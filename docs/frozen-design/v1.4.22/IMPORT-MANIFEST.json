@@ -1,0 +1,79 @@
+{
+  "manifest_version": 1,
+  "design_version": "v1.4.22",
+  "provenance": {
+    "classification": "PRE_EVENT_DESIGN_SNAPSHOT",
+    "statement": "These files are an unmodified byte-for-byte snapshot of the frozen pre-event design. The source commit was authored before the event-start baseline.",
+    "source_repository": "https://github.com/habrahgithub/swd-workspace",
+    "source_branch": "tameion/full-blueprint-v1",
+    "frozen_commit": "a6831c418d97f1bf36f7983b555863cbbeae082c",
+    "source_commit_authored_at_utc": "2026-09-24T14:54:36Z",
+    "event_start_baseline_at": "2026-09-27T19:06:23+04:00",
+    "destination_repository": "https://github.com/habrahgithub/swd-tameion-assured-payments"
+  },
+  "import_policy": {
+    "copy_only_listed_files": true,
+    "git_history_imported": false,
+    "runlogs_or_execution_logs_imported": false,
+    "secrets_imported": false,
+    "source_files_modified": false
+  },
+  "files": [
+    {
+      "source_path": "control-plane/specs/tameion/tameion-agent-runtime-baseline.v1.json",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-agent-runtime-baseline.v1.json",
+      "git_blob_sha1": "1e3914f736040b191b7dbe9a7dd5a82895a9f59f",
+      "sha256": "6db10cb2e6a9da77ad26807f6fa931755742ca1f740ab6a2fb1e599cf98e1ef7",
+      "bytes": 26645
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-agent-runtime-baseline.v1.md",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-agent-runtime-baseline.v1.md",
+      "git_blob_sha1": "c2f57509c9c81c4f934f2c63811850deb2a0d94f",
+      "sha256": "6278fa1bbb12c18fc3eae3b5edb59899174d617082a8be98a0aae46c392023ee",
+      "bytes": 21543
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-dependency-baseline.v1.json",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-dependency-baseline.v1.json",
+      "git_blob_sha1": "cc2dfd49a28ae5b42ddecb1d4a08db8156feb02f",
+      "sha256": "b5d636afef6a0c287eaa072b7ad8603480720ecf5c479824c0be703844a8256b",
+      "bytes": 13459
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-dependency-baseline.v1.md",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-dependency-baseline.v1.md",
+      "git_blob_sha1": "8aabc90ac809da64d7be3d784cc406e9891ac294",
+      "sha256": "51ab6146ff6a66b2e8bf48065f83cf8e11f20de33f7d3aa8e50c0df2879d388c",
+      "bytes": 11167
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-full-blueprint.v1.json",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-full-blueprint.v1.json",
+      "git_blob_sha1": "2937af2907fc2f7eeb95ac0bb6f5f875f5a9f8d4",
+      "sha256": "1d49e44ec94e0ff036c8cefe6f1da23541cbf64e5dbb17342af8aab6a80c1507",
+      "bytes": 279278
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-full-blueprint.v1.md",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-full-blueprint.v1.md",
+      "git_blob_sha1": "109b9d87b27671392730aa3d1e8a22c9a7fc893e",
+      "sha256": "d6b7506bf778dd3eb66c71b466c7f38ade56410f9e11957115a01852cfbd9b3c",
+      "bytes": 175588
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-verification-baseline.v1.json",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-verification-baseline.v1.json",
+      "git_blob_sha1": "c6316ed939e9640bb9b480931126928569377d2e",
+      "sha256": "6753c7f5c9d5f520bc650d998a18e306edefc55a46d640470b703ea3a9d85501",
+      "bytes": 25442
+    },
+    {
+      "source_path": "control-plane/specs/tameion/tameion-verification-baseline.v1.md",
+      "imported_path": "docs/frozen-design/v1.4.22/tameion-verification-baseline.v1.md",
+      "git_blob_sha1": "0227208b35bde8d9ff00fe7e9f8dc576b6ba3962",
+      "sha256": "357c845d0ce8a616412b4825b369ae85685151f602a946283f0dc63f55636a41",
+      "bytes": 17570
+    }
+  ]
+}
