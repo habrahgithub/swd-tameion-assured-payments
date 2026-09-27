@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Next.js output
+.next/
+out/
+
+# Test output
+coverage/
+
+# Local environment files (the names-only template is committed)
+.env*
+!.env.example
+
+# TypeScript and package-manager output
+*.tsbuildinfo
+npm-debug.log*
+
+# OS/editor files
+.DS_Store
+*.swp
