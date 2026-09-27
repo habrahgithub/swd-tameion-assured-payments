@@ -1,0 +1,288 @@
+{
+  "schema_version": "1.0.0",
+  "date": "2026-09-24",
+  "status": "ADOPTED",
+  "canonical_issue": 80,
+  "parent_blueprint_schema": "1.4.22",
+  "package_manager": {
+    "name": "npm",
+    "lockfile": "package-lock.json",
+    "lockfile_version": 3,
+    "project_node": "24.x",
+    "install_rule": "CI uses npm ci from committed lockfile. Required peer dependencies are direct dependencies; unused optional peer ecosystems must not be auto-added solely for optional SDK integrations.",
+    "pin_rule": "Initial direct dependencies use exact versions; upgrades require PR evidence rather than floating latest."
+  },
+  "runtime": {
+    "next": "16.3.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5",
+    "openai": "7.23.0",
+    "@supabase/supabase-js": "2.117.1",
+    "@supabase/ssr": "0.12.7",
+    "@circle-fin/developer-controlled-wallets": "10.8.1",
+    "json-canonicalize": "3.0.1",
+    "commander": "15.0.0"
+  },
+  "development": {
+    "typescript": "5.9.3",
+    "@types/node": "24.13.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.6",
+    "prettier": "3.9.9",
+    "vitest": "5.0.1",
+    "@vitest/coverage-v8": "5.0.1",
+    "fast-check": "4.10.2",
+    "@playwright/test": "1.63.0",
+    "tsx": "4.23.15"
+  },
+  "external_tools": {
+    "arc_canteen_cli": {
+      "version": "0.1.17",
+      "commit": "2e46a302a22f0ca114f3cf492518058d1dc28374",
+      "install": "uv tool install git+https://github.com/the-canteen-dev/ARC-cli@2e46a302a22f0ca114f3cf492518058d1dc28374",
+      "runtime_authority": false
+    },
+    "circle_cli": {
+      "version": "1.1.4",
+      "install": "npm install -g @circle-fin/cli@1.1.4",
+      "runtime_authority": false,
+      "reason_outside_lockfile": "Developer/J0 tool only; broad x402/Solana tooling is not part of application runtime."
+    },
+    "supabase_cli": {
+      "version": "2.117.0",
+      "install": "npx --yes supabase@2.117.0",
+      "runtime_authority": false
+    }
+  },
+  "platform_primitives": [
+    "node:crypto for hash/sign/verify and key operations",
+    "crypto.randomUUID() for opaque identifiers",
+    "built-in fetch for HTTP",
+    "strict decimal-string to bigint parser for authoritative USDC 6-decimal atomic units",
+    "Next route handlers instead of Express/Fastify",
+    "Postgres SQL/RPC functions for atomic authority transitions",
+    "Postgres durable outbox/reservation lease instead of a separate queue platform",
+    "small internal structured/redacting logger instead of a telemetry framework"
+  ],
+  "circle_p0_decision": {
+    "adopt": "@circle-fin/developer-controlled-wallets only",
+    "reason": "P0 requires one server-side Arc Testnet wallet/USDC execution path. Direct DCW SDK supports ARC-TESTNET without App Kit cross-chain/swap breadth.",
+    "defer": [
+      "@circle-fin/app-kit",
+      "@circle-fin/adapter-circle-wallets",
+      "Bridge Kit/CCTP",
+      "Gateway",
+      "Earn/USYC",
+      "direct viem/ethers",
+      "smart-contract framework"
+    ],
+    "revisit_condition": "Only if J0/J2 proves the direct DCW path cannot satisfy required Arc execution/status/idempotency behavior."
+  },
+  "ai_p0_decision": {
+    "adopt": [
+      "one AiProvider interface",
+      "OpenAI SDK compatible adapter",
+      "NVIDIA Build as P0 hosted inference provider",
+      "nvidia/nemotron-3-super-120b-a12b as pinned P0 Finance Agent model",
+      "ContextBuilder",
+      "SkillRegistry",
+      "AgentRunner",
+      "Zod structured skill/final-output validation",
+      "versioned prompt/provider/model/context/skill/eval metadata"
+    ],
+    "defer": [
+      "LangChain",
+      "DeepAgents",
+      "Vercel AI SDK",
+      "fine-tuning framework",
+      "general RAG/vector DB",
+      "agent memory platform",
+      "runtime MCP financial tool router",
+      "multi-agent orchestration"
+    ],
+    "rule": "If the model/provider fails the eval contract, change the model/adapter before adding orchestration breadth.",
+    "primary_provider": "NVIDIA Build",
+    "primary_model": "nvidia/nemotron-3-super-120b-a12b",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "adapter": "OpenAI SDK compatible adapter",
+    "reasoning_configuration": {
+      "enabled": true,
+      "temperature": 1.0,
+      "top_p": 0.95
+    },
+    "credential": "NVIDIA_API_KEY",
+    "contingency": {
+      "provider": "OpenRouter",
+      "status": "OPTIONAL_ONLY",
+      "rule": "No automatic router or silent fallback. Any contingency use starts a new AgentRun with explicit provider/model/config identity and must satisfy the frozen eval contract."
+    },
+    "openai_platform_api_key_required": false,
+    "executable_config": {
+      "config_version": "p0-nvidia-nemotron3super-v1",
+      "provider": "NVIDIA Build",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "endpoint": "https://integrate.api.nvidia.com/v1",
+      "adapter": "OpenAI SDK compatible adapter",
+      "reasoning": {
+        "enabled": true
+      },
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "max_output_tokens": 4096,
+      "request_timeout_ms": 30000,
+      "max_transport_attempts": 2,
+      "retry_policy": "At most one retry for a pre-response transient transport/5xx failure. Never silently switch provider/model. Partial/ambiguous response, schema failure, tool failure or capability mismatch ends the AgentRun fail-closed as HOLD/ESCALATE.",
+      "structured_output": "Final PAY/HOLD/ESCALATE object must validate against the application-owned Zod schema; invalid or incomplete output fails closed.",
+      "tool_mode": "Static code-defined typed READ/ANALYZE/PROPOSE allowlist only; no approval, signing, payment, shell, arbitrary SQL/HTTP or unrestricted MCP capability.",
+      "capability_smoke": "Before J1 acceptance, prove the pinned endpoint/model can return the required structured final output and execute only an allowed typed skill under the frozen manifest. Failure blocks J1 acceptance.",
+      "runtime_hash_rule": "Persist SHA-256 of the exact executable provider/model request configuration with every AgentRun; any config change starts a new config version and reruns the frozen eval contract."
+    }
+  },
+  "data_p0_decision": {
+    "adopt": "Supabase/Postgres + SQL migrations + RLS/Auth/RPC as needed",
+    "defer": [
+      "Prisma",
+      "Drizzle",
+      "TypeORM",
+      "Redis",
+      "BullMQ",
+      "Kafka",
+      "vector database"
+    ],
+    "atomicity_rule": "Money/authority state transitions requiring atomicity are implemented as database functions/transactions, not client-side multi-call sequences."
+  },
+  "ui_p0_decision": {
+    "adopt": "Next/React + native controls + CSS/CSS Modules",
+    "defer": [
+      "Tailwind",
+      "broad component library",
+      "charting library",
+      "form framework"
+    ],
+    "revisit_condition": "Only if J3 reveals a concrete accessibility/reliability blocker before feature freeze at end of Day 11."
+  },
+  "crypto_numeric": {
+    "canonicalization": "json-canonicalize",
+    "crypto": "Node standard cryptography; no custom cryptographic primitive",
+    "money": "USDC authoritative value is bigint atomic units derived from strict decimal-string parsing; binary float is never authoritative."
+  },
+  "survey_evidence": {
+    "date": "2026-09-24",
+    "broad_circle_candidate": {
+      "packages": [
+        "@circle-fin/app-kit@1.15.2",
+        "@circle-fin/adapter-circle-wallets@1.8.0"
+      ],
+      "resolved_package_count_approx": 791,
+      "runtime_audit_point_in_time": {
+        "critical": 0,
+        "high": 11,
+        "moderate": 10,
+        "low": 8,
+        "total": 29
+      },
+      "interpretation": "Rejected for P0 because cross-chain/Solana/Ethers/provider breadth is unnecessary for the one-chain proof; this is not a blanket judgment on package security."
+    },
+    "adopted_candidate": {
+      "direct_circle_package": "@circle-fin/developer-controlled-wallets@10.8.1",
+      "resolved_package_count_approx": 525,
+      "unused_optional_peer_ecosystems": "not installed as application requirements",
+      "runtime_audit_point_in_time": {
+        "critical": 0,
+        "high": 0,
+        "moderate": 0,
+        "low": 0,
+        "total": 0
+      },
+      "interpretation": "Point-in-time lockfile survey only; CI dependency review remains mandatory."
+    },
+    "local_toolchain_observed": {
+      "node": "22.15.1",
+      "npm": "10.9.2",
+      "python": "3.12.3",
+      "uv": "0.11.32",
+      "git": "2.43.0"
+    },
+    "local_action": "Do not change global SWD Node. Bootstrap Tameion with project-scoped Node 24."
+  },
+  "supply_chain_policy": [
+    "exact direct dependency pins at bootstrap",
+    "package-lock committed and reviewed",
+    "clean npm ci in CI",
+    "dependency tree/audit evidence on PR and release",
+    "weekly Dependabot for npm and GitHub Actions",
+    "no automatic merge for financial/runtime provider dependencies",
+    "Circle/Supabase/Next/AI/canonicalization dependency updates run targeted financial/adversarial/eval regressions",
+    "no dependency may add a new financial authority path",
+    "Tameion third-party GitHub Actions are pinned by full immutable commit SHA, not moving major/minor tags",
+    "Gitleaks is the selected P0 secret scanner; exact release/checksum or immutable action SHA is recorded at J0 bootstrap"
+  ],
+  "explicit_non_dependencies_p0": [
+    "@circle-fin/app-kit",
+    "@circle-fin/adapter-circle-wallets",
+    "direct viem/ethers",
+    "LangChain/DeepAgents",
+    "RAG/vector DB/embeddings",
+    "runtime MCP financial tools",
+    "ORM",
+    "Redis/queue platform",
+    "OpenTelemetry platform",
+    "Solidity/Hardhat/Foundry",
+    "second web framework/test runner"
+  ],
+  "canonical_workspace_path": "control-plane/specs/tameion/tameion-dependency-baseline.v1.json",
+  "mcp_policy": {
+    "developer_control_plane": "Allowed for engineering/governance workflows such as GitHub, documentation/reference retrieval, repository inspection and other explicitly authorized developer tooling.",
+    "runtime_financial_path": "Prohibited for P0 as a generic agent-to-money router. Finance Agent -> typed application service -> Safety Kernel -> signed PAE -> Execution Worker remains the only money authority path.",
+    "secrets": "Developer MCP/tools must not be given wallet private keys, PAE signing secrets or production/provider credentials unless a future narrowly scoped tool is explicitly threat-modeled and approved.",
+    "scope": "MCP use for development does not become an application runtime dependency and does not grant financial authority."
+  },
+  "rag_policy": {
+    "p0": "No general RAG/vector/embedding system.",
+    "p0_retrieval": "Use deterministic scoped evidence IDs/allowlisted context linked to the obligation.",
+    "future_trigger": "Reconsider only when long contracts/policies/vendor history/regulatory corpora create a demonstrated retrieval need; then require provenance, tenant isolation, freshness and prompt-injection evals."
+  },
+  "ci_security_tooling": {
+    "secret_scanner": {
+      "name": "Gitleaks",
+      "purpose": "blocking repository secret scan in local/CI/release gates",
+      "pin_rule": "J0 bootstrap records one exact Gitleaks release/version and checksum or immutable action commit; upgrades require reviewed PR evidence",
+      "config_rule": "scanner configuration is committed and versioned with the Tameion product repository"
+    },
+    "pii_publication_scan": {
+      "scope": "deterministic public-repository/demo-artifact checks for known real names, emails, account/wallet/source identifiers and prohibited fixture markers",
+      "claim_limit": "This is a publication guard, not a DLP certification or guarantee of comprehensive PII detection."
+    },
+    "github_actions_pin_rule": "Every third-party GitHub Action in the Tameion product repository uses a full immutable commit SHA in uses:. A human-readable release tag/version may appear only as a comment; moving major tags such as @v4 are not sufficient for release identity."
+  },
+  "agent_runtime_policy": {
+    "adopt": [
+      "application-owned AiProvider interface",
+      "ContextBuilder",
+      "SkillRegistry",
+      "AgentRunner",
+      "native provider structured tool/function calling",
+      "Zod validation"
+    ],
+    "p0_provider_adapter": "OpenAI SDK compatible adapter targeting NVIDIA Build",
+    "defer": [
+      "general agent framework",
+      "persistent provider agent memory",
+      "general RAG/vector memory",
+      "runtime financial MCP router",
+      "business workflow engine inside money path"
+    ],
+    "rule": "Prefer a small typed application-owned loop. Add orchestration framework breadth only for a concrete post-P0 blocker.",
+    "p0_email_connector": "No live Gmail/Outlook connector dependency. P0 consumes normalized uploaded/redacted source evidence; live mailbox OAuth remains post-P0 unless a concrete blocker is proven.",
+    "p0_provider": "NVIDIA Build",
+    "p0_model": "nvidia/nemotron-3-super-120b-a12b",
+    "p0_model_fallback": "No silent fallback. OpenRouter is contingency-only and requires a new explicitly recorded AgentRun.",
+    "p0_config_version": "p0-nvidia-nemotron3super-v1",
+    "p0_config_change_rule": "Any change to provider/model/endpoint/reasoning/sampling/output-token limit/timeout-retry/structured-output/tool-mode creates a new config version and requires the frozen eval contract before acceptance."
+  }
+}

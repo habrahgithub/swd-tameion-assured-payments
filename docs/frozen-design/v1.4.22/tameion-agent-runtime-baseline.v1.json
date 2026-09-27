@@ -1,0 +1,511 @@
+{
+  "schema_version": "1.0.0",
+  "date": "2026-09-24",
+  "status": "ADOPTED_P0_RUNTIME_CONTRACT",
+  "canonical_issue": 82,
+  "parent_blueprint_schema": "1.4.22",
+  "canonical_workspace_path": "control-plane/specs/tameion/tameion-agent-runtime-baseline.v1.json",
+  "purpose": "Provide one bounded in-app Finance Agent runtime that can inspect scoped evidence, call typed read/analysis/proposal skills, and return structured PAY/HOLD/ESCALATE recommendations without receiving financial execution authority.",
+  "core_principles": [
+    "MODEL_IS_DISPOSABLE_APPLICATION_STATE_IS_DURABLE",
+    "MODEL_MEMORY_IS_NEVER_FINANCIAL_TRUTH",
+    "MODEL_EFFECTIVE_CAPABILITY_EQUALS_EXACT_RUN_SKILL_ALLOWLIST",
+    "FINANCE_AGENT_HAS_NO_PAYMENT_EXECUTION_OR_AUTHORITY_MUTATION_SKILL",
+    "RAW_EXTERNAL_TOOL_CATALOGS_ARE_NEVER_DIRECTLY_EXPOSED_TO_FINANCE_AGENT",
+    "PROVIDER_FAILURE_OR_INVALID_OUTPUT_NEVER_DEFAULTS_TO_PAY"
+  ],
+  "p0_primitives": {
+    "AiProvider": {
+      "role": "Provider-neutral model adapter.",
+      "responsibilities": [
+        "submit versioned prompt/context",
+        "expose only supplied typed skill definitions",
+        "enforce structured tool/final output schema",
+        "return model/tool-call events to AgentRunner",
+        "report provider/model/config identity"
+      ],
+      "p0_adapter": "OpenAI SDK compatible adapter targeting NVIDIA Build",
+      "future_adapter_rule": "Future provider/model adapters must satisfy the same interface and frozen eval thresholds before accepted use.",
+      "authority": "NONE",
+      "p0_provider": "NVIDIA Build",
+      "p0_endpoint": "https://integrate.api.nvidia.com/v1",
+      "p0_model": "nvidia/nemotron-3-super-120b-a12b",
+      "p0_reasoning_mode": "enabled for Finance Agent obligation assessment",
+      "p0_sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "p0_secret": "NVIDIA_API_KEY",
+      "fallback_policy": "No silent provider/model fallback inside an AgentRun. Any fallback is a new explicit run with provider/model/config identity recorded and frozen eval requirements preserved.",
+      "p0_executable_config": {
+        "config_version": "p0-nvidia-nemotron3super-v1",
+        "provider": "NVIDIA Build",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "endpoint": "https://integrate.api.nvidia.com/v1",
+        "adapter": "OpenAI SDK compatible adapter",
+        "reasoning": {
+          "enabled": true
+        },
+        "sampling": {
+          "temperature": 1.0,
+          "top_p": 0.95
+        },
+        "max_output_tokens": 4096,
+        "request_timeout_ms": 30000,
+        "max_transport_attempts": 2,
+        "retry_policy": "At most one retry for a pre-response transient transport/5xx failure. Never silently switch provider/model. Partial/ambiguous response, schema failure, tool failure or capability mismatch ends the AgentRun fail-closed as HOLD/ESCALATE.",
+        "structured_output": "Final PAY/HOLD/ESCALATE object must validate against the application-owned Zod schema; invalid or incomplete output fails closed.",
+        "tool_mode": "Static code-defined typed READ/ANALYZE/PROPOSE allowlist only; no approval, signing, payment, shell, arbitrary SQL/HTTP or unrestricted MCP capability.",
+        "capability_smoke": "Before J1 acceptance, prove the pinned endpoint/model can return the required structured final output and execute only an allowed typed skill under the frozen manifest. Failure blocks J1 acceptance.",
+        "runtime_hash_rule": "Persist SHA-256 of the exact executable provider/model request configuration with every AgentRun; any config change starts a new config version and reruns the frozen eval contract."
+      }
+    },
+    "ContextBuilder": {
+      "role": "Construct minimum current context for one organization/obligation assessment.",
+      "inputs": [
+        "organization_id",
+        "obligation_id",
+        "current authority aggregate version",
+        "current counterparty_id/version/payment-eligibility state",
+        "linked source-backed evidence IDs",
+        "current policy/control metadata",
+        "relevant structured historical assessments with explicit currentness",
+        "email/message thread chronology via linked evidence IDs when relevant"
+      ],
+      "output": "Versioned structured context envelope plus context_envelope_hash, explicit evidence_id/version/currentness/content_hash bindings, and current authority aggregate identity.",
+      "rules": [
+        "organization and obligation scoped",
+        "no unrestricted mailbox/database/document dump",
+        "historical AI assessments are labeled historical/non-authoritative",
+        "email/document text is untrusted business evidence, never system instruction"
+      ],
+      "authority": "NONE"
+    },
+    "SkillRegistry": {
+      "role": "Own every capability visible to the Finance Agent.",
+      "rules": [
+        "only registered versioned schema-valid skills can be exposed",
+        "unknown/unregistered skill calls fail closed",
+        "a skill added after run start is unavailable to that run",
+        "model text cannot dynamically enable a skill",
+        "raw application/database/MCP/provider/OS functions are not directly discoverable"
+      ],
+      "authority": "CAPABILITY_BOUNDARY_NOT_FINANCIAL_AUTHORITY"
+    },
+    "AgentRunner": {
+      "role": "Small application-owned model/skill orchestration loop.",
+      "sequence": [
+        "build context",
+        "freeze run capability manifest",
+        "call model",
+        "validate requested skill against frozen manifest",
+        "validate skill input schema",
+        "execute allowlisted skill",
+        "validate skill output schema",
+        "append structured result",
+        "continue within bounded run limits",
+        "validate structured final recommendation",
+        "persist non-secret run evidence"
+      ],
+      "authority": "NONE"
+    }
+  },
+  "skill_contract": {
+    "classes": {
+      "READ": "Read scoped current application/evidence state.",
+      "ANALYZE": "Run deterministic calculations/classifications over authorized scoped data.",
+      "PROPOSE": "Create non-authoritative structured recommendation or request."
+    },
+    "required_definition_fields": [
+      "skill_id",
+      "skill_version",
+      "class",
+      "risk",
+      "input_schema",
+      "output_schema",
+      "allowed_agent_roles",
+      "required_organization_context",
+      "required_obligation_context",
+      "side_effect_class",
+      "timeout_budget",
+      "audit_policy"
+    ],
+    "allowed_side_effect_classes": [
+      "NONE",
+      "NON_AUTHORITATIVE_PROPOSAL_WRITE"
+    ],
+    "forbidden_side_effect_classes": [
+      "FINANCIAL_EXECUTION",
+      "AUTHORITY_MUTATION",
+      "UNRESTRICTED_DATABASE_WRITE",
+      "UNRESTRICTED_PROVIDER_CALL"
+    ],
+    "p0_examples": {
+      "READ": [
+        "obligation.read",
+        "evidence.read-linked",
+        "counterparty.read",
+        "destination.read-current",
+        "destination.read-history",
+        "assessment.read-history"
+      ],
+      "ANALYZE": [
+        "money.calculate-atomic",
+        "obligation.check-duplicate",
+        "evidence.check-completeness",
+        "destination.check-currentness"
+      ],
+      "PROPOSE": [
+        "decision.propose-pay",
+        "decision.propose-hold",
+        "decision.propose-escalate",
+        "evidence.request-more-context"
+      ]
+    },
+    "explicitly_absent_finance_agent_capabilities": [
+      "send payment",
+      "call Circle or wallet provider",
+      "seal/sign PAE",
+      "approve/reject as human",
+      "change counterparty/destination verification",
+      "change source-wallet authority",
+      "bypass Safety Kernel",
+      "write provider execution state",
+      "shell/filesystem/browser/generic HTTP access"
+    ]
+  },
+  "capability_manifest": {
+    "frozen_per_run_fields": [
+      "agent_role",
+      "agent_version",
+      "organization_id",
+      "obligation_id",
+      "aggregate_version",
+      "context_schema_version",
+      "context_hash",
+      "prompt_version",
+      "model_provider",
+      "model_id",
+      "model_config_version",
+      "skill_ids_and_versions",
+      "run_limits",
+      "prompt_hash",
+      "evidence_binding_manifest_hash",
+      "context_envelope_hash"
+    ],
+    "hash": "Deterministic skill/capability manifest hash stored with AgentRun evidence.",
+    "immutability": "Skills/plugins registered after a run begins cannot become available to that run.",
+    "validation": "Every requested skill ID/version and arguments are checked against this frozen manifest before execution.",
+    "evidence_binding_manifest_hash": "Deterministic hash over the exact ordered evidence_id/version/currentness/content_hash bindings visible to the run."
+  },
+  "durable_memory": {
+    "authoritative_memory": "Versioned application state plus source-backed evidence in Postgres/object storage.",
+    "authoritative_categories": [
+      "organization/users/authority",
+      "counterparties/destinations/source-wallet authority",
+      "obligations/authority aggregate",
+      "evidence",
+      "structured agent assessments",
+      "approvals",
+      "assurance records",
+      "PAEs",
+      "executions/provider events",
+      "settlements/reconciliation",
+      "audit events"
+    ],
+    "agent_run_persistence": [
+      "agent_run_id",
+      "organization_id",
+      "obligation_id",
+      "aggregate_version",
+      "context_hash",
+      "model_provider",
+      "model_id",
+      "model_config_version",
+      "prompt_version",
+      "input_schema_version",
+      "output_schema_version",
+      "skill_manifest_hash",
+      "skill-call IDs/input hashes/output hashes/status",
+      "structured final decision",
+      "evidence references",
+      "missing-evidence/uncertainty fields",
+      "timestamp",
+      "duration",
+      "outcome",
+      "prompt_artifact_ref + prompt_hash",
+      "evidence bindings: evidence_id + evidence_version/currentness + content_hash for every model-visible evidence item",
+      "context_envelope_hash over the exact normalized model-visible context"
+    ],
+    "forbidden_as_authority": [
+      "provider session memory",
+      "hosted assistant/thread memory",
+      "conversation recall",
+      "model-generated summary without source references",
+      "private chain-of-thought"
+    ],
+    "currentness_rule": "Prior agent decisions are historical evidence only. Any authority-bearing state change requires reconstruction/reassessment against current state.",
+    "restart_rule": "A fresh process/model/provider can reconstruct the current decision context from durable application state without hidden model memory.",
+    "memory_layers": {
+      "WORKING_CONTEXT": {
+        "persistence": "EPHEMERAL_OR_SHORT_LIVED",
+        "authority": "NONE",
+        "examples": [
+          "current prompt context",
+          "temporary tool results",
+          "intermediate orchestration state"
+        ],
+        "rule": "May be discarded after the AgentRun once required structured evidence/hashes are persisted."
+      },
+      "AUTHORITATIVE_BUSINESS_STATE": {
+        "persistence": "DURABLE_VERSIONED",
+        "authority": "AUTHORITATIVE_WITHIN_TAMEION_SCOPE",
+        "examples": [
+          "obligation authority aggregate",
+          "party/destination/source-wallet authority",
+          "holds/approvals/PAE/execution/settlement state"
+        ]
+      },
+      "SOURCE_EVIDENCE_MEMORY": {
+        "persistence": "DURABLE_PER_RETENTION_POLICY",
+        "authority": "EVIDENCE_NOT_SELF_EXECUTING_AUTHORITY",
+        "examples": [
+          "invoice",
+          "email/message",
+          "PO",
+          "delivery evidence",
+          "provider event"
+        ],
+        "rule": "Immutable source identity/content hash plus separate currentness/supersession metadata."
+      },
+      "DECISION_AUDIT_MEMORY": {
+        "persistence": "DURABLE_VERSIONED",
+        "authority": "HISTORICAL_EVIDENCE",
+        "examples": [
+          "structured agent assessment",
+          "human approval",
+          "Safety assurance",
+          "execution/reconciliation events"
+        ],
+        "rule": "Previous agent decisions never become current truth merely because they were persisted."
+      },
+      "DERIVED_CONTEXT": {
+        "persistence": "OPTIONAL_REGENERABLE",
+        "authority": "NON_AUTHORITATIVE",
+        "examples": [
+          "thread summary",
+          "supplier-history summary",
+          "derived risk/context fact"
+        ],
+        "rule": "Must reference source IDs/hashes and currentness; invalidated or regenerated when a source is superseded, removed under policy, or materially changes."
+      }
+    },
+    "prompt_binding_rule": "prompt_version identifies the governed prompt artifact; prompt_hash is the lowercase SHA-256 of the exact UTF-8 prompt artifact bytes used for the run (or an exact composite prompt manifest when multiple governed prompt files are used). The artifact is retained/versioned in Git or equivalent governed storage.",
+    "evidence_binding_rule": "Every source-backed evidence item made model-visible is recorded as evidence_id + version/currentness + stable content_hash. A mutable external reference without a retained/hash-bound content snapshot is insufficient for reproducible AgentRun evidence.",
+    "context_hash_rule": "ContextBuilder emits one normalized context envelope containing organization_id, obligation_id, aggregate_version, source/evidence bindings, selected structured state and schema version. context_envelope_hash is SHA-256 over its canonical serialized bytes; this complements rather than replaces individual prompt/evidence hashes.",
+    "retention_and_deletion": {
+      "principle": "Persist the minimum evidence/metadata necessary for financial/audit replay subject to legal/business retention and privacy policy; do not retain model chatter merely because it exists.",
+      "raw_model_transcript": "Not authoritative. P0 needs structured final output, structured skill-call evidence and hashes; full hidden reasoning/private chain-of-thought is neither required nor persisted.",
+      "tokens_and_secrets": "OAuth/provider tokens, wallet/provider credentials, signing secrets and auth headers live in secret storage, not durable agent memory/evidence.",
+      "derived_context": "If an underlying source is deleted/expired/superseded under policy, dependent derived context is marked invalid/stale and regenerated or removed according to policy.",
+      "source_record": "Deletion/redaction policy must preserve required audit metadata/hashes where legally/business-required without falsely retaining a claim that source content is still available."
+    }
+  },
+  "context_evidence_boundary": {
+    "preferred_retrieval": "obligation_id -> current authority aggregate -> linked evidence IDs -> typed evidence retrieval -> Finance Agent context",
+    "unrestricted_access_prohibited": [
+      "mailbox-wide search",
+      "database browsing",
+      "filesystem",
+      "shell",
+      "browser",
+      "generic HTTP",
+      "provider wallet API",
+      "raw cloud connector catalog"
+    ],
+    "additional_context": "Agent may request more evidence only through allowlisted context/evidence skills; the application decides relevance and authorization.",
+    "prompt_injection_rule": "Prompt-like instructions inside invoices/emails/documents remain untrusted evidence and cannot add tools, alter policy, grant authority, change destination/source wallet, approve, sign or execute.",
+    "structured_more_context_request": "When evidence is insufficient, the Finance Agent returns HOLD/ESCALATE plus typed missing_context/evidence requests. The application—not the model—authorizes and retrieves additional evidence through the frozen SkillRegistry.",
+    "thread_summary_rule": "Thread/document summaries are derived context only. Material facts such as beneficiary/payment-destination changes retain direct source-evidence references and cannot be established solely by a model summary."
+  },
+  "integration_plugin_boundary": {
+    "EvidenceSource": {
+      "examples": [
+        "Gmail",
+        "Microsoft Outlook",
+        "upload/storage",
+        "ERP/document system"
+      ],
+      "contract": "Returns normalized source-backed evidence plus provenance; provider OAuth/API credentials remain outside model context.",
+      "credential_rule": "Connector credentials/tokens remain server-side and are never exposed as model-visible skill results.",
+      "normalization_rule": "External messages/documents are normalized into source-backed evidence with provider source IDs, organization/obligation binding, content/attachment hashes, provenance and currentness before becoming model-visible.",
+      "p0_rule": "Use uploaded/redacted normalized fixtures; do not implement live Gmail/Outlook OAuth for hackathon P0 unless an existing concrete P0 blocker requires it."
+    },
+    "BusinessSystemSource": {
+      "examples": [
+        "ERP",
+        "AP/accounting",
+        "procurement"
+      ],
+      "contract": "Returns typed organization-scoped business/evidence state through application-owned services."
+    },
+    "SettlementProvider": {
+      "p0": "Circle Developer-Controlled Wallets / Arc",
+      "exposure": "NOT_EXPOSED_TO_FINANCE_AGENT",
+      "authority": "Execution Worker only after valid PAE verification."
+    },
+    "raw_plugin_rule": "External plugin capability is always narrowed through Tameion-owned interfaces/skills before model exposure."
+  },
+  "mcp_boundary": {
+    "developer_control_plane": "Allowed for governed engineering workflows.",
+    "future_customer_integration": "May be implemented behind a Tameion adapter/typed skill.",
+    "allowed_pattern": "Finance Agent -> Tameion typed skill -> Tameion adapter -> external MCP service.",
+    "forbidden_pattern": "Finance Agent -> arbitrary external MCP tool catalog -> mutation/payment/shell.",
+    "authority_rule": "Raw MCP capability never defines Tameion financial authority."
+  },
+  "run_limits_failure_behavior": {
+    "bounded_by": [
+      "maximum tool rounds",
+      "maximum duration",
+      "provider timeout/retry budget",
+      "maximum context/evidence size",
+      "exact skill allowlist",
+      "structured-output schema"
+    ],
+    "safe_fail_cases": [
+      "unknown skill",
+      "invalid skill args/output",
+      "loop/run-budget exhaustion",
+      "invalid final schema",
+      "provider failure without safe valid decision"
+    ],
+    "safe_result": "HOLD/AGENT_ERROR or ESCALATE by deterministic wrapper policy; never implicit PAY.",
+    "retry_rule": "Model-provider retry may repeat reasoning but cannot cause financial side effects because Finance Agent skills have no execution authority."
+  },
+  "provider_portability": {
+    "authoritative_contract": "Application context/skills/output schemas/run evidence, not provider-hosted agent state.",
+    "change_flow": [
+      "explicitly select provider/model/config version",
+      "bind same AiProvider interface",
+      "record provider/model/config version + SHA-256 runtime config hash",
+      "run frozen eval suite when provider, model, endpoint, reasoning mode, sampling, output/token limit, timeout/retry or structured/tool mode changes",
+      "threshold pass",
+      "start a new AgentRun; never mutate provider/model/config mid-run"
+    ],
+    "rule": "Tool-calling support alone does not make a provider trusted.",
+    "p0_configuration": {
+      "config_version": "p0-nvidia-nemotron3super-v1",
+      "provider": "NVIDIA Build",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "endpoint": "https://integrate.api.nvidia.com/v1",
+      "adapter": "OpenAI SDK compatible adapter",
+      "reasoning": {
+        "enabled": true
+      },
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "max_output_tokens": 4096,
+      "request_timeout_ms": 30000,
+      "max_transport_attempts": 2,
+      "retry_policy": "At most one retry for a pre-response transient transport/5xx failure. Never silently switch provider/model. Partial/ambiguous response, schema failure, tool failure or capability mismatch ends the AgentRun fail-closed as HOLD/ESCALATE.",
+      "structured_output": "Final PAY/HOLD/ESCALATE object must validate against the application-owned Zod schema; invalid or incomplete output fails closed.",
+      "tool_mode": "Static code-defined typed READ/ANALYZE/PROPOSE allowlist only; no approval, signing, payment, shell, arbitrary SQL/HTTP or unrestricted MCP capability.",
+      "capability_smoke": "Before J1 acceptance, prove the pinned endpoint/model can return the required structured final output and execute only an allowed typed skill under the frozen manifest. Failure blocks J1 acceptance.",
+      "runtime_hash_rule": "Persist SHA-256 of the exact executable provider/model request configuration with every AgentRun; any config change starts a new config version and reruns the frozen eval contract."
+    }
+  },
+  "p0_non_dependencies": [
+    "Agent Deck runtime",
+    "n8n/Zapier/Activepieces runtime",
+    "LangChain",
+    "DeepAgents",
+    "CrewAI",
+    "AutoGen",
+    "OpenClaw/Hermes/OpenCode/Codex CLI/Claude Code/Cline/Aider",
+    "general vector/RAG memory",
+    "multi-agent framework",
+    "persistent vendor-hosted agent memory"
+  ],
+  "j1_implementation_boundary": "Implement the minimum frozen Finance-Agent runtime inside J1; do not create a separate runtime milestone/job.",
+  "financial_boundary": "Finance Agent ends at structured recommendation. T1 human approval, deterministic Safety Kernel, PAE signer and Execution Worker remain outside model authority.",
+  "email_evidence_ingestion": {
+    "status": "P0_NORMALIZED_FIXTURE_SUPPORTED_LIVE_MAILBOX_CONNECTORS_DEFERRED",
+    "p0_scope": "Hackathon J0-J4 may use one genuine redacted email/message fixture or normalized JSON/.eml evidence linked to an obligation. Live Gmail/Outlook OAuth and mailbox synchronization are deferred.",
+    "future_evidence_source_auth": {
+      "oauth": "Use provider OAuth/authorized delegated access with the minimum practical read scope for the configured mailbox/folder/label; no mailbox password.",
+      "credential_boundary": "Access/refresh tokens and provider credentials remain server-side secret material and are never placed in model context, evidence text, logs or AgentRun records.",
+      "organization_binding": "Connected mailbox/account identity is bound to exactly one authorized organization integration context."
+    },
+    "normalized_email_evidence_fields": [
+      "evidence_id",
+      "organization_id",
+      "obligation_id",
+      "counterparty_id",
+      "source_provider",
+      "source_account_ref",
+      "provider_message_id",
+      "provider_thread_id",
+      "sender",
+      "recipients",
+      "subject",
+      "received_at",
+      "body_content_hash",
+      "source_message_hash",
+      "attachment_refs_and_hashes",
+      "provenance_class",
+      "currentness",
+      "supersedes_or_superseded_by"
+    ],
+    "thread_rule": "Persist individual source-message identities/hashes and chronology. A derived thread summary may assist context selection but is non-authoritative and cannot erase/supersede the underlying messages.",
+    "attachment_rule": "Attachments become separate source-backed evidence objects with their own hashes/provenance and explicit linkage to the source message.",
+    "change_request_rule": "A message that requests a beneficiary/payment-destination change creates an UNVERIFIED change-request/evidence fact only. It never updates VERIFIED destination state or financial authority by itself.",
+    "retrieval_rule": "ContextBuilder retrieves only obligation-linked/authorized message and attachment evidence by typed IDs. Finance Agent has no unrestricted mailbox search tool in P0.",
+    "prompt_injection_rule": "Email body, quoted replies, signatures and attachments are untrusted business evidence. Prompt-like instructions cannot alter system policy, skill allowlist, counterparty/destination/source-wallet trust, approval, PAE or execution authority.",
+    "currentness_rule": "Superseded/corrected messages remain immutable history; currentness is represented separately. A corrected invoice/email does not rewrite the original source record.",
+    "future_search_rule": "If semantic/RAG discovery is later introduced for large mail/document estates, it is discovery-only and must return source IDs/hashes/currentness; retrieved text never becomes financial authority."
+  },
+  "hackathon_execution_profile": {
+    "status": "PLANNED_NOT_ADMITTED_PRE_EVENT",
+    "assessment_scope": "3-5 genuine redacted event-period obligations; exactly one may enter payment execution.",
+    "implementation": "Use AiProvider + minimum ContextBuilder + static code-defined READ/ANALYZE/PROPOSE allowlist + small AgentRunner. No dynamic plugin system is required.",
+    "minimum_skill_classes": [
+      "READ",
+      "ANALYZE",
+      "PROPOSE"
+    ],
+    "minimum_behavior": [
+      "ground recommendation in evidence IDs",
+      "surface missing evidence and uncertainty",
+      "choose PAY/HOLD/ESCALATE",
+      "never claim approval/signing/execution authority",
+      "fail to HOLD/ESCALATE on provider/schema/tool error"
+    ],
+    "deferred_from_hackathon": [
+      "dynamic plugin registration/discovery",
+      "provider-portability breadth beyond the one adapter",
+      "general derived-context lifecycle engine beyond source-bound run evidence",
+      "live mailbox connectors",
+      "general RAG/vector memory",
+      "persistent provider-hosted agent memory"
+    ],
+    "event_delta_rule": "No Tameion-specific runtime implementation before EVENT_START_BASELINE.",
+    "model_configuration": "Use p0-nvidia-nemotron3super-v1: NVIDIA Build / nvidia/nemotron-3-super-120b-a12b with the exact versioned request configuration; no silent fallback.",
+    "credential_rule": "NVIDIA_API_KEY is the planned inference credential. OpenAI Platform API key is not required for P0. OPENROUTER_API_KEY is optional contingency only.",
+    "j1_capability_gate": "Before J1 acceptance, prove the pinned endpoint/model can return the required structured final output and execute only an allowed typed skill under the frozen manifest. Failure blocks J1 acceptance."
+  },
+  "hackathon_output_contract": {
+    "decision_enum": [
+      "PAY",
+      "HOLD",
+      "ESCALATE"
+    ],
+    "requires": [
+      "structured reasons",
+      "evidence IDs / grounding references",
+      "missing evidence / uncertainty signal"
+    ],
+    "pay_only_fields": "requested transaction fields are required only when PAY is proposed"
+  }
+}
