@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/tameion/J0-C-LIVE-USAGE-1.schema.json",
+  "title": "Tameion J0-C LIVE_USAGE_SET",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "organization_id",
+    "event_baseline_date",
+    "candidate_selection_performed",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "J0-C-LIVE-USAGE-1"
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "organization_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_baseline_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "candidate_selection_performed": {
+      "const": false
+    },
+    "records": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "obligation_id",
+          "counterparty_id",
+          "service_category",
+          "recurrence",
+          "issue_date",
+          "due_date",
+          "due_date_status",
+          "amount",
+          "currency",
+          "state_at_event_baseline",
+          "business_purpose_confirmed",
+          "destination_reference_token",
+          "destination_readiness",
+          "commercial_terms",
+          "source_evidence",
+          "currentness_attestation",
+          "candidate_readiness"
+        ],
+        "properties": {
+          "obligation_id": {
+            "type": "string",
+            "pattern": "^OBL-J0C-[0-9]{3}$"
+          },
+          "counterparty_id": {
+            "type": "string",
+            "pattern": "^CP-J0C-[0-9]{3}$"
+          },
+          "service_category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recurrence": {
+            "enum": [
+              "MONTHLY",
+              "YEARLY",
+              "ONE_TIME"
+            ]
+          },
+          "issue_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "due_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "due_date_status": {
+            "enum": [
+              "STATED_ON_SOURCE",
+              "NOT_STATED_ON_SOURCE"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]{2}$"
+          },
+          "currency": {
+            "enum": [
+              "AED",
+              "USD"
+            ]
+          },
+          "state_at_event_baseline": {
+            "const": "OUTSTANDING"
+          },
+          "business_purpose_confirmed": {
+            "const": true
+          },
+          "destination_reference_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "destination_readiness": {
+            "enum": [
+              "SOURCE_PRESENT_UNVERIFIED",
+              "NOT_CAPTURED_J0"
+            ]
+          },
+          "commercial_terms": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_evidence": {
+            "type": "array",
+            "minItems": 1
+          },
+          "currentness_attestation": {
+            "type": "object"
+          },
+          "candidate_readiness": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

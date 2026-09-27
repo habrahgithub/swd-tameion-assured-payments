@@ -1,0 +1,220 @@
+{
+  "schema_version": "J0-C-LIVE-USAGE-1",
+  "dataset_id": "LIVE_USAGE_SET-J0-C-001",
+  "organization_id": "ORG-DEMO-001",
+  "event_baseline_date": "2026-09-27",
+  "candidate_selection_performed": false,
+  "records": [
+    {
+      "obligation_id": "OBL-J0C-001",
+      "counterparty_id": "CP-J0C-001",
+      "service_category": "BUSINESS_LICENSE_AND_FLEXI_DESK",
+      "recurrence": "YEARLY",
+      "issue_date": "2026-01-28",
+      "due_date": null,
+      "due_date_status": "NOT_STATED_ON_SOURCE",
+      "amount": "5760.00",
+      "currency": "AED",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "destination_reference_token": "DEST-J0C-001",
+      "destination_readiness": "SOURCE_PRESENT_UNVERIFIED",
+      "commercial_terms": "One-year business-license/flexi-desk package; source is a proforma invoice.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-001-A",
+          "evidence_version": 1,
+          "source_type": "PDF_PROFORMA_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "0791ee66f50a182a63002052a85ecfcdeb1e15ff68d4a7534655ebbbc004739e",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-001",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
+        "content_sha256": "2a47324847b980bbac67918e48d688eeb8bf103beff52a767622aa3718b970cd"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": false,
+        "destination_status": "SOURCE_PRESENT_UNVERIFIED"
+      }
+    },
+    {
+      "obligation_id": "OBL-J0C-002",
+      "counterparty_id": "CP-J0C-002",
+      "service_category": "AI_SOFTWARE_SUBSCRIPTION_A",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-08-14",
+      "due_date": "2026-08-14",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "21.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "destination_reference_token": null,
+      "destination_readiness": "NOT_CAPTURED_J0",
+      "commercial_terms": "Monthly AI software subscription.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-002-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "0ef1dd4044b513998fed4b5354b9c92001f78645a2ba7603d21b58bb094227e4",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-002",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
+        "content_sha256": "c6f252e3c36219fc2afd2907e6857a39dd3122faa5d8705ee082dc8e166a092b"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "destination_status": "NOT_CAPTURED_J0"
+      }
+    },
+    {
+      "obligation_id": "OBL-J0C-003",
+      "counterparty_id": "CP-J0C-003",
+      "service_category": "CLOUD_INFRASTRUCTURE_SUBSCRIPTION",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-09-12",
+      "due_date": "2026-09-12",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "5.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "destination_reference_token": null,
+      "destination_readiness": "NOT_CAPTURED_J0",
+      "commercial_terms": "Monthly infrastructure plan and metered usage.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-003-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "5498f8d5bf87ebc8e380e9aae8b9e0cc9f896c25a413c296acfcf1eea2bcc373",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-003",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
+        "content_sha256": "b9584512e5faeccefff6443c316720f9485f5756351375627407250e76051bf9"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "destination_status": "NOT_CAPTURED_J0"
+      }
+    },
+    {
+      "obligation_id": "OBL-J0C-004",
+      "counterparty_id": "CP-J0C-004",
+      "service_category": "AI_SOFTWARE_SUBSCRIPTION_B",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-09-25",
+      "due_date": "2026-09-25",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "21.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "destination_reference_token": null,
+      "destination_readiness": "NOT_CAPTURED_J0",
+      "commercial_terms": "Monthly AI software subscription.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-004-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "ba5368b9d992bda526f2be77c990022c533ad6109f6eb859c06ebc596dc2fa41",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-004",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
+        "content_sha256": "0df03a0d25da80cddd29fca0a0bf7986d71528b921c457e5bf3ad1a14531ff6e"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "destination_status": "NOT_CAPTURED_J0"
+      }
+    },
+    {
+      "obligation_id": "OBL-J0C-005",
+      "counterparty_id": "CP-J0C-005",
+      "service_category": "PRODUCTIVITY_SUITE_SUBSCRIPTION",
+      "recurrence": "YEARLY",
+      "issue_date": "2026-03-30",
+      "due_date": "2026-03-30",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "75.60",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "destination_reference_token": null,
+      "destination_readiness": "NOT_CAPTURED_J0",
+      "commercial_terms": "One-year productivity-suite commitment covering 2026-03-29 through 2027-03-28.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-005-A",
+          "evidence_version": 1,
+          "source_type": "USER_SUPPLIED_EMAIL_INVOICE_EXCERPT",
+          "provenance_class": "USER_SUPPLIED_SOURCE_EXCERPT",
+          "currentness": "NORMALIZED_SOURCE_CLAIM",
+          "content_sha256": "f95e1fbe0ad6bc523186cc286956cd954ae405056b3567e8842604f7404dab33",
+          "content_hash_scope": "NORMALIZED_CLAIM_NOT_RAW_EMAIL",
+          "retention": "RAW_EMAIL_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-005",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
+        "content_sha256": "51573788a269f92ea7d1ec70ff8daf1a497522c3aaf6a64b8b0b31548ead28ff"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "destination_status": "NOT_CAPTURED_J0"
+      }
+    }
+  ]
+}
