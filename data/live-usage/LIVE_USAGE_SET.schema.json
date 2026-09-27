@@ -160,7 +160,9 @@
                 },
                 "content_sha256": {
                   "type": "string",
-                  "pattern": "^[0-9a-f]{64}$"
+                  "pattern": "^[0-9a-f]{64}$",
+                  "minLength": 64,
+                  "maxLength": 64
                 },
                 "content_hash_scope": {
                   "const": "NORMALIZED_CLAIM_NOT_RAW_EMAIL"
@@ -194,6 +196,7 @@
               },
               "recorded_at": {
                 "type": "string",
+                "minLength": 1,
                 "format": "date"
               },
               "statement": {
@@ -201,7 +204,9 @@
               },
               "content_sha256": {
                 "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
               }
             }
           },
@@ -234,6 +239,7 @@
                 "type": "boolean"
               },
               "source_payment_route_fingerprint_present": {
+                "type": "boolean",
                 "const": true
               },
               "arc_product_destination_status": {
@@ -254,7 +260,9 @@
               },
               "fingerprint_sha256": {
                 "type": "string",
-                "pattern": "^[0-9a-f]{64}$"
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
               }
             }
           },
