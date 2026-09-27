@@ -38,8 +38,11 @@ At event admission:
 
 ## Event repository baseline
 
-Repository:
-https://github.com/habrahgithub/tameion
+Repository (current canonical name):
+https://github.com/habrahgithub/swd-tameion-assured-payments
+
+Repository naming note:
+Originally created event-period as `habrahgithub/tameion`, then renamed during J0 to `habrahgithub/swd-tameion-assured-payments` before product implementation to avoid the generic hackathon-wide name while preserving repository history.
 
 Visibility:
 PUBLIC
@@ -51,7 +54,7 @@ Initial commit timestamp:
 `2026-09-27T19:13:14+04:00`
 
 Local clone:
-`/home/habib/tameion`
+`/home/habib/swd-tameion-assured-payments`
 
 Local and origin `main` matched at creation and the local worktree was clean.
 
