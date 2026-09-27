@@ -17,8 +17,6 @@
       "currency": "AED",
       "state_at_event_baseline": "OUTSTANDING",
       "business_purpose_confirmed": true,
-      "destination_reference_token": "DEST-J0C-001",
-      "destination_readiness": "SOURCE_PRESENT_UNVERIFIED",
       "commercial_terms": "One-year business-license/flexi-desk package; source is a proforma invoice.",
       "source_evidence": [
         {
@@ -35,8 +33,8 @@
         "attestation_id": "ATT-OBL-J0C-001",
         "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
         "recorded_at": "2026-09-27",
-        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
-        "content_sha256": "2a47324847b980bbac67918e48d688eeb8bf103beff52a767622aa3718b970cd"
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "7bec3986b6b995dc84792b304c8858af558060e7db51beb90807ed0e04a1362c"
       },
       "candidate_readiness": {
         "source_evidence_present": true,
@@ -44,8 +42,15 @@
         "business_purpose_known": true,
         "baseline_state_known": true,
         "due_date_known": false,
-        "destination_status": "SOURCE_PRESENT_UNVERIFIED"
-      }
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "c91be659ab5322d19ee5c8b3112bd714d203e862148e610b94c4c648c3e9a286"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": "DEST-J0C-001"
     },
     {
       "obligation_id": "OBL-J0C-002",
@@ -59,8 +64,6 @@
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
       "business_purpose_confirmed": true,
-      "destination_reference_token": null,
-      "destination_readiness": "NOT_CAPTURED_J0",
       "commercial_terms": "Monthly AI software subscription.",
       "source_evidence": [
         {
@@ -77,8 +80,8 @@
         "attestation_id": "ATT-OBL-J0C-002",
         "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
         "recorded_at": "2026-09-27",
-        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
-        "content_sha256": "c6f252e3c36219fc2afd2907e6857a39dd3122faa5d8705ee082dc8e166a092b"
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "1cf0e09833662b88800a74baa5a055b5e33ff67f10971943d1a25010238e30eb"
       },
       "candidate_readiness": {
         "source_evidence_present": true,
@@ -86,8 +89,15 @@
         "business_purpose_known": true,
         "baseline_state_known": true,
         "due_date_known": true,
-        "destination_status": "NOT_CAPTURED_J0"
-      }
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "156d7aea6b0c0b843426cc795eb889982f074bff86df3158688759bd8252332f"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
     },
     {
       "obligation_id": "OBL-J0C-003",
@@ -101,8 +111,6 @@
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
       "business_purpose_confirmed": true,
-      "destination_reference_token": null,
-      "destination_readiness": "NOT_CAPTURED_J0",
       "commercial_terms": "Monthly infrastructure plan and metered usage.",
       "source_evidence": [
         {
@@ -119,8 +127,8 @@
         "attestation_id": "ATT-OBL-J0C-003",
         "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
         "recorded_at": "2026-09-27",
-        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
-        "content_sha256": "b9584512e5faeccefff6443c316720f9485f5756351375627407250e76051bf9"
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "c8352e2aea67bd77158530da523ff02937b4dd55dd60a5ffa223027fc46feaeb"
       },
       "candidate_readiness": {
         "source_evidence_present": true,
@@ -128,8 +136,15 @@
         "business_purpose_known": true,
         "baseline_state_known": true,
         "due_date_known": true,
-        "destination_status": "NOT_CAPTURED_J0"
-      }
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "2ae21985764f2a36f2b221b1aee7d8b97c53055580b2f7a68c3e24592cb814e1"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
     },
     {
       "obligation_id": "OBL-J0C-004",
@@ -143,8 +158,6 @@
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
       "business_purpose_confirmed": true,
-      "destination_reference_token": null,
-      "destination_readiness": "NOT_CAPTURED_J0",
       "commercial_terms": "Monthly AI software subscription.",
       "source_evidence": [
         {
@@ -161,8 +174,8 @@
         "attestation_id": "ATT-OBL-J0C-004",
         "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
         "recorded_at": "2026-09-27",
-        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
-        "content_sha256": "0df03a0d25da80cddd29fca0a0bf7986d71528b921c457e5bf3ad1a14531ff6e"
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "514f730a149e45c8683e212e673058507bc3991fe501b6e996da81799addd221"
       },
       "candidate_readiness": {
         "source_evidence_present": true,
@@ -170,8 +183,15 @@
         "business_purpose_known": true,
         "baseline_state_known": true,
         "due_date_known": true,
-        "destination_status": "NOT_CAPTURED_J0"
-      }
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "55e8f4057e49183a487b48057e513761f0908fdd02775f77ae1ca92939ce0ccd"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
     },
     {
       "obligation_id": "OBL-J0C-005",
@@ -185,8 +205,6 @@
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
       "business_purpose_confirmed": true,
-      "destination_reference_token": null,
-      "destination_readiness": "NOT_CAPTURED_J0",
       "commercial_terms": "One-year productivity-suite commitment covering 2026-03-29 through 2027-03-28.",
       "source_evidence": [
         {
@@ -204,8 +222,8 @@
         "attestation_id": "ATT-OBL-J0C-005",
         "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
         "recorded_at": "2026-09-27",
-        "statement": "Authorized operator confirmed OUTSTANDING at the 2026-09-27 baseline and later paid in October 2026.",
-        "content_sha256": "51573788a269f92ea7d1ec70ff8daf1a497522c3aaf6a64b8b0b31548ead28ff"
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "197f58eadb4f1f9acc787a19bb33e8dcee9f7103f3a7e7184bf4f906b58cf4c1"
       },
       "candidate_readiness": {
         "source_evidence_present": true,
@@ -213,8 +231,15 @@
         "business_purpose_known": true,
         "baseline_state_known": true,
         "due_date_known": true,
-        "destination_status": "NOT_CAPTURED_J0"
-      }
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "cb90392c5241de97a6af548e8a4f598bfbbfff5668670a580d43390d0ea0d949"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
     }
   ]
 }

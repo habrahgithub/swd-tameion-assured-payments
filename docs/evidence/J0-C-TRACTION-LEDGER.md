@@ -2,7 +2,7 @@
 
 Snapshot date: 2026-09-27
 
-This ledger records only observed/attested event evidence. It does not claim customer traction that has not occurred.
+This ledger records only observed/attested event evidence. Five genuine business obligations are frozen for assessment. It does not claim customer traction that has not occurred.
 
 | Metric | Current value |
 |---|---:|
@@ -32,4 +32,4 @@ This ledger records only observed/attested event evidence. It does not claim cus
 
 ## Truthfulness boundary
 
-No synthetic invoice is represented as genuine. No obligation is described as paid by Tameion. No payment candidate has been selected. Later USDC movement remains zero until a separately admitted J2 product execution.
+Exact source-route evidence is privacy-safe and hash-bound. Arc product destination/source-wallet trust seed remains PENDING_J0_D_TRUST_SEED. J1 is not admitted. No synthetic invoice is represented as genuine. No obligation is described as paid by Tameion. No payment candidate has been selected. Later USDC movement remains zero until a separately admitted J2 product execution.

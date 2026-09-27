@@ -50,12 +50,13 @@
           "currency",
           "state_at_event_baseline",
           "business_purpose_confirmed",
-          "destination_reference_token",
-          "destination_readiness",
+          "source_destination_reference_token",
           "commercial_terms",
           "source_evidence",
           "currentness_attestation",
-          "candidate_readiness"
+          "candidate_readiness",
+          "source_destination_evidence",
+          "arc_product_destination_status"
         ],
         "properties": {
           "obligation_id": {
@@ -110,31 +111,161 @@
           "business_purpose_confirmed": {
             "const": true
           },
-          "destination_reference_token": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "destination_readiness": {
-            "enum": [
-              "SOURCE_PRESENT_UNVERIFIED",
-              "NOT_CAPTURED_J0"
-            ]
-          },
           "commercial_terms": {
             "type": "string",
             "minLength": 1
           },
           "source_evidence": {
             "type": "array",
-            "minItems": 1
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "evidence_id",
+                "evidence_version",
+                "source_type",
+                "provenance_class",
+                "currentness",
+                "content_sha256",
+                "retention"
+              ],
+              "properties": {
+                "evidence_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence_version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "source_type": {
+                  "enum": [
+                    "PDF_PROFORMA_INVOICE",
+                    "PDF_INVOICE",
+                    "USER_SUPPLIED_EMAIL_INVOICE_EXCERPT"
+                  ]
+                },
+                "provenance_class": {
+                  "enum": [
+                    "USER_SUPPLIED_SOURCE_DOCUMENT",
+                    "USER_SUPPLIED_SOURCE_EXCERPT"
+                  ]
+                },
+                "currentness": {
+                  "enum": [
+                    "IMMUTABLE_SOURCE_SNAPSHOT",
+                    "NORMALIZED_SOURCE_CLAIM"
+                  ]
+                },
+                "content_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "content_hash_scope": {
+                  "const": "NORMALIZED_CLAIM_NOT_RAW_EMAIL"
+                },
+                "retention": {
+                  "enum": [
+                    "PRIVATE_SOURCE_NOT_COMMITTED",
+                    "RAW_EMAIL_NOT_COMMITTED"
+                  ]
+                }
+              }
+            }
           },
           "currentness_attestation": {
-            "type": "object"
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "attestation_id",
+              "provenance_class",
+              "recorded_at",
+              "statement",
+              "content_sha256"
+            ],
+            "properties": {
+              "attestation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "provenance_class": {
+                "const": "AUTHORIZED_OPERATOR_ATTESTATION"
+              },
+              "recorded_at": {
+                "type": "string",
+                "format": "date"
+              },
+              "statement": {
+                "const": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline."
+              },
+              "content_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
           },
           "candidate_readiness": {
-            "type": "object"
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source_evidence_present",
+              "amount_currency_known",
+              "business_purpose_known",
+              "baseline_state_known",
+              "due_date_known",
+              "source_payment_route_fingerprint_present",
+              "arc_product_destination_status"
+            ],
+            "properties": {
+              "source_evidence_present": {
+                "type": "boolean"
+              },
+              "amount_currency_known": {
+                "type": "boolean"
+              },
+              "business_purpose_known": {
+                "type": "boolean"
+              },
+              "baseline_state_known": {
+                "type": "boolean"
+              },
+              "due_date_known": {
+                "type": "boolean"
+              },
+              "source_payment_route_fingerprint_present": {
+                "const": true
+              },
+              "arc_product_destination_status": {
+                "const": "PENDING_J0_D_TRUST_SEED"
+              }
+            }
+          },
+          "source_destination_evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fingerprint_type",
+              "fingerprint_sha256"
+            ],
+            "properties": {
+              "fingerprint_type": {
+                "const": "PRIVATE_SOURCE_ROUTE_SHA256"
+              },
+              "fingerprint_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          },
+          "arc_product_destination_status": {
+            "const": "PENDING_J0_D_TRUST_SEED"
+          },
+          "source_destination_reference_token": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

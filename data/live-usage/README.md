@@ -6,7 +6,8 @@ This directory contains the privacy-safe J0-C genuine-usage dataset.
 
 - Exactly five current business obligations are included.
 - Raw invoices, names, addresses, invoice numbers, account numbers, card details and bank details are not committed.
-- Counterparties and destinations use opaque tokens.
+- Counterparties and source destinations use opaque tokens; source payment routes are separately bound by `source_destination_evidence` fingerprints.
+- Arc product destination/source-wallet trust is distinct from source payment-route evidence and remains `PENDING_J0_D_TRUST_SEED` for J0-D.
 - Amount, currency, due-date state, cadence, commercial category and currentness are retained because they are decision-relevant.
 - Source documents remain private; SHA-256 binds the normalized public record to retained private evidence.
 - candidate_selection_performed is fixed to false.

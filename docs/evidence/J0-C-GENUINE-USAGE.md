@@ -12,29 +12,30 @@ Event baseline: 2026-09-27
 
 ## Live assessment set
 
-Five genuine SWD/business obligations are normalized into data/live-usage/LIVE_USAGE_SET.json.
+Five genuine business obligations are frozen for assessment in data/live-usage/LIVE_USAGE_SET.json.
 
 The set preserves economic facts required for later assessment while removing direct identifiers. It contains one yearly business-license/flexi-desk obligation, two monthly AI/software obligations, one monthly cloud-infrastructure obligation, and one yearly productivity-suite obligation.
 
-All five were confirmed by the authorized operator as OUTSTANDING at the Sep 27 event baseline and later paid in October 2026.
+Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.
 
 ## Privacy / redaction
 
 The public repository does not contain raw invoices, legal/person names, addresses, invoice numbers, account numbers, card references, IBANs, SWIFT details, email addresses or provider payment links.
 
-Opaque identifiers replace counterparties/destinations. Private source documents are represented only by immutable SHA-256 values and evidence metadata.
+Opaque identifiers replace counterparties/destinations. Each source payment route is bound by a privacy-safe SHA-256 fingerprint classified as PRIVATE_SOURCE_ROUTE_SHA256. Raw route values remain outside Git.
 
 ## Evidence lineage
 
 Four live obligations bind to user-supplied PDF source snapshots. One binds to a normalized user-supplied email invoice excerpt because the raw email artifact is not committed.
 
-Currentness is represented separately from immutable source identity through privacy-safe authorized-operator attestations.
+Currentness is represented separately from immutable source identity through hash-bound authorized-operator attestations. Arc product destination/source-wallet trust seeding remains PENDING_J0_D_TRUST_SEED.
 
 ## J0 exclusions enforced
 
 - candidate selected: NO
 - PAY/HOLD/ESCALATE assessment run: NO
 - AGENT_EVAL_SET run: NO
+- J1 admitted: NO
 - J1 functionality: NO
 - wallet created/funded for product payment: NO
 - transfer/payment/money movement: NO
