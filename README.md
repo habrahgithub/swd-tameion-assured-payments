@@ -50,24 +50,43 @@ The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](d
 
 ## Prototype status (`prototype/claude-autonomy`)
 
-Implemented and tested (`npm test`, 35 passing):
+Implemented and tested (`npm test`, 51 passing; verified live in a real Chromium browser, not just curl):
 
 - **Numeric safety** (`src/domain/numeric.ts`): exact decimal <-> atomic USDC conversion, no floating point, no silent truncation.
 - **PAE-P0-1** (`src/pae/`): RFC 8785 JCS canonicalization, SHA-256, Ed25519 sign/verify, a versioned trusted-key registry, and durable approval/assurance record hashing — matches the blueprint's Canonicalization Contract field-for-field.
 - **Safety Kernel** (`src/safety-kernel/kernel.ts`): deterministic evaluation of all 10 required P0 controls; a PAE can only be sealed when every control PASSes.
 - **Authority aggregate** (`src/authority/aggregate.ts`): one `ObligationAuthorityAggregate` per obligation with `expected_version` CAS semantics and the atomic reviewed-N -> authorized-N+1 approval transition.
 - **Execution Worker** (`src/execution/worker.ts`): idempotent claim (UNUSED -> RESERVED), replay/concurrency safety, pre-submit BLOCK on a destination changed after authorization, kill switch, UNKNOWN/no-blind-retry handling, and one-to-one settlement reconciliation.
-- **Finance Agent** (`src/agent/`): strict PAY/HOLD/ESCALATE output schema with no field an injected instruction could use to request approval/signing/execution; fails closed (HOLD) on provider failure, malformed output, or missing evidence; NVIDIA provider pinned to the frozen model, with a clearly-labeled deterministic fallback used only when no model API key is configured.
-- **J3 UI** (`app/command-center.tsx` + `app/api/obligations/**`): one page, five sections (Obligation & Evidence / Agent Decision / Authorization & Safety Proof / Arc Settlement & Reconciliation / Evidence Timeline & Blocked Attack), driving the real pipeline above against the actual `data/live-usage/LIVE_USAGE_SET.json` obligations.
+- **Finance Agent** (`src/agent/`): strict PAY/HOLD/ESCALATE output schema with no field an injected instruction could use to request approval/signing/execution; fails closed (HOLD) on provider failure, malformed output, or missing evidence; NVIDIA provider pinned to the frozen model, with a clearly-labeled deterministic fallback used only when no model API key is configured. Backed by an 8-case eval bank (`tests/agent-evals.test.ts`) proving zero unsafe PAY.
+- **J3 Command Center UI** (`app/command-center.tsx` + `app/api/obligations/**`): one page, five sections (Obligations / Assessment / Authorization / Assurance & Execution / Reconciliation & Evidence) matching the blueprint's Command Center, driving the real pipeline above against the actual `data/live-usage/LIVE_USAGE_SET.json` obligations. Restrained financial-operator visual language (no gradients/glassmorphism/AI-SaaS clichés); explicit text state labels, never colour alone.
+- **J2 Prime approval packet** (`src/pipeline/prime-approval-packet.ts`, wired into the Assurance & Execution panel): renders the exact-intent disclosure (obligation/version, amount, asset, network, source wallet identity/fingerprint, destination identity/fingerprint, PAE instruction id/hash/signing key/expiry) that a real J2 transfer requires Prime to explicitly approve before submission. Building this packet never submits anything; it is a read-only artifact for the human decision.
 
 **Known limitations / not yet done:**
 
 - **No live provider credentials in this build environment.** `NVIDIA_API_KEY`, `CIRCLE_API_KEY`, `CIRCLE_ENTITY_SECRET`, `ARC_API_KEY` and Supabase credentials are Vercel Production-scoped secrets this session cannot read (see [`docs/evidence/J0-B-CONNECTIVITY.md`](docs/evidence/J0-B-CONNECTIVITY.md)). Consequently:
-  - **J0-D has not run.** `src/j0d-spike/connectivity-spike.ts` fails closed; no real testnet connectivity transfer has been made. The real J0-C dataset still correctly shows every obligation's Arc destination readiness as `PENDING_J0_D_TRUST_SEED`, and the Finance Agent honestly HOLDs all five obligations on that basis (see `tests/golden-path.integration.test.ts`).
-  - **J2 execution is simulated.** `ExecutionWorker` runs against `FakeProviderAdapter`, not real Circle/Arc calls. `ArcCircleProviderAdapter` is a fail-closed stub, not a real integration.
-  - **Finance Agent reasoning defaults to a deterministic rule-based fallback**, not real NVIDIA model reasoning, whenever `NVIDIA_API_KEY` is absent (it is, here).
+  - **J0-D has not run.** `src/j0d-spike/connectivity-spike.ts` fails closed; no real testnet connectivity transfer has been made. The real J0-C dataset still correctly shows every obligation's Arc destination readiness as `PENDING_J0_D_TRUST_SEED`, and the Finance Agent honestly HOLDs all five obligations on that basis (see `tests/golden-path.integration.test.ts`). **BLOCKED_EXTERNAL** — requires live credentials this environment does not have.
+  - **J2 execution is simulated.** `ExecutionWorker` runs against `FakeProviderAdapter`, not real Circle/Arc calls. `ArcCircleProviderAdapter` is a fail-closed stub, not a real integration. **BLOCKED_EXTERNAL** — also gated on explicit Prime approval of the exact intent (see the Prime approval packet above) once credentials exist.
+  - **Finance Agent reasoning defaults to a deterministic rule-based fallback**, not real NVIDIA model reasoning, whenever `NVIDIA_API_KEY` is absent (it is, here). **BLOCKED_EXTERNAL**.
 - **No durable persistence.** `AuthorityStore` and the UI's demo state are in-memory singletons — correct for demonstrating the mechanism, not durable across restarts, and not safe across multiple serverless instances. Swapping in Supabase-backed storage should not change the version/CAS contract any caller depends on.
-- **No adversarial/eval test bank yet** (the blueprint's 8-12 focused agent-eval cases and Days-12-14 hardening tests are not implemented).
-- **UI has not been visually verified in a browser** by this session (no browser tool available here) — it has been exercised end-to-end via `curl` against a running `next dev` server (list -> assess -> approve -> execute -> settle/reconcile, and the changed-destination attack -> blocked with zero provider submissions) and `next build` passes, but a human/browser pass is still owed.
 
 None of the above is silently glossed over: every one of these limitations throws a clear, typed error (or is a clearly-labeled UI simulation banner) rather than fabricating a result.
+
+## Demo runbook
+
+Cold start:
+
+```bash
+nvm use && npm ci
+npm run verify   # hygiene -> typecheck -> test -> build, all from a clean tree
+npm run dev      # http://localhost:3000
+```
+
+Judge flow (all 5 obligations are the genuine, privacy-safe J0-C dataset):
+
+1. **Obligations** — pick any obligation; the right pane shows its authoritative amount/network/aggregate version and current destination/wallet trust.
+2. **Assessment** — "Run assessment" calls the real Finance Agent (deterministic fallback in this environment; see limitations above) and shows its PAY/HOLD/ESCALATE decision with reasons.
+3. **Authorization** — "Authorize this exact intent" performs the real T1 approval CAS transition, runs the real Safety Kernel, and — only on all-PASS — seals a real signed PAE. Watch the state banner change to "Authorized — PAE Sealed".
+4. **Assurance & Execution** — "Submit for execution (simulated)" runs the real Execution Worker (idempotent claim, re-verification, simulated provider) end to end to "Reconciled". The separate "View exact intent for a real J2 transfer" link shows the Prime approval packet that would gate an actual transfer — it does not submit anything.
+5. **Reconciliation & Evidence** — on a *different* obligation you have authorized, "Simulate changed-destination attack" mutates the destination as if compromised and proves the Execution Worker BLOCKs before any provider call, with zero submissions.
+
+Negative/demo evidence already covered by the automated suite (not just the UI): replay/duplicate execute, provider UNKNOWN with no blind retry, kill switch, tampered PAE fields (amount/destination/version/expiry/signature), asset/network/amount-scale rejection, and an obligation that never passed approval.

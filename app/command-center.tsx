@@ -333,13 +333,37 @@ export function CommandCenter() {
                   wallet trust before submitting — a changed destination is blocked here, before any provider
                   call.
                 </p>
-                <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
-                  Submit for execution (simulated)
-                </PrimaryButton>
+                <div className="flex flex-wrap items-center gap-4">
+                  <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
+                    Submit for execution (simulated)
+                  </PrimaryButton>
+                  <button
+                    disabled={busy || !selectedId || !detail?.pae_sealed}
+                    onClick={() =>
+                      run("prime-packet", async () => {
+                        const response = await fetch(`/api/obligations/${selectedId}/prime-approval-packet`);
+                        return { ok: response.ok, status: response.status, data: await response.json() };
+                      })
+                    }
+                    className="text-[13px] font-medium text-[var(--color-ink)] underline decoration-[var(--color-border)] underline-offset-4 hover:decoration-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    View exact intent for a real J2 transfer (Prime approval packet)
+                  </button>
+                </div>
                 {!detail?.pae_sealed && (
                   <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
                 )}
                 {lastResult?.label === "execute" && <EvidencePanel value={lastResult.data} />}
+                {lastResult?.label === "prime-packet" && (
+                  <div className="max-w-xl border-l-[3px] border-l-[var(--color-warning)] pl-3">
+                    <p className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
+                      Retained Prime gate — not submitted
+                    </p>
+                    <pre className="tabular whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--color-ink)]">
+                      {(lastResult.data as { text?: string })?.text ?? JSON.stringify(lastResult.data, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
             )}
 
