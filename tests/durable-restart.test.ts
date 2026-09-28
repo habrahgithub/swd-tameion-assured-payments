@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
+import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { sealTestAssessment } from "./test-support/seal-assessment";
 
@@ -12,7 +12,7 @@ function assessEveryObligation(state: DemoState): void {
 }
 
 function authorize(state: DemoState, obligationId: string) {
-  const result = approveAndSealPae(state.store, "DURABLE-RESTART-TEST", {
+  const result = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
     organizationId: DEMO_ORGANIZATION_ID,
     obligationId,
     expectedVersion: state.store.get(DEMO_ORGANIZATION_ID, obligationId).aggregate_version,
@@ -41,6 +41,7 @@ describe("durable demo-state restart boundaries", () => {
     expect(secondProcess.store.findUnassessedObligation(DEMO_ORGANIZATION_ID)).toBeNull();
 
     const sealed = authorize(secondProcess, obligationId);
+    expect(sealed.payload.signing_key_id).toBe(DEMO_SIGNING_KEY_ID);
     expect(sealed.payload.obligation_ids).toEqual([obligationId]);
     expect(secondProcess.exportSnapshot().authorization_history).toHaveLength(1);
   });

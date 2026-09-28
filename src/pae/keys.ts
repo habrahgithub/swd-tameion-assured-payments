@@ -86,10 +86,28 @@ export function revokeTrustedKey(signingKeyId: string): void {
   }
 }
 
+const signingKeyEnvironmentNameOverrides: Readonly<Record<string, string>> = {
+  "TAMEION-DEMO-PAE-KEY-1": "PAE_SIGNING_KEY_TAMEION_DEMO_PAE_KEY_1_PEM",
+};
+
+/**
+ * Resolve a logical PAE key identity to a deployable environment-variable
+ * name. The explicit demo mapping stays readable; other IDs use an
+ * injective UTF-8 hex encoding so punctuation cannot create invalid names
+ * or collide with a different logical key ID.
+ */
+export function signingKeyEnvironmentVariableName(signingKeyId: string): string {
+  const mapped = signingKeyEnvironmentNameOverrides[signingKeyId];
+  if (mapped) return mapped;
+  const encodedId = Buffer.from(signingKeyId, "utf8").toString("hex").toUpperCase();
+  return `PAE_SIGNING_KEY_HEX_${encodedId}_PEM`;
+}
+
 /**
  * Loads the server-side private signing key for `signingKeyId` from the
- * server secret boundary (env var `PAE_SIGNING_KEY_<ID>_PEM`), registering
- * its public half as trusted if not already known.
+ * server secret boundary, registering its public half as trusted if not
+ * already known. The environment-variable name is resolved separately from
+ * the logical key ID embedded in the PAE.
  *
  * KNOWN PROTOTYPE LIMITATION: no live signing key is provisioned in this
  * environment (no Vercel/production secret access from this build). When
@@ -103,7 +121,7 @@ export function revokeTrustedKey(signingKeyId: string): void {
 const devSigningKeys = new Map<string, Ed25519KeyPair>();
 
 export function loadServerSigningKey(signingKeyId: string): Ed25519KeyPair {
-  const envVar = `PAE_SIGNING_KEY_${signingKeyId}_PEM`;
+  const envVar = signingKeyEnvironmentVariableName(signingKeyId);
   const pem = process.env[envVar];
   if (pem) {
     const privateKey = importPrivateKeyPem(pem);
@@ -117,7 +135,7 @@ export function loadServerSigningKey(signingKeyId: string): Ed25519KeyPair {
     return { privateKey, publicKey };
   }
 
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "preview" || process.env.VERCEL_ENV === "production") {
     throw new PaeKeyError(
       `No signing key configured for "${signingKeyId}" (expected ${envVar}); refusing to fabricate one in production`,
       "PAE-015",
