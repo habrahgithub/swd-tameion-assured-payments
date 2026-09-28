@@ -1,0 +1,245 @@
+{
+  "schema_version": "J0-C-LIVE-USAGE-1",
+  "dataset_id": "LIVE_USAGE_SET-J0-C-001",
+  "organization_id": "ORG-DEMO-001",
+  "event_baseline_date": "2026-09-27",
+  "candidate_selection_performed": false,
+  "records": [
+    {
+      "obligation_id": "OBL-J0C-001",
+      "counterparty_id": "CP-J0C-001",
+      "service_category": "BUSINESS_LICENSE_AND_FLEXI_DESK",
+      "recurrence": "YEARLY",
+      "issue_date": "2026-01-28",
+      "due_date": null,
+      "due_date_status": "NOT_STATED_ON_SOURCE",
+      "amount": "5760.00",
+      "currency": "AED",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "One-year business-license/flexi-desk package; source is a proforma invoice.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-001-A",
+          "evidence_version": 1,
+          "source_type": "PDF_PROFORMA_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "0791ee66f50a182a63002052a85ecfcdeb1e15ff68d4a7534655ebbbc004739e",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-001",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "7bec3986b6b995dc84792b304c8858af558060e7db51beb90807ed0e04a1362c"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": false,
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "c91be659ab5322d19ee5c8b3112bd714d203e862148e610b94c4c648c3e9a286"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": "DEST-J0C-001"
+    },
+    {
+      "obligation_id": "OBL-J0C-002",
+      "counterparty_id": "CP-J0C-002",
+      "service_category": "AI_SOFTWARE_SUBSCRIPTION_A",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-08-14",
+      "due_date": "2026-08-14",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "21.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Monthly AI software subscription.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-002-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "0ef1dd4044b513998fed4b5354b9c92001f78645a2ba7603d21b58bb094227e4",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-002",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "1cf0e09833662b88800a74baa5a055b5e33ff67f10971943d1a25010238e30eb"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "156d7aea6b0c0b843426cc795eb889982f074bff86df3158688759bd8252332f"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
+    },
+    {
+      "obligation_id": "OBL-J0C-003",
+      "counterparty_id": "CP-J0C-003",
+      "service_category": "CLOUD_INFRASTRUCTURE_SUBSCRIPTION",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-09-12",
+      "due_date": "2026-09-12",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "5.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Monthly infrastructure plan and metered usage.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-003-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "5498f8d5bf87ebc8e380e9aae8b9e0cc9f896c25a413c296acfcf1eea2bcc373",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-003",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "c8352e2aea67bd77158530da523ff02937b4dd55dd60a5ffa223027fc46feaeb"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "2ae21985764f2a36f2b221b1aee7d8b97c53055580b2f7a68c3e24592cb814e1"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
+    },
+    {
+      "obligation_id": "OBL-J0C-004",
+      "counterparty_id": "CP-J0C-004",
+      "service_category": "AI_SOFTWARE_SUBSCRIPTION_B",
+      "recurrence": "MONTHLY",
+      "issue_date": "2026-09-25",
+      "due_date": "2026-09-25",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "21.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Monthly AI software subscription.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-004-A",
+          "evidence_version": 1,
+          "source_type": "PDF_INVOICE",
+          "provenance_class": "USER_SUPPLIED_SOURCE_DOCUMENT",
+          "currentness": "IMMUTABLE_SOURCE_SNAPSHOT",
+          "content_sha256": "ba5368b9d992bda526f2be77c990022c533ad6109f6eb859c06ebc596dc2fa41",
+          "retention": "PRIVATE_SOURCE_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-004",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "514f730a149e45c8683e212e673058507bc3991fe501b6e996da81799addd221"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "55e8f4057e49183a487b48057e513761f0908fdd02775f77ae1ca92939ce0ccd"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
+    },
+    {
+      "obligation_id": "OBL-J0C-005",
+      "counterparty_id": "CP-J0C-005",
+      "service_category": "PRODUCTIVITY_SUITE_SUBSCRIPTION",
+      "recurrence": "YEARLY",
+      "issue_date": "2026-03-30",
+      "due_date": "2026-03-30",
+      "due_date_status": "STATED_ON_SOURCE",
+      "amount": "75.60",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "One-year productivity-suite commitment covering 2026-03-29 through 2027-03-28.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-J0C-005-A",
+          "evidence_version": 1,
+          "source_type": "USER_SUPPLIED_EMAIL_INVOICE_EXCERPT",
+          "provenance_class": "USER_SUPPLIED_SOURCE_EXCERPT",
+          "currentness": "NORMALIZED_SOURCE_CLAIM",
+          "content_sha256": "f95e1fbe0ad6bc523186cc286956cd954ae405056b3567e8842604f7404dab33",
+          "content_hash_scope": "NORMALIZED_CLAIM_NOT_RAW_EMAIL",
+          "retention": "RAW_EMAIL_NOT_COMMITTED"
+        }
+      ],
+      "currentness_attestation": {
+        "attestation_id": "ATT-OBL-J0C-005",
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "recorded_at": "2026-09-27",
+        "statement": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline.",
+        "content_sha256": "197f58eadb4f1f9acc787a19bb33e8dcee9f7103f3a7e7184bf4f906b58cf4c1"
+      },
+      "candidate_readiness": {
+        "source_evidence_present": true,
+        "amount_currency_known": true,
+        "business_purpose_known": true,
+        "baseline_state_known": true,
+        "due_date_known": true,
+        "source_payment_route_fingerprint_present": true,
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_type": "PRIVATE_SOURCE_ROUTE_SHA256",
+        "fingerprint_sha256": "cb90392c5241de97a6af548e8a4f598bfbbfff5668670a580d43390d0ea0d949"
+      },
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED",
+      "source_destination_reference_token": null
+    }
+  ]
+}

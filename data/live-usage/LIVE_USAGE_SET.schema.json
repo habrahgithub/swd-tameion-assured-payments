@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/tameion/J0-C-LIVE-USAGE-1.schema.json",
+  "title": "Tameion J0-C LIVE_USAGE_SET",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "dataset_id",
+    "organization_id",
+    "event_baseline_date",
+    "candidate_selection_performed",
+    "records"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "J0-C-LIVE-USAGE-1"
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "organization_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_baseline_date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^(?!0000-)(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+      "maxLength": 10
+    },
+    "candidate_selection_performed": {
+      "const": false
+    },
+    "records": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "obligation_id",
+          "counterparty_id",
+          "service_category",
+          "recurrence",
+          "issue_date",
+          "due_date",
+          "due_date_status",
+          "amount",
+          "currency",
+          "state_at_event_baseline",
+          "business_purpose_confirmed",
+          "source_destination_reference_token",
+          "commercial_terms",
+          "source_evidence",
+          "currentness_attestation",
+          "candidate_readiness",
+          "source_destination_evidence",
+          "arc_product_destination_status"
+        ],
+        "properties": {
+          "obligation_id": {
+            "type": "string",
+            "pattern": "^OBL-J0C-[0-9]{3}$"
+          },
+          "counterparty_id": {
+            "type": "string",
+            "pattern": "^CP-J0C-[0-9]{3}$"
+          },
+          "service_category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recurrence": {
+            "enum": [
+              "MONTHLY",
+              "YEARLY",
+              "ONE_TIME"
+            ]
+          },
+          "issue_date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?!0000-)(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+            "maxLength": 10
+          },
+          "due_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "pattern": "^(?!0000-)(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+            "maxLength": 10
+          },
+          "due_date_status": {
+            "enum": [
+              "STATED_ON_SOURCE",
+              "NOT_STATED_ON_SOURCE"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]{2}$"
+          },
+          "currency": {
+            "enum": [
+              "AED",
+              "USD"
+            ]
+          },
+          "state_at_event_baseline": {
+            "const": "OUTSTANDING"
+          },
+          "business_purpose_confirmed": {
+            "const": true
+          },
+          "commercial_terms": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "evidence_id",
+                "evidence_version",
+                "source_type",
+                "provenance_class",
+                "currentness",
+                "content_sha256",
+                "retention"
+              ],
+              "properties": {
+                "evidence_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence_version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "source_type": {
+                  "enum": [
+                    "PDF_PROFORMA_INVOICE",
+                    "PDF_INVOICE",
+                    "USER_SUPPLIED_EMAIL_INVOICE_EXCERPT"
+                  ]
+                },
+                "provenance_class": {
+                  "enum": [
+                    "USER_SUPPLIED_SOURCE_DOCUMENT",
+                    "USER_SUPPLIED_SOURCE_EXCERPT"
+                  ]
+                },
+                "currentness": {
+                  "enum": [
+                    "IMMUTABLE_SOURCE_SNAPSHOT",
+                    "NORMALIZED_SOURCE_CLAIM"
+                  ]
+                },
+                "content_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "minLength": 64,
+                  "maxLength": 64
+                },
+                "content_hash_scope": {
+                  "const": "NORMALIZED_CLAIM_NOT_RAW_EMAIL"
+                },
+                "retention": {
+                  "enum": [
+                    "PRIVATE_SOURCE_NOT_COMMITTED",
+                    "RAW_EMAIL_NOT_COMMITTED"
+                  ]
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "source_type": {
+                        "const": "USER_SUPPLIED_EMAIL_INVOICE_EXCERPT"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "content_hash_scope"
+                    ],
+                    "properties": {
+                      "provenance_class": {
+                        "const": "USER_SUPPLIED_SOURCE_EXCERPT"
+                      },
+                      "currentness": {
+                        "const": "NORMALIZED_SOURCE_CLAIM"
+                      },
+                      "retention": {
+                        "const": "RAW_EMAIL_NOT_COMMITTED"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "provenance_class": {
+                        "const": "USER_SUPPLIED_SOURCE_DOCUMENT"
+                      },
+                      "currentness": {
+                        "const": "IMMUTABLE_SOURCE_SNAPSHOT"
+                      },
+                      "retention": {
+                        "const": "PRIVATE_SOURCE_NOT_COMMITTED"
+                      }
+                    },
+                    "not": {
+                      "required": [
+                        "content_hash_scope"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "currentness_attestation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "attestation_id",
+              "provenance_class",
+              "recorded_at",
+              "statement",
+              "content_sha256"
+            ],
+            "properties": {
+              "attestation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "provenance_class": {
+                "const": "AUTHORIZED_OPERATOR_ATTESTATION"
+              },
+              "recorded_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date",
+                "pattern": "^(?!0000-)(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+                "maxLength": 10
+              },
+              "statement": {
+                "const": "Authorized operator confirmed OUTSTANDING at 2026-09-27 baseline."
+              },
+              "content_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            }
+          },
+          "candidate_readiness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source_evidence_present",
+              "amount_currency_known",
+              "business_purpose_known",
+              "baseline_state_known",
+              "due_date_known",
+              "source_payment_route_fingerprint_present",
+              "arc_product_destination_status"
+            ],
+            "properties": {
+              "source_evidence_present": {
+                "type": "boolean"
+              },
+              "amount_currency_known": {
+                "type": "boolean"
+              },
+              "business_purpose_known": {
+                "type": "boolean"
+              },
+              "baseline_state_known": {
+                "type": "boolean"
+              },
+              "due_date_known": {
+                "type": "boolean"
+              },
+              "source_payment_route_fingerprint_present": {
+                "type": "boolean",
+                "const": true
+              },
+              "arc_product_destination_status": {
+                "const": "PENDING_J0_D_TRUST_SEED"
+              }
+            }
+          },
+          "source_destination_evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fingerprint_type",
+              "fingerprint_sha256"
+            ],
+            "properties": {
+              "fingerprint_type": {
+                "const": "PRIVATE_SOURCE_ROUTE_SHA256"
+              },
+              "fingerprint_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            }
+          },
+          "arc_product_destination_status": {
+            "const": "PENDING_J0_D_TRUST_SEED"
+          },
+          "source_destination_reference_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^DEST-J0C-[0-9]{3}$",
+            "maxLength": 12
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "due_date_status": {
+                  "const": "STATED_ON_SOURCE"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "due_date": {
+                  "type": "string"
+                },
+                "candidate_readiness": {
+                  "properties": {
+                    "due_date_known": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "due_date": {
+                  "type": "null"
+                },
+                "candidate_readiness": {
+                  "properties": {
+                    "due_date_known": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
