@@ -121,10 +121,22 @@ async function delay(ms: number): Promise<void> {
  * 0.01 USDC transfer between them — entirely outside the Tameion product
  * execution service, returning the resulting evidence.
  *
- * Fails closed (throws J0ConnectivitySpikeNotConfiguredError) if
- * CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET / ARC_API_KEY are not configured in
- * this environment, rather than fabricating a result.
+ * Fails closed (throws J0ConnectivitySpikeNotConfiguredError) if the
+ * Circle Developer-Controlled Wallet credentials actually consumed by this
+ * path (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET) are not configured, rather
+ * than fabricating a result. Arc Testnet routing is selected by the Circle
+ * SDK blockchain literal ARC-TESTNET; this module does not call an Arc RPC
+ * endpoint directly and therefore does not require an ARC_API_KEY.
  */
+export function assertJ0dProviderConfigured(): void {
+  if (!process.env.CIRCLE_API_KEY || !process.env.CIRCLE_ENTITY_SECRET) {
+    throw new J0ConnectivitySpikeNotConfiguredError(
+      "J0-D connectivity spike requires CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET. " +
+        "This build environment does not have them configured; the spike has not been executed.",
+    );
+  }
+}
+
 export async function runConnectivitySpike(options: RunConnectivitySpikeOptions = {}): Promise<J0ConnectivitySpikeResult> {
   const now = options.now ?? (() => new Date());
   const pollIntervalMs = options.pollIntervalMs ?? 5000;
@@ -132,17 +144,7 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions 
   const transactionTimeoutMs = options.transactionTimeoutMs ?? 3 * 60 * 1000;
 
   if (!options.client) {
-    if (!process.env.CIRCLE_API_KEY || !process.env.CIRCLE_ENTITY_SECRET) {
-      throw new J0ConnectivitySpikeNotConfiguredError(
-        "J0-D connectivity spike requires CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET. " +
-          "This build environment does not have them configured; the spike has not been executed.",
-      );
-    }
-    if (!process.env.ARC_API_KEY) {
-      throw new J0ConnectivitySpikeNotConfiguredError(
-        "J0-D connectivity spike requires ARC_API_KEY to be configured for Arc Testnet RPC access.",
-      );
-    }
+    assertJ0dProviderConfigured();
   }
 
   const client: CircleSpikeClient = options.client ?? createCircleArcSpikeClient();

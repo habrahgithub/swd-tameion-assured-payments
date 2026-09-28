@@ -2,26 +2,46 @@ import { describe, expect, it } from "vitest";
 
 import {
   runConnectivitySpike,
+  assertJ0dProviderConfigured,
   J0ConnectivitySpikeNotConfiguredError,
   J0ConnectivitySpikeError,
   type CircleSpikeClient,
 } from "../src/j0d-spike/connectivity-spike";
 
 describe("J0-D connectivity spike (isolated infrastructure harness)", () => {
-  it("fails closed rather than fabricating a transaction when no provider credentials are configured", async () => {
+  it("fails closed when the Circle credentials actually consumed by J0-D are absent", () => {
+    const originalCircle = process.env.CIRCLE_API_KEY;
+    const originalEntity = process.env.CIRCLE_ENTITY_SECRET;
+    delete process.env.CIRCLE_API_KEY;
+    delete process.env.CIRCLE_ENTITY_SECRET;
+
+    try {
+      expect(() => assertJ0dProviderConfigured()).toThrow(J0ConnectivitySpikeNotConfiguredError);
+    } finally {
+      if (originalCircle) process.env.CIRCLE_API_KEY = originalCircle;
+      else delete process.env.CIRCLE_API_KEY;
+      if (originalEntity) process.env.CIRCLE_ENTITY_SECRET = originalEntity;
+      else delete process.env.CIRCLE_ENTITY_SECRET;
+    }
+  });
+
+  it("does not require unused ARC_API_KEY when Circle credentials are present", () => {
     const originalCircle = process.env.CIRCLE_API_KEY;
     const originalEntity = process.env.CIRCLE_ENTITY_SECRET;
     const originalArc = process.env.ARC_API_KEY;
-    delete process.env.CIRCLE_API_KEY;
-    delete process.env.CIRCLE_ENTITY_SECRET;
+    process.env.CIRCLE_API_KEY = "test-circle-key";
+    process.env.CIRCLE_ENTITY_SECRET = "test-entity-secret";
     delete process.env.ARC_API_KEY;
 
     try {
-      await expect(runConnectivitySpike()).rejects.toThrow(J0ConnectivitySpikeNotConfiguredError);
+      expect(() => assertJ0dProviderConfigured()).not.toThrow();
     } finally {
       if (originalCircle) process.env.CIRCLE_API_KEY = originalCircle;
+      else delete process.env.CIRCLE_API_KEY;
       if (originalEntity) process.env.CIRCLE_ENTITY_SECRET = originalEntity;
+      else delete process.env.CIRCLE_ENTITY_SECRET;
       if (originalArc) process.env.ARC_API_KEY = originalArc;
+      else delete process.env.ARC_API_KEY;
     }
   });
 });
