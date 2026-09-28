@@ -176,6 +176,30 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("BLOCKED");
   });
 
+  it("(9b) BLOCKs when the source wallet became inactive, even with aggregate_version unchanged (defense in depth beyond the version check)", async () => {
+    const { sealed, store, aggregate } = setupAuthorizedFixture();
+    // Directly overwrite the wallet status without going through
+    // applyMaterialChange, so aggregate_version still matches the PAE.
+    // This proves the Execution Worker re-checks wallet status itself
+    // rather than relying solely on the version-mismatch shortcut.
+    store.seed({ ...aggregate, source_wallet_status: "INACTIVE" });
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(9c) BLOCKs when the destination operational status degraded, even with ref/version/address unchanged", async () => {
+    const { sealed, store, aggregate } = setupAuthorizedFixture();
+    store.seed({ ...aggregate, destination_operational_status: "BLOCKED" });
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
   it("(10) kill switch prevents execution", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     store.activateKillSwitch("GLOBAL_EXECUTION_DISABLED");
