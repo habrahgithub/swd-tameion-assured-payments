@@ -98,12 +98,37 @@ export interface CircleSpikeClient {
   getTransaction(input: { id: string }): Promise<{ data?: { transaction?: { state?: string; txHash?: string } } }>;
 }
 
+/** A previously-created disposable wallet-set/wallet pair, recovered via
+ * Circle's own read-only APIs (`listWalletSets`/`listWallets`) outside this
+ * module. Passing it in skips wallet creation entirely, so a failure after
+ * wallet creation (e.g. a faucet 403) is resumable without minting another
+ * disposable wallet set on every retry. */
+export interface J0dResumeContext {
+  walletSetId: string;
+  sourceWallet: { id: string; address: string };
+  destinationWallet: { id: string; address: string };
+}
+
+export interface J0dStageEvidence {
+  stage: "WALLET_CONTEXT_READY";
+  wallet_set_id: string;
+  source_wallet_id: string;
+  source_wallet_address: string;
+  destination_wallet_id: string;
+  destination_wallet_address: string;
+}
+
 export interface RunConnectivitySpikeOptions {
   client?: CircleSpikeClient;
   pollIntervalMs?: number;
   balanceTimeoutMs?: number;
   transactionTimeoutMs?: number;
   now?: () => Date;
+  /** Resume from an already-created wallet-set/wallet pair instead of creating a new one. */
+  resumeFrom?: J0dResumeContext;
+  /** Called as soon as the wallet context is known (fresh or resumed) — before the
+   * faucet call — so wallet identifiers are captured durably even if a later stage fails. */
+  onStageEvidence?: (evidence: J0dStageEvidence) => void;
 }
 
 function nowIso(now: () => Date): string {
@@ -150,77 +175,113 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions 
   const client: CircleSpikeClient = options.client ?? createCircleArcSpikeClient();
   const capturedAt = nowIso(now);
 
-  // 1. Dedicated disposable wallet set + two EOA wallets on Arc Testnet.
+  // 1. Dedicated disposable wallet set + two EOA wallets on Arc Testnet —
+  // or, if a prior run already created one, resume from it instead of
+  // minting another disposable context.
   let walletSetId: string;
-  try {
-    const walletSetResponse = await client.createWalletSet({
-      name: `tameion-j0d-spike-${capturedAt}`,
-      idempotencyKey: randomUUID(),
-    });
-    const id = walletSetResponse.data?.walletSet?.id;
-    if (!id) throw new Error("Circle createWalletSet returned no wallet set id");
-    walletSetId = id;
-  } catch (error) {
-    throw new J0ConnectivitySpikeError(`Failed to create spike wallet set: ${(error as Error).message}`, "CREATE_WALLET_SET");
-  }
-
   let sourceWallet: { id: string; address: string };
   let destinationWallet: { id: string; address: string };
-  try {
-    const walletsResponse = await client.createWallets({
-      blockchains: [ARC_TESTNET_BLOCKCHAIN],
-      count: 2,
-      walletSetId,
-      accountType: "EOA",
-      idempotencyKey: randomUUID(),
-    });
-    const wallets = walletsResponse.data?.wallets ?? [];
-    if (wallets.length < 2) {
-      throw new Error(`Expected 2 wallets, Circle returned ${wallets.length}`);
-    }
-    const [first, second] = wallets;
-    if (!first.id || !first.address || !second.id || !second.address) {
-      throw new Error("Circle createWallets response missing id/address");
-    }
-    sourceWallet = { id: first.id, address: first.address };
-    destinationWallet = { id: second.id, address: second.address };
-  } catch (error) {
-    throw new J0ConnectivitySpikeError(`Failed to create spike wallets: ${(error as Error).message}`, "CREATE_WALLETS");
-  }
 
-  // 2. Fund the source wallet from Circle's testnet faucet (native gas + USDC).
-  try {
-    await client.requestTestnetTokens({
-      address: sourceWallet.address,
-      blockchain: ARC_TESTNET_BLOCKCHAIN,
-      native: true,
-      usdc: true,
-    });
-  } catch (error) {
-    throw new J0ConnectivitySpikeError(`Faucet funding request failed: ${(error as Error).message}`, "FAUCET_REQUEST");
-  }
-
-  // 3. Poll the source wallet balance until USDC arrives (bounded).
-  let usdcTokenId: string | null = null;
-  const balancePollDeadline = Date.now() + balanceTimeoutMs;
-  while (Date.now() < balancePollDeadline) {
-    await delay(pollIntervalMs);
+  if (options.resumeFrom) {
+    walletSetId = options.resumeFrom.walletSetId;
+    sourceWallet = options.resumeFrom.sourceWallet;
+    destinationWallet = options.resumeFrom.destinationWallet;
+  } else {
     try {
-      const balanceResponse = await client.getWalletTokenBalance({ id: sourceWallet.id });
-      const usdc = (balanceResponse.data?.tokenBalances ?? []).find((b) => b.token?.symbol === "USDC");
-      if (usdc && Number(usdc.amount) > 0 && usdc.token?.id) {
-        usdcTokenId = usdc.token.id;
-        break;
-      }
+      const walletSetResponse = await client.createWalletSet({
+        name: `tameion-j0d-spike-${capturedAt}`,
+        idempotencyKey: randomUUID(),
+      });
+      const id = walletSetResponse.data?.walletSet?.id;
+      if (!id) throw new Error("Circle createWalletSet returned no wallet set id");
+      walletSetId = id;
     } catch (error) {
-      throw new J0ConnectivitySpikeError(`Balance check failed while awaiting faucet funds: ${(error as Error).message}`, "BALANCE_POLL");
+      throw new J0ConnectivitySpikeError(`Failed to create spike wallet set: ${(error as Error).message}`, "CREATE_WALLET_SET");
+    }
+
+    try {
+      const walletsResponse = await client.createWallets({
+        blockchains: [ARC_TESTNET_BLOCKCHAIN],
+        count: 2,
+        walletSetId,
+        accountType: "EOA",
+        idempotencyKey: randomUUID(),
+      });
+      const wallets = walletsResponse.data?.wallets ?? [];
+      if (wallets.length < 2) {
+        throw new Error(`Expected 2 wallets, Circle returned ${wallets.length}`);
+      }
+      const [first, second] = wallets;
+      if (!first.id || !first.address || !second.id || !second.address) {
+        throw new Error("Circle createWallets response missing id/address");
+      }
+      sourceWallet = { id: first.id, address: first.address };
+      destinationWallet = { id: second.id, address: second.address };
+    } catch (error) {
+      throw new J0ConnectivitySpikeError(`Failed to create spike wallets: ${(error as Error).message}`, "CREATE_WALLETS");
     }
   }
+
+  // Wallet context is now known (fresh or resumed) — hand it to the caller
+  // immediately, before the faucet call, so a later failure still leaves
+  // durable evidence instead of requiring a manual listWalletSets() hunt.
+  options.onStageEvidence?.({
+    stage: "WALLET_CONTEXT_READY",
+    wallet_set_id: walletSetId,
+    source_wallet_id: sourceWallet.id,
+    source_wallet_address: sourceWallet.address,
+    destination_wallet_id: destinationWallet.id,
+    destination_wallet_address: destinationWallet.address,
+  });
+
+  // 2. Check whether the source wallet already holds USDC (e.g. this is a
+  // resumed context that was already funded) before touching the faucet at
+  // all — avoids an unnecessary/duplicate faucet request.
+  let usdcTokenId: string | null = null;
+  try {
+    const balanceResponse = await client.getWalletTokenBalance({ id: sourceWallet.id });
+    const usdc = (balanceResponse.data?.tokenBalances ?? []).find((b) => b.token?.symbol === "USDC");
+    if (usdc && Number(usdc.amount) > 0 && usdc.token?.id) {
+      usdcTokenId = usdc.token.id;
+    }
+  } catch (error) {
+    throw new J0ConnectivitySpikeError(`Balance check failed before funding: ${(error as Error).message}`, "BALANCE_CHECK");
+  }
+
   if (!usdcTokenId) {
-    throw new J0ConnectivitySpikeError(
-      "Faucet did not fund the spike wallet with testnet USDC within the polling window; no transfer was attempted.",
-      "FAUCET_TIMEOUT",
-    );
+    // 2a. Fund the source wallet from Circle's testnet faucet (native gas + USDC).
+    try {
+      await client.requestTestnetTokens({
+        address: sourceWallet.address,
+        blockchain: ARC_TESTNET_BLOCKCHAIN,
+        native: true,
+        usdc: true,
+      });
+    } catch (error) {
+      throw new J0ConnectivitySpikeError(`Faucet funding request failed: ${(error as Error).message}`, "FAUCET_REQUEST");
+    }
+
+    // 2b. Poll the source wallet balance until USDC arrives (bounded).
+    const balancePollDeadline = Date.now() + balanceTimeoutMs;
+    while (Date.now() < balancePollDeadline) {
+      await delay(pollIntervalMs);
+      try {
+        const balanceResponse = await client.getWalletTokenBalance({ id: sourceWallet.id });
+        const usdc = (balanceResponse.data?.tokenBalances ?? []).find((b) => b.token?.symbol === "USDC");
+        if (usdc && Number(usdc.amount) > 0 && usdc.token?.id) {
+          usdcTokenId = usdc.token.id;
+          break;
+        }
+      } catch (error) {
+        throw new J0ConnectivitySpikeError(`Balance check failed while awaiting faucet funds: ${(error as Error).message}`, "BALANCE_POLL");
+      }
+    }
+    if (!usdcTokenId) {
+      throw new J0ConnectivitySpikeError(
+        "Faucet did not fund the spike wallet with testnet USDC within the polling window; no transfer was attempted.",
+        "FAUCET_TIMEOUT",
+      );
+    }
   }
 
   // 4. Exactly one deliberately tiny (0.01 USDC) disposable transfer.

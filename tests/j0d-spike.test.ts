@@ -136,6 +136,7 @@ describe("J0-D connectivity spike orchestration (fake client — no live network
   it("propagates a clear stage on faucet request failure without creating a transaction", async () => {
     let transactionCalled = false;
     const client = makeFakeClient({
+      getWalletTokenBalance: async () => ({ data: { tokenBalances: [] } }), // actually unfunded pre-faucet
       requestTestnetTokens: async () => {
         throw new Error("simulated faucet rate limit");
       },
@@ -148,5 +149,74 @@ describe("J0-D connectivity spike orchestration (fake client — no live network
       stage: "FAUCET_REQUEST",
     });
     expect(transactionCalled).toBe(false);
+  });
+
+  it("skips the faucet call entirely when the (resumed) source wallet is already funded", async () => {
+    let faucetCalled = false;
+    const client = makeFakeClient({
+      requestTestnetTokens: async () => {
+        faucetCalled = true;
+        return undefined;
+      },
+    });
+    const result = await runConnectivitySpike({ client, pollIntervalMs: 1 });
+    expect(faucetCalled).toBe(false);
+    expect(result.status).toBe("COMPLETE");
+  });
+
+  it("resumes from a prior wallet-set/wallet context instead of creating a new one", async () => {
+    let createWalletSetCalled = false;
+    let createWalletsCalled = false;
+    const client = makeFakeClient({
+      createWalletSet: async () => {
+        createWalletSetCalled = true;
+        return { data: { walletSet: { id: "should-not-be-used" } } };
+      },
+      createWallets: async () => {
+        createWalletsCalled = true;
+        return { data: { wallets: [] } };
+      },
+    });
+    const result = await runConnectivitySpike({
+      client,
+      pollIntervalMs: 1,
+      resumeFrom: {
+        walletSetId: "recovered-ws-1",
+        sourceWallet: { id: "recovered-source", address: "0xrecoveredsource" },
+        destinationWallet: { id: "recovered-dest", address: "0xrecovereddest" },
+      },
+    });
+    expect(createWalletSetCalled).toBe(false);
+    expect(createWalletsCalled).toBe(false);
+    expect(result.wallet_set_id).toBe("recovered-ws-1");
+    expect(result.source_wallet_id).toBe("recovered-source");
+    expect(result.destination_wallet_id).toBe("recovered-dest");
+  });
+
+  it("reports wallet context via onStageEvidence before the faucet call, even if the faucet then fails", async () => {
+    const stageEvents: unknown[] = [];
+    const client = makeFakeClient({
+      getWalletTokenBalance: async () => ({ data: { tokenBalances: [] } }),
+      requestTestnetTokens: async () => {
+        throw new Error("simulated faucet 403");
+      },
+    });
+    await expect(
+      runConnectivitySpike({
+        client,
+        pollIntervalMs: 1,
+        onStageEvidence: (evidence) => stageEvents.push(evidence),
+      }),
+    ).rejects.toMatchObject({ stage: "FAUCET_REQUEST" });
+    expect(stageEvents).toEqual([
+      {
+        stage: "WALLET_CONTEXT_READY",
+        wallet_set_id: "ws-1",
+        source_wallet_id: "w-source",
+        source_wallet_address: "0xsource",
+        destination_wallet_id: "w-dest",
+        destination_wallet_address: "0xdest",
+      },
+    ]);
   });
 });

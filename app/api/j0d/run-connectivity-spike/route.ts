@@ -4,6 +4,7 @@ import {
   runConnectivitySpike,
   J0ConnectivitySpikeNotConfiguredError,
   J0ConnectivitySpikeError,
+  type J0dResumeContext,
 } from "../../../../src/j0d-spike/connectivity-spike";
 
 /**
@@ -19,14 +20,24 @@ import {
  * sits behind Vercel's own deployment protection (SSO) on this project's
  * non-custom-domain URLs.
  *
- * Not idempotent across calls: each successful call creates new disposable
- * wallets and attempts one new transfer. There is no persistent store in
- * this build to enforce "at most once" across separate serverless
- * invocations — that is a known limitation, not an oversight. Call it
- * exactly once, deliberately.
+ * Not idempotent across calls: each successful call (with no `resumeFrom`)
+ * creates new disposable wallets and attempts one new transfer. There is no
+ * persistent store in this build to enforce "at most once" across separate
+ * serverless invocations — that is a known limitation, not an oversight.
+ * Call it exactly once, deliberately, unless deliberately resuming a known
+ * prior wallet-set/wallet context recovered out-of-band via Circle's own
+ * `listWalletSets`/`listWallets` (see docs/evidence/J0-D-CONNECTIVITY-SPIKE.md).
+ *
+ * Wallet context is logged (via `onStageEvidence`) as soon as it's known —
+ * before the faucet call — so a mid-run failure on this serverless platform
+ * still leaves the wallet-set/wallet IDs in Vercel's function logs instead
+ * of requiring a manual provider-side recovery.
  */
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { confirm?: string };
+  const body = (await request.json().catch(() => ({}))) as {
+    confirm?: string;
+    resumeFrom?: J0dResumeContext;
+  };
   if (body.confirm !== "RUN_J0D_CONNECTIVITY_SPIKE_ONCE") {
     return NextResponse.json(
       {
@@ -39,7 +50,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await runConnectivitySpike();
+    const result = await runConnectivitySpike({
+      resumeFrom: body.resumeFrom,
+      onStageEvidence: (evidence) => {
+        // eslint-disable-next-line no-console
+        console.log("[j0d-spike] WALLET_CONTEXT_READY", JSON.stringify(evidence));
+      },
+    });
     // eslint-disable-next-line no-console
     console.log("[j0d-spike] COMPLETE", JSON.stringify(result));
     return NextResponse.json({ result });
