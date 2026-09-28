@@ -73,10 +73,13 @@ export const durableAssessmentRecordSchema = z
     missing_evidence: z.array(boundedAscii()),
     uncertainty_signal: z.boolean(),
     provider_name: boundedAscii(),
-    /** LIVE_AI only for an actual model call; deterministic/mock/fallback
-     * reasoning must always be recorded as NOT_LIVE_AI, so a sealed
-     * assessment can never be mistaken for real model output later. */
-    provider_mode: z.enum(["LIVE_AI", "NOT_LIVE_AI"]),
+    /** LIVE_AI only for a real model call that actually returned parseable
+     * output; deterministic/mock/fallback reasoning is always NOT_LIVE_AI;
+     * BLOCKED_EXTERNAL is a live call that was attempted but failed before
+     * any model reasoning occurred (e.g. provider auth failure) — the
+     * resulting HOLD is a fail-closed default, not model output, and must
+     * never be shown as successful live reasoning. */
+    provider_mode: z.enum(["LIVE_AI", "NOT_LIVE_AI", "BLOCKED_EXTERNAL"]),
     assessed_at: rfc3339Millis,
   })
   .strict();

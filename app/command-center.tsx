@@ -10,6 +10,9 @@ interface ObligationSummary {
   recurrence: string;
   due_date: string | null;
   commercial_terms: string;
+  assessed: boolean;
+  decision: string | null;
+  provider_mode: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL" | null;
 }
 
 interface AggregateView {
@@ -181,6 +184,90 @@ function ActionResultBanner({ result }: { result: ActionResult }) {
   );
 }
 
+type ProviderMode = "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL";
+
+const RUNTIME_BADGE: Record<ProviderMode, { label: string; textVar: string; surfaceVar: string; borderVar: string }> = {
+  LIVE_AI: {
+    label: "LIVE NVIDIA",
+    textVar: "var(--status-pass-text)",
+    surfaceVar: "var(--status-pass-surface)",
+    borderVar: "var(--status-pass-border)",
+  },
+  NOT_LIVE_AI: {
+    label: "DETERMINISTIC DEMO — NOT LIVE AI",
+    textVar: "var(--status-advisory-text)",
+    surfaceVar: "var(--status-advisory-surface)",
+    borderVar: "var(--status-advisory-border)",
+  },
+  BLOCKED_EXTERNAL: {
+    label: "BLOCKED_EXTERNAL — LIVE CALL FAILED",
+    textVar: "var(--status-hold-text)",
+    surfaceVar: "var(--status-hold-surface)",
+    borderVar: "var(--status-hold-border)",
+  },
+};
+
+/** Explicit, non-color-only runtime provenance for an assessment — never a
+ * confidence score, since the real Finance Agent output schema has none. */
+function RuntimeBadge({ mode }: { mode: ProviderMode | null }) {
+  if (!mode) return null;
+  const style = RUNTIME_BADGE[mode];
+  return (
+    <span
+      className="mono inline-flex w-fit items-center rounded px-2 py-0.5 text-[11px] font-semibold tracking-wide"
+      style={{ color: style.textVar, background: style.surfaceVar, border: `1px solid ${style.borderVar}` }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+interface ControlResultView {
+  control_id: string;
+  result: "PASS" | "HOLD" | "BLOCK" | "NOT_ASSESSED";
+  finding_code: string;
+}
+
+/** The real per-control Safety Kernel breakdown — actual control IDs and
+ * finding codes from SafetyKernelResult.controlResults, never invented
+ * telemetry. */
+function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; controlResults: ControlResultView[] }) {
+  const resultStyle: Record<ControlResultView["result"], { text: string; surface: string; border: string }> = {
+    PASS: { text: "var(--status-pass-text)", surface: "var(--status-pass-surface)", border: "var(--status-pass-border)" },
+    HOLD: { text: "var(--status-hold-text)", surface: "var(--status-hold-surface)", border: "var(--status-hold-border)" },
+    BLOCK: {
+      text: "var(--status-blocked-text)",
+      surface: "var(--status-blocked-surface)",
+      border: "var(--status-blocked-border)",
+    },
+    NOT_ASSESSED: { text: "var(--color-ink-muted)", surface: "var(--color-surface)", border: "var(--color-border)" },
+  };
+  return (
+    <div className="max-w-xl space-y-2 border border-[var(--color-border)] rounded-[var(--radius-md)] p-3">
+      <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
+        Safety Kernel — {overall} ({controlResults.filter((c) => c.result === "PASS").length}/{controlResults.length} PASS)
+      </p>
+      <ul className="space-y-1">
+        {controlResults.map((c) => {
+          const style = resultStyle[c.result];
+          return (
+            <li key={c.control_id} className="mono flex items-center justify-between gap-2 text-[12px]">
+              <span className="text-[var(--color-ink)]">{c.control_id}</span>
+              <span
+                className="rounded px-1.5 py-0.5 font-semibold"
+                style={{ color: style.text, background: style.surface, border: `1px solid ${style.border}` }}
+              >
+                {c.result}
+                {c.result !== "PASS" && c.finding_code !== "NONE" ? ` · ${c.finding_code}` : ""}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
@@ -189,13 +276,17 @@ export function CommandCenter() {
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const refreshObligations = async () => {
+    const response = await fetch("/api/obligations");
+    const data = await response.json();
+    setObligations(data.obligations);
+    return data.obligations as ObligationSummary[];
+  };
+
   useEffect(() => {
-    fetch("/api/obligations")
-      .then((r) => r.json())
-      .then((data) => {
-        setObligations(data.obligations);
-        if (data.obligations[0]) setSelectedId(data.obligations[0].obligation_id);
-      });
+    void refreshObligations().then((fetched) => {
+      if (fetched[0]) setSelectedId(fetched[0].obligation_id);
+    });
   }, []);
 
   const refreshDetail = async (id: string) => {
@@ -214,13 +305,14 @@ export function CommandCenter() {
     try {
       const result = await action();
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status });
-      await refreshDetail(selectedId);
+      await Promise.all([refreshDetail(selectedId), refreshObligations()]);
     } finally {
       setBusy(false);
     }
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
+  const assessedCount = obligations.filter((o) => o.assessed).length;
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
 
@@ -257,7 +349,15 @@ export function CommandCenter() {
                   }`}
                 >
                   <span className="flex items-baseline justify-between gap-2">
-                    <span className="text-[12px] font-medium text-[var(--color-ink)]">{o.obligation_id}</span>
+                    <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-ink)]">
+                      <span
+                        aria-label={o.assessed ? "assessed" : "not yet assessed"}
+                        title={o.assessed ? `Assessed: ${o.decision}` : "Not yet assessed"}
+                        className="inline-block h-1.5 w-1.5 rounded-full"
+                        style={{ background: o.assessed ? "var(--status-pass-text)" : "var(--color-border-strong)" }}
+                      />
+                      {o.obligation_id}
+                    </span>
                     <span className="tabular shrink-0 text-[12px] text-[var(--color-ink-muted)]">
                       {o.amount} {o.currency}
                     </span>
@@ -318,6 +418,17 @@ export function CommandCenter() {
                   The Finance Agent reads this obligation and returns exactly one PAY / HOLD / ESCALATE
                   recommendation with reasons. It cannot approve, sign, or execute anything.
                 </p>
+                <div className="flex items-center justify-between gap-3 border-l-[3px] border-l-[var(--color-border)] px-3 py-2">
+                  <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                    {assessedCount}/{obligations.length} obligations assessed
+                  </p>
+                  <RuntimeBadge mode={selected?.provider_mode ?? null} />
+                </div>
+                {assessedCount < obligations.length && (
+                  <p className="text-[12px] text-[var(--color-warning)]">
+                    Authorization is refused for every obligation until all {obligations.length} have been assessed.
+                  </p>
+                )}
                 <PrimaryButton disabled={busy || !selectedId} onClick={() => run("assess", () => postJson(`/api/obligations/${selectedId}/assess`))}>
                   Run assessment
                 </PrimaryButton>
@@ -346,6 +457,13 @@ export function CommandCenter() {
                   </PrimaryButton>
                 </div>
                 {lastResult?.label === "approve" && <ActionResultBanner result={lastResult} />}
+                {lastResult?.label === "approve" &&
+                  (() => {
+                    const data = lastResult.data as { safety_kernel?: { overall: string; control_results: ControlResultView[] } };
+                    return data.safety_kernel ? (
+                      <SafetyKernelBreakdown overall={data.safety_kernel.overall} controlResults={data.safety_kernel.control_results} />
+                    ) : null;
+                  })()}
                 {lastResult?.label === "approve" && <EvidencePanel value={lastResult.data} />}
               </div>
             )}

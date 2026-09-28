@@ -2,16 +2,20 @@ import { randomUUID } from "node:crypto";
 
 import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
 import { AuthorityError } from "../authority/aggregate";
-import { runSafetyKernel, SAFETY_KERNEL_VERSION } from "../safety-kernel/kernel";
+import { runSafetyKernel, SAFETY_KERNEL_VERSION, type SafetyKernelResult } from "../safety-kernel/kernel";
 import { hashApprovalReason, sealDurableApprovalRecord, sealDurableAssuranceRecord } from "../pae/durable-records";
 import { loadServerSigningKey } from "../pae/keys";
 import { sealPae } from "../pae/sign-verify";
-import type { PaeUnsignedPayload, SealedPae } from "../domain/schemas";
+import type { ControlResult, PaeUnsignedPayload, SealedPae } from "../domain/schemas";
 
 export class AssuranceFailedError extends Error {
   constructor(
     message: string,
     public readonly overall: "HOLD" | "BLOCK",
+    /** The real per-control breakdown from the Safety Kernel that produced
+     * this failure — structured, not just embedded in the message string,
+     * so callers can display exactly which control(s) failed. */
+    public readonly controlResults: ControlResult[],
   ) {
     super(message);
     this.name = "AssuranceFailedError";
@@ -44,7 +48,7 @@ export function approveAndSealPae(
   store: AuthorityStore,
   signingKeyId: string,
   input: ApprovalInput,
-): { aggregate: AuthorityAggregate; sealed: SealedPae } {
+): { aggregate: AuthorityAggregate; sealed: SealedPae; safetyKernel: SafetyKernelResult } {
   const now = input.now ?? (() => new Date());
   const isoNow = now().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
 
@@ -74,6 +78,7 @@ export function approveAndSealPae(
     throw new AssuranceFailedError(
       `Safety Kernel did not PASS (${safetyResult.overall}): ${JSON.stringify(safetyResult.controlResults)}`,
       safetyResult.overall,
+      safetyResult.controlResults,
     );
   }
 
@@ -143,7 +148,7 @@ export function approveAndSealPae(
   const sealed = sealPae(unsignedPayload, privateKey);
   void approvalRecord;
   void assuranceRecord;
-  return { aggregate, sealed };
+  return { aggregate, sealed, safetyKernel: safetyResult };
 }
 
 export { AuthorityError };

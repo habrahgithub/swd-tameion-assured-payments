@@ -17,6 +17,17 @@ import type { AiProvider } from "./ai-provider";
  * no field in that schema an injected instruction could use to request
  * approval, signing, or execution.
  */
+/** Prefix used only for the "the provider call itself failed" HOLD reason —
+ * distinct from a schema-validation failure or a genuine model HOLD. Used
+ * by callers (the assess API route) to tell "we tried live AI and the call
+ * failed" apart from "the model itself decided HOLD/ESCALATE", so the UI's
+ * runtime badge can show BLOCKED_EXTERNAL instead of claiming live success. */
+export const PROVIDER_CALL_FAILURE_REASON_PREFIX = "AI provider call failed:";
+
+export function wasProviderCallFailure(decision: FinanceAgentDecision): boolean {
+  return decision.reasons.some((reason) => reason.startsWith(PROVIDER_CALL_FAILURE_REASON_PREFIX));
+}
+
 export async function assessObligation(
   context: FinanceAgentContext,
   provider: AiProvider,
@@ -25,7 +36,7 @@ export async function assessObligation(
   try {
     rawOutput = await provider.assess(context);
   } catch (error) {
-    return holdOnFailure(context, `AI provider "${provider.name}" failed: ${(error as Error).message}`);
+    return holdOnFailure(context, `${PROVIDER_CALL_FAILURE_REASON_PREFIX} "${provider.name}": ${(error as Error).message}`);
   }
 
   const parsed = financeAgentDecisionSchema.safeParse(rawOutput);

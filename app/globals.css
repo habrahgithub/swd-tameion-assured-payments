@@ -3,21 +3,64 @@
 :root {
   color-scheme: light;
 
-  /* Restrained financial-operator palette: warm near-white base, deep navy
-     ink, muted gold accent. No neon, no gradients. */
-  --color-bg: #f6f5f2;
+  /* Institutional treasury-console palette — obsidian ink + brass accent,
+     ported from the Stitch visual-reference design tokens
+     (docs/design/STITCH-DELTA-CENSUS.md), not copied as HTML/Tailwind-CDN
+     markup. Variable names are kept stable so existing component code
+     (app/command-center.tsx) needs no rewiring. */
+  --color-bg: #f8fafc;
   --color-surface: #ffffff;
-  --color-ink: #16213d;
+  --color-ink: #0b132b;
   --color-ink-muted: #5b6577;
-  --color-border: #e1ddd3;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
   --color-accent: #92702f;
   --color-accent-ink: #4a3818;
-  --color-danger: #7a2e26;
-  --color-danger-bg: #f7e9e6;
-  --color-success: #2f5233;
-  --color-success-bg: #e9f0e8;
-  --color-warning: #7a5a12;
-  --color-warning-bg: #f6efdd;
+  /* Institutional gold/brass — reserved for cryptographic attestation and
+     irrevocable-action affordances, per the ported design system. */
+  --color-attestation: #c5a059;
+  --color-attestation-ink: #0b132b;
+
+  /* Semantic status triads (text / surface / border) — a status is never
+     conveyed by color alone; every use must still pair with a text label. */
+  --status-pass-text: #047857;
+  --status-pass-surface: #ecfdf5;
+  --status-pass-border: #a7f3d0;
+  --status-hold-text: #b45309;
+  --status-hold-surface: #fffbeb;
+  --status-hold-border: #fde68a;
+  --status-blocked-text: #b91c1c;
+  --status-blocked-surface: #fef2f2;
+  --status-blocked-border: #fecaca;
+  --status-advisory-text: #4338ca;
+  --status-advisory-surface: #eef2ff;
+  --status-advisory-border: #c7d2fe;
+
+  /* Kept for existing component references. */
+  --color-danger: var(--status-blocked-text);
+  --color-danger-bg: var(--status-blocked-surface);
+  --color-success: var(--status-pass-text);
+  --color-success-bg: var(--status-pass-surface);
+  --color-warning: var(--status-hold-text);
+  --color-warning-bg: var(--status-hold-surface);
+
+  --font-sans:
+    ui-sans-serif, "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  /* Machine monospace for cryptographic digests, signature envelopes, and
+     provider/tx identifiers, per the ported design system's typography
+     rule. Uses the system monospace stack rather than loading JetBrains
+     Mono from an external font CDN, to keep this a token/CSS-only change. */
+  --font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
 }
 
 * {
@@ -28,8 +71,7 @@ body {
   margin: 0;
   background: var(--color-bg);
   color: var(--color-ink);
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -38,4 +80,9 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+}
+
+/* Cryptographic digests, signature envelopes, provider/tx identifiers. */
+.mono {
+  font-family: var(--font-mono);
 }

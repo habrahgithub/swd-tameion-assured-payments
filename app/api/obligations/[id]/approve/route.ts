@@ -20,7 +20,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    const { aggregate, sealed } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
+    const { aggregate, sealed, safetyKernel } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,
       expectedVersion: body.expected_version,
@@ -37,13 +37,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         signature: sealed.signature,
         payload: sealed.payload,
       },
+      safety_kernel: { overall: safetyKernel.overall, control_results: safetyKernel.controlResults },
     });
   } catch (error) {
     if (error instanceof StaleStateError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
     }
     if (error instanceof AssuranceFailedError) {
-      return NextResponse.json({ error: error.message, overall: error.overall }, { status: 422 });
+      return NextResponse.json(
+        {
+          error: error.message,
+          overall: error.overall,
+          safety_kernel: { overall: error.overall, control_results: error.controlResults },
+        },
+        { status: 422 },
+      );
     }
     if (error instanceof AuthorityError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });

@@ -82,6 +82,30 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
     ).toThrow(AssuranceFailedError);
   });
 
+  it("AssuranceFailedError carries the real per-control breakdown, not just an embedded message string", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ destination_verification_status: "PENDING_VERIFICATION" }));
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
+    try {
+      approveAndSealPae(store, SIGNING_KEY_ID, {
+        organizationId: "ORG-DEMO-001",
+        obligationId: "OBL-J0C-002",
+        expectedVersion: 3,
+        actorId: "USR-OPERATOR-001",
+        actorRole: "FINANCE_APPROVER",
+        policyVersion: "POLICY-P0-1",
+        reasonText: "Attempting approval with an unverified destination.",
+      });
+      expect.unreachable("expected approveAndSealPae to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AssuranceFailedError);
+      const failure = error as AssuranceFailedError;
+      expect(failure.controlResults.length).toBe(10);
+      const destinationControl = failure.controlResults.find((c) => c.control_id === "SK-DESTINATION-TRUST");
+      expect(destinationControl?.result).toBe("BLOCK");
+    }
+  });
+
   it("rejects a stale approval attempt (STALE_STATE)", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());

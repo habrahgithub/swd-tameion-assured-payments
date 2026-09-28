@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildFinanceAgentContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
-import { assessObligation, selectSoleCandidate } from "../src/agent/finance-agent";
+import { assessObligation, selectSoleCandidate, wasProviderCallFailure } from "../src/agent/finance-agent";
 import { DeterministicFallbackProvider } from "../src/agent/ai-provider";
 import type { AiProvider } from "../src/agent/ai-provider";
 import type { FinanceAgentContext } from "../src/agent/schema";
@@ -84,6 +84,19 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     const context = buildFinanceAgentContext(record());
     const decision = await assessObligation(context, new ThrowingProvider());
     expect(decision.decision).toBe("HOLD");
+  });
+
+  it("wasProviderCallFailure distinguishes a failed live call from a genuine model HOLD", async () => {
+    const context = buildFinanceAgentContext(record());
+    const failedCallDecision = await assessObligation(context, new ThrowingProvider());
+    expect(wasProviderCallFailure(failedCallDecision)).toBe(true);
+
+    const genuineHoldDecision = await assessObligation(
+      buildFinanceAgentContext(record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" })),
+      new DeterministicFallbackProvider(),
+    );
+    expect(genuineHoldDecision.decision).toBe("HOLD");
+    expect(wasProviderCallFailure(genuineHoldDecision)).toBe(false);
   });
 
   it("(14) never defaults to PAY when provider output fails schema validation", async () => {
