@@ -236,6 +236,36 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     await expect(worker2.execute(second.sealed)).rejects.toThrow(ExecutionBlockedError);
   });
 
+  it("cancel-vs-execute race yields exactly one winner, never both", async () => {
+    // Case A: cancel completes fully before execute is ever invoked -> execute must lose.
+    {
+      const { sealed, store, aggregate } = setupAuthorizedFixture();
+      store.cancel("ORG-DEMO-001", "OBL-J0C-002", aggregate.aggregate_version);
+      const worker = new ExecutionWorker(store, new FakeProviderAdapter());
+      await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+      expect(store.get("ORG-DEMO-001", "OBL-J0C-002").state).toBe("CANCELLED");
+    }
+
+    // Case B: execute's synchronous claim (verify -> checks -> RESERVED -> SUBMITTING)
+    // runs to completion before any interleaved code can act, so a cancel
+    // attempted immediately after invoking (not awaiting) execute() must
+    // observe the provider-submit boundary and be rejected — execute wins.
+    {
+      const { sealed, store, aggregate } = setupAuthorizedFixture();
+      const adapter = new FakeProviderAdapter();
+      adapter.queueOutcome("CONFIRMED");
+      const worker = new ExecutionWorker(store, adapter);
+
+      const executePromise = worker.execute(sealed); // not awaited yet
+      expect(() => store.cancel("ORG-DEMO-001", "OBL-J0C-002", aggregate.aggregate_version)).toThrow(
+        /provider-submit boundary/,
+      );
+      const record = await executePromise;
+      expect(record.status).toBe("SETTLED");
+      expect(adapter.getSubmissionCount()).toBe(1);
+    }
+  });
+
   it("(11) settlement amount/destination/status must reconcile exactly to the obligation", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     const adapter = new FakeProviderAdapter();
