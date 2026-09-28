@@ -234,12 +234,14 @@ export function CommandCenter() {
                     o.obligation_id === selectedId ? "bg-[var(--color-surface)]" : "hover:bg-[var(--color-surface)]"
                   }`}
                 >
-                  <span className="text-[12px] font-medium text-[var(--color-ink)]">{o.obligation_id}</span>
-                  <span className="flex justify-between text-[12px] text-[var(--color-ink-muted)]">
-                    <span>{o.service_category.replaceAll("_", " ").toLowerCase()}</span>
-                    <span className="tabular">
+                  <span className="flex items-baseline justify-between gap-2">
+                    <span className="text-[12px] font-medium text-[var(--color-ink)]">{o.obligation_id}</span>
+                    <span className="tabular shrink-0 text-[12px] text-[var(--color-ink-muted)]">
                       {o.amount} {o.currency}
                     </span>
+                  </span>
+                  <span className="truncate text-[12px] text-[var(--color-ink-muted)]">
+                    {o.service_category.replaceAll("_", " ").toLowerCase()}
                   </span>
                 </button>
               </li>
