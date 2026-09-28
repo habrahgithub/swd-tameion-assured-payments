@@ -45,6 +45,7 @@ export class NvidiaProvider implements AiProvider {
   readonly name = "nvidia-nemotron-3-super-120b-a12b";
   private static readonly MODEL = "nvidia/nemotron-3-super-120b-a12b";
   private static readonly BASE_URL = "https://integrate.api.nvidia.com/v1";
+  static readonly REQUEST_TIMEOUT_MS = 15_000;
 
   async assess(context: FinanceAgentContext): Promise<unknown> {
     const apiKey = process.env.NVIDIA_API_KEY;
@@ -54,6 +55,7 @@ export class NvidiaProvider implements AiProvider {
 
     const response = await fetch(`${NvidiaProvider.BASE_URL}/chat/completions`, {
       method: "POST",
+      signal: AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",

@@ -32,6 +32,12 @@ interface AggregateView {
 interface ObligationDetail {
   aggregate: AggregateView;
   record: Record<string, unknown>;
+  current_assessment: {
+    assessment_id: string;
+    assessment_hash: string;
+    aggregate_version: string;
+    decision: string;
+  } | null;
   demo_arc_trust_seeded: boolean;
   pae_sealed: boolean;
   execution: { status: string; provider_ref: string | null } | null;
@@ -465,12 +471,24 @@ export function CommandCenter() {
                   reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
                   control PASSes — seals a signed Payment Authorization Envelope.
                 </p>
+                {detail?.current_assessment && (
+                  <dl className="space-y-1 border-l-2 border-[var(--color-border)] pl-3 text-[12px] text-[var(--color-ink-muted)]">
+                    <Field label="Reviewed assessment" value={detail.current_assessment.assessment_id} />
+                    <Field label="Assessment hash" value={detail.current_assessment.assessment_hash} />
+                    <Field label="Assessment aggregate version" value={detail.current_assessment.aggregate_version} />
+                  </dl>
+                )}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || !selectedId || aggregateVersion === undefined}
+                    disabled={busy || !selectedId || aggregateVersion === undefined || !detail?.current_assessment ||
+                      detail.current_assessment.aggregate_version !== String(aggregateVersion)}
                     onClick={() =>
                       run("approve", () =>
-                        postJson(`/api/obligations/${selectedId}/approve`, { expected_version: aggregateVersion }),
+                        postJson(`/api/obligations/${selectedId}/approve`, {
+                          expected_version: aggregateVersion,
+                          reviewed_assessment_id: detail!.current_assessment!.assessment_id,
+                          reviewed_assessment_hash: detail!.current_assessment!.assessment_hash,
+                        }),
                       )
                     }
                   >

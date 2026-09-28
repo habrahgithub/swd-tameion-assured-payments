@@ -4,7 +4,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker, ExecutionBlockedError } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
-import { sealTestAssessment } from "./test-support/seal-assessment";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
 
@@ -49,6 +49,7 @@ function setupAuthorizedFixture() {
     organizationId: "ORG-DEMO-001",
     obligationId: "OBL-J0C-002",
     expectedVersion: 3,
+    ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
     actorId: "USR-OPERATOR-001",
     actorRole: "FINANCE_APPROVER",
     policyVersion: "POLICY-P0-1",
@@ -74,6 +75,7 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
         organizationId: "ORG-DEMO-001",
         obligationId: "OBL-J0C-002",
         expectedVersion: 3,
+        ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
         actorId: "USR-OPERATOR-001",
         actorRole: "FINANCE_APPROVER",
         policyVersion: "POLICY-P0-1",
@@ -91,6 +93,7 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
         organizationId: "ORG-DEMO-001",
         obligationId: "OBL-J0C-002",
         expectedVersion: 3,
+        ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
         actorId: "USR-OPERATOR-001",
         actorRole: "FINANCE_APPROVER",
         policyVersion: "POLICY-P0-1",
@@ -114,6 +117,8 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
         organizationId: "ORG-DEMO-001",
         obligationId: "OBL-J0C-002",
         expectedVersion: 2, // stale; current is 3
+        reviewedAssessmentId: "stale-assessment",
+        reviewedAssessmentHash: "0".repeat(64),
         actorId: "USR-OPERATOR-001",
         actorRole: "FINANCE_APPROVER",
         policyVersion: "POLICY-P0-1",

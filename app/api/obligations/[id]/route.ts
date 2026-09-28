@@ -9,11 +9,18 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     const record = state.getRecord(id);
+    const currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
     const sealed = state.getSealedPae(id);
     const execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
     return NextResponse.json({
       aggregate,
       record,
+      current_assessment: currentAssessment ? {
+        assessment_id: currentAssessment.record.assessment_id,
+        assessment_hash: currentAssessment.hash,
+        aggregate_version: currentAssessment.record.aggregate_version,
+        decision: currentAssessment.record.decision,
+      } : null,
       demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
       pae_sealed: Boolean(sealed),
       execution: execution ?? null,

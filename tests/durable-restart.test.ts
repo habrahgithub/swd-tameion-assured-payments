@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
-import { sealTestAssessment } from "./test-support/seal-assessment";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 function assessEveryObligation(state: DemoState): void {
   for (const obligation of state.listObligations()) {
@@ -16,6 +16,7 @@ function authorize(state: DemoState, obligationId: string) {
     organizationId: DEMO_ORGANIZATION_ID,
     obligationId,
     expectedVersion: state.store.get(DEMO_ORGANIZATION_ID, obligationId).aggregate_version,
+    ...currentAssessmentReview(state.store, DEMO_ORGANIZATION_ID, obligationId),
     actorId: "USR-TEST-OPERATOR",
     actorRole: "FINANCE_APPROVER",
     policyVersion: "POLICY-P0-1",

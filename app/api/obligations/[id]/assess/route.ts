@@ -12,7 +12,10 @@ import {
 import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
 import type { DurableAssessmentRecord } from "../../../../../src/domain/schemas";
 
+export const maxDuration = 30;
+
 const MAX_PERSISTENCE_ATTEMPTS = 4;
+const RESERVED_OPERATION_TIMEOUT_MS = 25_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
@@ -65,10 +68,86 @@ function existingOperationResponse(state: DemoState, operation: AssessmentOperat
     if (!response) throw new Error("Completed assessment operation has no response.");
     return NextResponse.json(response);
   }
+  if (operation.status === "UNKNOWN") {
+    return NextResponse.json(
+      { status: "UNKNOWN", error: "Provider completion is ambiguous. This operation will not be retried automatically.", code: "ASM-UNKNOWN" },
+      { status: 409 },
+    );
+  }
+  if (operation.status === "PROVIDER_RESULT_DURABLE") {
+    return NextResponse.json({ status: "RECOVERY_PENDING", message: "The durable provider result is being sealed; retry this same Idempotency-Key to recover it." }, { status: 202 });
+  }
   return NextResponse.json(
-    { status: "IN_PROGRESS", message: "This assessment request is already reserved. Its provider result will not be requested again." },
+    { status: "IN_PROGRESS", message: "This assessment is reserved. Replays will not submit a second provider request." },
     { status: 202 },
   );
+}
+
+async function markUnknownAndReply(state: DemoState, idempotencyKey: string) {
+  for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
+    const operation = state.getAssessmentOperation(idempotencyKey);
+    if (!operation || operation.status !== "RESERVED") break;
+    state.markAssessmentUnknown(idempotencyKey);
+    try {
+      await state.flush();
+      break;
+    } catch (error) {
+      if (!(error instanceof DemoStateConflictError)) throw error;
+      state = await getDemoState();
+    }
+  }
+  const latest = await getDemoState();
+  const operation = latest.getAssessmentOperation(idempotencyKey);
+  if (!operation) return NextResponse.json({ error: "Assessment reservation could not be resolved durably.", code: "ASM-PERSISTENCE-UNKNOWN" }, { status: 503 });
+  return existingOperationResponse(latest, operation);
+}
+
+async function sealDurableProviderResult(idempotencyKey: string, initialState: DemoState) {
+  let state = initialState;
+  for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
+    const operation = state.getAssessmentOperation(idempotencyKey);
+    if (!operation) break;
+    if (operation.status !== "PROVIDER_RESULT_DURABLE") return existingOperationResponse(state, operation);
+    state.completeAssessmentOperation(idempotencyKey);
+    try {
+      await state.flush();
+      const completed = state.getAssessmentOperation(idempotencyKey)!;
+      if (completed.status === "STALE") return existingOperationResponse(state, completed);
+      const response = responseFor(state, completed);
+      if (!response) throw new Error("Assessment persistence completed without a sealed result.");
+      return NextResponse.json(response);
+    } catch (error) {
+      if (!(error instanceof DemoStateConflictError)) throw error;
+      state = await getDemoState();
+    }
+  }
+  const latest = await getDemoState();
+  const operation = latest.getAssessmentOperation(idempotencyKey);
+  return operation
+    ? existingOperationResponse(latest, operation)
+    : NextResponse.json({ error: "Durable assessment operation disappeared during recovery.", code: "ASM-RECOVERY-FAILED" }, { status: 503 });
+}
+
+async function persistProviderResult(idempotencyKey: string, assessment: DurableAssessmentRecord, initialState: DemoState) {
+  let state = initialState;
+  for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
+    const operation = state.getAssessmentOperation(idempotencyKey);
+    if (!operation) break;
+    if (operation.status === "STALE") return existingOperationResponse(state, operation);
+    if (operation.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
+    if (operation.status !== "RESERVED") return existingOperationResponse(state, operation);
+    state.checkpointAssessmentResult(idempotencyKey, assessment);
+    const checkpointed = state.getAssessmentOperation(idempotencyKey)!;
+    if (checkpointed.status === "STALE") return existingOperationResponse(state, checkpointed);
+    try {
+      await state.flush();
+      return sealDurableProviderResult(idempotencyKey, state);
+    } catch (error) {
+      if (!(error instanceof DemoStateConflictError)) throw error;
+      state = await getDemoState();
+    }
+  }
+  return markUnknownAndReply(state, idempotencyKey);
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -91,12 +170,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (existing.obligation_id !== id) {
         return NextResponse.json({ error: "Idempotency key is already bound to a different assessment request.", code: "ASM-002" }, { status: 400 });
       }
+      if (existing.status === "RESERVED" && Date.now() - (existing.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS) {
+        return markUnknownAndReply(state, idempotencyKey);
+      }
+      if (existing.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
       return existingOperationResponse(state, existing);
     }
 
     aggregateVersion = state.store.get(DEMO_ORGANIZATION_ID, id).aggregate_version;
-    state.reserveAssessmentOperation(idempotencyKey, id, aggregateVersion);
+    const unresolved = state.findUnresolvedAssessmentOperation(id, aggregateVersion);
+    if (unresolved) {
+      return NextResponse.json(
+        { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status },
+        { status: 409 },
+      );
+    }
     try {
+      state.reserveAssessmentOperation(idempotencyKey, id, aggregateVersion);
       await state.flush();
       reserved = true;
       break;
@@ -111,8 +201,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (latestOperation.obligation_id !== id) {
         return NextResponse.json({ error: "Idempotency key is already bound to a different assessment request.", code: "ASM-002" }, { status: 400 });
       }
-      return existingOperationResponse(latestState, latestOperation);
+      return latestOperation.status === "PROVIDER_RESULT_DURABLE"
+        ? sealDurableProviderResult(idempotencyKey, latestState)
+        : existingOperationResponse(latestState, latestOperation);
     }
+    const unresolved = latestState.findUnresolvedAssessmentOperation(id, latestState.store.get(DEMO_ORGANIZATION_ID, id).aggregate_version);
+    if (unresolved) return NextResponse.json({ error: "Another assessment operation is unresolved for this obligation and aggregate version.", code: "ASM-OPERATION-UNRESOLVED" }, { status: 409 });
     return NextResponse.json(
       { error: "The assessment could not be reserved because durable state kept changing. No provider call was made; retry with the same Idempotency-Key.", code: "ASM-RESERVATION-RETRY" },
       { status: 503 },
@@ -123,11 +217,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const isLiveNvidia = Boolean(process.env.NVIDIA_API_KEY);
   const provider = isLiveNvidia ? new NvidiaProvider() : new DeterministicFallbackProvider();
   const decision = await assessObligation(buildFinanceAgentContext(record), provider);
-  const providerMode: DurableAssessmentRecord["provider_mode"] = !isLiveNvidia
-    ? "NOT_LIVE_AI"
-    : wasProviderCallFailure(decision)
-      ? "BLOCKED_EXTERNAL"
-      : "LIVE_AI";
+  if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
+
   const assessmentRecord: DurableAssessmentRecord = {
     assessment_id: `ASM-${idempotencyKey}`,
     organization_id: DEMO_ORGANIZATION_ID,
@@ -139,34 +230,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     missing_evidence: decision.missing_evidence,
     uncertainty_signal: decision.uncertainty_signal,
     provider_name: provider.name,
-    provider_mode: providerMode,
+    provider_mode: !isLiveNvidia ? "NOT_LIVE_AI" : "LIVE_AI",
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),
   };
 
-  for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
-    const operation = state.getAssessmentOperation(idempotencyKey);
-    if (!operation) throw new Error("Reserved assessment operation disappeared before persistence.");
-    if (operation.status === "COMPLETED") return existingOperationResponse(state, operation);
-    if (operation.status === "STALE") return existingOperationResponse(state, operation);
-
-    state.completeAssessmentOperation(idempotencyKey, assessmentRecord);
-    try {
-      await state.flush();
-      const completed = state.getAssessmentOperation(idempotencyKey)!;
-      if (completed.status === "STALE") return existingOperationResponse(state, completed);
-      const response = responseFor(state, completed);
-      if (!response) throw new Error("Assessment persistence completed without a sealed result.");
-      return NextResponse.json(response);
-    } catch (error) {
-      if (!(error instanceof DemoStateConflictError)) throw error;
-      state = await getDemoState();
-    }
-  }
-  const latestState = await getDemoState();
-  const latestOperation = latestState.getAssessmentOperation(idempotencyKey);
-  if (latestOperation) return existingOperationResponse(latestState, latestOperation);
-  return NextResponse.json(
-    { error: "The provider result was obtained, but durable persistence is still pending. This operation remains reserved and will not call the provider again; resolve its pending status before starting a new assessment.", code: "ASM-PERSISTENCE-PENDING" },
-    { status: 202 },
-  );
+  return persistProviderResult(idempotencyKey, assessmentRecord, state);
 }

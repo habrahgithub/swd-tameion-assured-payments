@@ -35,3 +35,12 @@ export function sealTestAssessment(
   };
   return store.sealAssessment(record);
 }
+
+export function currentAssessmentReview(store: AuthorityStore, organizationId: string, obligationId: string) {
+  const assessment = store.getCurrentAssessment(organizationId, obligationId);
+  if (!assessment) throw new Error(`No current assessment exists for ${obligationId}.`);
+  return {
+    reviewedAssessmentId: assessment.record.assessment_id,
+    reviewedAssessmentHash: assessment.hash,
+  };
+}

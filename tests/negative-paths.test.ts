@@ -142,55 +142,71 @@ describe("negative path: missing human authorization", () => {
   it("refuses to approve an obligation that was never assessed by the Finance Agent", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
-    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1)).toThrow(/no sealed Finance Agent assessment/);
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, "missing", "0".repeat(64))).toThrow(/no sealed Finance Agent assessment/);
   });
 
   it("refuses to approve an obligation the Finance Agent decided HOLD or ESCALATE", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "HOLD" });
-    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1)).toThrow(/sealed assessment decision is HOLD/);
+    const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "HOLD" });
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash)).toThrow(/sealed assessment decision is HOLD/);
+  });
+
+  it("refuses approval when the human reviewed an older same-version assessment", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
+    const reviewed = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const replacement = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    expect(replacement.assessment_hash).not.toBe(reviewed.assessment_hash);
+
+    expect(() => store.approve(
+      "ORG-DEMO-001",
+      "OBL-J0C-002",
+      1,
+      reviewed.record.assessment_id,
+      reviewed.assessment_hash,
+    )).toThrow(/reviewed assessment is no longer current/);
   });
 
   it("refuses to approve when the sealed assessment is stale (obligation changed since it was assessed)", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
     store.applyMaterialChange("ORG-DEMO-001", "OBL-J0C-002", 1, { policy_version: "POLICY-P0-2" });
     // Aggregate is now version 2; the sealed assessment is still bound to version 1.
-    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 2)).toThrow(/bound to aggregate_version 1/);
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 2, assessment.record.assessment_id, assessment.assessment_hash)).toThrow(/bound to aggregate_version 1/);
   });
 
   it("refuses to approve even a PAY-decided obligation while a sibling obligation has not been assessed yet", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
     store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
+    const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
     // OBL-B is never assessed.
-    expect(() => store.approve("ORG-DEMO-001", "OBL-A", 1)).toThrow(/OBL-B has not been assessed yet/);
+    expect(() => store.approve("ORG-DEMO-001", "OBL-A", 1, assessment.record.assessment_id, assessment.assessment_hash)).toThrow(/OBL-B has not been assessed yet/);
   });
 
   it("enforces exactly-one candidate selection: refuses to approve a second obligation while another is already the committed candidate", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
     store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-B", 1);
+    const assessmentA = sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
+    const assessmentB = sealTestAssessment(store, "ORG-DEMO-001", "OBL-B", 1);
 
-    store.approve("ORG-DEMO-001", "OBL-A", 1);
-    expect(() => store.approve("ORG-DEMO-001", "OBL-B", 1)).toThrow(/already the committed sole execution candidate/);
+    store.approve("ORG-DEMO-001", "OBL-A", 1, assessmentA.record.assessment_id, assessmentA.assessment_hash);
+    expect(() => store.approve("ORG-DEMO-001", "OBL-B", 1, assessmentB.record.assessment_id, assessmentB.assessment_hash)).toThrow(/already the committed sole execution candidate/);
   });
 
   it("allows approving a different obligation once the previously-committed candidate is cancelled", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
     store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
-    sealTestAssessment(store, "ORG-DEMO-001", "OBL-B", 1);
+    const assessmentA = sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
+    const assessmentB = sealTestAssessment(store, "ORG-DEMO-001", "OBL-B", 1);
 
-    const authorizedA = store.approve("ORG-DEMO-001", "OBL-A", 1);
+    const authorizedA = store.approve("ORG-DEMO-001", "OBL-A", 1, assessmentA.record.assessment_id, assessmentA.assessment_hash);
     store.cancel("ORG-DEMO-001", "OBL-A", authorizedA.aggregate_version);
-    const authorizedB = store.approve("ORG-DEMO-001", "OBL-B", 1);
+    const authorizedB = store.approve("ORG-DEMO-001", "OBL-B", 1, assessmentB.record.assessment_id, assessmentB.assessment_hash);
     expect(authorizedB.state).toBe("AUTHORIZED");
   });
 });

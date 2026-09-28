@@ -9,6 +9,7 @@ import type { LiveUsageObligationRecord } from "../agent/context-builder";
 import {
   durableApprovalRecordSchema,
   durableAssuranceRecordSchema,
+  durableAssessmentRecordSchema,
   sealedPaeSchema,
   type DurableApprovalRecord,
   type DurableAssuranceRecord,
@@ -73,7 +74,9 @@ export interface AssessmentOperation {
   idempotency_key: string;
   obligation_id: string;
   aggregate_version: number;
-  status: "PENDING" | "COMPLETED" | "STALE";
+  status: "RESERVED" | "PROVIDER_RESULT_DURABLE" | "COMPLETED" | "STALE" | "UNKNOWN";
+  reserved_at?: number;
+  provider_result?: DurableAssessmentRecord;
   assessment_hash?: string;
 }
 
@@ -245,16 +248,30 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operation.idempotency_key) ||
     typeof operation.obligation_id !== "string" ||
     !Number.isSafeInteger(operation.aggregate_version) || (operation.aggregate_version as number) < 1 ||
-    !["PENDING", "COMPLETED", "STALE"].includes(String(operation.status))
+    !["PENDING", "RESERVED", "PROVIDER_RESULT_DURABLE", "COMPLETED", "STALE", "UNKNOWN"].includes(String(operation.status))
   ) throw new Error("Malformed persisted assessment operation.");
-  if (operation.status === "COMPLETED") {
+  const status = operation.status === "PENDING" ? "UNKNOWN" : operation.status;
+  const providerResult = operation.provider_result === undefined
+    ? undefined
+    : durableAssessmentRecordSchema.parse(operation.provider_result);
+  if (status === "COMPLETED") {
     if (typeof operation.assessment_hash !== "string" || !/^[0-9a-f]{64}$/.test(operation.assessment_hash)) {
       throw new Error("Malformed completed assessment operation.");
     }
+    if (providerResult) throw new Error("Completed assessment operation cannot retain an unsealed provider result.");
   } else if (operation.assessment_hash !== undefined) {
     throw new Error("Incomplete assessment operation cannot contain an assessment hash.");
   }
-  return operation as unknown as AssessmentOperation;
+  if (status === "PROVIDER_RESULT_DURABLE" && !providerResult) {
+    throw new Error("Provider-result-durable operation is missing its validated result.");
+  }
+  if (status !== "PROVIDER_RESULT_DURABLE" && providerResult) {
+    throw new Error("Assessment operation has a provider result in an invalid state.");
+  }
+  if (status === "RESERVED" && (!Number.isSafeInteger(operation.reserved_at) || (operation.reserved_at as number) < 0)) {
+    throw new Error("Reserved assessment operation is missing its reservation time.");
+  }
+  return { ...operation, status, provider_result: providerResult } as unknown as AssessmentOperation;
 }
 
 function parseExecutionRecord(value: unknown): ExecutionRecord {
@@ -361,7 +378,15 @@ export class DemoState {
     return operation ? { ...operation } : undefined;
   }
 
-  reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number): AssessmentOperation {
+  findUnresolvedAssessmentOperation(obligationId: string, aggregateVersion: number): AssessmentOperation | undefined {
+    const operation = [...this.assessmentOperations.values()].find((item) =>
+      item.obligation_id === obligationId && item.aggregate_version === aggregateVersion &&
+      ["RESERVED", "PROVIDER_RESULT_DURABLE", "UNKNOWN"].includes(item.status),
+    );
+    return operation ? { ...operation } : undefined;
+  }
+
+  reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number, reservedAt = Date.now()): AssessmentOperation {
     const existing = this.assessmentOperations.get(idempotencyKey);
     if (existing) {
       if (existing.obligation_id !== obligationId) throw new Error("Idempotency key is already bound to a different assessment request.");
@@ -371,30 +396,62 @@ export class DemoState {
     if (aggregate.aggregate_version !== aggregateVersion) {
       throw new Error("Assessment aggregate changed before provider submission.");
     }
+    const unresolved = this.findUnresolvedAssessmentOperation(obligationId, aggregateVersion);
+    if (unresolved) throw new Error("Another assessment operation is unresolved for this obligation and aggregate version.");
     const operation: AssessmentOperation = {
       idempotency_key: idempotencyKey,
       obligation_id: obligationId,
       aggregate_version: aggregateVersion,
-      status: "PENDING",
+      status: "RESERVED",
+      reserved_at: reservedAt,
     };
     this.assessmentOperations.set(idempotencyKey, operation);
     return { ...operation };
   }
 
-  completeAssessmentOperation(
-    idempotencyKey: string,
-    record: DurableAssessmentRecord,
-  ): AssessmentOperation {
+  checkpointAssessmentResult(idempotencyKey: string, record: DurableAssessmentRecord): AssessmentOperation {
     const operation = this.assessmentOperations.get(idempotencyKey);
-    if (!operation || operation.status !== "PENDING") throw new Error("Assessment operation is not pending.");
+    if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for a provider result.");
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
     if (aggregate.aggregate_version !== operation.aggregate_version) {
       operation.status = "STALE";
+      delete operation.reserved_at;
       return { ...operation };
     }
-    const sealed = this.store.sealAssessment(record);
+    const validated = durableAssessmentRecordSchema.parse(record);
+    if (validated.obligation_id !== operation.obligation_id || validated.aggregate_version !== String(operation.aggregate_version) ||
+        validated.assessment_id !== `ASM-${operation.idempotency_key}`) {
+      throw new Error("Provider result does not match its reserved assessment operation.");
+    }
+    operation.status = "PROVIDER_RESULT_DURABLE";
+    operation.provider_result = validated;
+    return { ...operation };
+  }
+
+  markAssessmentUnknown(idempotencyKey: string): AssessmentOperation {
+    const operation = this.assessmentOperations.get(idempotencyKey);
+    if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for UNKNOWN transition.");
+    operation.status = "UNKNOWN";
+    return { ...operation };
+  }
+
+  completeAssessmentOperation(idempotencyKey: string): AssessmentOperation {
+    const operation = this.assessmentOperations.get(idempotencyKey);
+    if (!operation || operation.status !== "PROVIDER_RESULT_DURABLE" || !operation.provider_result) {
+      throw new Error("Assessment operation has no durable provider result to seal.");
+    }
+    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
+    if (aggregate.aggregate_version !== operation.aggregate_version) {
+      operation.status = "STALE";
+      delete operation.provider_result;
+      delete operation.reserved_at;
+      return { ...operation };
+    }
+    const sealed = this.store.sealAssessment(operation.provider_result);
     operation.status = "COMPLETED";
     operation.assessment_hash = sealed.assessment_hash;
+    delete operation.provider_result;
+    delete operation.reserved_at;
     return { ...operation };
   }
 

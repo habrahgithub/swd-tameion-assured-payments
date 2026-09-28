@@ -7,6 +7,8 @@ import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-
 
 interface ApproveRequestBody {
   expected_version: number;
+  reviewed_assessment_id: string;
+  reviewed_assessment_hash: string;
   actor_id?: string;
   reason_text?: string;
 }
@@ -16,8 +18,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const state = await getDemoState();
   const body = (await request.json().catch(() => ({}))) as Partial<ApproveRequestBody>;
 
-  if (typeof body.expected_version !== "number") {
-    return NextResponse.json({ error: "expected_version is required" }, { status: 400 });
+  if (typeof body.expected_version !== "number" || typeof body.reviewed_assessment_id !== "string" ||
+      typeof body.reviewed_assessment_hash !== "string" || !/^[0-9a-f]{64}$/.test(body.reviewed_assessment_hash)) {
+    return NextResponse.json({ error: "expected_version, reviewed_assessment_id, and reviewed_assessment_hash are required" }, { status: 400 });
   }
 
   try {
@@ -25,6 +28,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,
       expectedVersion: body.expected_version,
+      reviewedAssessmentId: body.reviewed_assessment_id,
+      reviewedAssessmentHash: body.reviewed_assessment_hash,
       actorId: body.actor_id ?? "USR-DEMO-OPERATOR",
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",

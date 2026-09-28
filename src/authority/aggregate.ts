@@ -316,7 +316,13 @@ export class AuthorityStore {
    * "P0 T1 Approval Transition": one atomic step that consumes reviewed
    * aggregate N (expectedVersion) and produces authorized aggregate N+1.
    */
-  approve(organizationId: string, obligationId: string, expectedVersion: number): AuthorityAggregate {
+  approve(
+    organizationId: string,
+    obligationId: string,
+    expectedVersion: number,
+    reviewedAssessmentId: string,
+    reviewedAssessmentHash: string,
+  ): AuthorityAggregate {
     const current = this.get(organizationId, obligationId);
     this.requireVersion(current, expectedVersion);
     if (current.state !== "APPROVAL_PENDING" && current.state !== "OPEN") {
@@ -335,6 +341,9 @@ export class AuthorityStore {
         );
       }
       throw new AuthorityError("Cannot approve: no sealed Finance Agent assessment exists for this obligation", "AUT-007");
+    }
+    if (sealed.record.assessment_id !== reviewedAssessmentId || sealed.hash !== reviewedAssessmentHash) {
+      throw new AuthorityError("Cannot approve: reviewed assessment is no longer current; refresh and review the latest assessment", "AUT-013");
     }
     if (!verifyDurableAssessmentRecordHash(sealed.record, sealed.hash)) {
       throw new AuthorityError("Cannot approve: sealed assessment failed hash-integrity verification", "AUT-011");

@@ -26,6 +26,8 @@ export interface ApprovalInput {
   organizationId: string;
   obligationId: string;
   expectedVersion: number;
+  reviewedAssessmentId: string;
+  reviewedAssessmentHash: string;
   actorId: string;
   actorRole: string;
   policyVersion: string;
@@ -61,14 +63,17 @@ export function approveAndSealPae(
   if (current.aggregate_version !== input.expectedVersion) {
     // Preserve the authority store's canonical STALE_STATE rejection before
     // checking assessment availability for an obsolete version.
-    store.approve(input.organizationId, input.obligationId, input.expectedVersion);
+    store.approve(input.organizationId, input.obligationId, input.expectedVersion, input.reviewedAssessmentId, input.reviewedAssessmentHash);
   }
   const assessment = store.getCurrentAssessment(input.organizationId, input.obligationId);
   if (!assessment || assessment.record.aggregate_version !== String(input.expectedVersion)) {
     throw new AuthorityError("Cannot authorize without a current assessment bound to the reviewed aggregate version", "AUT-009");
   }
+  if (assessment.record.assessment_id !== input.reviewedAssessmentId || assessment.hash !== input.reviewedAssessmentHash) {
+    throw new AuthorityError("Cannot authorize: reviewed assessment is no longer current; refresh and review the latest assessment", "AUT-013");
+  }
 
-  const aggregate = store.approve(input.organizationId, input.obligationId, input.expectedVersion);
+  const aggregate = store.approve(input.organizationId, input.obligationId, input.expectedVersion, input.reviewedAssessmentId, input.reviewedAssessmentHash);
 
   const reasonHash = hashApprovalReason(input.reasonText);
   const approvalId = `APR-${randomUUID()}`;

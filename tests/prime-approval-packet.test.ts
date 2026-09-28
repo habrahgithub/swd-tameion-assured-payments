@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { buildJ2PrimeApprovalPacket, renderJ2PrimeApprovalPacketText } from "../src/pipeline/prime-approval-packet";
-import { sealTestAssessment } from "./test-support/seal-assessment";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 function baseAggregate(): AuthorityAggregate {
   return {
@@ -46,6 +46,7 @@ describe("J2 Prime approval packet", () => {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
       expectedVersion: 1,
+      ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-003"),
       actorId: "USR-1",
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",
@@ -83,6 +84,7 @@ describe("J2 Prime approval packet", () => {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
       expectedVersion: 1,
+      ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-003"),
       actorId: "USR-1",
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",
@@ -99,7 +101,8 @@ describe("J2 Prime approval packet", () => {
     // (fail-closed tamper detection) — a fresh assessment bound to the new
     // version is required before this obligation can be re-approved.
     sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-003", 3);
-    store.approve("ORG-DEMO-001", "OBL-J0C-003", 3);
+    const latest = currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-003");
+    store.approve("ORG-DEMO-001", "OBL-J0C-003", 3, latest.reviewedAssessmentId, latest.reviewedAssessmentHash);
     // Re-seal manually isn't needed; just prove the fingerprint function is
     // sensitive to destination identity by comparing to a hand-built payload.
     expect(packetA.destination_fingerprint).not.toBe(

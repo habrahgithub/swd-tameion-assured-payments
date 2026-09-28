@@ -9,7 +9,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
-import { sealTestAssessment } from "./test-support/seal-assessment";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 /**
  * End-to-end proof of the P0 Golden Flow using the ACTUAL genuine,
@@ -109,6 +109,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       organizationId: "ORG-DEMO-001",
       obligationId: candidateRecord.obligation_id,
       expectedVersion: 1,
+      ...currentAssessmentReview(store, "ORG-DEMO-001", candidateRecord.obligation_id),
       actorId: "USR-DEMO-OPERATOR",
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",
