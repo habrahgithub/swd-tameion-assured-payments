@@ -159,12 +159,33 @@ function PrimaryButton({
   );
 }
 
+type ActionResult = { label: string; data: unknown; ok: boolean; status: number };
+
+function actionErrorMessage(data: unknown): string {
+  if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
+    return (data as { error: string }).error;
+  }
+  return "The request did not succeed.";
+}
+
+function ActionResultBanner({ result }: { result: ActionResult }) {
+  if (result.ok) return null;
+  return (
+    <div className="border-l-[3px] border-l-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
+      <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
+        Refused (HTTP {result.status})
+      </p>
+      <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{actionErrorMessage(result.data)}</p>
+    </div>
+  );
+}
+
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
-  const [lastResult, setLastResult] = useState<{ label: string; data: unknown } | null>(null);
+  const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -191,7 +212,7 @@ export function CommandCenter() {
     setBusy(true);
     try {
       const result = await action();
-      setLastResult({ label, data: result.data });
+      setLastResult({ label, data: result.data, ok: result.ok, status: result.status });
       await refreshDetail(selectedId);
     } finally {
       setBusy(false);
@@ -299,6 +320,7 @@ export function CommandCenter() {
                 <PrimaryButton disabled={busy || !selectedId} onClick={() => run("assess", () => postJson(`/api/obligations/${selectedId}/assess`))}>
                   Run assessment
                 </PrimaryButton>
+                {lastResult?.label === "assess" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "assess" && <EvidencePanel value={lastResult.data} />}
               </div>
             )}
@@ -322,6 +344,7 @@ export function CommandCenter() {
                     Authorize this exact intent
                   </PrimaryButton>
                 </div>
+                {lastResult?.label === "approve" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "approve" && <EvidencePanel value={lastResult.data} />}
               </div>
             )}
@@ -353,8 +376,10 @@ export function CommandCenter() {
                 {!detail?.pae_sealed && (
                   <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
                 )}
+                {lastResult?.label === "execute" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "execute" && <EvidencePanel value={lastResult.data} />}
-                {lastResult?.label === "prime-packet" && (
+                {lastResult?.label === "prime-packet" && <ActionResultBanner result={lastResult} />}
+                {lastResult?.label === "prime-packet" && lastResult.ok && (
                   <div className="max-w-xl border-l-[3px] border-l-[var(--color-warning)] pl-3">
                     <p className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
                       Retained Prime gate — not submitted
@@ -384,6 +409,7 @@ export function CommandCenter() {
                 {!detail?.pae_sealed && (
                   <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
                 )}
+                {lastResult?.label === "attack" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "attack" && <EvidencePanel value={lastResult.data} />}
                 {detail && <EvidencePanel value={detail} />}
               </div>
