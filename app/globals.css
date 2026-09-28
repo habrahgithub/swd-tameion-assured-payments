@@ -2,11 +2,40 @@
 
 :root {
   color-scheme: light;
+
+  /* Restrained financial-operator palette: warm near-white base, deep navy
+     ink, muted gold accent. No neon, no gradients. */
+  --color-bg: #f6f5f2;
+  --color-surface: #ffffff;
+  --color-ink: #16213d;
+  --color-ink-muted: #5b6577;
+  --color-border: #e1ddd3;
+  --color-accent: #92702f;
+  --color-accent-ink: #4a3818;
+  --color-danger: #7a2e26;
+  --color-danger-bg: #f7e9e6;
+  --color-success: #2f5233;
+  --color-success-bg: #e9f0e8;
+  --color-warning: #7a5a12;
+  --color-warning-bg: #f6efdd;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface ObligationSummary {
   obligation_id: string;
@@ -12,22 +12,36 @@ interface ObligationSummary {
   commercial_terms: string;
 }
 
+interface AggregateView {
+  aggregate_version: number;
+  state: string;
+  amount: string;
+  asset: string;
+  network: string;
+  destination_address: string;
+  destination_verification_status: string;
+  destination_operational_status: string;
+  source_wallet_ref: string;
+  execution_state: string;
+  pae_state: string;
+}
+
 interface ObligationDetail {
-  aggregate: Record<string, unknown>;
+  aggregate: AggregateView;
   record: Record<string, unknown>;
   demo_arc_trust_seeded: boolean;
   pae_sealed: boolean;
-  execution: Record<string, unknown> | null;
+  execution: { status: string; provider_ref: string | null } | null;
 }
 
-type PanelKey = "evidence" | "decision" | "authorization" | "settlement" | "timeline";
+type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation";
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
-  { key: "evidence", label: "1. Obligation & Evidence" },
-  { key: "decision", label: "2. Agent Decision" },
-  { key: "authorization", label: "3. Authorization / Safety Proof" },
-  { key: "settlement", label: "4. Arc Settlement & Reconciliation" },
-  { key: "timeline", label: "5. Evidence Timeline / Blocked Attack" },
+  { key: "obligations", label: "Obligations" },
+  { key: "assessment", label: "Assessment" },
+  { key: "authorization", label: "Authorization" },
+  { key: "assurance", label: "Assurance & Execution" },
+  { key: "reconciliation", label: "Reconciliation & Evidence" },
 ];
 
 async function postJson(url: string, body?: unknown) {
@@ -40,18 +54,115 @@ async function postJson(url: string, body?: unknown) {
   return { ok: response.ok, status: response.status, data };
 }
 
-function Pre({ value }: { value: unknown }) {
+type Tone = "neutral" | "info" | "success" | "warning" | "danger";
+
+const TONE_STYLE: Record<Tone, { border: string; text: string }> = {
+  neutral: { border: "border-l-[3px] border-l-[var(--color-border)]", text: "text-[var(--color-ink-muted)]" },
+  info: { border: "border-l-[3px] border-l-[var(--color-ink)]", text: "text-[var(--color-ink)]" },
+  success: { border: "border-l-[3px] border-l-[var(--color-success)]", text: "text-[var(--color-success)]" },
+  warning: { border: "border-l-[3px] border-l-[var(--color-warning)]", text: "text-[var(--color-warning)]" },
+  danger: { border: "border-l-[3px] border-l-[var(--color-danger)]", text: "text-[var(--color-danger)]" },
+};
+
+/** Explicit workflow state, never expressed by colour alone. */
+function workflowState(detail: ObligationDetail | null): { label: string; tone: Tone; explanation: string } {
+  if (!detail) return { label: "Loading", tone: "neutral", explanation: "" };
+  const { aggregate, execution } = detail;
+
+  if (execution?.status === "SETTLED" && aggregate.state === "RECONCILED") {
+    return { label: "Reconciled", tone: "success", explanation: "Settlement matches the authorized obligation exactly." };
+  }
+  if (execution?.status === "BLOCKED" || aggregate.execution_state === "BLOCKED") {
+    return {
+      label: "Blocked",
+      tone: "danger",
+      explanation: "A pre-submit or reconciliation check failed. No unauthorized movement occurred.",
+    };
+  }
+  if (execution?.status === "UNKNOWN") {
+    return {
+      label: "Provider response unknown",
+      tone: "warning",
+      explanation: "Awaiting provider/chain truth. The system will not blind-retry submission.",
+    };
+  }
+  if (execution?.status === "FAILED") {
+    return { label: "Execution failed", tone: "danger", explanation: "Provider confirmed the attempt failed." };
+  }
+  if (aggregate.execution_state === "SUBMITTED" || aggregate.execution_state === "SUBMITTING") {
+    return { label: "Submitted to provider", tone: "info", explanation: "Simulated Arc Testnet submission in flight." };
+  }
+  if (detail.pae_sealed && aggregate.state === "AUTHORIZED") {
+    return {
+      label: "Authorized — PAE sealed",
+      tone: "success",
+      explanation: "Human authorization is bound to a signed Payment Authorization Envelope, ready for execution.",
+    };
+  }
+  if (aggregate.state === "APPROVAL_PENDING") {
+    return { label: "Awaiting human authorization", tone: "neutral", explanation: "No approval has been recorded yet." };
+  }
+  return { label: aggregate.state, tone: "neutral", explanation: "" };
+}
+
+function StateLine({ tone, label, explanation }: { tone: Tone; label: string; explanation?: string }) {
+  const style = TONE_STYLE[tone];
   return (
-    <pre className="max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs leading-relaxed text-slate-100">
-      {JSON.stringify(value, null, 2)}
-    </pre>
+    <div className={`${style.border} pl-3 py-1`}>
+      <p className={`text-[13px] font-semibold uppercase tracking-wide ${style.text}`}>{label}</p>
+      {explanation && <p className="mt-0.5 text-[13px] text-[var(--color-ink-muted)]">{explanation}</p>}
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5">
+      <dt className="text-[13px] text-[var(--color-ink-muted)]">{label}</dt>
+      <dd className="tabular text-[13px] font-medium text-[var(--color-ink)]">{value}</dd>
+    </div>
+  );
+}
+
+function EvidencePanel({ value }: { value: unknown }) {
+  return (
+    <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
+      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">Raw evidence / response</summary>
+      <pre className="tabular mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-ink)]">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+function PrimaryButton({
+  onClick,
+  disabled,
+  children,
+  danger,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        danger ? "bg-[var(--color-danger)] hover:opacity-90" : "bg-[var(--color-ink)] hover:opacity-90"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
-  const [panel, setPanel] = useState<PanelKey>("evidence");
+  const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
   const [lastResult, setLastResult] = useState<{ label: string; data: unknown } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -88,154 +199,172 @@ export function CommandCenter() {
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
-  const aggregateVersion = (detail?.aggregate as { aggregate_version?: number } | undefined)?.aggregate_version;
+  const state = useMemo(() => workflowState(detail), [detail]);
+  const aggregateVersion = detail?.aggregate?.aggregate_version;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-6 py-10">
-      <header className="space-y-2">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
-          Tameion — Assured Payment Agent
-        </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Command Center (prototype)</h1>
-        <p className="max-w-3xl text-sm leading-6 text-slate-600">
-          AI decides what should be paid; deterministic, cryptographically bound controls decide what can
-          actually move. This is a PROTOTYPE build: execution below runs against a deterministic in-memory
-          simulator, not a live Circle/Arc Testnet call — this environment holds no live provider
-          credentials, so the J0-D connectivity spike has not been executed and Arc destination trust shown
-          here is <span className="font-semibold text-amber-700">SIMULATED</span>, not real.
+    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-6 py-8">
+      <header className="flex items-baseline justify-between border-b border-[var(--color-border)] pb-4">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
+            Tameion
+          </p>
+          <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
+        </div>
+        <p className="max-w-sm text-right text-[12px] leading-5 text-[var(--color-ink-muted)]">
+          Execution here is simulated (no live Circle/Arc credentials in this build). Arc destination trust
+          shown is a labeled simulation, not a completed J0-D spike.
         </p>
       </header>
 
-      <section className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <label className="text-sm font-medium text-slate-700" htmlFor="obligation-select">
-          Obligation
-        </label>
-        <select
-          id="obligation-select"
-          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm"
-          value={selectedId}
-          onChange={(event) => {
-            setSelectedId(event.target.value);
-            setLastResult(null);
-          }}
-        >
-          {obligations.map((o) => (
-            <option key={o.obligation_id} value={o.obligation_id}>
-              {o.obligation_id} — {o.amount} {o.currency} ({o.service_category})
-            </option>
-          ))}
-        </select>
-        {selected && (
-          <span className="text-xs text-slate-500">Terms: {selected.commercial_terms}</span>
-        )}
-      </section>
+      <div className="grid grid-cols-[280px_1fr] gap-5">
+        <aside className="border-r border-[var(--color-border)] pr-4">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+            Obligations
+          </p>
+          <ul>
+            {obligations.map((o) => (
+              <li key={o.obligation_id}>
+                <button
+                  onClick={() => {
+                    setSelectedId(o.obligation_id);
+                    setLastResult(null);
+                  }}
+                  className={`flex w-full flex-col gap-0.5 border-b border-[var(--color-border)] px-2 py-2 text-left transition ${
+                    o.obligation_id === selectedId ? "bg-[var(--color-surface)]" : "hover:bg-[var(--color-surface)]"
+                  }`}
+                >
+                  <span className="text-[12px] font-medium text-[var(--color-ink)]">{o.obligation_id}</span>
+                  <span className="flex justify-between text-[12px] text-[var(--color-ink-muted)]">
+                    <span>{o.service_category.replaceAll("_", " ").toLowerCase()}</span>
+                    <span className="tabular">
+                      {o.amount} {o.currency}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </aside>
 
-      <nav className="flex flex-wrap gap-2">
-        {PANELS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => setPanel(p.key)}
-            className={`rounded-full px-4 py-1.5 text-sm font-medium transition ${
-              panel === p.key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </nav>
+        <section className="flex flex-col gap-4">
+          {selected && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-semibold text-[var(--color-ink)]">{selected.obligation_id}</h2>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
+              </div>
+              <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
+            </div>
+          )}
 
-      <section className="grid gap-4 rounded-lg border border-slate-200 p-5">
-        {panel === "evidence" && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Obligation &amp; Evidence</h2>
-            <p className="text-sm text-slate-600">
-              Current authority aggregate for the selected obligation (aggregate_version is the concurrency
-              root every later step is bound to).
-            </p>
-            <Pre value={detail} />
+          <nav className="flex gap-5 border-b border-[var(--color-border)]">
+            {PANELS.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setPanel(p.key)}
+                className={`border-b-2 pb-2 text-[13px] font-medium transition ${
+                  panel === p.key
+                    ? "border-[var(--color-ink)] text-[var(--color-ink)]"
+                    : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="min-h-[320px]">
+            {panel === "obligations" && detail && (
+              <dl className="max-w-md">
+                <Field label="Amount (authoritative)" value={`${detail.aggregate.amount} ${detail.aggregate.asset}`} />
+                <Field label="Network" value={detail.aggregate.network} />
+                <Field label="Aggregate version" value={String(detail.aggregate.aggregate_version)} />
+                <Field label="Source wallet" value={detail.aggregate.source_wallet_ref} />
+                <Field
+                  label="Destination trust"
+                  value={`${detail.aggregate.destination_verification_status} / ${detail.aggregate.destination_operational_status}${detail.demo_arc_trust_seeded ? " (simulated)" : ""}`}
+                />
+              </dl>
+            )}
+
+            {panel === "assessment" && (
+              <div className="max-w-xl space-y-3">
+                <p className="text-[13px] text-[var(--color-ink-muted)]">
+                  The Finance Agent reads this obligation and returns exactly one PAY / HOLD / ESCALATE
+                  recommendation with reasons. It cannot approve, sign, or execute anything.
+                </p>
+                <PrimaryButton disabled={busy || !selectedId} onClick={() => run("assess", () => postJson(`/api/obligations/${selectedId}/assess`))}>
+                  Run assessment
+                </PrimaryButton>
+                {lastResult?.label === "assess" && <EvidencePanel value={lastResult.data} />}
+              </div>
+            )}
+
+            {panel === "authorization" && (
+              <div className="max-w-xl space-y-3">
+                <p className="text-[13px] text-[var(--color-ink-muted)]">
+                  Authorizing this exact intent (aggregate v{aggregateVersion ?? "?"}) atomically advances
+                  reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
+                  control PASSes — seals a signed Payment Authorization Envelope.
+                </p>
+                <div className="flex gap-3">
+                  <PrimaryButton
+                    disabled={busy || !selectedId || aggregateVersion === undefined}
+                    onClick={() =>
+                      run("approve", () =>
+                        postJson(`/api/obligations/${selectedId}/approve`, { expected_version: aggregateVersion }),
+                      )
+                    }
+                  >
+                    Authorize this exact intent
+                  </PrimaryButton>
+                </div>
+                {lastResult?.label === "approve" && <EvidencePanel value={lastResult.data} />}
+              </div>
+            )}
+
+            {panel === "assurance" && (
+              <div className="max-w-xl space-y-3">
+                <p className="text-[13px] text-[var(--color-ink-muted)]">
+                  The Execution Worker independently re-verifies the sealed envelope and current destination/
+                  wallet trust before submitting — a changed destination is blocked here, before any provider
+                  call.
+                </p>
+                <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
+                  Submit for execution (simulated)
+                </PrimaryButton>
+                {!detail?.pae_sealed && (
+                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                )}
+                {lastResult?.label === "execute" && <EvidencePanel value={lastResult.data} />}
+              </div>
+            )}
+
+            {panel === "reconciliation" && (
+              <div className="max-w-xl space-y-3">
+                <p className="text-[13px] text-[var(--color-ink-muted)]">
+                  Demonstration attack: mutate the destination after authorization, as if a compromised
+                  session changed it. Expected result — blocked before submission, zero unauthorized
+                  movement.
+                </p>
+                <PrimaryButton
+                  danger
+                  disabled={busy || !selectedId || !detail?.pae_sealed}
+                  onClick={() => run("attack", () => postJson(`/api/obligations/${selectedId}/simulate-attack`))}
+                >
+                  Simulate changed-destination attack
+                </PrimaryButton>
+                {!detail?.pae_sealed && (
+                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                )}
+                {lastResult?.label === "attack" && <EvidencePanel value={lastResult.data} />}
+                {detail && <EvidencePanel value={detail} />}
+              </div>
+            )}
           </div>
-        )}
-
-        {panel === "decision" && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Agent Decision</h2>
-            <p className="text-sm text-slate-600">
-              Runs the Finance Agent (read-only: it can only return a PAY/HOLD/ESCALATE recommendation — it
-              cannot approve, sign, or execute anything).
-            </p>
-            <button
-              disabled={busy || !selectedId}
-              onClick={() => run("assess", () => postJson(`/api/obligations/${selectedId}/assess`))}
-              className="w-fit rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
-              Run Finance Agent Assessment
-            </button>
-            {lastResult?.label === "assess" && <Pre value={lastResult.data} />}
-          </div>
-        )}
-
-        {panel === "authorization" && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Authorization / Safety Proof</h2>
-            <p className="text-sm text-slate-600">
-              One T1 human approval atomically transitions reviewed aggregate N → authorized N+1, then the
-              deterministic Safety Kernel evaluates all 10 required controls on N+1. A signed PAE is only
-              produced when every control PASSes.
-            </p>
-            <button
-              disabled={busy || !selectedId || aggregateVersion === undefined}
-              onClick={() =>
-                run("approve", () =>
-                  postJson(`/api/obligations/${selectedId}/approve`, { expected_version: aggregateVersion }),
-                )
-              }
-              className="w-fit rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
-              Approve &amp; Seal PAE (reviewed v{aggregateVersion ?? "?"})
-            </button>
-            {lastResult?.label === "approve" && <Pre value={lastResult.data} />}
-          </div>
-        )}
-
-        {panel === "settlement" && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Arc Settlement &amp; Reconciliation</h2>
-            <p className="text-sm text-slate-600">
-              Execution Worker independently re-verifies the sealed PAE, re-resolves current destination/
-              wallet trust, then submits (simulated) and reconciles one-to-one against the obligation.
-            </p>
-            <button
-              disabled={busy || !selectedId || !detail?.pae_sealed}
-              onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}
-              className="w-fit rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
-              Execute Sealed PAE (simulated Arc Testnet)
-            </button>
-            {!detail?.pae_sealed && <p className="text-xs text-amber-700">Approve the obligation first.</p>}
-            {lastResult?.label === "execute" && <Pre value={lastResult.data} />}
-          </div>
-        )}
-
-        {panel === "timeline" && (
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold">Evidence Timeline / Blocked Attack</h2>
-            <p className="text-sm text-slate-600">
-              Demo attack path: after a PAE is sealed, mutate the destination as if it had been changed by a
-              compromised session — the Execution Worker must BLOCK before any provider submission, with
-              zero unauthorized movement.
-            </p>
-            <button
-              disabled={busy || !selectedId || !detail?.pae_sealed}
-              onClick={() => run("attack", () => postJson(`/api/obligations/${selectedId}/simulate-attack`))}
-              className="w-fit rounded-md bg-red-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-            >
-              Simulate Changed-Destination Attack
-            </button>
-            {!detail?.pae_sealed && <p className="text-xs text-amber-700">Approve the obligation first.</p>}
-            {lastResult?.label === "attack" && <Pre value={lastResult.data} />}
-          </div>
-        )}
-      </section>
+        </section>
+      </div>
     </main>
   );
 }
