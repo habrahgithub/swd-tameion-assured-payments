@@ -17,6 +17,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
       pae_sealed: Boolean(sealed),
       execution: execution ?? null,
+      execution_kill_switched: state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id),
     });
   } catch (error) {
     if (error instanceof AuthorityError) {

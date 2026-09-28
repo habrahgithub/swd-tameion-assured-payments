@@ -32,6 +32,7 @@ interface ObligationDetail {
   demo_arc_trust_seeded: boolean;
   pae_sealed: boolean;
   execution: { status: string; provider_ref: string | null } | null;
+  execution_kill_switched: boolean;
 }
 
 type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation";
@@ -356,6 +357,59 @@ export function CommandCenter() {
                   wallet trust before submitting — a changed destination is blocked here, before any provider
                   call.
                 </p>
+
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-3 border-l-[3px] px-3 py-2 ${
+                    detail?.execution_kill_switched
+                      ? "border-l-[var(--color-danger)] bg-[var(--color-surface)]"
+                      : "border-l-[var(--color-border)]"
+                  }`}
+                >
+                  <div>
+                    <p
+                      className={`text-[13px] font-semibold uppercase tracking-wide ${
+                        detail?.execution_kill_switched ? "text-[var(--color-danger)]" : "text-[var(--color-ink-muted)]"
+                      }`}
+                    >
+                      Kill switch: {detail?.execution_kill_switched ? "Execution disabled" : "Execution allowed"}
+                    </p>
+                    <p className="text-[12px] text-[var(--color-ink-muted)]">
+                      Checked by both the Safety Kernel (pre-approval) and the Execution Worker (pre-submit).
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      disabled={busy || !selectedId}
+                      onClick={() =>
+                        run("kill-switch", () =>
+                          postJson(`/api/obligations/${selectedId}/kill-switch`, {
+                            action: "ACTIVATE",
+                            scope: "TRANSACTION",
+                          }),
+                        )
+                      }
+                      className="rounded border border-[var(--color-danger)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-danger)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Disable this obligation
+                    </button>
+                    <button
+                      disabled={busy || !selectedId}
+                      onClick={() =>
+                        run("kill-switch", () =>
+                          postJson(`/api/obligations/${selectedId}/kill-switch`, {
+                            action: "DEACTIVATE",
+                            scope: "TRANSACTION",
+                          }),
+                        )
+                      }
+                      className="rounded border border-[var(--color-border)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-ink)] transition hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Re-enable
+                    </button>
+                  </div>
+                </div>
+                {lastResult?.label === "kill-switch" && <ActionResultBanner result={lastResult} />}
+
                 <div className="flex flex-wrap items-center gap-4">
                   <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
                     Submit for execution (simulated)
