@@ -4,6 +4,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker, ExecutionBlockedError } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
+import { sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
 
@@ -43,7 +44,7 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
 function setupAuthorizedFixture() {
   const store = new AuthorityStore();
   store.seed(baseAggregate());
-  store.recordAssessment("ORG-DEMO-001", "OBL-J0C-002", "PAY");
+  sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
   const { aggregate, sealed } = approveAndSealPae(store, SIGNING_KEY_ID, {
     organizationId: "ORG-DEMO-001",
     obligationId: "OBL-J0C-002",
@@ -67,7 +68,7 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
   it("refuses to seal a PAE when the Safety Kernel does not PASS", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ destination_verification_status: "PENDING_VERIFICATION" }));
-    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-002", "PAY");
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
     expect(() =>
       approveAndSealPae(store, SIGNING_KEY_ID, {
         organizationId: "ORG-DEMO-001",

@@ -2,12 +2,27 @@ import { createHash } from "node:crypto";
 
 import {
   durableApprovalRecordSchema,
+  durableAssessmentRecordSchema,
   durableAssuranceRecordSchema,
   type ControlResult,
   type DurableApprovalRecord,
+  type DurableAssessmentRecord,
   type DurableAssuranceRecord,
 } from "../domain/schemas";
 import { canonicalBytes, sha256Hex } from "./canonicalize";
+
+export function sealDurableAssessmentRecord(
+  record: DurableAssessmentRecord,
+): { record: DurableAssessmentRecord; assessment_hash: string } {
+  const validated = durableAssessmentRecordSchema.parse(record);
+  const hash = sha256Hex(canonicalBytes(validated));
+  return { record: validated, assessment_hash: hash };
+}
+
+export function verifyDurableAssessmentRecordHash(record: DurableAssessmentRecord, expectedHash: string): boolean {
+  const validated = durableAssessmentRecordSchema.parse(record);
+  return sha256Hex(canonicalBytes(validated)) === expectedHash;
+}
 
 /**
  * Normalizes a raw human-entered approval reason into reason_hash per the

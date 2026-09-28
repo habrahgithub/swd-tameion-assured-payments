@@ -1,3 +1,6 @@
+import { sealDurableAssessmentRecord, verifyDurableAssessmentRecordHash } from "../pae/durable-records";
+import type { DurableAssessmentRecord } from "../domain/schemas";
+
 /**
  * The P0 ObligationAuthorityAggregate: one root per (organization_id,
  * obligation_id) that owns aggregate_version and is the single concurrency/
@@ -113,24 +116,47 @@ const COMMITTED_CANDIDATE_STATES: ReadonlySet<ObligationState> = new Set([
 export class AuthorityStore {
   private readonly aggregates = new Map<string, AuthorityAggregate>();
   private readonly killSwitches = new Set<string>();
-  /** obligation_id -> last recorded Finance Agent decision (J1 candidate-selection gate). */
-  private readonly assessments = new Map<string, "PAY" | "HOLD" | "ESCALATE">();
+  /** obligation_id -> sealed, hash-addressable Finance Agent assessment
+   * (J1 candidate-selection gate references this identity, not mutable
+   * in-memory decision state). */
+  private readonly sealedAssessments = new Map<string, { record: DurableAssessmentRecord; hash: string }>();
 
   private key(organizationId: string, obligationId: string): string {
     return `${organizationId}::${obligationId}`;
   }
 
-  /** Records the Finance Agent's decision for an obligation. Approval is
-   * refused for any obligation that has never been recorded here as PAY —
-   * this is the server-side enforcement point for "AI proposes, never
-   * approves": a decision must exist and must be PAY before a human can
-   * even attempt the T1 approval transition. */
-  recordAssessment(organizationId: string, obligationId: string, decision: "PAY" | "HOLD" | "ESCALATE"): void {
-    this.assessments.set(this.key(organizationId, obligationId), decision);
+  /**
+   * Seals a Finance Agent assessment as an immutable, hash-addressable
+   * artifact. Fails closed (ASM-001) if the record's bound aggregate_version
+   * does not match the obligation's actual current version — an assessment
+   * can only be sealed against the exact state it was computed from, the
+   * same version-binding discipline already used for approval/PAE sealing.
+   * This is the server-side enforcement point for "AI proposes, never
+   * approves": approve() below requires this sealed artifact to exist,
+   * still be bound to the current version, and pass hash-integrity
+   * verification before a human can even attempt the T1 transition.
+   */
+  sealAssessment(record: DurableAssessmentRecord): { record: DurableAssessmentRecord; assessment_hash: string } {
+    const current = this.get(record.organization_id, record.obligation_id);
+    if (record.aggregate_version !== String(current.aggregate_version)) {
+      throw new AuthorityError(
+        `Cannot seal assessment: record aggregate_version ${record.aggregate_version} does not match current ${current.aggregate_version}`,
+        "ASM-001",
+      );
+    }
+    const sealed = sealDurableAssessmentRecord(record);
+    this.sealedAssessments.set(this.key(record.organization_id, record.obligation_id), {
+      record: sealed.record,
+      hash: sealed.assessment_hash,
+    });
+    return sealed;
   }
 
-  getAssessment(organizationId: string, obligationId: string): "PAY" | "HOLD" | "ESCALATE" | undefined {
-    return this.assessments.get(this.key(organizationId, obligationId));
+  getSealedAssessment(
+    organizationId: string,
+    obligationId: string,
+  ): { record: DurableAssessmentRecord; hash: string } | undefined {
+    return this.sealedAssessments.get(this.key(organizationId, obligationId));
   }
 
   /** Returns the obligation_id of another obligation already committed as
@@ -217,12 +243,21 @@ export class AuthorityStore {
     if (current.business_hold || current.security_freeze) {
       throw new AuthorityError("Cannot approve while HOLD or security freeze is active", "OPS-001");
     }
-    const decision = this.getAssessment(organizationId, obligationId);
-    if (decision !== "PAY") {
+    const sealed = this.getSealedAssessment(organizationId, obligationId);
+    if (!sealed) {
+      throw new AuthorityError("Cannot approve: no sealed Finance Agent assessment exists for this obligation", "AUT-007");
+    }
+    if (!verifyDurableAssessmentRecordHash(sealed.record, sealed.hash)) {
+      throw new AuthorityError("Cannot approve: sealed assessment failed hash-integrity verification", "AUT-011");
+    }
+    if (sealed.record.aggregate_version !== String(current.aggregate_version)) {
       throw new AuthorityError(
-        `Cannot approve: no recorded PAY decision for this obligation (found: ${decision ?? "none — never assessed"})`,
-        "AUT-007",
+        `Cannot approve: sealed assessment is bound to aggregate_version ${sealed.record.aggregate_version}, but the obligation is now at ${current.aggregate_version} — it changed since assessment; a fresh assessment is required`,
+        "AUT-009",
       );
+    }
+    if (sealed.record.decision !== "PAY") {
+      throw new AuthorityError(`Cannot approve: sealed assessment decision is ${sealed.record.decision}, not PAY`, "AUT-007");
     }
     const otherCandidate = this.findCommittedCandidateExcluding(organizationId, obligationId);
     if (otherCandidate) {

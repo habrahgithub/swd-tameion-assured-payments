@@ -9,6 +9,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
+import { sealTestAssessment } from "./test-support/seal-assessment";
 
 /**
  * End-to-end proof of the P0 Golden Flow using the ACTUAL genuine,
@@ -102,7 +103,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     // ready destination this obligation would be the sole PAY candidate, so
     // record that decision explicitly rather than relying on the pre-seed
     // HOLD computed above.
-    store.recordAssessment("ORG-DEMO-001", candidateRecord.obligation_id, "PAY");
+    sealTestAssessment(store, "ORG-DEMO-001", candidateRecord.obligation_id, 1);
 
     const { sealed } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
       organizationId: "ORG-DEMO-001",

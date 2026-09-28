@@ -56,6 +56,32 @@ export const controlResultSchema = z
   .strict();
 export type ControlResult = z.infer<typeof controlResultSchema>;
 
+/** DURABLE-ASSESSMENT-RECORD-P0-1 canonical payload: the sealed, hash-addressable
+ * Finance Agent output that candidate selection and approval must reference,
+ * rather than trusting mutable in-memory decision state. */
+export const durableAssessmentRecordSchema = z
+  .object({
+    assessment_id: boundedAscii(),
+    organization_id: boundedAscii(),
+    obligation_id: boundedAscii(),
+    aggregate_version: canonicalIntegerString,
+    decision: z.enum(["PAY", "HOLD", "ESCALATE"]),
+    // Free-text model/fallback output — deliberately Unicode, not
+    // boundedAscii, since an AI provider's reasons are not guaranteed ASCII.
+    reasons: z.array(z.string().min(1).max(1000)).min(1).max(10),
+    evidence_ids: z.array(boundedAscii()),
+    missing_evidence: z.array(boundedAscii()),
+    uncertainty_signal: z.boolean(),
+    provider_name: boundedAscii(),
+    /** LIVE_AI only for an actual model call; deterministic/mock/fallback
+     * reasoning must always be recorded as NOT_LIVE_AI, so a sealed
+     * assessment can never be mistaken for real model output later. */
+    provider_mode: z.enum(["LIVE_AI", "NOT_LIVE_AI"]),
+    assessed_at: rfc3339Millis,
+  })
+  .strict();
+export type DurableAssessmentRecord = z.infer<typeof durableAssessmentRecordSchema>;
+
 /** DURABLE-APPROVAL-RECORD-P0-1 canonical payload. */
 export const durableApprovalRecordSchema = z
   .object({

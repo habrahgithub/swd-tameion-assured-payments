@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { buildJ2PrimeApprovalPacket, renderJ2PrimeApprovalPacketText } from "../src/pipeline/prime-approval-packet";
+import { sealTestAssessment } from "./test-support/seal-assessment";
 
 function baseAggregate(): AuthorityAggregate {
   return {
@@ -40,7 +41,7 @@ describe("J2 Prime approval packet", () => {
   it("discloses exact obligation/version/amount/network/wallet/destination/PAE identity", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());
-    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-003", "PAY");
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-003", 1);
     const { sealed } = approveAndSealPae(store, "PACKET-TEST-KEY", {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
@@ -77,7 +78,7 @@ describe("J2 Prime approval packet", () => {
   it("produces a different fingerprint if the destination version changes (material change detectability)", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());
-    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-003", "PAY");
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-003", 1);
     const { sealed: first } = approveAndSealPae(store, "PACKET-TEST-KEY-2", {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
@@ -94,6 +95,10 @@ describe("J2 Prime approval packet", () => {
       destination_version: 2,
       destination_address: `0x${"8".repeat(40)}`,
     });
+    // The material change invalidated the version-1 sealed assessment
+    // (fail-closed tamper detection) — a fresh assessment bound to the new
+    // version is required before this obligation can be re-approved.
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-003", 3);
     store.approve("ORG-DEMO-001", "OBL-J0C-003", 3);
     // Re-seal manually isn't needed; just prove the fingerprint function is
     // sensitive to destination identity by comparing to a hand-built payload.
