@@ -265,6 +265,14 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
   if (status === "PROVIDER_RESULT_DURABLE" && !providerResult) {
     throw new Error("Provider-result-durable operation is missing its validated result.");
   }
+  if (providerResult && (
+    providerResult.assessment_id !== `ASM-${operation.idempotency_key}` ||
+    providerResult.obligation_id !== operation.obligation_id ||
+    providerResult.aggregate_version !== String(operation.aggregate_version) ||
+    providerResult.organization_id !== DEMO_ORGANIZATION_ID
+  )) {
+    throw new Error("Provider result identity does not match its assessment operation.");
+  }
   if (status !== "PROVIDER_RESULT_DURABLE" && providerResult) {
     throw new Error("Assessment operation has a provider result in an invalid state.");
   }
@@ -379,11 +387,20 @@ export class DemoState {
   }
 
   findUnresolvedAssessmentOperation(obligationId: string, aggregateVersion: number): AssessmentOperation | undefined {
-    const operation = [...this.assessmentOperations.values()].find((item) =>
-      item.obligation_id === obligationId && item.aggregate_version === aggregateVersion &&
-      ["RESERVED", "PROVIDER_RESULT_DURABLE", "UNKNOWN"].includes(item.status),
-    );
+    const operation = this.findUnresolvedAssessmentOperations(obligationId)
+      .find((item) => item.aggregate_version === aggregateVersion);
     return operation ? { ...operation } : undefined;
+  }
+
+  findUnresolvedAssessmentOperations(obligationId: string): AssessmentOperation[] {
+    return [...this.assessmentOperations.values()]
+      .filter((item) => item.obligation_id === obligationId && ["RESERVED", "PROVIDER_RESULT_DURABLE", "UNKNOWN"].includes(item.status))
+      .map((item) => ({ ...item }));
+  }
+
+  hasLivePaeAuthority(obligationId: string): boolean {
+    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
+    return aggregate.state === "AUTHORIZED" || aggregate.pae_state !== "UNUSED" || Boolean(this.getSealedPae(obligationId));
   }
 
   reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number, reservedAt = Date.now()): AssessmentOperation {
@@ -396,6 +413,7 @@ export class DemoState {
     if (aggregate.aggregate_version !== aggregateVersion) {
       throw new Error("Assessment aggregate changed before provider submission.");
     }
+    if (this.hasLivePaeAuthority(obligationId)) throw new Error("Assessment is closed after authorization or PAE creation.");
     const unresolved = this.findUnresolvedAssessmentOperation(obligationId, aggregateVersion);
     if (unresolved) throw new Error("Another assessment operation is unresolved for this obligation and aggregate version.");
     const operation: AssessmentOperation = {
@@ -413,7 +431,7 @@ export class DemoState {
     const operation = this.assessmentOperations.get(idempotencyKey);
     if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for a provider result.");
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version) {
+    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
       operation.status = "STALE";
       delete operation.reserved_at;
       return { ...operation };
@@ -441,7 +459,7 @@ export class DemoState {
       throw new Error("Assessment operation has no durable provider result to seal.");
     }
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version) {
+    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
       operation.status = "STALE";
       delete operation.provider_result;
       delete operation.reserved_at;

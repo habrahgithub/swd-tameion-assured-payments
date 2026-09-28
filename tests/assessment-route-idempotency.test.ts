@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "../app/api/obligations/[id]/assess/route";
-import { getDemoState, DEMO_ORGANIZATION_ID } from "../src/server/demo-state";
+import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, getDemoState } from "../src/server/demo-state";
+import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const originalFetch = globalThis.fetch;
 const originalEnv = {
@@ -18,7 +20,13 @@ function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function createDurableFetch(options: { loseCompletionCas?: "unrelated" | "stale" | "all"; providerFailure?: boolean; legacyPending?: boolean } = {}) {
+function createDurableFetch(options: {
+  loseCompletionCas?: "unrelated" | "stale" | "all";
+  loseProviderResultResponse?: boolean;
+  providerFailure?: boolean;
+  legacyPending?: boolean;
+  seedSnapshot?: Record<string, any>;
+} = {}) {
   let revision = 1;
   let snapshot: Record<string, any> | undefined;
   let providerCalls = 0;
@@ -33,7 +41,7 @@ function createDurableFetch(options: { loseCompletionCas?: "unrelated" | "stale"
     const url = String(input);
     if (url.includes("/rest/v1/rpc/tameion_state_load_or_seed")) {
       const body = JSON.parse(String(init?.body)) as { p_initial_snapshot: Record<string, any> };
-      snapshot ??= body.p_initial_snapshot;
+      snapshot ??= options.seedSnapshot ? structuredClone(options.seedSnapshot) : body.p_initial_snapshot;
       if (options.legacyPending && snapshot.assessment_operations.length === 0) {
         snapshot.assessment_operations.push({
           idempotency_key: operationId,
@@ -54,6 +62,14 @@ function createDurableFetch(options: { loseCompletionCas?: "unrelated" | "stale"
       const hasCompletedOperation = body.p_next_snapshot.assessment_operations?.some(
         (operation: { status: string }) => operation.status === "COMPLETED",
       );
+      const hasDurableProviderResult = body.p_next_snapshot.assessment_operations?.some(
+        (operation: { status: string }) => operation.status === "PROVIDER_RESULT_DURABLE",
+      );
+      if (options.loseProviderResultResponse && hasDurableProviderResult) {
+        snapshot = body.p_next_snapshot;
+        revision += 1;
+        throw new TypeError("simulated committed provider-result checkpoint with lost response");
+      }
       if (options.loseCompletionCas === "all" && hasCompletedOperation && completionCasFailures < 4) {
         completionCasFailures += 1;
         return jsonResponse({ accepted: false, revision });
@@ -295,5 +311,144 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(freshKeyResponse.status).toBe(409);
     expect((await freshKeyResponse.json()).code).toBe("ASM-OPERATION-UNRESOLVED");
     expect(durable.providerCalls).toBe(0);
+  });
+
+  it("transitions an aged RESERVED operation to UNKNOWN when observed through a different key", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const seed = new DemoState().exportSnapshot() as unknown as Record<string, any>;
+    const aggregate = seed.authority.aggregates.find((item: { obligation_id: string }) => item.obligation_id === "OBL-J0C-001");
+    aggregate.aggregate_version = 2;
+    seed.assessment_operations.push({
+      idempotency_key: operationId,
+      obligation_id: "OBL-J0C-001",
+      aggregate_version: 1,
+      status: "RESERVED",
+      reserved_at: Date.now() - 60_000,
+    });
+    const durable = createDurableFetch({ seedSnapshot: seed });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const call = POST(new Request("http://localhost/api/obligations/OBL-J0C-001/assess", {
+      method: "POST",
+      headers: { "Idempotency-Key": "d13e1a83-3541-4bd0-8fbf-095047bc29c3" },
+    }), { params: Promise.resolve({ id: "OBL-J0C-001" }) });
+    await Promise.race([durable.providerStarted, new Promise<void>((resolve) => setTimeout(resolve, 30))]);
+    durable.releaseProvider();
+    const response = await call;
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).status).toBe("UNKNOWN");
+    expect(durable.snapshot?.assessment_operations).toHaveLength(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("UNKNOWN");
+    expect(durable.providerCalls).toBe(0);
+  });
+
+  it("recovers a checkpoint after its commit response is lost with the original key", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const durable = createDurableFetch({ loseProviderResultResponse: true });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const first = callAssessment();
+    await durable.providerStarted;
+    durable.releaseProvider();
+    await expect(first).rejects.toThrow("simulated committed provider-result checkpoint with lost response");
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("PROVIDER_RESULT_DURABLE");
+
+    const replay = await callAssessment();
+    expect(replay.status).toBe(200);
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.authority.assessments).toHaveLength(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("COMPLETED");
+  });
+
+  it("refuses assessment before provider submission when PAE authority is already live", async () => {
+    const previousEnvironment = process.env.VERCEL_ENV;
+    delete process.env.VERCEL_ENV;
+    const seeded = new DemoState();
+    for (const obligation of seeded.listObligations()) {
+      const aggregate = seeded.store.get(DEMO_ORGANIZATION_ID, obligation.obligation_id);
+      sealTestAssessment(seeded.store, DEMO_ORGANIZATION_ID, obligation.obligation_id, aggregate.aggregate_version);
+    }
+    const obligationId = "OBL-J0C-001";
+    const version = seeded.store.get(DEMO_ORGANIZATION_ID, obligationId).aggregate_version;
+    const authorization = approveAndSealPae(seeded.store, DEMO_SIGNING_KEY_ID, {
+      organizationId: DEMO_ORGANIZATION_ID,
+      obligationId,
+      expectedVersion: version,
+      ...currentAssessmentReview(seeded.store, DEMO_ORGANIZATION_ID, obligationId),
+      actorId: "USR-TEST-OPERATOR",
+      actorRole: "FINANCE_APPROVER",
+      policyVersion: "POLICY-P0-1",
+      reasonText: "Test fixture only.",
+    });
+    seeded.recordAuthorization({
+      approval_record: authorization.approvalRecord.record,
+      approval_record_hash: authorization.approvalRecord.approval_record_hash,
+      assurance_record: authorization.assuranceRecord.record,
+      assurance_hash: authorization.assuranceRecord.assurance_hash,
+      sealed_pae: authorization.sealed,
+    });
+    if (previousEnvironment === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = previousEnvironment;
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const before = seeded.exportSnapshot();
+    const durable = createDurableFetch({ seedSnapshot: before as unknown as Record<string, any> });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const call = POST(new Request(`http://localhost/api/obligations/${obligationId}/assess`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "d13e1a83-3541-4bd0-8fbf-095047bc29c3" },
+    }), { params: Promise.resolve({ id: obligationId }) });
+    await Promise.race([durable.providerStarted, new Promise<void>((resolve) => setTimeout(resolve, 30))]);
+    durable.releaseProvider();
+    const response = await call;
+    const after = durable.snapshot!;
+
+    expect(response.status).toBe(409);
+    expect(durable.providerCalls).toBe(0);
+    expect(after.authority.assessments).toHaveLength(before.authority.assessments.length);
+    expect(after.authority.aggregates).toEqual(before.authority.aggregates);
+    expect(after.sealed_paes).toEqual(before.sealed_paes);
+    expect(after.assessment_operations).toEqual(before.assessment_operations);
+  });
+
+  it.each([
+    ["operation id", { assessment_id: "ASM-other" }],
+    ["obligation id", { obligation_id: "OBL-J0C-002" }],
+    ["aggregate version", { aggregate_version: "2" }],
+  ])("rejects a stored provider result whose %s differs from the operation", async (_label, mismatch) => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    const seed = new DemoState().exportSnapshot() as unknown as Record<string, any>;
+    const valid = {
+      ...sealTestAssessment(new DemoState().store, DEMO_ORGANIZATION_ID, "OBL-J0C-001", 1).record,
+      assessment_id: `ASM-${operationId}`,
+    };
+    seed.assessment_operations.push({
+      idempotency_key: operationId,
+      obligation_id: "OBL-J0C-001",
+      aggregate_version: 1,
+      status: "PROVIDER_RESULT_DURABLE",
+      provider_result: { ...valid, ...mismatch },
+    });
+    const durable = createDurableFetch({ seedSnapshot: seed });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    await expect(callAssessment()).rejects.toThrow(/Provider result identity does not match its assessment operation/);
+    expect(durable.providerCalls).toBe(0);
+    expect(durable.snapshot?.authority.assessments).toHaveLength(0);
   });
 });

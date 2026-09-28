@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  assessmentReviewSnapshot,
+  currentReviewedAssessment,
+  shouldKeepAssessmentRecoveryKey,
+  type AssessmentReviewSnapshot,
+} from "../src/client/assessment-review-snapshot";
 
 interface ObligationSummary {
   obligation_id: string;
@@ -33,10 +39,12 @@ interface ObligationDetail {
   aggregate: AggregateView;
   record: Record<string, unknown>;
   current_assessment: {
+    obligation_id: string;
     assessment_id: string;
     assessment_hash: string;
     aggregate_version: string;
-    decision: string;
+    decision: "PAY" | "HOLD" | "ESCALATE";
+    reasons: string[];
   } | null;
   demo_arc_trust_seeded: boolean;
   pae_sealed: boolean;
@@ -280,6 +288,7 @@ export function CommandCenter() {
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
+  const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
 
@@ -304,44 +313,87 @@ export function CommandCenter() {
   };
 
   useEffect(() => {
+    setDisplayedAssessment(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!displayedAssessment || !detail) return;
+    const current = assessmentReviewSnapshot(detail?.current_assessment);
+    if (!currentReviewedAssessment(displayedAssessment, current, selectedId, detail?.aggregate.aggregate_version)) {
+      setDisplayedAssessment(null);
+    }
+  }, [displayedAssessment, detail, selectedId]);
 
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
     setBusy(true);
     try {
       const result = await action();
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status });
+      if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
       await Promise.all([refreshDetail(selectedId), refreshObligations()]);
     } finally {
       setBusy(false);
     }
   };
 
-  const runAssessment = () => run("assess", async () => {
-    const storageKey = `tameion.assessment-request.${selectedId}`;
-    if (assessmentRequestKey.current?.obligationId !== selectedId) {
+  const runAssessment = () => {
+    const obligationId = selectedId;
+    setDisplayedAssessment(null);
+    return run("assess", async () => {
+    const storageKey = `tameion.assessment-request.${obligationId}`;
+    if (assessmentRequestKey.current?.obligationId !== obligationId) {
       const persistedKey = localStorage.getItem(storageKey);
-      assessmentRequestKey.current = { obligationId: selectedId, key: persistedKey ?? crypto.randomUUID() };
+      assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
       if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
     }
-    const result = await postJson(`/api/obligations/${selectedId}/assess`, undefined, {
+    const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
       "Idempotency-Key": assessmentRequestKey.current.key,
     });
     const code = result.data && typeof result.data === "object" && "code" in result.data
       ? (result.data as { code?: unknown }).code
       : undefined;
-    if (result.status !== 202 && code !== "OPS-002") {
+    if (!shouldKeepAssessmentRecoveryKey(result.status, typeof code === "string" ? code : undefined)) {
       localStorage.removeItem(storageKey);
       assessmentRequestKey.current = null;
     }
+    if (result.status === 200 && result.ok && result.data && typeof result.data === "object") {
+      const data = result.data as {
+        assessment_id?: unknown;
+        aggregate_version?: unknown;
+        decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
+        assessment_hash?: unknown;
+      };
+      const snapshot = assessmentReviewSnapshot({
+        obligation_id: data.decision?.obligation_id,
+        assessment_id: data.assessment_id,
+        assessment_hash: data.assessment_hash,
+        aggregate_version: data.aggregate_version,
+        decision: data.decision?.decision,
+        reasons: data.decision?.reasons,
+      });
+      if (snapshot) {
+        setDisplayedAssessment(snapshot);
+        setDetail((current) => current && current.aggregate.aggregate_version === Number(snapshot.aggregate_version)
+          ? { ...current, current_assessment: snapshot }
+          : current);
+      }
+    }
     return result;
-  });
+    });
+  };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
   const assessedCount = obligations.filter((o) => o.assessed).length;
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
+  const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
+  const authorizationAssessment = currentReviewedAssessment(
+    displayedAssessment,
+    currentAssessment,
+    selectedId,
+    aggregateVersion,
+  );
 
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-6 py-8">
@@ -370,6 +422,7 @@ export function CommandCenter() {
                   onClick={() => {
                     setSelectedId(o.obligation_id);
                     setLastResult(null);
+                    setDisplayedAssessment(null);
                   }}
                   className={`flex w-full flex-col gap-0.5 border-b border-[var(--color-border)] px-2 py-2 text-left transition ${
                     o.obligation_id === selectedId ? "bg-[var(--color-surface)]" : "hover:bg-[var(--color-surface)]"
@@ -459,6 +512,36 @@ export function CommandCenter() {
                 <PrimaryButton disabled={busy || !selectedId} onClick={runAssessment}>
                   Run assessment
                 </PrimaryButton>
+                {displayedAssessment && authorizationAssessment && (
+                  <div className="space-y-2 border-l-2 border-[var(--color-ink)] pl-3" data-testid="displayed-assessment-snapshot">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide">Displayed assessment under review</p>
+                    <Field label="Assessment" value={displayedAssessment.assessment_id} />
+                    <Field label="Assessment hash" value={displayedAssessment.assessment_hash} />
+                    <Field label="Aggregate version" value={displayedAssessment.aggregate_version} />
+                    <Field label="Decision" value={displayedAssessment.decision} />
+                    <ul className="list-disc pl-5 text-[12px]">{displayedAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                  </div>
+                )}
+                {!displayedAssessment && currentAssessment && (
+                  <div className="space-y-2 border-l-2 border-[var(--color-border)] pl-3" data-testid="available-assessment-snapshot">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide">Current sealed assessment</p>
+                    <Field label="Assessment" value={currentAssessment.assessment_id} />
+                    <Field label="Assessment hash" value={currentAssessment.assessment_hash} />
+                    <Field label="Aggregate version" value={currentAssessment.aggregate_version} />
+                    <Field label="Decision" value={currentAssessment.decision} />
+                    <ul className="list-disc pl-5 text-[12px]">{currentAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                    <button
+                      type="button"
+                      className="text-[12px] font-semibold underline"
+                      onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment))}
+                    >
+                      Review this assessment for authorization
+                    </button>
+                  </div>
+                )}
+                {displayedAssessment && !authorizationAssessment && (
+                  <p className="text-[12px] text-[var(--color-danger)]">The displayed assessment is no longer current. Review the current assessment before authorization.</p>
+                )}
                 {lastResult?.label === "assess" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "assess" && <EvidencePanel value={lastResult.data} />}
               </div>
@@ -471,23 +554,24 @@ export function CommandCenter() {
                   reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
                   control PASSes — seals a signed Payment Authorization Envelope.
                 </p>
-                {detail?.current_assessment && (
+                {authorizationAssessment && (
                   <dl className="space-y-1 border-l-2 border-[var(--color-border)] pl-3 text-[12px] text-[var(--color-ink-muted)]">
-                    <Field label="Reviewed assessment" value={detail.current_assessment.assessment_id} />
-                    <Field label="Assessment hash" value={detail.current_assessment.assessment_hash} />
-                    <Field label="Assessment aggregate version" value={detail.current_assessment.aggregate_version} />
+                    <Field label="Reviewed assessment" value={authorizationAssessment.assessment_id} />
+                    <Field label="Assessment hash" value={authorizationAssessment.assessment_hash} />
+                    <Field label="Assessment aggregate version" value={authorizationAssessment.aggregate_version} />
+                    <Field label="Decision reviewed" value={authorizationAssessment.decision} />
+                    <ul className="list-disc pl-5">{authorizationAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
                   </dl>
                 )}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || !selectedId || aggregateVersion === undefined || !detail?.current_assessment ||
-                      detail.current_assessment.aggregate_version !== String(aggregateVersion)}
+                    disabled={busy || !selectedId || !authorizationAssessment}
                     onClick={() =>
                       run("approve", () =>
                         postJson(`/api/obligations/${selectedId}/approve`, {
-                          expected_version: aggregateVersion,
-                          reviewed_assessment_id: detail!.current_assessment!.assessment_id,
-                          reviewed_assessment_hash: detail!.current_assessment!.assessment_hash,
+                          expected_version: Number(authorizationAssessment!.aggregate_version),
+                          reviewed_assessment_id: authorizationAssessment!.assessment_id,
+                          reviewed_assessment_hash: authorizationAssessment!.assessment_hash,
                         }),
                       )
                     }

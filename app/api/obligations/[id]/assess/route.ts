@@ -19,7 +19,13 @@ const RESERVED_OPERATION_TIMEOUT_MS = 25_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
+function reservationExpired(operation: AssessmentOperation): boolean {
+  return operation.status === "RESERVED" && Date.now() - (operation.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS;
+}
+
 type AssessmentResponse = {
+  assessment_id: string;
+  aggregate_version: string;
   decision: {
     obligation_id: string;
     decision: DurableAssessmentRecord["decision"];
@@ -44,6 +50,8 @@ function responseFor(state: DemoState, operation: AssessmentOperation): Assessme
   if (!sealed) throw new Error("Completed assessment operation is missing its sealed assessment.");
   const { record } = sealed;
   return {
+    assessment_id: record.assessment_id,
+    aggregate_version: record.aggregate_version,
     decision: {
       obligation_id: record.obligation_id,
       decision: record.decision,
@@ -59,6 +67,12 @@ function responseFor(state: DemoState, operation: AssessmentOperation): Assessme
 }
 
 function existingOperationResponse(state: DemoState, operation: AssessmentOperation) {
+  if (operation.status === "UNKNOWN") {
+    return NextResponse.json(
+      { status: "UNKNOWN", idempotency_key: operation.idempotency_key, error: "Provider completion is ambiguous. This operation will not be retried automatically.", code: "ASM-UNKNOWN" },
+      { status: 409 },
+    );
+  }
   const current = state.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
   if (operation.status === "STALE" || current.aggregate_version !== operation.aggregate_version) {
     return NextResponse.json({ error: ASSESSMENT_CONFLICT_MESSAGE, code: "ASM-001" }, { status: 409 });
@@ -68,17 +82,11 @@ function existingOperationResponse(state: DemoState, operation: AssessmentOperat
     if (!response) throw new Error("Completed assessment operation has no response.");
     return NextResponse.json(response);
   }
-  if (operation.status === "UNKNOWN") {
-    return NextResponse.json(
-      { status: "UNKNOWN", error: "Provider completion is ambiguous. This operation will not be retried automatically.", code: "ASM-UNKNOWN" },
-      { status: 409 },
-    );
-  }
   if (operation.status === "PROVIDER_RESULT_DURABLE") {
-    return NextResponse.json({ status: "RECOVERY_PENDING", message: "The durable provider result is being sealed; retry this same Idempotency-Key to recover it." }, { status: 202 });
+    return NextResponse.json({ status: "RECOVERY_PENDING", idempotency_key: operation.idempotency_key, message: "The durable provider result is being sealed; retry this same Idempotency-Key to recover it." }, { status: 202 });
   }
   return NextResponse.json(
-    { status: "IN_PROGRESS", message: "This assessment is reserved. Replays will not submit a second provider request." },
+    { status: "IN_PROGRESS", idempotency_key: operation.idempotency_key, message: "This assessment is reserved. Replays will not submit a second provider request." },
     { status: 202 },
   );
 }
@@ -170,7 +178,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (existing.obligation_id !== id) {
         return NextResponse.json({ error: "Idempotency key is already bound to a different assessment request.", code: "ASM-002" }, { status: 400 });
       }
-      if (existing.status === "RESERVED" && Date.now() - (existing.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS) {
+      if (reservationExpired(existing)) {
         return markUnknownAndReply(state, idempotencyKey);
       }
       if (existing.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
@@ -178,12 +186,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     aggregateVersion = state.store.get(DEMO_ORGANIZATION_ID, id).aggregate_version;
+    const expiredReservation = state.findUnresolvedAssessmentOperations(id).find(reservationExpired);
+    if (expiredReservation) return markUnknownAndReply(state, expiredReservation.idempotency_key);
     const unresolved = state.findUnresolvedAssessmentOperation(id, aggregateVersion);
     if (unresolved) {
+      if (reservationExpired(unresolved)) return markUnknownAndReply(state, unresolved.idempotency_key);
       return NextResponse.json(
-        { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status },
+        { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status, idempotency_key: unresolved.idempotency_key },
         { status: 409 },
       );
+    }
+    if (state.hasLivePaeAuthority(id)) {
+      return NextResponse.json({ error: "Assessment is closed after authorization or PAE creation.", code: "ASM-CLOSED-AUTHORITY" }, { status: 409 });
     }
     try {
       state.reserveAssessmentOperation(idempotencyKey, id, aggregateVersion);
@@ -205,8 +219,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         ? sealDurableProviderResult(idempotencyKey, latestState)
         : existingOperationResponse(latestState, latestOperation);
     }
+    const expiredReservation = latestState.findUnresolvedAssessmentOperations(id).find(reservationExpired);
+    if (expiredReservation) return markUnknownAndReply(latestState, expiredReservation.idempotency_key);
     const unresolved = latestState.findUnresolvedAssessmentOperation(id, latestState.store.get(DEMO_ORGANIZATION_ID, id).aggregate_version);
-    if (unresolved) return NextResponse.json({ error: "Another assessment operation is unresolved for this obligation and aggregate version.", code: "ASM-OPERATION-UNRESOLVED" }, { status: 409 });
+    if (unresolved) return NextResponse.json({ error: "Another assessment operation is unresolved for this obligation and aggregate version.", code: "ASM-OPERATION-UNRESOLVED", idempotency_key: unresolved.idempotency_key }, { status: 409 });
     return NextResponse.json(
       { error: "The assessment could not be reserved because durable state kept changing. No provider call was made; retry with the same Idempotency-Key.", code: "ASM-RESERVATION-RETRY" },
       { status: 503 },

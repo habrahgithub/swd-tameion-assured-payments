@@ -16,10 +16,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       aggregate,
       record,
       current_assessment: currentAssessment ? {
+        obligation_id: currentAssessment.record.obligation_id,
         assessment_id: currentAssessment.record.assessment_id,
         assessment_hash: currentAssessment.hash,
         aggregate_version: currentAssessment.record.aggregate_version,
         decision: currentAssessment.record.decision,
+        reasons: currentAssessment.record.reasons,
       } : null,
       demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
       pae_sealed: Boolean(sealed),
