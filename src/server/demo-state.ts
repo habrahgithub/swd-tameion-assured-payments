@@ -12,6 +12,7 @@ import {
   sealedPaeSchema,
   type DurableApprovalRecord,
   type DurableAssuranceRecord,
+  type DurableAssessmentRecord,
   type SealedPae,
 } from "../domain/schemas";
 import {
@@ -61,10 +62,19 @@ export interface DemoAuthorizationArtifacts {
 export interface DemoStateSnapshot {
   schema_version: 1;
   authority: ReturnType<AuthorityStore["exportSnapshot"]>;
+  assessment_operations: AssessmentOperation[];
   sealed_paes: Array<[string, SealedPae]>;
   authorization_history: DemoAuthorizationArtifacts[];
   execution_ledger: ExecutionRecord[];
   provider_adapter: FakeProviderAdapterSnapshot;
+}
+
+export interface AssessmentOperation {
+  idempotency_key: string;
+  obligation_id: string;
+  aggregate_version: number;
+  status: "PENDING" | "COMPLETED" | "STALE";
+  assessment_hash?: string;
 }
 
 const authorizationArtifactsParser = (value: unknown): DemoAuthorizationArtifacts => {
@@ -133,7 +143,12 @@ function parseSnapshot(value: unknown): DemoStateSnapshot {
     return [entry[0], sealedPaeSchema.parse(entry[1])] as [string, SealedPae];
   });
   const authorizationHistory = snapshot.authorization_history.map(authorizationArtifactsParser);
-  const assessmentsByHash = new Map<string, { assessment_id: string; organization_id: string; obligation_id: string }>();
+  const assessmentsByHash = new Map<string, {
+    assessment_id: string;
+    organization_id: string;
+    obligation_id: string;
+    aggregate_version: string;
+  }>();
   for (const assessment of authority.assessments) {
     if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)) throw new Error("Malformed persisted assessment.");
     const item = assessment as Record<string, unknown>;
@@ -146,6 +161,7 @@ function parseSnapshot(value: unknown): DemoStateSnapshot {
       assessment_id: record.assessment_id,
       organization_id: record.organization_id,
       obligation_id: record.obligation_id,
+      aggregate_version: String(record.aggregate_version),
     });
   }
   for (const authorization of authorizationHistory) {
@@ -194,14 +210,51 @@ function parseSnapshot(value: unknown): DemoStateSnapshot {
     !Array.isArray(providerAdapter.transfers_by_ref) || !Array.isArray(providerAdapter.refs_by_idempotency_key) ||
     !Array.isArray(providerAdapter.outcome_queue) || !Number.isSafeInteger(providerAdapter.submission_count)
   ) throw new Error("Malformed persisted provider simulator snapshot.");
+  const rawAssessmentOperations = snapshot.assessment_operations ?? [];
+  if (!Array.isArray(rawAssessmentOperations)) throw new Error("Malformed persisted assessment operations.");
+  const assessmentOperations = rawAssessmentOperations.map(parseAssessmentOperation);
+  if (new Set(assessmentOperations.map((operation) => operation.idempotency_key)).size !== assessmentOperations.length) {
+    throw new Error("Persisted assessment operations contain duplicate idempotency keys.");
+  }
+  for (const operation of assessmentOperations) {
+    if (operation.status === "COMPLETED") {
+      const assessment = assessmentsByHash.get(operation.assessment_hash!);
+      if (
+        !assessment || assessment.assessment_id !== `ASM-${operation.idempotency_key}` ||
+        assessment.obligation_id !== operation.obligation_id ||
+        assessment.aggregate_version !== String(operation.aggregate_version)
+      ) throw new Error("Persisted assessment operation does not match its sealed assessment.");
+    }
+  }
   return {
     schema_version: 1,
     authority: snapshot.authority as DemoStateSnapshot["authority"],
+    assessment_operations: assessmentOperations,
     sealed_paes: sealedPaes,
     authorization_history: authorizationHistory,
     execution_ledger: executionLedger,
     provider_adapter: providerAdapter,
   };
+}
+
+function parseAssessmentOperation(value: unknown): AssessmentOperation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted assessment operation.");
+  const operation = value as Record<string, unknown>;
+  if (
+    typeof operation.idempotency_key !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operation.idempotency_key) ||
+    typeof operation.obligation_id !== "string" ||
+    !Number.isSafeInteger(operation.aggregate_version) || (operation.aggregate_version as number) < 1 ||
+    !["PENDING", "COMPLETED", "STALE"].includes(String(operation.status))
+  ) throw new Error("Malformed persisted assessment operation.");
+  if (operation.status === "COMPLETED") {
+    if (typeof operation.assessment_hash !== "string" || !/^[0-9a-f]{64}$/.test(operation.assessment_hash)) {
+      throw new Error("Malformed completed assessment operation.");
+    }
+  } else if (operation.assessment_hash !== undefined) {
+    throw new Error("Incomplete assessment operation cannot contain an assessment hash.");
+  }
+  return operation as unknown as AssessmentOperation;
 }
 
 function parseExecutionRecord(value: unknown): ExecutionRecord {
@@ -235,6 +288,7 @@ export class DemoState {
   readonly liveUsageRecords: LiveUsageObligationRecord[];
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
   private readonly authorizationHistory: DemoAuthorizationArtifacts[];
+  private readonly assessmentOperations: Map<string, AssessmentOperation>;
   private repository?: SupabaseDemoStateRepository;
   private revision?: number;
 
@@ -246,6 +300,9 @@ export class DemoState {
     this.adapter = new FakeProviderAdapter(snapshot?.provider_adapter);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
+    this.assessmentOperations = new Map(
+      (snapshot?.assessment_operations ?? []).map((operation) => [operation.idempotency_key, { ...operation }]),
+    );
     this.worker = new ExecutionWorker(this.store, this.adapter, () => this.flush());
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
 
@@ -299,6 +356,48 @@ export class DemoState {
     return this.liveUsageRecords.find((r) => r.obligation_id === obligationId);
   }
 
+  getAssessmentOperation(idempotencyKey: string): AssessmentOperation | undefined {
+    const operation = this.assessmentOperations.get(idempotencyKey);
+    return operation ? { ...operation } : undefined;
+  }
+
+  reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number): AssessmentOperation {
+    const existing = this.assessmentOperations.get(idempotencyKey);
+    if (existing) {
+      if (existing.obligation_id !== obligationId) throw new Error("Idempotency key is already bound to a different assessment request.");
+      return { ...existing };
+    }
+    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
+    if (aggregate.aggregate_version !== aggregateVersion) {
+      throw new Error("Assessment aggregate changed before provider submission.");
+    }
+    const operation: AssessmentOperation = {
+      idempotency_key: idempotencyKey,
+      obligation_id: obligationId,
+      aggregate_version: aggregateVersion,
+      status: "PENDING",
+    };
+    this.assessmentOperations.set(idempotencyKey, operation);
+    return { ...operation };
+  }
+
+  completeAssessmentOperation(
+    idempotencyKey: string,
+    record: DurableAssessmentRecord,
+  ): AssessmentOperation {
+    const operation = this.assessmentOperations.get(idempotencyKey);
+    if (!operation || operation.status !== "PENDING") throw new Error("Assessment operation is not pending.");
+    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
+    if (aggregate.aggregate_version !== operation.aggregate_version) {
+      operation.status = "STALE";
+      return { ...operation };
+    }
+    const sealed = this.store.sealAssessment(record);
+    operation.status = "COMPLETED";
+    operation.assessment_hash = sealed.assessment_hash;
+    return { ...operation };
+  }
+
   setSealedPae(obligationId: string, sealed: SealedPae): void {
     this.sealedPaeByObligation.set(obligationId, sealed);
   }
@@ -316,6 +415,7 @@ export class DemoState {
     return {
       schema_version: 1,
       authority: this.store.exportSnapshot(),
+      assessment_operations: [...this.assessmentOperations.values()].map((operation) => ({ ...operation })),
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
       execution_ledger: this.worker.exportSnapshot(),

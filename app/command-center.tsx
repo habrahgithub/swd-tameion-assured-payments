@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface ObligationSummary {
   obligation_id: string;
@@ -48,10 +48,10 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "reconciliation", label: "Reconciliation & Evidence" },
 ];
 
-async function postJson(url: string, body?: unknown) {
+async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json();
@@ -275,6 +275,7 @@ export function CommandCenter() {
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
 
   const refreshObligations = async () => {
     const response = await fetch("/api/obligations");
@@ -310,6 +311,26 @@ export function CommandCenter() {
       setBusy(false);
     }
   };
+
+  const runAssessment = () => run("assess", async () => {
+    const storageKey = `tameion.assessment-request.${selectedId}`;
+    if (assessmentRequestKey.current?.obligationId !== selectedId) {
+      const persistedKey = localStorage.getItem(storageKey);
+      assessmentRequestKey.current = { obligationId: selectedId, key: persistedKey ?? crypto.randomUUID() };
+      if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
+    }
+    const result = await postJson(`/api/obligations/${selectedId}/assess`, undefined, {
+      "Idempotency-Key": assessmentRequestKey.current.key,
+    });
+    const code = result.data && typeof result.data === "object" && "code" in result.data
+      ? (result.data as { code?: unknown }).code
+      : undefined;
+    if (result.status !== 202 && code !== "OPS-002") {
+      localStorage.removeItem(storageKey);
+      assessmentRequestKey.current = null;
+    }
+    return result;
+  });
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
   const assessedCount = obligations.filter((o) => o.assessed).length;
@@ -429,7 +450,7 @@ export function CommandCenter() {
                     Authorization is refused for every obligation until all {obligations.length} have been assessed.
                   </p>
                 )}
-                <PrimaryButton disabled={busy || !selectedId} onClick={() => run("assess", () => postJson(`/api/obligations/${selectedId}/assess`))}>
+                <PrimaryButton disabled={busy || !selectedId} onClick={runAssessment}>
                   Run assessment
                 </PrimaryButton>
                 {lastResult?.label === "assess" && <ActionResultBanner result={lastResult} />}
