@@ -186,6 +186,31 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(adapter.getSubmissionCount()).toBe(1);
   });
 
+  it("records a thrown provider submission as UNKNOWN and never resubmits it", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissionCount = 0;
+    const adapter = {
+      name: "throw-after-submit-test-adapter",
+      async submitTransfer() {
+        submissionCount += 1;
+        throw new Error("transport closed after request dispatch");
+      },
+      async getStatus() {
+        return { status: "UNKNOWN" as const };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const first = await worker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(first.provider_ref).toBeNull();
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+
+    const replay = await worker.execute(sealed);
+    expect(replay).toEqual(first);
+    expect(submissionCount).toBe(1);
+  });
+
   it("(9) BLOCKs pre-submit with zero unauthorized movement when the destination changed after authorization", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     // Simulate an attacker/operator changing the destination after the PAE was sealed.

@@ -52,23 +52,44 @@ export async function assessObligation(
     return holdOnFailure(context, "AI provider output obligation_id did not match the requested obligation");
   }
 
+  const suppliedEvidenceIds = new Set(context.evidence_ids);
+  if (decision.evidence_ids.some((evidenceId) => !suppliedEvidenceIds.has(evidenceId))) {
+    return holdOnFailure(
+      context,
+      "AI provider output cited evidence that was not supplied for this obligation",
+      ["evidence_reference_integrity"],
+    );
+  }
+
   // Never trust a PAY recommendation over missing/uncertain evidence, even
   // if the model claims otherwise — this is a deterministic backstop, not
   // something the model can talk its way around.
-  if (decision.decision === "PAY" && (!context.evidence_present || decision.missing_evidence.length > 0)) {
-    return holdOnFailure(context, "Refusing PAY: evidence is missing or incomplete despite provider recommendation");
+  if (decision.decision === "PAY") {
+    const blockers = [...decision.missing_evidence];
+    if (!context.evidence_present || decision.evidence_ids.length === 0) blockers.push("source_evidence");
+    if (context.due_date_status !== "STATED_ON_SOURCE" || !context.due_date) blockers.push("due_date");
+    if (!context.business_purpose_confirmed) blockers.push("business_purpose");
+    if (!context.destination_ready) blockers.push("destination_trust_seed");
+    if (blockers.length > 0) {
+      const uniqueBlockers = [...new Set(blockers)];
+      return holdOnFailure(
+        context,
+        `Refusing PAY: required evidence/readiness is missing or incomplete (${uniqueBlockers.join(", ")})`,
+        uniqueBlockers,
+      );
+    }
   }
 
   return decision;
 }
 
-function holdOnFailure(context: FinanceAgentContext, reason: string): FinanceAgentDecision {
+function holdOnFailure(context: FinanceAgentContext, reason: string, missingEvidence?: string[]): FinanceAgentDecision {
   return {
     obligation_id: context.obligation_id,
     decision: "HOLD",
     reasons: [reason],
     evidence_ids: context.evidence_ids,
-    missing_evidence: context.evidence_present ? [] : ["source_evidence"],
+    missing_evidence: missingEvidence ?? (context.evidence_present ? [] : ["source_evidence"]),
     uncertainty_signal: true,
   };
 }

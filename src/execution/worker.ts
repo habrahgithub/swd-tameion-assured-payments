@@ -134,14 +134,33 @@ export class ExecutionWorker {
     }
 
     this.store.markSubmitting(payload.organization_id, obligationId);
-    const submission = await this.adapter.submitTransfer({
-      idempotencyKey: payload.idempotency_key,
-      sourceWalletRef: payload.source_wallet_ref,
-      destinationAddress: payload.destination_address,
-      atomicAmount: payload.atomic_amount,
-      asset: payload.asset,
-      network: payload.network,
-    });
+    let submission;
+    try {
+      submission = await this.adapter.submitTransfer({
+        idempotencyKey: payload.idempotency_key,
+        sourceWalletRef: payload.source_wallet_ref,
+        destinationAddress: payload.destination_address,
+        atomicAmount: payload.atomic_amount,
+        asset: payload.asset,
+        network: payload.network,
+      });
+    } catch {
+      // A rejected transport promise does not prove that the provider did
+      // not receive the request. Persist an in-process UNKNOWN record and
+      // never let replay submit this PAE again. The provider reference is
+      // unavailable, so automatic status reconciliation is not possible.
+      this.store.markUnknown(payload.organization_id, obligationId);
+      const record: ExecutionRecord = {
+        obligation_id: obligationId,
+        idempotency_key: payload.idempotency_key,
+        provider_ref: null,
+        status: "UNKNOWN",
+        atomic_amount: payload.atomic_amount,
+        destination_address: payload.destination_address,
+      };
+      this.executionLedger.set(payload.idempotency_key, record);
+      return record;
+    }
     this.store.markSubmitted(payload.organization_id, obligationId);
 
     // (8) Provider timeout/UNKNOWN: query status; never blind-retry submit.

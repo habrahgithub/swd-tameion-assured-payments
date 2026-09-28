@@ -73,6 +73,25 @@ class OverclaimingPayProvider implements AiProvider {
   }
 }
 
+class StaticProvider implements AiProvider {
+  readonly name = "static-test-provider";
+  constructor(private readonly output: unknown) {}
+  async assess(): Promise<unknown> {
+    return this.output;
+  }
+}
+
+function payOutput(obligationId: string, evidenceIds: string[] = ["EVID-J0C-002-A"]) {
+  return {
+    obligation_id: obligationId,
+    decision: "PAY",
+    reasons: ["The obligation is supported by the cited evidence."],
+    evidence_ids: evidenceIds,
+    missing_evidence: [],
+    uncertainty_signal: false,
+  };
+}
+
 describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
   it("recommends PAY for a complete, evidence-backed obligation via the deterministic fallback", async () => {
     const context = buildFinanceAgentContext(record());
@@ -127,6 +146,27 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     const context = buildFinanceAgentContext(record());
     const decision = await assessObligation(context, new OverclaimingPayProvider(context.obligation_id));
     expect(decision.decision).toBe("HOLD");
+  });
+
+  it("rejects PAY without a real, supplied evidence citation", async () => {
+    const context = buildFinanceAgentContext(record());
+    for (const evidenceIds of [[], ["EVID-J0C-999"]]) {
+      const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id, evidenceIds)));
+      expect(decision.decision).toBe("HOLD");
+    }
+  });
+
+  it("rejects PAY when deterministic readiness facts are unmet", async () => {
+    const records = [
+      record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" }),
+      record({ business_purpose_confirmed: false }),
+      record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } }),
+    ];
+    for (const input of records) {
+      const context = buildFinanceAgentContext(input);
+      const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
+      expect(decision.decision).toBe("HOLD");
+    }
   });
 
   it("(12) the agent module has no capability to approve/sign/execute — only a decision object crosses the boundary", async () => {
