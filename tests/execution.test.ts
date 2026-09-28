@@ -210,6 +210,32 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(adapter.getSubmissionCount()).toBe(0);
   });
 
+  it("(10b) organization-scoped kill switch blocks execution for that organization", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    store.activateKillSwitch("ORGANIZATION_EXECUTION_DISABLED", "ORG-DEMO-001");
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(10c) transaction-scoped kill switch blocks only its exact obligation, never an unrelated one", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    // Kill switch for a different obligation must not affect this one.
+    store.activateKillSwitch("TRANSACTION_DISABLED", "OBL-SOME-OTHER-OBLIGATION");
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("CONFIRMED");
+    const worker = new ExecutionWorker(store, adapter);
+    await expect(worker.execute(sealed)).resolves.toMatchObject({ status: "SETTLED" });
+
+    // Now activate it for the exact obligation and prove it blocks a fresh one.
+    const second = setupAuthorizedFixture();
+    second.store.activateKillSwitch("TRANSACTION_DISABLED", "OBL-J0C-002");
+    const worker2 = new ExecutionWorker(second.store, new FakeProviderAdapter());
+    await expect(worker2.execute(second.sealed)).rejects.toThrow(ExecutionBlockedError);
+  });
+
   it("(11) settlement amount/destination/status must reconcile exactly to the obligation", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     const adapter = new FakeProviderAdapter();

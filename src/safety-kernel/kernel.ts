@@ -94,9 +94,7 @@ export function runSafetyKernel(aggregate: AuthorityAggregate, store: AuthorityS
 
   // SK-KILL-SWITCH: global/org/transaction kill switch must allow authorization.
   controls.push(
-    !store.isKillSwitchActive("GLOBAL_EXECUTION_DISABLED") &&
-      !store.isKillSwitchActive(`ORG:${aggregate.organization_id}`) &&
-      !store.isKillSwitchActive(`TXN:${aggregate.obligation_id}`)
+    !store.isExecutionKillSwitched(aggregate.organization_id, aggregate.obligation_id)
       ? pass("SK-KILL-SWITCH")
       : fail("SK-KILL-SWITCH", "BLOCK", "WDG-001"),
   );

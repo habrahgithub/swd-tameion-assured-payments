@@ -68,8 +68,11 @@ export class ExecutionWorker {
       return existing;
     }
 
-    // (10) Kill switch prevents execution.
-    if (this.store.isKillSwitchActive("GLOBAL_EXECUTION_DISABLED")) {
+    // (10) Kill switch prevents execution — checked at the exact org/
+    // obligation scope, not just the unscoped global switch, so an
+    // ORGANIZATION_EXECUTION_DISABLED or TRANSACTION_DISABLED switch
+    // activated after approval still stops this exact submission.
+    if (this.store.isExecutionKillSwitched(payload.organization_id, obligationId)) {
       this.store.markBlocked(payload.organization_id, obligationId, "kill switch active");
       throw new ExecutionBlockedError("Kill switch is active; execution refused", "WDG-001");
     }

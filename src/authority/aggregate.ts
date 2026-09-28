@@ -18,6 +18,16 @@ export type ObligationState =
 
 export type PaeLifecycleState = "UNUSED" | "RESERVED" | "SUBMITTED" | "CONSUMED" | "EXPIRED" | "REVOKED";
 
+/** Kill Switch Scopes, per the frozen blueprint's Guardrails section. */
+export type KillSwitchScope =
+  | "TRANSACTION_DISABLED"
+  | "AGENT_DISABLED"
+  | "WALLET_DISABLED"
+  | "AUTONOMOUS_EXECUTION_DISABLED"
+  | "ORGANIZATION_EXECUTION_DISABLED"
+  | "GLOBAL_EXECUTION_DISABLED"
+  | "DISASTER_MODE";
+
 export type ExecutionState =
   | "NONE"
   | "RESERVED"
@@ -89,7 +99,7 @@ export class AuthorityError extends Error {
  */
 export class AuthorityStore {
   private readonly aggregates = new Map<string, AuthorityAggregate>();
-  private readonly globalKillSwitches = new Set<string>();
+  private readonly killSwitches = new Set<string>();
 
   private key(organizationId: string, obligationId: string): string {
     return `${organizationId}::${obligationId}`;
@@ -107,16 +117,37 @@ export class AuthorityStore {
     return { ...found };
   }
 
-  activateKillSwitch(scope: string): void {
-    this.globalKillSwitches.add(scope);
+  private killSwitchKey(scope: KillSwitchScope, targetId?: string): string {
+    return targetId ? `${scope}:${targetId}` : scope;
   }
 
-  deactivateKillSwitch(scope: string): void {
-    this.globalKillSwitches.delete(scope);
+  /**
+   * Activates one of the blueprint's Kill Switch Scopes. GLOBAL_EXECUTION_DISABLED
+   * and DISASTER_MODE take no targetId (they are unscoped); ORGANIZATION_EXECUTION_DISABLED
+   * takes an organization_id; TRANSACTION_DISABLED takes an obligation_id.
+   */
+  activateKillSwitch(scope: KillSwitchScope, targetId?: string): void {
+    this.killSwitches.add(this.killSwitchKey(scope, targetId));
   }
 
-  isKillSwitchActive(scope: string): boolean {
-    return this.globalKillSwitches.has(scope) || this.globalKillSwitches.has("GLOBAL_EXECUTION_DISABLED");
+  deactivateKillSwitch(scope: KillSwitchScope, targetId?: string): void {
+    this.killSwitches.delete(this.killSwitchKey(scope, targetId));
+  }
+
+  /**
+   * The single kill-switch check both the Safety Kernel (pre-approval) and
+   * the Execution Worker (pre-submit) must use — checking only the
+   * unscoped global switch here would silently miss an
+   * ORGANIZATION_EXECUTION_DISABLED or TRANSACTION_DISABLED switch that a
+   * caller activated for this exact organization/obligation.
+   */
+  isExecutionKillSwitched(organizationId: string, obligationId: string): boolean {
+    return (
+      this.killSwitches.has("GLOBAL_EXECUTION_DISABLED") ||
+      this.killSwitches.has("DISASTER_MODE") ||
+      this.killSwitches.has(this.killSwitchKey("ORGANIZATION_EXECUTION_DISABLED", organizationId)) ||
+      this.killSwitches.has(this.killSwitchKey("TRANSACTION_DISABLED", obligationId))
+    );
   }
 
   private write(next: AuthorityAggregate): AuthorityAggregate {
