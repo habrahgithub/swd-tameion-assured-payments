@@ -159,6 +159,21 @@ export class AuthorityStore {
     return this.sealedAssessments.get(this.key(organizationId, obligationId));
   }
 
+  /** Returns the obligation_id of the first obligation in this organization
+   * that has no sealed assessment yet, or null if every obligation the
+   * store knows about for this organization has one. J1 requires the sole
+   * candidate be selected only after all obligations are assessed — this
+   * is that check, evaluated against every obligation this store holds for
+   * the organization (the same set the demo/product seeds up front). */
+  findUnassessedObligation(organizationId: string): string | null {
+    for (const aggregate of this.aggregates.values()) {
+      if (aggregate.organization_id === organizationId && !this.getSealedAssessment(organizationId, aggregate.obligation_id)) {
+        return aggregate.obligation_id;
+      }
+    }
+    return null;
+  }
+
   /** Returns the obligation_id of another obligation already committed as
    * the sole execution candidate for this organization, or null if none. */
   findCommittedCandidateExcluding(organizationId: string, obligationId: string): string | null {
@@ -258,6 +273,13 @@ export class AuthorityStore {
     }
     if (sealed.record.decision !== "PAY") {
       throw new AuthorityError(`Cannot approve: sealed assessment decision is ${sealed.record.decision}, not PAY`, "AUT-007");
+    }
+    const unassessed = this.findUnassessedObligation(organizationId);
+    if (unassessed) {
+      throw new AuthorityError(
+        `Cannot approve: ${unassessed} has not been assessed yet — candidate selection requires every obligation to be assessed first`,
+        "AUT-012",
+      );
     }
     const otherCandidate = this.findCommittedCandidateExcluding(organizationId, obligationId);
     if (otherCandidate) {

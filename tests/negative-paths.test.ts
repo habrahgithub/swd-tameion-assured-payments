@@ -159,6 +159,15 @@ describe("negative path: missing human authorization", () => {
     expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 2)).toThrow(/bound to aggregate_version 1/);
   });
 
+  it("refuses to approve even a PAY-decided obligation while a sibling obligation has not been assessed yet", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
+    store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-A", 1);
+    // OBL-B is never assessed.
+    expect(() => store.approve("ORG-DEMO-001", "OBL-A", 1)).toThrow(/OBL-B has not been assessed yet/);
+  });
+
   it("enforces exactly-one candidate selection: refuses to approve a second obligation while another is already the committed candidate", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
