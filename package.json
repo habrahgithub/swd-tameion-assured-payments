@@ -17,6 +17,7 @@
     "verify": "npm run check:hygiene && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "@circle-fin/developer-controlled-wallets": "10.8.1",
     "json-canonicalize": "3.0.1",
     "next": "16.3.6",
     "react": "19.3.0",
