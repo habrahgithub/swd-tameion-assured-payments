@@ -98,6 +98,11 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       reviewed_aggregate_version: null,
     };
     store.seed(aggregate);
+    // Simulating the post-J0-D-trust-seed world (see comment above): with a
+    // ready destination this obligation would be the sole PAY candidate, so
+    // record that decision explicitly rather than relying on the pre-seed
+    // HOLD computed above.
+    store.recordAssessment("ORG-DEMO-001", candidateRecord.obligation_id, "PAY");
 
     const { sealed } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
       organizationId: "ORG-DEMO-001",

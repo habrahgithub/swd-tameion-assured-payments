@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { AssuranceFailedError } from "../../../../../src/pipeline/authorize-and-seal";
-import { approveAndSealPae } from "../../../../../src/pipeline/authorize-and-seal";
-import { StaleStateError } from "../../../../../src/authority/aggregate";
+import { AssuranceFailedError, approveAndSealPae } from "../../../../../src/pipeline/authorize-and-seal";
+import { AuthorityError, StaleStateError } from "../../../../../src/authority/aggregate";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, getDemoState } from "../../../../../src/server/demo-state";
 
 interface ApproveRequestBody {
@@ -45,6 +44,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     if (error instanceof AssuranceFailedError) {
       return NextResponse.json({ error: error.message, overall: error.overall }, { status: 422 });
+    }
+    if (error instanceof AuthorityError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
     }
     throw error;
   }

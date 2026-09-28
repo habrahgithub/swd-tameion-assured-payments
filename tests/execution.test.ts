@@ -43,6 +43,7 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
 function setupAuthorizedFixture() {
   const store = new AuthorityStore();
   store.seed(baseAggregate());
+  store.recordAssessment("ORG-DEMO-001", "OBL-J0C-002", "PAY");
   const { aggregate, sealed } = approveAndSealPae(store, SIGNING_KEY_ID, {
     organizationId: "ORG-DEMO-001",
     obligationId: "OBL-J0C-002",
@@ -66,6 +67,7 @@ describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
   it("refuses to seal a PAE when the Safety Kernel does not PASS", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ destination_verification_status: "PENDING_VERIFICATION" }));
+    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-002", "PAY");
     expect(() =>
       approveAndSealPae(store, SIGNING_KEY_ID, {
         organizationId: "ORG-DEMO-001",

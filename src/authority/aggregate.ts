@@ -97,12 +97,55 @@ export class AuthorityError extends Error {
  * the storage backend does not change the authority/version contract any
  * caller depends on.
  */
+/** States that mean an obligation has already been selected as *the* execution
+ * candidate (approved, or further along). Used to enforce "exactly one
+ * candidate selection" — J1 requires the sole PAY candidate be chosen only
+ * after all assessments complete, and this repo has exactly one execution
+ * rail, so at most one obligation may hold one of these states at a time. */
+const COMMITTED_CANDIDATE_STATES: ReadonlySet<ObligationState> = new Set([
+  "AUTHORIZED",
+  "EXTERNAL_SETTLEMENT_PENDING_VERIFICATION",
+  "EXTERNALLY_SETTLED",
+  "SETTLED",
+  "RECONCILED",
+]);
+
 export class AuthorityStore {
   private readonly aggregates = new Map<string, AuthorityAggregate>();
   private readonly killSwitches = new Set<string>();
+  /** obligation_id -> last recorded Finance Agent decision (J1 candidate-selection gate). */
+  private readonly assessments = new Map<string, "PAY" | "HOLD" | "ESCALATE">();
 
   private key(organizationId: string, obligationId: string): string {
     return `${organizationId}::${obligationId}`;
+  }
+
+  /** Records the Finance Agent's decision for an obligation. Approval is
+   * refused for any obligation that has never been recorded here as PAY —
+   * this is the server-side enforcement point for "AI proposes, never
+   * approves": a decision must exist and must be PAY before a human can
+   * even attempt the T1 approval transition. */
+  recordAssessment(organizationId: string, obligationId: string, decision: "PAY" | "HOLD" | "ESCALATE"): void {
+    this.assessments.set(this.key(organizationId, obligationId), decision);
+  }
+
+  getAssessment(organizationId: string, obligationId: string): "PAY" | "HOLD" | "ESCALATE" | undefined {
+    return this.assessments.get(this.key(organizationId, obligationId));
+  }
+
+  /** Returns the obligation_id of another obligation already committed as
+   * the sole execution candidate for this organization, or null if none. */
+  findCommittedCandidateExcluding(organizationId: string, obligationId: string): string | null {
+    for (const aggregate of this.aggregates.values()) {
+      if (
+        aggregate.organization_id === organizationId &&
+        aggregate.obligation_id !== obligationId &&
+        COMMITTED_CANDIDATE_STATES.has(aggregate.state)
+      ) {
+        return aggregate.obligation_id;
+      }
+    }
+    return null;
   }
 
   seed(aggregate: AuthorityAggregate): void {
@@ -173,6 +216,20 @@ export class AuthorityStore {
     }
     if (current.business_hold || current.security_freeze) {
       throw new AuthorityError("Cannot approve while HOLD or security freeze is active", "OPS-001");
+    }
+    const decision = this.getAssessment(organizationId, obligationId);
+    if (decision !== "PAY") {
+      throw new AuthorityError(
+        `Cannot approve: no recorded PAY decision for this obligation (found: ${decision ?? "none — never assessed"})`,
+        "AUT-007",
+      );
+    }
+    const otherCandidate = this.findCommittedCandidateExcluding(organizationId, obligationId);
+    if (otherCandidate) {
+      throw new AuthorityError(
+        `Cannot approve: ${otherCandidate} is already the committed sole execution candidate for this organization`,
+        "AUT-008",
+      );
     }
     return this.write({
       ...current,

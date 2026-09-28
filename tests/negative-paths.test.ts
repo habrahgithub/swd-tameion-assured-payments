@@ -82,7 +82,7 @@ describe("negative path: amount/asset/network mismatch", () => {
 });
 
 describe("negative path: missing human authorization", () => {
-  function baseAggregate(): AuthorityAggregate {
+  function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAggregate {
     return {
       organization_id: "ORG-DEMO-001",
       obligation_id: "OBL-J0C-002",
@@ -111,6 +111,7 @@ describe("negative path: missing human authorization", () => {
       execution_state: "NONE",
       execution_idempotency_key: null,
       reviewed_aggregate_version: null,
+      ...overrides,
     };
   }
 
@@ -133,5 +134,42 @@ describe("negative path: missing human authorization", () => {
     store.seed(baseAggregate());
     const worker = new ExecutionWorker(store, new FakeProviderAdapter());
     expect(worker.getExecutionRecord("idem-never-approved")).toBeUndefined();
+  });
+
+  it("refuses to approve an obligation that was never assessed by the Finance Agent", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1)).toThrow(/no recorded PAY decision/);
+  });
+
+  it("refuses to approve an obligation the Finance Agent decided HOLD or ESCALATE", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
+    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-002", "HOLD");
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1)).toThrow(/no recorded PAY decision/);
+  });
+
+  it("enforces exactly-one candidate selection: refuses to approve a second obligation while another is already the committed candidate", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
+    store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
+    store.recordAssessment("ORG-DEMO-001", "OBL-A", "PAY");
+    store.recordAssessment("ORG-DEMO-001", "OBL-B", "PAY");
+
+    store.approve("ORG-DEMO-001", "OBL-A", 1);
+    expect(() => store.approve("ORG-DEMO-001", "OBL-B", 1)).toThrow(/already the committed sole execution candidate/);
+  });
+
+  it("allows approving a different obligation once the previously-committed candidate is cancelled", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ obligation_id: "OBL-A", state: "APPROVAL_PENDING" }));
+    store.seed(baseAggregate({ obligation_id: "OBL-B", state: "APPROVAL_PENDING" }));
+    store.recordAssessment("ORG-DEMO-001", "OBL-A", "PAY");
+    store.recordAssessment("ORG-DEMO-001", "OBL-B", "PAY");
+
+    const authorizedA = store.approve("ORG-DEMO-001", "OBL-A", 1);
+    store.cancel("ORG-DEMO-001", "OBL-A", authorizedA.aggregate_version);
+    const authorizedB = store.approve("ORG-DEMO-001", "OBL-B", 1);
+    expect(authorizedB.state).toBe("AUTHORIZED");
   });
 });

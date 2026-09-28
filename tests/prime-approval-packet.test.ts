@@ -40,6 +40,7 @@ describe("J2 Prime approval packet", () => {
   it("discloses exact obligation/version/amount/network/wallet/destination/PAE identity", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());
+    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-003", "PAY");
     const { sealed } = approveAndSealPae(store, "PACKET-TEST-KEY", {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
@@ -76,6 +77,7 @@ describe("J2 Prime approval packet", () => {
   it("produces a different fingerprint if the destination version changes (material change detectability)", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());
+    store.recordAssessment("ORG-DEMO-001", "OBL-J0C-003", "PAY");
     const { sealed: first } = approveAndSealPae(store, "PACKET-TEST-KEY-2", {
       organizationId: "ORG-DEMO-001",
       obligationId: "OBL-J0C-003",
