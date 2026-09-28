@@ -36,6 +36,8 @@ function buildFixture() {
     new_state: "AUTHORIZED",
     approved_at: "2026-09-28T12:00:00.000Z",
     reason_hash: reasonHash,
+    assessment_id: "ASM-001",
+    assessment_hash: "c".repeat(64),
   });
 
   const { record: assuranceRecord, assurance_hash } = sealDurableAssuranceRecord({
@@ -86,6 +88,8 @@ function buildFixture() {
         approved_at: "2026-09-28T12:00:00.000Z",
         policy_version: "POLICY-P0-1",
         approval_record_hash,
+        assessment_id: "ASM-001",
+        assessment_hash: "c".repeat(64),
       },
     ],
     assurance_hash,

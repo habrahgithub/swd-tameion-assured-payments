@@ -102,6 +102,8 @@ export const durableApprovalRecordSchema = z
     new_state: boundedAscii(),
     approved_at: rfc3339Millis,
     reason_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    assessment_id: boundedAscii(),
+    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
 export type DurableApprovalRecord = z.infer<typeof durableApprovalRecordSchema>;
@@ -120,6 +122,8 @@ export const paeApprovalEvidenceSchema = z
     approved_at: rfc3339Millis,
     policy_version: boundedAscii(),
     approval_record_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    assessment_id: boundedAscii(),
+    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
 export type PaeApprovalEvidence = z.infer<typeof paeApprovalEvidenceSchema>;

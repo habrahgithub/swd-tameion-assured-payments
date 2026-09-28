@@ -211,6 +211,30 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(submissionCount).toBe(1);
   });
 
+  it("recovers a persisted SUBMITTING marker as UNKNOWN after restart without a provider resubmit", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let crashSnapshot: ReturnType<AuthorityStore["exportSnapshot"]> | undefined;
+    let executionSnapshot: ReturnType<ExecutionWorker["exportSnapshot"]> | undefined;
+    const interruptedWorker = new ExecutionWorker(store, adapter, async () => {
+      crashSnapshot = store.exportSnapshot();
+      executionSnapshot = interruptedWorker.exportSnapshot();
+      throw new Error("simulated process loss after durable SUBMITTING marker");
+    });
+
+    await expect(interruptedWorker.execute(sealed)).rejects.toThrow(/simulated process loss/);
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(executionSnapshot?.[0]?.status).toBe("SUBMITTING");
+
+    const restartedStore = AuthorityStore.fromSnapshot(crashSnapshot!);
+    const restartedWorker = new ExecutionWorker(restartedStore, adapter);
+    restartedWorker.restoreSnapshot(executionSnapshot!);
+    const recovered = await restartedWorker.execute(sealed);
+    expect(recovered.status).toBe("UNKNOWN");
+    expect(restartedStore.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
   it("(9) BLOCKs pre-submit with zero unauthorized movement when the destination changed after authorization", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     // Simulate an attacker/operator changing the destination after the PAE was sealed.

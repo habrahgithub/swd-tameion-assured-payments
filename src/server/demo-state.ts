@@ -3,18 +3,28 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
-import { ExecutionWorker } from "../execution/worker";
-import { FakeProviderAdapter } from "../execution/fake-provider-adapter";
+import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
-import type { SealedPae } from "../domain/schemas";
+import {
+  durableApprovalRecordSchema,
+  durableAssuranceRecordSchema,
+  sealedPaeSchema,
+  type DurableApprovalRecord,
+  type DurableAssuranceRecord,
+  type SealedPae,
+} from "../domain/schemas";
+import {
+  verifyDurableApprovalRecordHash,
+  verifyDurableAssuranceRecordHash,
+} from "../pae/durable-records";
+import { canonicalBytes, sha256Hex } from "../pae/canonicalize";
+import { SupabaseDemoStateRepository } from "./supabase-demo-state-repository";
 
 /**
- * Server-side demo/prototype state for the J3 UI. This is a single-process
- * in-memory singleton — correct for demoing the P0 golden flow, NOT durable
- * across restarts and NOT safe across multiple serverless instances. A
- * hardening pass should replace this with the Supabase-backed store the
- * blueprint specifies once live database credentials are available in this
- * environment (see docs/evidence/J0-B-CONNECTIVITY.md).
+ * Server-side demo/prototype state for the J3 UI. Vercel Preview and
+ * Production load and compare-and-set this snapshot through Supabase on
+ * every request. Local development/test may use the memory adapter.
  *
  * DEMO_ARC_TRUST_SEEDED: the real J0-C dataset marks every obligation's Arc
  * destination readiness as PENDING_J0_D_TRUST_SEED (J0-D has not run — see
@@ -40,6 +50,173 @@ export interface DemoObligationSummary {
   commercial_terms: string;
 }
 
+export interface DemoAuthorizationArtifacts {
+  approval_record: DurableApprovalRecord;
+  approval_record_hash: string;
+  assurance_record: DurableAssuranceRecord;
+  assurance_hash: string;
+  sealed_pae: SealedPae;
+}
+
+export interface DemoStateSnapshot {
+  schema_version: 1;
+  authority: ReturnType<AuthorityStore["exportSnapshot"]>;
+  sealed_paes: Array<[string, SealedPae]>;
+  authorization_history: DemoAuthorizationArtifacts[];
+  execution_ledger: ExecutionRecord[];
+  provider_adapter: FakeProviderAdapterSnapshot;
+}
+
+const authorizationArtifactsParser = (value: unknown): DemoAuthorizationArtifacts => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted authorization artifact.");
+  const item = value as Record<string, unknown>;
+  const artifacts = {
+    approval_record: durableApprovalRecordSchema.parse(item.approval_record),
+    approval_record_hash: parseSha256(item.approval_record_hash),
+    assurance_record: durableAssuranceRecordSchema.parse(item.assurance_record),
+    assurance_hash: parseSha256(item.assurance_hash),
+    sealed_pae: sealedPaeSchema.parse(item.sealed_pae),
+  };
+  if (!verifyDurableApprovalRecordHash(artifacts.approval_record, artifacts.approval_record_hash)) {
+    throw new Error("Persisted approval record failed hash-integrity verification.");
+  }
+  if (!verifyDurableAssuranceRecordHash(artifacts.assurance_record, artifacts.assurance_hash)) {
+    throw new Error("Persisted assurance record failed hash-integrity verification.");
+  }
+  if (sha256Hex(canonicalBytes(artifacts.sealed_pae.payload)) !== artifacts.sealed_pae.instruction_hash) {
+    throw new Error("Persisted PAE failed instruction-hash verification.");
+  }
+  const approval = artifacts.approval_record;
+  const assurance = artifacts.assurance_record;
+  const evidence = artifacts.sealed_pae.payload.approval_evidence[0];
+  if (
+    artifacts.sealed_pae.payload.approval_evidence.length !== 1 ||
+    !evidence ||
+    approval.organization_id !== assurance.organization_id || approval.obligation_id !== assurance.obligation_id ||
+    approval.organization_id !== artifacts.sealed_pae.payload.organization_id ||
+    approval.obligation_id !== artifacts.sealed_pae.payload.obligation_ids[0] ||
+    approval.assessment_id !== evidence.assessment_id || approval.assessment_hash !== evidence.assessment_hash ||
+    approval.approval_id !== evidence.approval_id || artifacts.approval_record_hash !== evidence.approval_record_hash ||
+    approval.actor_id !== evidence.actor_id || approval.actor_role !== evidence.actor_role ||
+    approval.policy_version !== evidence.policy_version ||
+    approval.authorized_aggregate_version !== evidence.authorized_aggregate_version ||
+    assurance.aggregate_version !== approval.authorized_aggregate_version ||
+    artifacts.sealed_pae.payload.aggregate_version !== approval.authorized_aggregate_version ||
+    artifacts.sealed_pae.payload.assurance_hash !== artifacts.assurance_hash
+  ) throw new Error("Persisted authorization artifacts are not consistently bound.");
+  return artifacts;
+};
+
+function parseSha256(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) throw new Error("Malformed persisted artifact hash.");
+  return value;
+}
+
+function parseSnapshot(value: unknown): DemoStateSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed Supabase demo-state snapshot.");
+  const snapshot = value as Record<string, unknown>;
+  if (
+    snapshot.schema_version !== 1 ||
+    !snapshot.authority || typeof snapshot.authority !== "object" || Array.isArray(snapshot.authority) ||
+    !Array.isArray(snapshot.sealed_paes) || !Array.isArray(snapshot.authorization_history) ||
+    !Array.isArray(snapshot.execution_ledger) || !snapshot.provider_adapter ||
+    typeof snapshot.provider_adapter !== "object" || Array.isArray(snapshot.provider_adapter)
+  ) {
+    throw new Error("Malformed Supabase demo-state snapshot.");
+  }
+  const authority = snapshot.authority as Record<string, unknown>;
+  if (!Array.isArray(authority.aggregates) || !Array.isArray(authority.kill_switches) || !Array.isArray(authority.assessments)) {
+    throw new Error("Malformed persisted authority snapshot.");
+  }
+  const sealedPaes = snapshot.sealed_paes.map((entry) => {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") throw new Error("Malformed persisted PAE entry.");
+    return [entry[0], sealedPaeSchema.parse(entry[1])] as [string, SealedPae];
+  });
+  const authorizationHistory = snapshot.authorization_history.map(authorizationArtifactsParser);
+  const assessmentsByHash = new Map<string, { assessment_id: string; organization_id: string; obligation_id: string }>();
+  for (const assessment of authority.assessments) {
+    if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)) throw new Error("Malformed persisted assessment.");
+    const item = assessment as Record<string, unknown>;
+    if (typeof item.hash !== "string") throw new Error("Malformed persisted assessment hash.");
+    const record = item.record as Record<string, unknown> | undefined;
+    if (!record || typeof record.assessment_id !== "string" || typeof record.organization_id !== "string" || typeof record.obligation_id !== "string") {
+      throw new Error("Malformed persisted assessment identity.");
+    }
+    assessmentsByHash.set(parseSha256(item.hash), {
+      assessment_id: record.assessment_id,
+      organization_id: record.organization_id,
+      obligation_id: record.obligation_id,
+    });
+  }
+  for (const authorization of authorizationHistory) {
+    const assessment = assessmentsByHash.get(authorization.approval_record.assessment_hash);
+    if (
+      !assessment ||
+      assessment.assessment_id !== authorization.approval_record.assessment_id ||
+      assessment.organization_id !== authorization.approval_record.organization_id ||
+      assessment.obligation_id !== authorization.approval_record.obligation_id
+    ) {
+      throw new Error("Persisted authorization references missing assessment history.");
+    }
+  }
+  const latestAuthorizationByObligation = new Map<string, DemoAuthorizationArtifacts>();
+  for (const authorization of authorizationHistory) {
+    latestAuthorizationByObligation.set(authorization.approval_record.obligation_id, authorization);
+  }
+  for (const [obligationId, pae] of sealedPaes) {
+    const latestAuthorization = latestAuthorizationByObligation.get(obligationId);
+    if (
+      pae.payload.obligation_ids.length !== 1 || pae.payload.obligation_ids[0] !== obligationId ||
+      !latestAuthorization || latestAuthorization.sealed_pae.instruction_hash !== pae.instruction_hash ||
+      latestAuthorization.sealed_pae.signature !== pae.signature
+    ) throw new Error("Persisted current PAE pointer does not match authorization history.");
+  }
+  for (const [obligationId, authorization] of latestAuthorizationByObligation) {
+    const currentPae = sealedPaes.find(([id]) => id === obligationId)?.[1];
+    if (!currentPae || currentPae.instruction_hash !== authorization.sealed_pae.instruction_hash) {
+      throw new Error("Persisted authorization is missing its current sealed PAE pointer.");
+    }
+  }
+  const executionLedger = snapshot.execution_ledger.map((value) => parseExecutionRecord(value));
+  const executionKeys = executionLedger.map((entry) => entry.idempotency_key);
+  if (new Set(executionKeys).size !== executionKeys.length) throw new Error("Persisted execution ledger contains duplicate idempotency keys.");
+  const aggregateIdentities = (authority.aggregates as Array<Record<string, unknown>>).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+        typeof entry.organization_id !== "string" || typeof entry.obligation_id !== "string" ||
+        !Number.isSafeInteger(entry.aggregate_version) || (entry.aggregate_version as number) < 1) {
+      throw new Error("Malformed persisted authority aggregate.");
+    }
+    return `${entry.organization_id}::${entry.obligation_id}`;
+  });
+  if (new Set(aggregateIdentities).size !== aggregateIdentities.length) throw new Error("Persisted authority snapshot contains duplicate aggregates.");
+  const providerAdapter = snapshot.provider_adapter as FakeProviderAdapterSnapshot;
+  if (
+    !Array.isArray(providerAdapter.transfers_by_ref) || !Array.isArray(providerAdapter.refs_by_idempotency_key) ||
+    !Array.isArray(providerAdapter.outcome_queue) || !Number.isSafeInteger(providerAdapter.submission_count)
+  ) throw new Error("Malformed persisted provider simulator snapshot.");
+  return {
+    schema_version: 1,
+    authority: snapshot.authority as DemoStateSnapshot["authority"],
+    sealed_paes: sealedPaes,
+    authorization_history: authorizationHistory,
+    execution_ledger: executionLedger,
+    provider_adapter: providerAdapter,
+  };
+}
+
+function parseExecutionRecord(value: unknown): ExecutionRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted execution record.");
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.obligation_id !== "string" || typeof record.idempotency_key !== "string" ||
+    record.idempotency_key.length === 0 ||
+    !(record.provider_ref === null || typeof record.provider_ref === "string") ||
+    !["SUBMITTING", "SETTLED", "FAILED", "UNKNOWN", "BLOCKED"].includes(String(record.status)) ||
+    typeof record.atomic_amount !== "string" || typeof record.destination_address !== "string"
+  ) throw new Error("Malformed persisted execution record.");
+  return record as unknown as ExecutionRecord;
+}
+
 function loadLiveUsageSet(): LiveUsageObligationRecord[] {
   const fixturePath = path.join(process.cwd(), "data/live-usage/LIVE_USAGE_SET.json");
   const parsed = JSON.parse(readFileSync(fixturePath, "utf8")) as { records: LiveUsageObligationRecord[] };
@@ -51,17 +228,28 @@ function toUsdcAmount(rawAmount: string): string {
   return `${whole}.${fractional.padEnd(6, "0")}`;
 }
 
-class DemoState {
-  readonly store = new AuthorityStore();
+export class DemoState {
+  readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
-  readonly adapter = new FakeProviderAdapter();
+  readonly adapter: FakeProviderAdapter;
   readonly liveUsageRecords: LiveUsageObligationRecord[];
-  private readonly sealedPaeByObligation = new Map<string, SealedPae>();
+  private readonly sealedPaeByObligation: Map<string, SealedPae>;
+  private readonly authorizationHistory: DemoAuthorizationArtifacts[];
+  private repository?: SupabaseDemoStateRepository;
+  private revision?: number;
 
-  constructor() {
+  constructor(snapshot?: DemoStateSnapshot, repository?: SupabaseDemoStateRepository, revision?: number) {
     this.liveUsageRecords = loadLiveUsageSet();
-    this.worker = new ExecutionWorker(this.store, this.adapter);
-    for (const record of this.liveUsageRecords) {
+    this.repository = repository;
+    this.revision = revision;
+    this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.adapter = new FakeProviderAdapter(snapshot?.provider_adapter);
+    this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
+    this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
+    this.worker = new ExecutionWorker(this.store, this.adapter, () => this.flush());
+    if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
+
+    if (!snapshot) for (const record of this.liveUsageRecords) {
       const aggregate: AuthorityAggregate = {
         organization_id: DEMO_ORGANIZATION_ID,
         obligation_id: record.obligation_id,
@@ -118,6 +306,35 @@ class DemoState {
   getSealedPae(obligationId: string): SealedPae | undefined {
     return this.sealedPaeByObligation.get(obligationId);
   }
+
+  recordAuthorization(artifacts: DemoAuthorizationArtifacts): void {
+    this.authorizationHistory.push(authorizationArtifactsParser(artifacts));
+    this.setSealedPae(artifacts.sealed_pae.payload.obligation_ids[0], artifacts.sealed_pae);
+  }
+
+  exportSnapshot(): DemoStateSnapshot {
+    return {
+      schema_version: 1,
+      authority: this.store.exportSnapshot(),
+      sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
+      authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      execution_ledger: this.worker.exportSnapshot(),
+      provider_adapter: this.adapter.exportSnapshot(),
+    };
+  }
+
+  async flush(): Promise<void> {
+    if (!this.repository || this.revision === undefined || this.namespace === undefined) return;
+    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, this.exportSnapshot() as unknown as Record<string, unknown>);
+  }
+
+  private namespace?: string;
+
+  attachRepository(repository: SupabaseDemoStateRepository, namespace: string, revision: number): void {
+    this.repository = repository;
+    this.namespace = namespace;
+    this.revision = revision;
+  }
 }
 
 function syntheticEvidenceHash(evidenceId: string): string {
@@ -138,7 +355,41 @@ declare global {
   var __tameionDemoState: DemoState | undefined;
 }
 
-export function getDemoState(): DemoState {
+function stateNamespace(): string {
+  const deploymentEnvironment = process.env.VERCEL_ENV;
+  if (deploymentEnvironment === "production") return "production-demo";
+  if (deploymentEnvironment === "preview") {
+    const pullRequest = process.env.VERCEL_GIT_PULL_REQUEST_ID;
+    if (pullRequest && /^\d+$/.test(pullRequest)) return `preview-pr${pullRequest}`;
+    const branch = (process.env.VERCEL_GIT_COMMIT_REF ?? "unknown-branch").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    return `preview-${(branch || "unknown-branch").slice(0, 88)}`;
+  }
+  return "local-development";
+}
+
+async function createPersistentDemoState(url: string, serviceRoleKey: string): Promise<DemoState> {
+  const namespace = stateNamespace();
+  const repository = new SupabaseDemoStateRepository(url, serviceRoleKey);
+  const initial = new DemoState();
+  const stored = await repository.loadOrSeed(namespace, initial.exportSnapshot() as unknown as Record<string, unknown>);
+  const state = new DemoState(parseSnapshot(stored.snapshot), repository, stored.revision);
+  state.attachRepository(repository, namespace, stored.revision);
+  return state;
+}
+
+export async function getDemoState(): Promise<DemoState> {
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const mustBeDurable = process.env.VERCEL_ENV === "preview" || process.env.VERCEL_ENV === "production";
+
+  if (Boolean(url) !== Boolean(serviceRoleKey)) {
+    throw new Error("Both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for durable demo state.");
+  }
+  if (url && serviceRoleKey) return createPersistentDemoState(url, serviceRoleKey);
+  if (mustBeDurable) {
+    throw new Error("Vercel Preview/Production requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY; in-memory state is disabled.");
+  }
+
   if (!globalThis.__tameionDemoState) {
     globalThis.__tameionDemoState = new DemoState();
   }

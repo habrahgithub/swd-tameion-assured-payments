@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../../src/server/demo-state";
+import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
 
 interface KillSwitchRequestBody {
   action: "ACTIVATE" | "DEACTIVATE";
@@ -18,7 +19,7 @@ interface KillSwitchRequestBody {
  */
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = getDemoState();
+  const state = await getDemoState();
   const body = (await request.json().catch(() => ({}))) as Partial<KillSwitchRequestBody>;
 
   if (body.action !== "ACTIVATE" && body.action !== "DEACTIVATE") {
@@ -35,6 +36,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     state.store.activateKillSwitch(killSwitchScope, targetId);
   } else {
     state.store.deactivateKillSwitch(killSwitchScope, targetId);
+  }
+
+  try {
+    await state.flush();
+  } catch (error) {
+    if (error instanceof DemoStateConflictError) {
+      return NextResponse.json({ error: error.message, code: "OPS-002" }, { status: 409 });
+    }
+    throw error;
   }
 
   return NextResponse.json({

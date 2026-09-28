@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../src/server/demo-state";
 
-export function GET() {
-  const state = getDemoState();
+export async function GET() {
+  const state = await getDemoState();
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);

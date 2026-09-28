@@ -40,6 +40,7 @@ export interface ProviderAdapter {
   readonly name: string;
   submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult>;
   getStatus(providerRef: string): Promise<StatusResult>;
+  getStatusByIdempotencyKey?(idempotencyKey: string): Promise<StatusResult>;
 }
 
 export class ProviderNotConfiguredError extends Error {

@@ -48,9 +48,25 @@ export function approveAndSealPae(
   store: AuthorityStore,
   signingKeyId: string,
   input: ApprovalInput,
-): { aggregate: AuthorityAggregate; sealed: SealedPae; safetyKernel: SafetyKernelResult } {
+): {
+  aggregate: AuthorityAggregate;
+  sealed: SealedPae;
+  safetyKernel: SafetyKernelResult;
+  approvalRecord: ReturnType<typeof sealDurableApprovalRecord>;
+  assuranceRecord: ReturnType<typeof sealDurableAssuranceRecord>;
+} {
   const now = input.now ?? (() => new Date());
   const isoNow = now().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
+  const current = store.get(input.organizationId, input.obligationId);
+  if (current.aggregate_version !== input.expectedVersion) {
+    // Preserve the authority store's canonical STALE_STATE rejection before
+    // checking assessment availability for an obsolete version.
+    store.approve(input.organizationId, input.obligationId, input.expectedVersion);
+  }
+  const assessment = store.getCurrentAssessment(input.organizationId, input.obligationId);
+  if (!assessment || assessment.record.aggregate_version !== String(input.expectedVersion)) {
+    throw new AuthorityError("Cannot authorize without a current assessment bound to the reviewed aggregate version", "AUT-009");
+  }
 
   const aggregate = store.approve(input.organizationId, input.obligationId, input.expectedVersion);
 
@@ -71,6 +87,8 @@ export function approveAndSealPae(
     new_state: "AUTHORIZED",
     approved_at: isoNow,
     reason_hash: reasonHash,
+    assessment_id: assessment.record.assessment_id,
+    assessment_hash: assessment.hash,
   });
 
   const safetyResult = runSafetyKernel(aggregate, store);
@@ -136,6 +154,8 @@ export function approveAndSealPae(
         approved_at: isoNow,
         policy_version: input.policyVersion,
         approval_record_hash,
+        assessment_id: assessment.record.assessment_id,
+        assessment_hash: assessment.hash,
       },
     ],
     assurance_hash,
@@ -146,9 +166,13 @@ export function approveAndSealPae(
   };
 
   const sealed = sealPae(unsignedPayload, privateKey);
-  void approvalRecord;
-  void assuranceRecord;
-  return { aggregate, sealed, safetyKernel: safetyResult };
+  return {
+    aggregate,
+    sealed,
+    safetyKernel: safetyResult,
+    approvalRecord: { record: approvalRecord, approval_record_hash },
+    assuranceRecord: { record: assuranceRecord, assurance_hash },
+  };
 }
 
 export { AuthorityError };

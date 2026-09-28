@@ -104,13 +104,26 @@ describe("AuthorityStore.sealAssessment: missing / modified / duplicate / stale 
     expect(() => store.sealAssessment(validRecord({ aggregate_version: "1" }))).toThrow(/does not match current/);
   });
 
-  it("duplicate: sealing a second assessment for the same obligation replaces the first (latest wins)", () => {
+  it("reassessment appends immutable history and deterministically selects the newest current record", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());
     sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "HOLD" });
     sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "PAY" });
-    const sealed = store.getSealedAssessment("ORG-DEMO-001", "OBL-J0C-002");
-    expect(sealed?.record.decision).toBe("PAY");
+    const history = store.getAssessmentHistory("ORG-DEMO-001", "OBL-J0C-002");
+    expect(history.map((item) => item.record.decision)).toEqual(["HOLD", "PAY"]);
+    expect(store.getCurrentAssessment("ORG-DEMO-001", "OBL-J0C-002")?.record.decision).toBe("PAY");
+    expect(history[0].hash).not.toBe(history[1].hash);
+  });
+
+  it("assessment history and its derived current assessment survive a store restart", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate());
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "HOLD" });
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "PAY" });
+
+    const restarted = AuthorityStore.fromSnapshot(store.exportSnapshot());
+    expect(restarted.getAssessmentHistory("ORG-DEMO-001", "OBL-J0C-002")).toHaveLength(2);
+    expect(restarted.getCurrentAssessment("ORG-DEMO-001", "OBL-J0C-002")?.record.decision).toBe("PAY");
   });
 
   it("modified: a sealed assessment retrieved from the store still passes hash-integrity verification untouched", () => {

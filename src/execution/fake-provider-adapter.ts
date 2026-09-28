@@ -14,6 +14,13 @@ interface FakeTransfer {
   status: "PENDING" | "CONFIRMED" | "FAILED";
 }
 
+export interface FakeProviderAdapterSnapshot {
+  transfers_by_ref: Array<[string, FakeTransfer]>;
+  refs_by_idempotency_key: Array<[string, string]>;
+  outcome_queue: Array<"CONFIRMED" | "FAILED" | "TIMEOUT">;
+  submission_count: number;
+}
+
 /**
  * Deterministic in-memory fake of a Circle/Arc-style provider, used for the
  * mocked golden path and all automated tests. Behaviour is scriptable via
@@ -22,10 +29,26 @@ interface FakeTransfer {
  */
 export class FakeProviderAdapter implements ProviderAdapter {
   readonly name = "fake-testnet";
-  private readonly transfersByRef = new Map<string, FakeTransfer>();
-  private readonly refsByIdempotencyKey = new Map<string, string>();
-  private outcomeQueue: Array<"CONFIRMED" | "FAILED" | "TIMEOUT"> = [];
-  private submissionCount = 0;
+  private readonly transfersByRef: Map<string, FakeTransfer>;
+  private readonly refsByIdempotencyKey: Map<string, string>;
+  private outcomeQueue: Array<"CONFIRMED" | "FAILED" | "TIMEOUT">;
+  private submissionCount: number;
+
+  constructor(snapshot?: FakeProviderAdapterSnapshot) {
+    this.transfersByRef = new Map(snapshot?.transfers_by_ref ?? []);
+    this.refsByIdempotencyKey = new Map(snapshot?.refs_by_idempotency_key ?? []);
+    this.outcomeQueue = [...(snapshot?.outcome_queue ?? [])];
+    this.submissionCount = snapshot?.submission_count ?? 0;
+  }
+
+  exportSnapshot(): FakeProviderAdapterSnapshot {
+    return {
+      transfers_by_ref: [...this.transfersByRef.entries()].map(([ref, transfer]) => [ref, { ...transfer }]),
+      refs_by_idempotency_key: [...this.refsByIdempotencyKey.entries()],
+      outcome_queue: [...this.outcomeQueue],
+      submission_count: this.submissionCount,
+    };
+  }
 
   queueOutcome(outcome: "CONFIRMED" | "FAILED" | "TIMEOUT"): void {
     this.outcomeQueue.push(outcome);
@@ -83,6 +106,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
       destinationAddress: transfer.destinationAddress,
       atomicAmount: transfer.atomicAmount,
     };
+  }
+
+  async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
+    const providerRef = this.refsByIdempotencyKey.get(idempotencyKey);
+    return providerRef ? this.getStatus(providerRef) : { status: "UNKNOWN" };
   }
 
   /** Test/demo hook: resolve a previously-timed-out transfer as if the chain finally confirmed it. */

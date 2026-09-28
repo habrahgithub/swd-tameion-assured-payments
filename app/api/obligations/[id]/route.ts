@@ -5,7 +5,7 @@ import { DEMO_ARC_TRUST_SEEDED, DEMO_ORGANIZATION_ID, getDemoState } from "../..
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = getDemoState();
+  const state = await getDemoState();
   try {
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     const record = state.getRecord(id);

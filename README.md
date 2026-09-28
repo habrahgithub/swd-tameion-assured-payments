@@ -50,7 +50,7 @@ The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](d
 
 ## Prototype status (`prototype/claude-autonomy`)
 
-Implemented and tested (`npm test`, 51 passing; verified live in a real Chromium browser, not just curl):
+Implemented and tested (`npm test`, 106 passing; verified live in a real Chromium browser, not just curl):
 
 - **Numeric safety** (`src/domain/numeric.ts`): exact decimal <-> atomic USDC conversion, no floating point, no silent truncation.
 - **PAE-P0-1** (`src/pae/`): RFC 8785 JCS canonicalization, SHA-256, Ed25519 sign/verify, a versioned trusted-key registry, and durable approval/assurance record hashing — matches the blueprint's Canonicalization Contract field-for-field.
@@ -70,7 +70,8 @@ Implemented and tested (`npm test`, 51 passing; verified live in a real Chromium
   - **J2 execution is still simulated** (`FakeProviderAdapter`) — unchanged, and intentionally so pending Prime's exact-intent approval for a real transfer.
   - The real J0-C dataset still correctly shows every obligation's Arc destination readiness as `PENDING_J0_D_TRUST_SEED` until J0-D actually completes (reaches a terminal transfer state); the Finance Agent honestly HOLDs all five obligations on that basis (see `tests/golden-path.integration.test.ts`).
   - **To resume the real spike** once the source wallet is funded: `POST /api/j0d/run-connectivity-spike` with body `{"confirm":"RUN_J0D_CONNECTIVITY_SPIKE_ONCE","resumeFrom":{"walletSetId":"...","sourceWallet":{"id":"...","address":"..."},"destinationWallet":{"id":"...","address":"..."}}}` (IDs in `docs/evidence/J0-D-CONNECTIVITY-SPIKE.md`), or omit `resumeFrom` to mint a fresh disposable context. Not idempotent — there's no persistent store to enforce "at most once" across separate serverless invocations, so call it exactly once, deliberately.
-- **No durable persistence.** `AuthorityStore` and the UI's demo state are in-memory singletons — correct for demonstrating the mechanism, not durable across restarts, and not safe across multiple serverless instances. Swapping in Supabase-backed storage should not change the version/CAS contract any caller depends on.
+- **P0 demo-state persistence:** Vercel Preview and Production load and compare-and-set authority, append-only assessments and approvals, sealed PAE, kill switches, execution/idempotency status, and provider simulator state through Supabase Postgres. SQL migrations are in `supabase/migrations/`; the tables are private, and only the server-side service role can call their RPCs. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in both Vercel environments. If either is missing in Preview or Production, the app fails closed instead of using process-local state. Local development and tests may use the memory adapter.
+- **J0-D connectivity-spike state remains separate:** its wallet/faucet spike is outside this persistence slice and still has no durable cross-invocation at-most-once ledger. Do not treat its process-local resume context as reliable across Vercel instances.
 
 None of the above is silently glossed over: every one of these limitations throws a clear, typed error (or is a clearly-labeled UI simulation banner) rather than fabricating a result.
 

@@ -6,11 +6,12 @@ import { buildFinanceAgentContext } from "../../../../../src/agent/context-build
 import { DeterministicFallbackProvider, NvidiaProvider } from "../../../../../src/agent/ai-provider";
 import { assessObligation, wasProviderCallFailure } from "../../../../../src/agent/finance-agent";
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../../src/server/demo-state";
+import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
 import type { DurableAssessmentRecord } from "../../../../../src/domain/schemas";
 
 export async function POST(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = getDemoState();
+  const state = await getDemoState();
   const record = state.getRecord(id);
   if (!record) {
     return NextResponse.json({ error: `Unknown obligation ${id}` }, { status: 404 });
@@ -58,6 +59,15 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),
   };
   const { assessment_hash } = state.store.sealAssessment(assessmentRecord);
+
+  try {
+    await state.flush();
+  } catch (error) {
+    if (error instanceof DemoStateConflictError) {
+      return NextResponse.json({ error: error.message, code: "OPS-002" }, { status: 409 });
+    }
+    throw error;
+  }
 
   return NextResponse.json({ decision, provider_used: provider.name, provider_mode: providerMode, assessment_hash });
 }

@@ -29,6 +29,8 @@ function approvalRecordFixture(overrides: Partial<DurableApprovalRecord> = {}): 
     new_state: "AUTHORIZED",
     approved_at: "2026-09-28T12:00:00.000Z",
     reason_hash: hashApprovalReason("Reviewed and approved."),
+    assessment_id: "ASM-001",
+    assessment_hash: "c".repeat(64),
     ...overrides,
   };
 }

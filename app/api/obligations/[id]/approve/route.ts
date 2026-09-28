@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { AssuranceFailedError, approveAndSealPae } from "../../../../../src/pipeline/authorize-and-seal";
 import { AuthorityError, StaleStateError } from "../../../../../src/authority/aggregate";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, getDemoState } from "../../../../../src/server/demo-state";
+import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
 
 interface ApproveRequestBody {
   expected_version: number;
@@ -12,7 +13,7 @@ interface ApproveRequestBody {
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = getDemoState();
+  const state = await getDemoState();
   const body = (await request.json().catch(() => ({}))) as Partial<ApproveRequestBody>;
 
   if (typeof body.expected_version !== "number") {
@@ -20,7 +21,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    const { aggregate, sealed, safetyKernel } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
+    const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,
       expectedVersion: body.expected_version,
@@ -29,7 +30,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       policyVersion: "POLICY-P0-1",
       reasonText: body.reason_text ?? `Reviewed and approved ${id} for a testnet-fixture Arc payment.`,
     });
-    state.setSealedPae(id, sealed);
+    state.recordAuthorization({
+      approval_record: approvalRecord.record,
+      approval_record_hash: approvalRecord.approval_record_hash,
+      assurance_record: assuranceRecord.record,
+      assurance_hash: assuranceRecord.assurance_hash,
+      sealed_pae: sealed,
+    });
+    await state.flush();
     return NextResponse.json({
       aggregate,
       sealed_pae: {
@@ -55,6 +63,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
     if (error instanceof AuthorityError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
+    }
+    if (error instanceof DemoStateConflictError) {
+      return NextResponse.json({ error: error.message, code: "OPS-002" }, { status: 409 });
     }
     throw error;
   }

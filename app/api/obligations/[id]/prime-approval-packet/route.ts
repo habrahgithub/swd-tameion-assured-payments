@@ -11,7 +11,7 @@ import { getDemoState } from "../../../../../src/server/demo-state";
  */
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = getDemoState();
+  const state = await getDemoState();
   const sealed = state.getSealedPae(id);
   if (!sealed) {
     return NextResponse.json({ error: "No sealed PAE for this obligation; authorize it first." }, { status: 409 });

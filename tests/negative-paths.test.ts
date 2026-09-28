@@ -47,6 +47,8 @@ function validPayload(overrides: Partial<PaeUnsignedPayload> = {}): unknown {
         approved_at: "2026-09-28T00:00:00.000Z",
         policy_version: "POLICY-P0-1",
         approval_record_hash: "a".repeat(64),
+        assessment_id: "ASM-1",
+        assessment_hash: "c".repeat(64),
       },
     ],
     assurance_hash: "b".repeat(64),

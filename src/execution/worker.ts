@@ -18,7 +18,7 @@ export interface ExecutionRecord {
   obligation_id: string;
   idempotency_key: string;
   provider_ref: string | null;
-  status: "SETTLED" | "FAILED" | "UNKNOWN" | "BLOCKED";
+  status: "SUBMITTING" | "SETTLED" | "FAILED" | "UNKNOWN" | "BLOCKED";
   atomic_amount: string;
   destination_address: string;
 }
@@ -37,11 +37,22 @@ export interface ExecutionRecord {
  */
 export class ExecutionWorker {
   private readonly executionLedger = new Map<string, ExecutionRecord>();
+  private readonly inFlight = new Map<string, Promise<ExecutionRecord>>();
 
   constructor(
     private readonly store: AuthorityStore,
     private readonly adapter: ProviderAdapter,
+    private readonly onDurableStateChange?: () => Promise<void>,
   ) {}
+
+  restoreSnapshot(records: ExecutionRecord[]): void {
+    this.executionLedger.clear();
+    for (const record of records) this.executionLedger.set(record.idempotency_key, { ...record });
+  }
+
+  exportSnapshot(): ExecutionRecord[] {
+    return [...this.executionLedger.values()].map((record) => ({ ...record }));
+  }
 
   getExecutionRecord(idempotencyKey: string): ExecutionRecord | undefined {
     return this.executionLedger.get(idempotencyKey);
@@ -56,6 +67,21 @@ export class ExecutionWorker {
     // (6) No execution without a valid current one-obligation PAE.
     verifySealedPae(sealed);
 
+    const key = sealed.payload.idempotency_key;
+    const pending = this.inFlight.get(key);
+    if (pending) return pending;
+
+    const operation = this.executeOnce(sealed);
+    this.inFlight.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
+
+  private async executeOnce(sealed: SealedPae): Promise<ExecutionRecord> {
+
     const payload = sealed.payload;
     const obligationId = payload.obligation_ids[0];
     const aggregate = this.store.get(payload.organization_id, obligationId);
@@ -65,6 +91,16 @@ export class ExecutionWorker {
     // currentness against a since-changed aggregate.
     const existing = this.executionLedger.get(payload.idempotency_key);
     if (existing) {
+      if (existing.status === "SUBMITTING") {
+        // A persisted submit marker without a persisted response is
+        // ambiguous after restart. Resolve it as UNKNOWN and never replay
+        // the provider submission.
+        this.store.markUnknown(payload.organization_id, obligationId);
+        const recovered = { ...existing, status: "UNKNOWN" as const };
+        this.executionLedger.set(payload.idempotency_key, recovered);
+        await this.onDurableStateChange?.();
+        return recovered;
+      }
       return existing;
     }
 
@@ -134,6 +170,20 @@ export class ExecutionWorker {
     }
 
     this.store.markSubmitting(payload.organization_id, obligationId);
+    const submittingRecord: ExecutionRecord = {
+      obligation_id: obligationId,
+      idempotency_key: payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING",
+      atomic_amount: payload.atomic_amount,
+      destination_address: payload.destination_address,
+    };
+    this.executionLedger.set(payload.idempotency_key, submittingRecord);
+    // The durable submit marker is committed before control crosses the
+    // provider boundary. A restart can therefore never turn an uncertain
+    // submission into a fresh submission.
+    await this.onDurableStateChange?.();
+
     let submission;
     try {
       submission = await this.adapter.submitTransfer({
@@ -159,6 +209,7 @@ export class ExecutionWorker {
         destination_address: payload.destination_address,
       };
       this.executionLedger.set(payload.idempotency_key, record);
+      await this.onDurableStateChange?.();
       return record;
     }
     this.store.markSubmitted(payload.organization_id, obligationId);
@@ -175,6 +226,7 @@ export class ExecutionWorker {
         destination_address: payload.destination_address,
       };
       this.executionLedger.set(payload.idempotency_key, record);
+      await this.onDurableStateChange?.();
       return record;
     }
 
@@ -192,6 +244,7 @@ export class ExecutionWorker {
       payload.organization_id,
     );
     this.executionLedger.set(payload.idempotency_key, finalRecord);
+    await this.onDurableStateChange?.();
     return finalRecord;
   }
 
@@ -202,15 +255,20 @@ export class ExecutionWorker {
    */
   async reconcilePendingByIdempotencyKey(idempotencyKey: string, organizationId: string): Promise<ExecutionRecord> {
     const record = this.executionLedger.get(idempotencyKey);
-    if (!record || record.status !== "UNKNOWN" || !record.provider_ref) {
+    if (!record || record.status !== "UNKNOWN") {
       throw new ExecutionBlockedError("No pending UNKNOWN execution for this idempotency key", "OPS-008");
     }
-    const status = await this.adapter.getStatus(record.provider_ref);
+    const status = record.provider_ref
+      ? await this.adapter.getStatus(record.provider_ref)
+      : this.adapter.getStatusByIdempotencyKey
+        ? await this.adapter.getStatusByIdempotencyKey(idempotencyKey)
+        : { status: "UNKNOWN" as const };
     if (status.status === "UNKNOWN") {
       return record; // still unknown; caller may poll again later, never resubmit.
     }
     const finalRecord = this.finalizeFromStatus(record, status, organizationId);
     this.executionLedger.set(idempotencyKey, finalRecord);
+    await this.onDurableStateChange?.();
     return finalRecord;
   }
 

@@ -72,6 +72,17 @@ export interface AuthorityAggregate {
   reviewed_aggregate_version: number | null;
 }
 
+export interface SealedAssessment {
+  record: DurableAssessmentRecord;
+  hash: string;
+}
+
+export interface AuthorityStoreSnapshot {
+  aggregates: AuthorityAggregate[];
+  kill_switches: string[];
+  assessments: Array<{ organization_id: string; obligation_id: string; record: DurableAssessmentRecord; hash: string }>;
+}
+
 export class StaleStateError extends Error {
   constructor(public readonly code = "OPS-002") {
     super("STALE_STATE: expected_version does not match current aggregate_version");
@@ -90,15 +101,11 @@ export class AuthorityError extends Error {
 }
 
 /**
- * Single-process, single-threaded in-memory authority store. JavaScript's
- * run-to-completion semantics give every method here true atomicity for
- * this prototype; a production build swaps this for one Postgres
- * transaction/CAS per method, matching the same expected_version contract.
- *
- * KNOWN PROTOTYPE LIMITATION: not durable across process restarts (no
- * Supabase credentials are available in this build environment). Swapping
- * the storage backend does not change the authority/version contract any
- * caller depends on.
+ * Request-local authority aggregate hydrated from the durable snapshot.
+ * Local transitions preserve the expected_version contract; in Vercel,
+ * the enclosing Supabase Postgres compare-and-set serializes and persists
+ * each request's complete state transition before it can cross a provider
+ * boundary.
  */
 /** States that mean an obligation has already been selected as *the* execution
  * candidate (approved, or further along). Used to enforce "exactly one
@@ -119,7 +126,47 @@ export class AuthorityStore {
   /** obligation_id -> sealed, hash-addressable Finance Agent assessment
    * (J1 candidate-selection gate references this identity, not mutable
    * in-memory decision state). */
-  private readonly sealedAssessments = new Map<string, { record: DurableAssessmentRecord; hash: string }>();
+  private readonly sealedAssessments = new Map<string, SealedAssessment[]>();
+
+  static fromSnapshot(snapshot: AuthorityStoreSnapshot): AuthorityStore {
+    const store = new AuthorityStore();
+    for (const aggregate of snapshot.aggregates) store.seed(aggregate);
+    for (const key of snapshot.kill_switches) store.killSwitches.add(key);
+    const assessmentIds = new Set<string>();
+    for (const assessment of snapshot.assessments) {
+      const validated = sealDurableAssessmentRecord(assessment.record);
+      if (
+        validated.assessment_hash !== assessment.hash ||
+        validated.record.organization_id !== assessment.organization_id ||
+        validated.record.obligation_id !== assessment.obligation_id ||
+        assessmentIds.has(validated.record.assessment_id)
+      ) {
+        throw new AuthorityError("Persisted assessment history failed hash-integrity verification", "ASM-011");
+      }
+      assessmentIds.add(validated.record.assessment_id);
+      const key = store.key(assessment.organization_id, assessment.obligation_id);
+      const history = store.sealedAssessments.get(key) ?? [];
+      history.push({ record: validated.record, hash: assessment.hash });
+      store.sealedAssessments.set(key, history);
+    }
+    return store;
+  }
+
+  exportSnapshot(): AuthorityStoreSnapshot {
+    return {
+      aggregates: [...this.aggregates.values()].map((aggregate) => ({ ...aggregate, evidence_hashes: [...aggregate.evidence_hashes] })),
+      kill_switches: [...this.killSwitches].sort(),
+      assessments: [...this.sealedAssessments.entries()].flatMap(([key, history]) => {
+        const separator = key.indexOf("::");
+        return history.map(({ record, hash }) => ({
+          organization_id: key.slice(0, separator),
+          obligation_id: key.slice(separator + 2),
+          record: { ...record, reasons: [...record.reasons], evidence_ids: [...record.evidence_ids], missing_evidence: [...record.missing_evidence] },
+          hash,
+        }));
+      }),
+    };
+  }
 
   private key(organizationId: string, obligationId: string): string {
     return `${organizationId}::${obligationId}`;
@@ -145,10 +192,10 @@ export class AuthorityStore {
       );
     }
     const sealed = sealDurableAssessmentRecord(record);
-    this.sealedAssessments.set(this.key(record.organization_id, record.obligation_id), {
-      record: sealed.record,
-      hash: sealed.assessment_hash,
-    });
+    const key = this.key(record.organization_id, record.obligation_id);
+    const history = this.sealedAssessments.get(key) ?? [];
+    history.push({ record: sealed.record, hash: sealed.assessment_hash });
+    this.sealedAssessments.set(key, history);
     return sealed;
   }
 
@@ -156,7 +203,22 @@ export class AuthorityStore {
     organizationId: string,
     obligationId: string,
   ): { record: DurableAssessmentRecord; hash: string } | undefined {
-    return this.sealedAssessments.get(this.key(organizationId, obligationId));
+    const history = this.sealedAssessments.get(this.key(organizationId, obligationId));
+    return history?.at(-1);
+  }
+
+  getAssessmentHistory(organizationId: string, obligationId: string): SealedAssessment[] {
+    return (this.sealedAssessments.get(this.key(organizationId, obligationId)) ?? []).map((item) => ({
+      record: item.record,
+      hash: item.hash,
+    }));
+  }
+
+  getCurrentAssessment(organizationId: string, obligationId: string): SealedAssessment | undefined {
+    const current = this.get(organizationId, obligationId);
+    return [...(this.sealedAssessments.get(this.key(organizationId, obligationId)) ?? [])]
+      .reverse()
+      .find((assessment) => assessment.record.aggregate_version === String(current.aggregate_version));
   }
 
   /** Returns the obligation_id of the first obligation in this organization
@@ -167,7 +229,12 @@ export class AuthorityStore {
    * the organization (the same set the demo/product seeds up front). */
   findUnassessedObligation(organizationId: string): string | null {
     for (const aggregate of this.aggregates.values()) {
-      if (aggregate.organization_id === organizationId && !this.getSealedAssessment(organizationId, aggregate.obligation_id)) {
+      if (
+        aggregate.organization_id === organizationId &&
+        aggregate.state !== "CANCELLED" &&
+        !COMMITTED_CANDIDATE_STATES.has(aggregate.state) &&
+        !this.getCurrentAssessment(organizationId, aggregate.obligation_id)
+      ) {
         return aggregate.obligation_id;
       }
     }
@@ -258,8 +325,15 @@ export class AuthorityStore {
     if (current.business_hold || current.security_freeze) {
       throw new AuthorityError("Cannot approve while HOLD or security freeze is active", "OPS-001");
     }
-    const sealed = this.getSealedAssessment(organizationId, obligationId);
+    const sealed = this.getCurrentAssessment(organizationId, obligationId);
     if (!sealed) {
+      const previous = this.getSealedAssessment(organizationId, obligationId);
+      if (previous) {
+        throw new AuthorityError(
+          `Cannot approve: latest sealed assessment is bound to aggregate_version ${previous.record.aggregate_version}; a fresh assessment is required`,
+          "AUT-009",
+        );
+      }
       throw new AuthorityError("Cannot approve: no sealed Finance Agent assessment exists for this obligation", "AUT-007");
     }
     if (!verifyDurableAssessmentRecordHash(sealed.record, sealed.hash)) {
