@@ -10,6 +10,7 @@ export const J0D_SPIKE_FEE_LEVEL = "MEDIUM" as const;
 const walletIdSchema = z.string().min(1).max(128);
 const evmAddressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
 const tokenIdSchema = z.string().min(1).max(256);
+const MAX_PROVIDER_NUMERIC_LENGTH = 128;
 
 export const j0dResumeContextSchema = z.object({
   walletSetId: walletIdSchema,
@@ -115,28 +116,54 @@ export function j0dPreflightHttpStatus(result: J0dPreflightResult): number {
 type VerifiedWallet = z.infer<typeof verifiedWalletSchema>;
 type VerifiedUsdcToken = z.infer<typeof verifiedUsdcTokenSchema>;
 
-interface ProviderToken {
-  id?: string;
-  symbol?: string;
-  blockchain?: string;
-  decimals?: number;
-  isNative?: boolean;
-  tokenAddress?: string;
-}
+const providerWalletTruthSchema = z.object({
+  id: z.string(),
+  address: z.string(),
+  blockchain: z.string(),
+  walletSetId: z.string(),
+  state: z.string(),
+}).passthrough();
+
+const providerWalletResponseSchema = z.object({
+  data: z.object({ wallet: providerWalletTruthSchema }).passthrough(),
+}).passthrough();
+
+const providerTokenSchema = z.object({
+  id: z.unknown().optional(),
+  symbol: z.unknown().optional(),
+  blockchain: z.unknown().optional(),
+  decimals: z.unknown().optional(),
+  isNative: z.unknown().optional(),
+  tokenAddress: z.unknown().optional(),
+}).passthrough();
+
+const providerBalanceEntrySchema = z.object({
+  amount: z.unknown().optional(),
+  token: providerTokenSchema.optional(),
+}).passthrough();
+
+const providerBalanceResponseSchema = z.object({
+  data: z.object({ tokenBalances: z.array(providerBalanceEntrySchema) }).passthrough(),
+}).passthrough();
+
+const providerFeeResponseSchema = z.object({
+  data: z.object({
+    medium: z.object({ networkFee: z.unknown().optional() }).passthrough().optional(),
+  }).passthrough(),
+}).passthrough();
+
+type ProviderWalletTruth = z.infer<typeof providerWalletTruthSchema>;
+type ProviderBalanceEntry = z.infer<typeof providerBalanceEntrySchema>;
 
 export interface J0dPreflightClient {
-  getWallet(input: { id: string }): Promise<{
-    data?: { wallet?: { id?: string; address?: string; blockchain?: string; walletSetId?: string; state?: string } };
-  }>;
-  getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<{
-    data?: { tokenBalances?: Array<{ amount?: string; token?: ProviderToken }> };
-  }>;
+  getWallet(input: { id: string }): Promise<unknown>;
+  getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<unknown>;
   estimateTransferFee(input: {
     walletId: string;
     tokenId: string;
     amount: string[];
     destinationAddress: string;
-  }): Promise<{ data?: { medium?: { networkFee?: string } } }>;
+  }): Promise<unknown>;
 }
 
 export interface RunJ0dPreflightOptions {
@@ -166,7 +193,7 @@ function blocked(
 function normalizeWallet(
   expected: { id: string; address: string },
   expectedWalletSetId: string,
-  wallet: NonNullable<NonNullable<Awaited<ReturnType<J0dPreflightClient["getWallet"]>>["data"]>["wallet"]>,
+  wallet: ProviderWalletTruth,
   mismatchBlocker: "SOURCE_WALLET_CONTEXT_MISMATCH" | "DESTINATION_WALLET_CONTEXT_MISMATCH",
   notLiveBlocker: "SOURCE_WALLET_NOT_LIVE" | "DESTINATION_WALLET_NOT_LIVE",
   now: () => Date,
@@ -195,7 +222,8 @@ function normalizeWallet(
 }
 
 function decimalToAtomicAtScale(value: string, decimals: number): bigint | null {
-  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 36 || typeof value !== "string") return null;
+  if (typeof value !== "string" || value.length > MAX_PROVIDER_NUMERIC_LENGTH) return null;
+  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 36) return null;
   const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(value);
   if (!match) return null;
   const fraction = match[2] ?? "";
@@ -211,8 +239,12 @@ function atomicToDecimalAtScale(value: bigint, decimals: number): string {
   return `${whole.toString(10)}.${fraction}`;
 }
 
+function normalizeProviderSymbol(value: unknown): string | null {
+  return typeof value === "string" ? value.trim().toUpperCase() : null;
+}
+
 function pinNativeArcUsdc(
-  balances: Array<{ amount?: string; token?: ProviderToken }>,
+  balances: ProviderBalanceEntry[],
   now: () => Date,
 ): { kind: "NONE" } | { kind: "BLOCKED"; result: J0dPreflightResult } | {
   kind: "PINNED";
@@ -221,15 +253,16 @@ function pinNativeArcUsdc(
 } {
   const candidates = balances.filter((balance) => {
     const token = balance.token;
-    return token?.symbol === J0D_SPIKE_ASSET ||
-      (token?.blockchain === ARC_TESTNET_BLOCKCHAIN && token.isNative === true);
+    if (!token) return true;
+    const symbol = normalizeProviderSymbol(token.symbol);
+    return symbol === J0D_SPIKE_ASSET || token.isNative !== false;
   });
   if (candidates.length === 0) return { kind: "NONE" };
 
   const pinned = candidates.filter((balance) => {
     const token = balance.token;
-    return token?.symbol === J0D_SPIKE_ASSET &&
-      token.blockchain === ARC_TESTNET_BLOCKCHAIN &&
+    return normalizeProviderSymbol(token?.symbol) === J0D_SPIKE_ASSET &&
+      token?.blockchain === ARC_TESTNET_BLOCKCHAIN &&
       token.isNative === true;
   });
   if (pinned.length !== 1) {
@@ -242,18 +275,19 @@ function pinNativeArcUsdc(
   const balance = pinned[0];
   const token = balance.token;
   if (
-    !token?.id ||
-    !Number.isSafeInteger(token.decimals) || token.decimals! < 0 || token.decimals! > 36 ||
-    typeof balance.amount !== "string"
+    typeof token?.id !== "string" || !token.id ||
+    typeof token.decimals !== "number" || !Number.isSafeInteger(token.decimals) || token.decimals < 0 || token.decimals > 36 ||
+    typeof balance.amount !== "string" ||
+    (token.tokenAddress !== undefined && token.tokenAddress !== null && typeof token.tokenAddress !== "string")
   ) {
     return { kind: "BLOCKED", result: blocked("INVALID_PROVIDER_TOKEN", "Circle native Arc USDC token metadata is incomplete or invalid.", now) };
   }
 
   const parsedToken = verifiedUsdcTokenSchema.safeParse({
     id: token.id,
-    symbol: token.symbol,
-    blockchain: token.blockchain,
-    is_native: token.isNative,
+    symbol: J0D_SPIKE_ASSET,
+    blockchain: ARC_TESTNET_BLOCKCHAIN,
+    is_native: true,
     decimals: token.decimals,
     token_address: token.tokenAddress ?? null,
   });
@@ -308,9 +342,9 @@ export async function runJ0dPreflight(
     client = createCircleArcReadOnlyClient();
   }
 
-  let sourceResponse: Awaited<ReturnType<J0dPreflightClient["getWallet"]>>;
-  let destinationResponse: Awaited<ReturnType<J0dPreflightClient["getWallet"]>>;
-  let balanceResponse: Awaited<ReturnType<J0dPreflightClient["getWalletTokenBalance"]>>;
+  let sourceResponse: unknown;
+  let destinationResponse: unknown;
+  let balanceResponse: unknown;
   try {
     [sourceResponse, destinationResponse, balanceResponse] = await Promise.all([
       client.getWallet({ id: context.sourceWallet.id }),
@@ -322,17 +356,22 @@ export async function runJ0dPreflight(
     return blocked("PROVIDER_QUERY_FAILED", `Circle read-only wallet/balance query failed (${name}).`, now);
   }
 
-  const sourceProviderWallet = sourceResponse.data?.wallet;
-  const destinationProviderWallet = destinationResponse.data?.wallet;
-  if (!sourceProviderWallet) return blocked("SOURCE_WALLET_CONTEXT_MISMATCH", "Circle did not return the recovered source wallet.", now);
-  if (!destinationProviderWallet) return blocked("DESTINATION_WALLET_CONTEXT_MISMATCH", "Circle did not return the recovered destination wallet.", now);
+  const parsedSourceResponse = providerWalletResponseSchema.safeParse(sourceResponse);
+  const parsedDestinationResponse = providerWalletResponseSchema.safeParse(destinationResponse);
+  if (!parsedSourceResponse.success || !parsedDestinationResponse.success) {
+    return blocked("PROVIDER_QUERY_FAILED", "Circle returned a malformed wallet response during read-only preflight.", now);
+  }
+  const parsedBalanceResponse = providerBalanceResponseSchema.safeParse(balanceResponse);
+  if (!parsedBalanceResponse.success) {
+    return blocked("INVALID_PROVIDER_BALANCE", "Circle returned a malformed token-balance response during read-only preflight.", now);
+  }
 
-  const source = normalizeWallet(context.sourceWallet, context.walletSetId, sourceProviderWallet, "SOURCE_WALLET_CONTEXT_MISMATCH", "SOURCE_WALLET_NOT_LIVE", now);
+  const source = normalizeWallet(context.sourceWallet, context.walletSetId, parsedSourceResponse.data.data.wallet, "SOURCE_WALLET_CONTEXT_MISMATCH", "SOURCE_WALLET_NOT_LIVE", now);
   if (!source.ok) return source.result;
-  const destination = normalizeWallet(context.destinationWallet, context.walletSetId, destinationProviderWallet, "DESTINATION_WALLET_CONTEXT_MISMATCH", "DESTINATION_WALLET_NOT_LIVE", now);
+  const destination = normalizeWallet(context.destinationWallet, context.walletSetId, parsedDestinationResponse.data.data.wallet, "DESTINATION_WALLET_CONTEXT_MISMATCH", "DESTINATION_WALLET_NOT_LIVE", now);
   if (!destination.ok) return destination.result;
 
-  const pinnedUsdc = pinNativeArcUsdc(balanceResponse.data?.tokenBalances ?? [], now);
+  const pinnedUsdc = pinNativeArcUsdc(parsedBalanceResponse.data.data.tokenBalances, now);
   if (pinnedUsdc.kind === "BLOCKED") return pinnedUsdc.result;
   if (pinnedUsdc.kind === "NONE") return fundingRequired(source.wallet, destination.wallet, "0", null, now);
 
@@ -345,7 +384,7 @@ export async function runJ0dPreflight(
     return fundingRequired(source.wallet, destination.wallet, pinnedUsdc.amount, pinnedUsdc.token, now);
   }
 
-  let feeResponse: Awaited<ReturnType<J0dPreflightClient["estimateTransferFee"]>>;
+  let feeResponse: unknown;
   try {
     feeResponse = await client.estimateTransferFee({
       walletId: source.wallet.id,
@@ -358,17 +397,24 @@ export async function runJ0dPreflight(
     return blocked("FEE_ESTIMATE_FAILED", `Circle read-only transfer-fee estimate failed (${name}).`, now);
   }
 
-  const estimatedNetworkFee = feeResponse.data?.medium?.networkFee;
+  const parsedFeeResponse = providerFeeResponseSchema.safeParse(feeResponse);
+  if (!parsedFeeResponse.success) {
+    return blocked("INVALID_FEE_ESTIMATE", "Circle returned a malformed transfer-fee response.", now);
+  }
+  const estimatedNetworkFee = parsedFeeResponse.data.data.medium?.networkFee;
   if (typeof estimatedNetworkFee !== "string") {
     return blocked("INVALID_FEE_ESTIMATE", "Circle did not return a MEDIUM network fee estimate for the contemplated transfer.", now);
   }
   const feeAtomic = decimalToAtomicAtScale(estimatedNetworkFee, pinnedUsdc.token.decimals);
-  if (feeAtomic === null) {
-    return blocked("INVALID_FEE_ESTIMATE", "Circle returned a network fee that could not be represented exactly in the native Arc USDC scale.", now);
+  if (feeAtomic === null || feeAtomic <= 0n) {
+    return blocked("INVALID_FEE_ESTIMATE", "Circle returned a non-positive or non-representable network fee for the contemplated transfer.", now);
   }
 
   const minimumRequiredAtomic = transferAtomic + feeAtomic;
   const minimumRequiredTotal = atomicToDecimalAtScale(minimumRequiredAtomic, pinnedUsdc.token.decimals);
+  if (minimumRequiredTotal.length > MAX_PROVIDER_NUMERIC_LENGTH) {
+    return blocked("INVALID_FEE_ESTIMATE", "The computed transfer-plus-fee total exceeds the accepted numeric bound.", now);
+  }
   if (balanceAtomic < minimumRequiredAtomic) {
     return fundingRequired(
       source.wallet,

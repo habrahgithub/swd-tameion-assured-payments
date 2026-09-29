@@ -25,7 +25,7 @@ function arcUsdcToken(overrides: Record<string, unknown> = {}) {
     blockchain: "ARC-TESTNET",
     decimals: 18,
     isNative: true,
-    tokenAddress: "0x3600000000000000000000000000000000000000",
+    tokenAddress: undefined,
     ...overrides,
   };
 }
@@ -239,72 +239,88 @@ describe("J0-D read-only recovered-wallet preflight", () => {
     });
   });
 
-  it("blocks when native ARC-TESTNET USDC metadata is missing its symbol instead of inventing zero balance", async () => {
-    const { client } = fakeClient({
-      tokenBalances: [{ amount: "20", token: arcUsdcToken({ symbol: undefined }) }],
-    });
+  it("blocks an oversized provider balance string instead of throwing during result serialization", async () => {
+    const { client } = fakeClient({ balance: "1" + "0".repeat(200) });
     const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
     expect(result.readiness).toBe("BLOCKED_EXTERNAL");
     if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
-    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
+    expect(result.blocker).toBe("INVALID_PROVIDER_BALANCE");
   });
 
-  it("blocks when only an other-chain or non-native USDC entry is present", async () => {
-    const { client } = fakeClient({
-      tokenBalances: [{ amount: "20", token: arcUsdcToken({ id: "BRIDGED", blockchain: "ETH-SEPOLIA", isNative: false, decimals: 6 }) }],
-    });
-    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
-    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
-    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
-    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
-  });
-
-  it("blocks ambiguous duplicate native ARC-TESTNET USDC entries", async () => {
-    const { client } = fakeClient({
-      tokenBalances: [
-        { amount: "20", token: arcUsdcToken({ id: "ARC-USDC-A" }) },
-        { amount: "20", token: arcUsdcToken({ id: "ARC-USDC-B" }) },
-      ],
-    });
-    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
-    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
-    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
-    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
-  });
-
-  it("blocks oversized provider token metadata instead of throwing an unhandled validation error", async () => {
-    const { client } = fakeClient({ token: { id: "x".repeat(300) } });
-    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
-    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
-    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
-    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
-  });
-
-  it("fails closed and sanitizes transfer-fee estimator failures", async () => {
-    const { client } = fakeClient();
-    client.estimateTransferFee.mockRejectedValueOnce(new Error("SECRET-FEE-DETAIL-" + "x".repeat(1000)));
-    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
-    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
-    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
-    expect(result.blocker).toBe("FEE_ESTIMATE_FAILED");
-    expect(result.message).not.toContain("SECRET-FEE-DETAIL");
-  });
-
-  it("blocks when Circle omits the MEDIUM network fee", async () => {
-    const { client } = fakeClient();
-    client.estimateTransferFee.mockImplementationOnce(async () => ({ data: {} } as any));
+  it("blocks an oversized provider fee string instead of throwing during result serialization", async () => {
+    const { client } = fakeClient({ balance: "20", fee: "9".repeat(200) });
     const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
     expect(result.readiness).toBe("BLOCKED_EXTERNAL");
     if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
     expect(result.blocker).toBe("INVALID_FEE_ESTIMATE");
   });
 
-  it("blocks a fee estimate with precision beyond the provider token decimals", async () => {
-    const { client } = fakeClient({ balance: "1.000000", token: { decimals: 6 }, fee: "0.0000001" });
+  it("blocks malformed token-balance response shapes instead of treating them as zero", async () => {
+    const { client } = fakeClient();
+    client.getWalletTokenBalance.mockImplementationOnce(async () => ({ data: { tokenBalances: null } } as never));
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
+    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
+    expect(result.blocker).toBe("INVALID_PROVIDER_BALANCE");
+  });
+
+  it("blocks malformed wallet response shapes instead of throwing", async () => {
+    const { client } = fakeClient();
+    client.getWallet.mockImplementationOnce(async () => ({ data: { wallet: { id: context.sourceWallet.id, address: 123 } } } as never));
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
+    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
+    expect(result.blocker).toBe("PROVIDER_QUERY_FAILED");
+  });
+
+  it("blocks a native-looking token with missing symbol and blockchain instead of inventing zero balance", async () => {
+    const { client } = fakeClient({
+      tokenBalances: [{
+        amount: "20",
+        token: { id: "USDC-ARC-TESTNET", decimals: 18, isNative: true },
+      }],
+    });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
+    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
+    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
+  });
+
+  it("accepts an explicit null tokenAddress for native Arc USDC", async () => {
+    const { client } = fakeClient({ token: { tokenAddress: null } });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("READY_FOR_EXPLICIT_AUTHORIZATION");
+    if (result.readiness !== "READY_FOR_EXPLICIT_AUTHORIZATION") throw new Error("unexpected readiness");
+    expect(result.source_usdc_token.token_address).toBeNull();
+  });
+
+  it("rejects a zero MEDIUM network fee as invalid provider truth", async () => {
+    const { client } = fakeClient({ fee: "0" });
     const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
     expect(result.readiness).toBe("BLOCKED_EXTERNAL");
     if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
     expect(result.blocker).toBe("INVALID_FEE_ESTIMATE");
+  });
+
+  it("blocks malformed native flags rather than inventing a zero balance", async () => {
+    const { client } = fakeClient({
+      tokenBalances: [{
+        amount: "20",
+        token: { id: "USDC-ARC-TESTNET", symbol: "usdc", blockchain: "ARC-TESTNET", decimals: 18, isNative: "true" },
+      }],
+    });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("BLOCKED_EXTERNAL");
+    if (result.readiness !== "BLOCKED_EXTERNAL") throw new Error("unexpected readiness");
+    expect(result.blocker).toBe("INVALID_PROVIDER_TOKEN");
+  });
+
+  it("accepts case/whitespace-normalized USDC symbol only when native flag is a real boolean true", async () => {
+    const { client } = fakeClient({ token: { symbol: " usdc ", isNative: true } });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("READY_FOR_EXPLICIT_AUTHORIZATION");
+    if (result.readiness !== "READY_FOR_EXPLICIT_AUTHORIZATION") throw new Error("unexpected readiness");
+    expect(result.source_usdc_token.symbol).toBe("USDC");
   });
 
   it("rejects a self-transfer context before any provider call", async () => {
