@@ -17,8 +17,8 @@
  * preflight (and approved by Prime out-of-band), and that intent's SHA-256
  * fingerprint. Immediately before submission this module re-runs the same
  * read-only preflight against current provider truth and refuses to submit
- * unless the re-derived intent is identical in every material field —
- * including the current MEDIUM fee estimate (no tolerance band). The
+ * unless immutable transfer fields still match and current MEDIUM fee and
+ * total debit remain within the fixed v2 ceilings. The
  * execution capability has no wallet-creation or faucet method, so a
  * resumed transfer can never mint wallets or request testnet funds.
  *
@@ -33,6 +33,7 @@ import { z } from "zod";
 
 import { createCircleArcSpikeExecutionClient, ARC_TESTNET_BLOCKCHAIN } from "./circle-arc-client";
 import {
+  decimalToAtomicAtScale,
   computeJ0dExecutionIdentity,
   computeJ0dIntentFingerprint,
   diffMaterialIntentFields,
@@ -59,7 +60,7 @@ export type J0ConnectivitySpikeStage =
   | "RESUME_CONTEXT_INTENT_MISMATCH"
   | "PROVIDER_TRUTH_BLOCKED"
   | "FUNDING_REQUIRED"
-  | "FEE_ESTIMATE_CHANGED"
+  | "AUTHORIZATION_CEILING_EXCEEDED"
   | "STALE_INTENT"
   | "PRIOR_TRANSACTION_CHECK_FAILED"
   | "PRIOR_OUTBOUND_TRANSACTION_EXISTS"
@@ -73,7 +74,7 @@ export const J0D_PRE_SUBMISSION_STAGES: ReadonlySet<J0ConnectivitySpikeStage> = 
   "RESUME_CONTEXT_INTENT_MISMATCH",
   "PROVIDER_TRUTH_BLOCKED",
   "FUNDING_REQUIRED",
-  "FEE_ESTIMATE_CHANGED",
+  "AUTHORIZATION_CEILING_EXCEEDED",
   "STALE_INTENT",
   "PRIOR_TRANSACTION_CHECK_FAILED",
   "PRIOR_OUTBOUND_TRANSACTION_EXISTS",
@@ -229,8 +230,6 @@ const providerGetTransactionSchema = z.object({
   }).passthrough(),
 }).passthrough();
 
-const FEE_FIELDS = new Set(["estimated_network_fee", "minimum_required_total"]);
-
 /**
  * Binds the caller's inputs to each other before any provider call:
  * strict resume context, strict internally-consistent intent, matching
@@ -297,6 +296,18 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions)
       { blocker: current.blocker },
     );
   }
+  if (current.readiness === "AUTHORIZATION_CEILING_EXCEEDED") {
+    throw new J0ConnectivitySpikeError(
+      "Refusing to submit: current fee estimate or total debit exceeds a fixed J0-D authorization ceiling.",
+      "AUTHORIZATION_CEILING_EXCEEDED",
+      {
+        current_network_fee: current.estimated_network_fee,
+        max_network_fee: current.max_network_fee,
+        current_total_debit: current.minimum_required_total,
+        max_total_debit: current.max_total_debit,
+      },
+    );
+  }
   if (current.readiness === "FUNDING_REQUIRED") {
     throw new J0ConnectivitySpikeError(
       "Refusing to submit: the source wallet no longer covers the transfer plus estimated network fee. No faucet request was made.",
@@ -309,20 +320,34 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions)
     );
   }
 
-  // 3. Stale-intent rule: every material field must be identical, including the
-  // current MEDIUM fee estimate. No tolerance band.
+  // 3. Immutable transfer fields must still match. Fee and total remain
+  // point-in-time preflight evidence and are checked against authorized caps.
   const changed = diffMaterialIntentFields(approvedIntent, current.exact_intent);
   if (changed.length > 0) {
-    const feeOnly = changed.every((field) => FEE_FIELDS.has(field));
     throw new J0ConnectivitySpikeError(
-      feeOnly
-        ? "Refusing to submit: the current MEDIUM fee estimate differs from the approved intent. Run a fresh preflight and obtain fresh authorization."
-        : "Refusing to submit: current provider truth differs from the approved intent. Run a fresh preflight and obtain fresh authorization.",
-      feeOnly ? "FEE_ESTIMATE_CHANGED" : "STALE_INTENT",
+      "Refusing to submit: current provider truth differs from the approved immutable transfer intent.",
+      "STALE_INTENT",
       {
         changed_fields: changed,
-        approved_estimated_network_fee: approvedIntent.estimated_network_fee,
-        current_estimated_network_fee: current.exact_intent.estimated_network_fee,
+      },
+    );
+  }
+
+  const decimals = approvedIntent.provider_token.decimals;
+  const currentFee = decimalToAtomicAtScale(current.exact_intent.estimated_network_fee, decimals);
+  const authorizedMaxFee = decimalToAtomicAtScale(approvedIntent.max_network_fee, decimals);
+  const transferAmount = decimalToAtomicAtScale(approvedIntent.amount, decimals);
+  const authorizedMaxTotal = decimalToAtomicAtScale(approvedIntent.max_total_debit, decimals);
+  if (currentFee === null || authorizedMaxFee === null || transferAmount === null || authorizedMaxTotal === null ||
+      currentFee > authorizedMaxFee || transferAmount + currentFee > authorizedMaxTotal) {
+    throw new J0ConnectivitySpikeError(
+      "Refusing to submit: the current network fee or total debit exceeds the approved authorization ceiling.",
+      "AUTHORIZATION_CEILING_EXCEEDED",
+      {
+        current_network_fee: current.exact_intent.estimated_network_fee,
+        max_network_fee: approvedIntent.max_network_fee,
+        current_total_debit: current.exact_intent.minimum_required_total,
+        max_total_debit: approvedIntent.max_total_debit,
       },
     );
   }

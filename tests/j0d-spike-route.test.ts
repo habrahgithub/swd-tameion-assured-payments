@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { canonicalize } from "json-canonicalize";
 
 import { POST } from "../app/api/j0d/run-connectivity-spike/route";
 import { computeJ0dIntentFingerprint, type J0dExactIntent } from "../src/j0d-spike/intent";
@@ -9,7 +11,7 @@ const resumeFrom = {
   destinationWallet: { id: "01769e53-cfbe-57aa-ba88-c787b8cba2d3", address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9" },
 };
 const approvedIntent: J0dExactIntent = {
-  intent_version: "J0D-EXACT-INTENT-v1",
+  intent_version: "J0D-EXACT-INTENT-v2",
   classification: "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION",
   network: "ARC-TESTNET",
   asset: "USDC",
@@ -17,6 +19,8 @@ const approvedIntent: J0dExactIntent = {
   fee_level: "MEDIUM",
   estimated_network_fee: "0.001000000000000000",
   minimum_required_total: "0.011000000000000000",
+  max_network_fee: "0.002",
+  max_total_debit: "0.012",
   wallet_set_id: resumeFrom.walletSetId,
   source_wallet_id: resumeFrom.sourceWallet.id,
   source_wallet_address: resumeFrom.sourceWallet.address,
@@ -27,6 +31,12 @@ const approvedIntent: J0dExactIntent = {
 };
 const intentFingerprint = computeJ0dIntentFingerprint(approvedIntent);
 const confirm = "RUN_J0D_CONNECTIVITY_SPIKE_ONCE";
+
+// Deliberately bypasses the validating production helper: invalid schemas still
+// receive a correct raw JCS fingerprint, so a 400 proves schema rejection.
+function rawFingerprint(intent: unknown) {
+  return createHash("sha256").update(canonicalize(intent), "utf8").digest("hex");
+}
 
 function post(body: unknown) {
   return POST(new Request("http://localhost/api/j0d/run-connectivity-spike", {
@@ -55,14 +65,37 @@ describe("intent-bound J0-D spike route", () => {
     ["intent without fingerprint", { confirm, resumeFrom, approvedIntent }],
     ["the wrong confirmation literal", { confirm: "YES", resumeFrom, approvedIntent, intentFingerprint }],
     ["extra top-level fields", { confirm, resumeFrom, approvedIntent, intentFingerprint, faucet: true }],
-    ["extra intent fields", { confirm, resumeFrom, approvedIntent: { ...approvedIntent, amount_override: "5" }, intentFingerprint }],
     ["a self-transfer context", { confirm, resumeFrom: { ...resumeFrom, destinationWallet: resumeFrom.sourceWallet }, approvedIntent, intentFingerprint }],
-    ["a non-0.01 amount", { confirm, resumeFrom, approvedIntent: { ...approvedIntent, amount: "1" }, intentFingerprint }],
   ])("refuses %s with 400 before any provider access", async (_label, body) => {
     delete process.env.CIRCLE_API_KEY;
     delete process.env.CIRCLE_ENTITY_SECRET;
     const response = await post(body);
     expect(response.status).toBe(400);
+  });
+
+  it.each([
+    ["a v1 intent", { ...approvedIntent, intent_version: "J0D-EXACT-INTENT-v1" }],
+    ["an intent with extra fields", { ...approvedIntent, amount_override: "5" }],
+    ["an intent with a non-0.01 amount", { ...approvedIntent, amount: "1" }],
+    ["a missing max_network_fee cap", (() => { const { max_network_fee: _cap, ...v } = approvedIntent; return v; })()],
+    ["a missing max_total_debit cap", (() => { const { max_total_debit: _cap, ...v } = approvedIntent; return v; })()],
+    ["a larger fee cap", { ...approvedIntent, max_network_fee: "0.003" }],
+    ["a larger total cap", { ...approvedIntent, max_total_debit: "0.013" }],
+    ["a noncanonical fee cap string", { ...approvedIntent, max_network_fee: "0.0020" }],
+    ["a noncanonical total cap string", { ...approvedIntent, max_total_debit: "0.0120" }],
+    ["a numeric fee cap", { ...approvedIntent, max_network_fee: 0 }],
+    ["a null total cap", { ...approvedIntent, max_total_debit: null }],
+    ["a zero fee cap", { ...approvedIntent, max_network_fee: "0" }],
+    ["a zero total cap", { ...approvedIntent, max_total_debit: "0" }],
+    ["a tighter fee cap", { ...approvedIntent, max_network_fee: "0.0015" }],
+    ["a tighter total cap", { ...approvedIntent, max_total_debit: "0.0115" }],
+    ["an estimate above its fixed cap", { ...approvedIntent, estimated_network_fee: "0.002000000000000001", minimum_required_total: "0.012000000000000001" }],
+  ])("rejects %s as invalid intent schema with a matching fingerprint", async (_label, invalidIntent) => {
+    delete process.env.CIRCLE_API_KEY;
+    delete process.env.CIRCLE_ENTITY_SECRET;
+    const response = await post({ confirm, resumeFrom, approvedIntent: invalidIntent, intentFingerprint: rawFingerprint(invalidIntent) });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining("approvedIntent returned by the read-only preflight") });
   });
 
   it("refuses a fingerprint mismatch with 409 before the credential check", async () => {

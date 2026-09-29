@@ -3,6 +3,8 @@ import { z } from "zod";
 import { ARC_TESTNET_BLOCKCHAIN, createCircleArcReadOnlyClient } from "./circle-arc-client";
 import {
   J0D_INTENT_VERSION,
+  J0D_MAX_NETWORK_FEE,
+  J0D_MAX_TOTAL_DEBIT,
   J0D_SPIKE_AMOUNT,
   J0D_SPIKE_ASSET,
   J0D_SPIKE_CLASSIFICATION,
@@ -60,6 +62,21 @@ export const j0dPreflightResultSchema = z.discriminatedUnion("readiness", [
     intent_fingerprint: j0dIntentFingerprintSchema,
     execution_identity: j0dExecutionIdentitySchema,
     idempotency_key: z.string().uuid(),
+    captured_at: z.string().datetime({ offset: true }),
+  }).strict(),
+  z.object({
+    dispatch_profile: z.literal("J0_CONNECTIVITY_SPIKE"),
+    action: z.literal("READ_ONLY_PREFLIGHT"),
+    readiness: z.literal("AUTHORIZATION_CEILING_EXCEEDED"),
+    source_wallet: verifiedWalletSchema,
+    destination_wallet: verifiedWalletSchema,
+    source_usdc_balance: z.string().min(1).max(128),
+    source_usdc_token: verifiedUsdcTokenSchema,
+    minimum_transfer_amount: z.literal(J0D_SPIKE_AMOUNT),
+    estimated_network_fee: z.string().min(1).max(128),
+    minimum_required_total: z.string().min(1).max(128),
+    max_network_fee: z.literal(J0D_MAX_NETWORK_FEE),
+    max_total_debit: z.literal(J0D_MAX_TOTAL_DEBIT),
     captured_at: z.string().datetime({ offset: true }),
   }).strict(),
   z.object({
@@ -389,6 +406,28 @@ export async function runJ0dPreflight(
   if (minimumRequiredTotal.length > MAX_PROVIDER_NUMERIC_LENGTH) {
     return blocked("INVALID_FEE_ESTIMATE", "The computed transfer-plus-fee total exceeds the accepted numeric bound.", now);
   }
+  const maxFeeAtomic = decimalToAtomicAtScale(J0D_MAX_NETWORK_FEE, pinnedUsdc.token.decimals);
+  const maxTotalAtomic = decimalToAtomicAtScale(J0D_MAX_TOTAL_DEBIT, pinnedUsdc.token.decimals);
+  if (maxFeeAtomic === null || maxTotalAtomic === null) {
+    return blocked("INVALID_FEE_ESTIMATE", "The fixed authorization ceilings are not representable at the provider token scale.", now);
+  }
+  if (feeAtomic > maxFeeAtomic || minimumRequiredAtomic > maxTotalAtomic) {
+    return j0dPreflightResultSchema.parse({
+      dispatch_profile: "J0_CONNECTIVITY_SPIKE",
+      action: "READ_ONLY_PREFLIGHT",
+      readiness: "AUTHORIZATION_CEILING_EXCEEDED",
+      source_wallet: source.wallet,
+      destination_wallet: destination.wallet,
+      source_usdc_balance: pinnedUsdc.amount,
+      source_usdc_token: pinnedUsdc.token,
+      minimum_transfer_amount: J0D_SPIKE_AMOUNT,
+      estimated_network_fee: estimatedNetworkFee,
+      minimum_required_total: minimumRequiredTotal,
+      max_network_fee: J0D_MAX_NETWORK_FEE,
+      max_total_debit: J0D_MAX_TOTAL_DEBIT,
+      captured_at: capturedAt(now),
+    });
+  }
   if (balanceAtomic < minimumRequiredAtomic) {
     return fundingRequired(
       source.wallet,
@@ -411,6 +450,8 @@ export async function runJ0dPreflight(
     fee_level: J0D_SPIKE_FEE_LEVEL,
     estimated_network_fee: estimatedNetworkFee,
     minimum_required_total: minimumRequiredTotal,
+    max_network_fee: J0D_MAX_NETWORK_FEE,
+    max_total_debit: J0D_MAX_TOTAL_DEBIT,
     wallet_set_id: source.wallet.wallet_set_id,
     source_wallet_id: source.wallet.id,
     source_wallet_address: source.wallet.address,

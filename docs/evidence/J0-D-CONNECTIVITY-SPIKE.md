@@ -45,14 +45,17 @@ PAE/ExecutionWorker pipeline.
 
 The route requires the explicit literal `READ_J0D_PREFLIGHT_ONLY` and returns one of:
 
-- `READY_FOR_EXPLICIT_AUTHORIZATION` — both wallets still match the recovered Arc Testnet
-  context and are `LIVE`; exactly one **native `ARC-TESTNET` USDC** balance is pinned from Circle
-  metadata; and the source balance covers both the 0.01 USDC transfer and Circle's current
-  `MEDIUM` estimated network fee. The response includes that token identity, fee estimate, and the
-  exact contemplated intent. This is **not authorization** and cannot auto-submit it.
-- `FUNDING_REQUIRED` — provider wallet/token truth is valid but the source wallet does not cover
-  the transfer plus estimated network fee; the response identifies the funding address. It does
-  not call the faucet.
+- `READY_FOR_EXPLICIT_AUTHORIZATION` — both wallets match the recovered Arc Testnet context and
+  are `LIVE`; exactly one **native `ARC-TESTNET` USDC** balance is pinned from Circle metadata;
+  the source balance covers the 0.01 USDC transfer plus the current `MEDIUM` fee estimate; and
+  both fit the fixed ceilings, `max_network_fee: "0.002"` and
+  `max_total_debit: "0.012"` USDC. This is **not authorization** and cannot auto-submit it.
+- `FUNDING_REQUIRED` — provider wallet/token truth is valid but the source wallet cannot cover the
+  transfer plus fee. When a fee estimate was obtained, the estimate fits both fixed ceilings;
+  the response identifies the funding address and never calls the faucet.
+- `AUTHORIZATION_CEILING_EXCEEDED` — verified wallet, token, balance, and fee evidence are returned
+  when the point-in-time estimate or total already exceeds a fixed authorization ceiling. It carries no
+  intent fingerprint and cannot be authorized as READY.
 - `BLOCKED_EXTERNAL` — credentials/provider truth/context validation failed; no transfer is
   attempted and no provider result is fabricated.
 
@@ -69,10 +72,20 @@ Invariant: **NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER.**
 
 - `src/j0d-spike/intent.ts` is the single exact-intent contract. The preflight's
   `READY_FOR_EXPLICIT_AUTHORIZATION` result carries `exact_intent` (intent version, classification,
-  `ARC-TESTNET`, native USDC provider token id/decimals/native flag, amount `0.01`, fee level
-  `MEDIUM`, estimated network fee, minimum required total, wallet set, source/destination wallet
-  id/address, `preflight_captured_at`) and `intent_fingerprint` = SHA-256 over its RFC 8785
+  `ARC-TESTNET`, native USDC provider token identity, amount `0.01`, fee level
+  `MEDIUM`, point-in-time estimated network fee and minimum required total, explicit
+  `max_network_fee: "0.002"` and `max_total_debit: "0.012"` USDC ceilings, wallet set,
+  source/destination wallet id/address, `preflight_captured_at`) and `intent_fingerprint` = SHA-256 over its RFC 8785
   canonical JSON. The fingerprint is an integrity binding, not authorization.
+  The only valid v2 cap literals are `max_network_fee: "0.002"` and `max_total_debit: "0.012"` USDC.
+  The strict v2 schema rejects v1 intents, missing caps, tighter caps, larger caps, and zero caps.
+  With amount fixed at 0.01 USDC and `minimum_required_total == amount + estimated_network_fee`,
+  the fee cap of 0.002 and total cap of 0.012 have aligned boundaries: fee at or below 0.002
+  implies exact total at or below 0.012. A total-only over-cap state cannot satisfy the exact-total
+  invariant while fee remains within its cap. Both production checks remain in place. Preflight
+  cannot return READY unless the current fee is at most 0.002 USDC and current total debit is at
+  most 0.012 USDC. The post-diff BigInt ceiling check is intentional defensive redundancy after a
+  coherent preflight; the earlier preflight ceiling gate normally preempts it.
 - `POST /api/j0d/run-connectivity-spike` is resume-only. Its strict body requires the
   confirmation literal, `resumeFrom`, the exact `approvedIntent`, and the matching
   `intentFingerprint`. A bare confirmation, a missing field, an extra field, a fingerprint mismatch,
@@ -81,10 +94,17 @@ Invariant: **NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER.**
   Circle capability (`createCircleArcSpikeExecutionClient`) does not expose them. A resumed
   transfer with insufficient native USDC stops with `FUNDING_REQUIRED`; no faucet call is possible.
 - Immediately before submission the spike re-runs the same read-only preflight against current
-  provider truth and stops (`PROVIDER_TRUTH_BLOCKED`, `FUNDING_REQUIRED`, `STALE_INTENT`, or
-  `FEE_ESTIMATE_CHANGED`) unless every material intent field is identical. A different current
-  `MEDIUM` fee estimate — in either direction — requires a fresh preflight and fresh Prime
-  authorization; no tolerance band exists.
+  provider truth and blocks (`PROVIDER_TRUTH_BLOCKED`, `FUNDING_REQUIRED`, `STALE_INTENT`, or
+  `AUTHORIZATION_CEILING_EXCEEDED`) if immutable transfer fields changed or either authorized
+  fixed ceiling is exceeded. Lower, equal-to-preflight, or higher fees are permitted only when
+  `current_fee <= 0.002` and `amount + current_fee <= 0.012`; schema validation and the immediate pre-submit
+  check both enforce these exact decimal bounds. Since amount plus exact fee determines total,
+  tests do not claim separate total-only over-cap coverage. The estimate and minimum total remain point-in-time
+  preflight evidence, not execution equality requirements. These caps constrain the Circle
+  pre-submit fee estimate; they do not guarantee the final network fee charged. The installed
+  Circle SDK makes `feeLevel: MEDIUM` incompatible with Circle manual `maxFee`/`priorityFee`
+  parameters. This issue preserves the exact MEDIUM fee-level authority and does not switch to
+  manual gas parameters.
 - Immediately before submission it queries Circle for prior outbound existence with
   `walletIds: [sourceWalletId]`, `blockchain: ARC-TESTNET`, `txType: OUTBOUND`, `pageSize: 1`,
   and `order: DESC`. Zero rows means only that no outbound is visible in Circle's current provider
@@ -101,8 +121,10 @@ Invariant: **NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER.**
 
 There is no durable cross-serverless J0-D ledger or lock. Concurrent invocations can both pass the
 prior-outbound existence check before Circle's provider truth exposes either transaction. The
-stable execution identity and its idempotency key improve same-transfer replay consistency while
-excluding volatile fee, minimum-total, and preflight-timestamp fields; Circle's provider-side
+stable execution identity and its idempotency key improve same-transfer replay consistency,
+excluding volatile fee, minimum-total, preflight timestamp, and fixed cap fields while including
+the fuller v2 provider-token identity. The v2 identity/key may differ from v1; no live
+v1 J0-D transfer occurred, so that migration is accepted. Circle's provider-side
 idempotency semantics have not been live-verified. This spike is intended for one deliberately
 invoked J0-D testnet connectivity run, not as a production exactly-once guarantee. Invoke once,
 only after a fresh `READY_FOR_EXPLICIT_AUTHORIZATION` preflight and Prime's explicit approval of
@@ -140,10 +162,11 @@ ids, wrong or missing directions, more than one row, and provider errors fail cl
 
 The stable execution identity hashes the immutable classification, network, native USDC token
 identity/scale, exact amount, MEDIUM fee level, wallet set, and source/destination identifiers
-and addresses. It excludes volatile fee estimate, minimum total, and preflight timestamp fields.
-The full `intent_fingerprint` binds the exact Prime authorization evidence and includes those
-freshness fields; any fee change stops execution pending fresh preflight and authorization. The
-Circle idempotency key derives from the separate stable execution identity. This can improve
+and addresses. It excludes fee estimate, minimum total, fixed caps, and preflight
+timestamp fields. The full `intent_fingerprint` binds the exact Prime authorization evidence,
+including both ceilings and point-in-time evidence. The
+Circle idempotency key derives from the separate stable execution identity using the
+`tameion-j0d-stable-execution-v2` domain. This can improve
 same-transfer replay consistency, but does not remove the race or establish provider idempotency
 semantics, which have not been live-verified.
 

@@ -108,6 +108,41 @@ describe("J0-D read-only recovered-wallet preflight", () => {
     expect(prohibited.createTransaction).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["fee and exact total above the fixed ceilings", "0.002000000000000001", "20.000000000000000000"],
+  ])("returns truthful non-READY evidence with no fingerprint for %s", async (_label, fee, balance) => {
+    const { client } = fakeClient({ balance, fee });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("AUTHORIZATION_CEILING_EXCEEDED");
+    if (result.readiness !== "AUTHORIZATION_CEILING_EXCEEDED") throw new Error("unexpected readiness");
+    expect(result).toMatchObject({
+      source_wallet: { id: context.sourceWallet.id }, destination_wallet: { id: context.destinationWallet.id },
+      source_usdc_token: { id: "USDC-ARC-TESTNET" }, source_usdc_balance: balance,
+      minimum_transfer_amount: "0.01", estimated_network_fee: fee, max_network_fee: "0.002",
+      max_total_debit: "0.012", captured_at: fixedNow().toISOString(),
+    });
+    expect(result.minimum_required_total).toBe("0.012000000000000001");
+    expect("intent_fingerprint" in result).toBe(false);
+    expect("exact_intent" in result).toBe(false);
+  });
+
+  it("uses aligned fixed fee and total ceiling boundaries", () => {
+    // With amount 0.01 and exact total = amount + fee, fee <= 0.002 implies
+    // total <= 0.012. A total-only over-cap state cannot satisfy both invariants.
+    const amount = 10_000_000_000_000_000n;
+    const feeCap = 2_000_000_000_000_000n;
+    const totalCap = 12_000_000_000_000_000n;
+    expect(amount + feeCap).toBe(totalCap);
+  });
+
+  it("returns READY at the exact fixed fee and total ceilings", async () => {
+    const { client } = fakeClient({ balance: "20", fee: "0.002" });
+    const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });
+    expect(result.readiness).toBe("READY_FOR_EXPLICIT_AUTHORIZATION");
+    if (result.readiness !== "READY_FOR_EXPLICIT_AUTHORIZATION") throw new Error("unexpected readiness");
+    expect(result.exact_intent).toMatchObject({ estimated_network_fee: "0.002", minimum_required_total: "0.012000000000000000", max_network_fee: "0.002", max_total_debit: "0.012" });
+  });
+
   it("does not call exactly 0.01 USDC ready when Arc gas still needs native USDC", async () => {
     const { client } = fakeClient({ balance: "0.010000000000000000", fee: "0.001000000000000000" });
     const result = await runJ0dPreflight(context, { client: client as J0dPreflightClient, now: fixedNow });

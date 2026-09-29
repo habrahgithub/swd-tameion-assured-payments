@@ -9,7 +9,8 @@ import { z } from "zod";
  * state-changing spike accepts only an intent that parses against this
  * schema, is internally consistent, and matches its SHA-256 fingerprint;
  * it then re-derives the intent from current provider truth and refuses to
- * submit unless the two are identical.
+ * submit unless the immutable transfer fields still match and current fee
+ * evidence remains within the fixed authorization ceilings.
  *
  * The fingerprint is an integrity binding only. Possessing it is not human
  * authorization.
@@ -22,7 +23,9 @@ export const ARC_TESTNET = "ARC-TESTNET" as const;
 export const J0D_SPIKE_AMOUNT = "0.01" as const;
 export const J0D_SPIKE_ASSET = "USDC" as const;
 export const J0D_SPIKE_FEE_LEVEL = "MEDIUM" as const;
-export const J0D_INTENT_VERSION = "J0D-EXACT-INTENT-v1" as const;
+export const J0D_INTENT_VERSION = "J0D-EXACT-INTENT-v2" as const;
+export const J0D_MAX_NETWORK_FEE = "0.002" as const;
+export const J0D_MAX_TOTAL_DEBIT = "0.012" as const;
 export const J0D_SPIKE_CLASSIFICATION = "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION" as const;
 export const MAX_PROVIDER_NUMERIC_LENGTH = 128;
 
@@ -69,6 +72,8 @@ export const j0dExactIntentSchema = z.object({
   fee_level: z.literal(J0D_SPIKE_FEE_LEVEL),
   estimated_network_fee: decimalStringSchema,
   minimum_required_total: decimalStringSchema,
+  max_network_fee: z.literal(J0D_MAX_NETWORK_FEE),
+  max_total_debit: z.literal(J0D_MAX_TOTAL_DEBIT),
   wallet_set_id: walletIdSchema,
   source_wallet_id: walletIdSchema,
   source_wallet_address: evmAddressSchema,
@@ -98,6 +103,14 @@ export const j0dExactIntentSchema = z.object({
   if (total !== amount + fee) {
     ctx.addIssue({ code: "custom", path: ["minimum_required_total"], message: "minimum_required_total must equal amount + estimated_network_fee exactly" });
   }
+  const maxFee = decimalToAtomicAtScale(J0D_MAX_NETWORK_FEE, decimals);
+  const maxTotal = decimalToAtomicAtScale(J0D_MAX_TOTAL_DEBIT, decimals);
+  if (maxFee === null || fee > maxFee) {
+    ctx.addIssue({ code: "custom", path: ["estimated_network_fee"], message: "estimated_network_fee must not exceed the fixed max_network_fee" });
+  }
+  if (maxTotal === null || total > maxTotal) {
+    ctx.addIssue({ code: "custom", path: ["minimum_required_total"], message: "minimum_required_total must not exceed the fixed max_total_debit" });
+  }
 });
 export type J0dExactIntent = z.infer<typeof j0dExactIntentSchema>;
 
@@ -114,7 +127,7 @@ export function computeJ0dIntentFingerprint(intent: J0dExactIntent): string {
 export function computeJ0dExecutionIdentity(intent: J0dExactIntent): string {
   const parsed = j0dExactIntentSchema.parse(intent);
   const stableExecution = {
-    domain: "tameion-j0d-stable-execution-v1",
+    domain: "tameion-j0d-stable-execution-v2",
     classification: parsed.classification,
     network: parsed.network,
     asset: parsed.asset,
@@ -127,8 +140,11 @@ export function computeJ0dExecutionIdentity(intent: J0dExactIntent): string {
     destination_wallet_address: parsed.destination_wallet_address.toLowerCase(),
     provider_token: {
       id: parsed.provider_token.id,
+      symbol: parsed.provider_token.symbol,
+      blockchain: parsed.provider_token.blockchain,
       decimals: parsed.provider_token.decimals,
       is_native: parsed.provider_token.is_native,
+      token_address: parsed.provider_token.token_address,
     },
   };
   return createHash("sha256").update(canonicalize(stableExecution), "utf8").digest("hex");
@@ -147,7 +163,7 @@ export function j0dIdempotencyKeyForExecutionIdentity(identity: string): string 
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** Material intent fields compared against re-derived provider truth (everything but capture time). */
+/** Immutable transfer fields compared against re-derived provider truth. Fee and total are point-in-time evidence. */
 export const J0D_MATERIAL_INTENT_FIELDS = [
   "intent_version",
   "classification",
@@ -155,8 +171,6 @@ export const J0D_MATERIAL_INTENT_FIELDS = [
   "asset",
   "amount",
   "fee_level",
-  "estimated_network_fee",
-  "minimum_required_total",
   "wallet_set_id",
   "source_wallet_id",
   "source_wallet_address",

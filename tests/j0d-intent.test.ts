@@ -9,7 +9,7 @@ import {
 } from "../src/j0d-spike/intent";
 
 const intent: J0dExactIntent = {
-  intent_version: "J0D-EXACT-INTENT-v1",
+  intent_version: "J0D-EXACT-INTENT-v2",
   classification: "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION",
   network: "ARC-TESTNET",
   asset: "USDC",
@@ -17,6 +17,8 @@ const intent: J0dExactIntent = {
   fee_level: "MEDIUM",
   estimated_network_fee: "0.001000000000000000",
   minimum_required_total: "0.011000000000000000",
+  max_network_fee: "0.002",
+  max_total_debit: "0.012",
   wallet_set_id: "2b72f116-16da-591a-9212-5382388a35c4",
   source_wallet_id: "9fe9c001-a044-5f9a-8997-165474887952",
   source_wallet_address: "0x8a5ec63c8bc7a4d4b4f0134e034bda4c24043e95",
@@ -51,12 +53,25 @@ describe("J0-D canonical exact intent and fingerprint", () => {
   });
 
   it.each([
+    ["v1 version", { intent_version: "J0D-EXACT-INTENT-v1" }],
+    ["missing max network fee", { max_network_fee: undefined }],
+    ["missing max total debit", { max_total_debit: undefined }],
+    ["larger network fee cap", { max_network_fee: "0.003" }],
+    ["larger total cap", { max_total_debit: "0.013" }],
+    ["zero network fee cap", { max_network_fee: "0" }],
+    ["zero total cap", { max_total_debit: "0" }],
+    ["tighter network fee cap", { max_network_fee: "0.0015" }],
+    ["tighter total debit cap", { max_total_debit: "0.0115" }],
     ["amount", { amount: "0.02" }],
     ["fee level", { fee_level: "HIGH" }],
     ["network", { network: "ETH-SEPOLIA" }],
     ["non-native token", { provider_token: { ...intent.provider_token, is_native: false } }],
     ["total not amount + fee", { minimum_required_total: "0.010000000000000000" }],
     ["zero fee", { estimated_network_fee: "0", minimum_required_total: "0.01" }],
+    ["fee above fixed cap", { estimated_network_fee: "0.002000000000000001", minimum_required_total: "0.012000000000000001" }],
+    ["fee cap is not the fixed literal", { max_network_fee: "0.002000000000000001" }],
+    ["total cap is not the fixed literal", { max_total_debit: "0.012000000000000001" }],
+    ["total cap not above amount", { max_total_debit: "0.01" }],
     ["fee beyond token precision", { provider_token: { ...intent.provider_token, decimals: 2 } }],
     ["float-looking fee", { estimated_network_fee: "1e-3" }],
     ["self-transfer id", { destination_wallet_id: intent.source_wallet_id }],
@@ -65,6 +80,15 @@ describe("J0-D canonical exact intent and fingerprint", () => {
   ])("rejects an intent with invalid %s", (_label, change) => {
     expect(j0dExactIntentSchema.safeParse({ ...intent, ...change }).success).toBe(false);
     expect(() => computeJ0dIntentFingerprint({ ...intent, ...change } as unknown as J0dExactIntent)).toThrow();
+  });
+
+  it("reports both aligned ceiling errors when fee and exact total exceed their fixed limits", () => {
+    const fee = j0dExactIntentSchema.safeParse({ ...intent, estimated_network_fee: "0.002000000000000001", minimum_required_total: "0.012000000000000001" });
+    const total = j0dExactIntentSchema.safeParse({ ...intent, estimated_network_fee: "0.002000000000000001", minimum_required_total: "0.012000000000000001" });
+    expect(fee.success).toBe(false);
+    if (!fee.success) expect(fee.error.issues.map((issue) => issue.path)).toContainEqual(["estimated_network_fee"]);
+    expect(total.success).toBe(false);
+    if (!total.success) expect(total.error.issues.map((issue) => issue.path)).toContainEqual(["minimum_required_total"]);
   });
 
   it("derives a deterministic UUIDv4-shaped Circle idempotency key from stable execution identity", () => {
@@ -76,12 +100,16 @@ describe("J0-D canonical exact intent and fingerprint", () => {
     expect(() => j0dIdempotencyKeyForExecutionIdentity("nope")).toThrow();
   });
 
-  it("keeps stable execution identity/key across fresh fee and timestamp evidence", () => {
-    const changedEvidence = { ...intent, estimated_network_fee: "0.002", minimum_required_total: "0.012", preflight_captured_at: "2026-09-29T07:01:00.000Z" };
+  it("keeps stable execution identity/key across estimate and timestamp changes", () => {
+    const changedEvidence = { ...intent, estimated_network_fee: "0.0015", minimum_required_total: "0.0115", preflight_captured_at: "2026-09-29T07:01:00.000Z" };
     expect(computeJ0dIntentFingerprint(changedEvidence)).not.toBe(computeJ0dIntentFingerprint(intent));
     const identity = computeJ0dExecutionIdentity(intent);
     expect(computeJ0dExecutionIdentity(changedEvidence)).toBe(identity);
     expect(j0dIdempotencyKeyForExecutionIdentity(computeJ0dExecutionIdentity(changedEvidence))).toBe(j0dIdempotencyKeyForExecutionIdentity(identity));
+  });
+
+  it("binds the fuller v2 provider-token identity in stable execution identity", () => {
+    expect(computeJ0dExecutionIdentity({ ...intent, provider_token: { ...intent.provider_token, token_address: "0x3600000000000000000000000000000000000000" } })).not.toBe(computeJ0dExecutionIdentity(intent));
   });
 
   it.each([

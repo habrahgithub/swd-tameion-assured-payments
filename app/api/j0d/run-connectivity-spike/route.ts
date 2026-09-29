@@ -34,8 +34,10 @@ const spikeRequestSchema = z.object({
  * The fingerprint is an integrity binding, not authorization: Prime's
  * explicit approval of the displayed intent happens out-of-band and must
  * precede any call. Current provider truth is re-read immediately before
- * submission; any material change, including the MEDIUM fee estimate, stops
- * the request before `createTransaction`.
+ * submission; immutable transfer changes or a current fee above the fixed
+ * 0.002 USDC fee cap or total above the fixed 0.012 USDC debit cap stop the
+ * request before `createTransaction`. Fee and total are point-in-time evidence
+ * and may vary within those exact caps.
  *
  * There is no durable J0-D ledger or lock, and point-in-time provider truth
  * plus Circle idempotency alone provides no production exactly-once guarantee.

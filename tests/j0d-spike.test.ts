@@ -304,18 +304,44 @@ describe("#26 NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER", () => {
     }
   });
 
-  it("stops as FEE_ESTIMATE_CHANGED when the current MEDIUM fee differs from the approved fee in either direction", async () => {
+  it.each([
+    ["lower than estimate", "0.0005"],
+    ["higher than estimate within cap", "0.0015"],
+    ["equal to the approved estimate", "0.001000000000000000"],
+    ["exactly at fee and total caps", "0.002"],
+  ])("submits when the current fee is %s and the total remains within both ceilings", async (_label, fee) => {
     const binding = await approved();
-    for (const fee of ["0.001000000000000001", "0.000999999999999999"]) {
-      const { client, prohibited } = makeClient({ fee });
-      const error = await expectStopped(runConnectivitySpike({ resumeFrom, ...binding, client }), "FEE_ESTIMATE_CHANGED");
-      expect(error.details).toMatchObject({
-        changed_fields: ["estimated_network_fee", "minimum_required_total"],
-        approved_estimated_network_fee: "0.001000000000000000",
-        current_estimated_network_fee: fee,
-      });
-      expectNothingSubmitted(client, prohibited);
-    }
+    const { client } = makeClient({ fee });
+    const result = await runConnectivitySpike({ resumeFrom, ...binding, client, pollIntervalMs: 1 });
+    expect(result.status).toBe("COMPLETE");
+    expect(client.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a current fee above the authorized max_network_fee before submission", async () => {
+    const binding = await approved();
+    const { client, prohibited } = makeClient({ fee: "0.002000000000000001" });
+    const error = await expectStopped(runConnectivitySpike({ resumeFrom, ...binding, client }), "AUTHORIZATION_CEILING_EXCEEDED");
+    expect(error.details.current_total_debit).toBe("0.012000000000000001");
+    expectNothingSubmitted(client, prohibited);
+  });
+
+  it("returns STALE_INTENT when provider token identity changes after current context validation", async () => {
+    const binding = await approved();
+    const { client, prohibited } = makeClient({ token: { id: "USDC-ARC-TESTNET-ROTATED" } });
+    const error = await expectStopped(runConnectivitySpike({ resumeFrom, ...binding, client }), "STALE_INTENT");
+    expect(error.details.changed_fields).toContain("provider_token");
+    expect(client.getWallet).toHaveBeenCalledTimes(2);
+    expect(client.getWalletTokenBalance).toHaveBeenCalledTimes(1);
+    expect(client.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({ tokenId: "USDC-ARC-TESTNET-ROTATED" }));
+    expectNothingSubmitted(client, prohibited);
+  });
+
+  it("blocks a changed immutable transfer field before submission", async () => {
+    const binding = await approved();
+    const { client, prohibited } = makeClient({ destination: { address: "0x1111111111111111111111111111111111111111" } });
+    const error = await expectStopped(runConnectivitySpike({ resumeFrom, ...binding, client }), "PROVIDER_TRUTH_BLOCKED");
+    expect(error.details.blocker).toBe("DESTINATION_WALLET_CONTEXT_MISMATCH");
+    expectNothingSubmitted(client, prohibited);
   });
 
   it("fails closed on malformed provider responses before submission", async () => {
