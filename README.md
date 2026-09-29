@@ -1,8 +1,14 @@
 # Tameion
 
-Tameion is an assured AI payment agent for the Canteen × Circle hackathon: AI decides what should be paid; deterministic, cryptographically bound controls decide what can actually move.
+Tameion is an ERP-native assured payment control plane for the Canteen × Circle hackathon: AI proposes what should be paid, a human authorizes the exact intent, and deterministic, cryptographically bound controls decide what may execute.
 
 **Branch status:** `main` holds the verified J0 baseline (app shell, provider connectivity evidence, genuine obligation dataset). The `prototype/claude-autonomy` branch (this branch, if you are reading it there) is an active prototype build covering J0-D through J3 under `DIR-TAMEION-PROTOTYPE-CLAUDE-001` — see "Prototype status" below before assuming anything here is production- or judged-demo-ready.
+
+## ERP-native control-plane boundary
+
+Tameion does not replace an ERP or accounting system. The upstream business system remains the system of record for vendors, invoices/obligations, source approvals and accounting state. The vendor-neutral canonical payment-obligation contract supports ERP, accounting-system, API, CSV-import and direct-evidence source records. Only the existing `DIRECT_EVIDENCE` adapter is implemented in the hackathon prototype; vendor-specific connectors are not. Tameion then owns AI assessment, exact-intent human authorization, deterministic assurance, execution orchestration, reconciliation and evidence. Circle Developer-Controlled Wallets and Arc are the target settlement rail/provider truth.
+
+An upstream `APPROVED` state is descriptive input only. The canonical source contract cannot carry Tameion execution authority. **NO ASSURANCE, NO EXECUTION** remains the invariant, and a sealed Tameion PAE is still re-verified server-side by the Execution Worker before provider submission. The current J0-C obligations are truthfully labeled `DIRECT_EVIDENCE`; this prototype does not claim they originated from an ERP. Vendor-specific ERP connectors are outside the hackathon scope. Architecture authority: GitHub issue #20 (`ADR-TAMEION-ERP-001`); implementation directive: issue #21 (`TAMEION-ERP-BOUNDARY-001`).
 
 ## Runtime
 
@@ -50,7 +56,7 @@ The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](d
 
 ## Prototype status (`prototype/claude-autonomy`)
 
-Implemented and tested (`npm test`, 106 passing; verified live in a real Chromium browser, not just curl):
+Implemented and tested (full verification suite passing):
 
 - **Numeric safety** (`src/domain/numeric.ts`): exact decimal <-> atomic USDC conversion, no floating point, no silent truncation.
 - **PAE-P0-1** (`src/pae/`): RFC 8785 JCS canonicalization, SHA-256, Ed25519 sign/verify, a versioned trusted-key registry, and durable approval/assurance record hashing — matches the blueprint's Canonicalization Contract field-for-field.

@@ -6,6 +6,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate"
 import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
+import { adaptDirectEvidenceObligation, type CanonicalPaymentObligation } from "../domain/payment-control-boundary";
 import {
   durableApprovalRecordSchema,
   durableAssuranceRecordSchema,
@@ -379,6 +380,11 @@ export class DemoState {
 
   getRecord(obligationId: string): LiveUsageObligationRecord | undefined {
     return this.liveUsageRecords.find((r) => r.obligation_id === obligationId);
+  }
+
+  getCanonicalObligation(obligationId: string): CanonicalPaymentObligation | undefined {
+    const record = this.getRecord(obligationId);
+    return record ? adaptDirectEvidenceObligation(record) : undefined;
   }
 
   getAssessmentOperation(idempotencyKey: string): AssessmentOperation | undefined {

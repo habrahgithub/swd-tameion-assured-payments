@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { AuthorityError } from "../../../../src/authority/aggregate";
 import { DEMO_ARC_TRUST_SEEDED, DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
+import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -9,10 +10,46 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     const record = state.getRecord(id);
+    const canonicalObligation = state.getCanonicalObligation(id);
+    if (!record || !canonicalObligation) {
+      return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
+    }
     const currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
     const sealed = state.getSealedPae(id);
     const execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
+    const executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
+    let providerStatus = "NOT_SUBMITTED";
+    if (execution) {
+      try {
+        if (execution.provider_ref) {
+          providerStatus = (await state.adapter.getStatus(execution.provider_ref)).status;
+        } else if (execution.status === "SUBMITTING" || execution.status === "UNKNOWN") {
+          providerStatus = state.adapter.getStatusByIdempotencyKey
+            ? (await state.adapter.getStatusByIdempotencyKey(execution.idempotency_key)).status
+            : "IN_DOUBT";
+        }
+      } catch {
+        providerStatus = "PROVIDER_QUERY_FAILED";
+      }
+    }
+    const settlementRuntime = state.adapter.name === "fake-testnet" ? "SIMULATED" as const : "LIVE" as const;
+    const truth = buildPaymentTruthLayers({
+      obligation: canonicalObligation,
+      source_obligation_state: record.state_at_event_baseline,
+      aggregate_version: aggregate.aggregate_version,
+      aggregate_state: aggregate.state,
+      pae_state: aggregate.pae_state,
+      execution_state: aggregate.execution_state,
+      current_assessment_present: Boolean(currentAssessment),
+      pae_sealed: Boolean(sealed),
+      execution_kill_switched: executionKillSwitched,
+      network: aggregate.network,
+      settlement_status: providerStatus,
+      provider_ref: execution?.provider_ref ?? null,
+      settlement_runtime: settlementRuntime,
+    });
     return NextResponse.json({
+      truth,
       aggregate,
       record,
       current_assessment: currentAssessment ? {
@@ -27,7 +64,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
       pae_sealed: Boolean(sealed),
       execution: execution ?? null,
-      execution_kill_switched: state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id),
+      execution_kill_switched: executionKillSwitched,
     });
   } catch (error) {
     if (error instanceof AuthorityError) {

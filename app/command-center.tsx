@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RaceAssessment } from "../src/agent/schema";
+import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary";
 import {
   assessmentReviewSnapshot,
   currentReviewedAssessment,
@@ -37,6 +38,7 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  truth: PaymentTruthLayers;
   aggregate: AggregateView;
   record: Record<string, unknown>;
   current_assessment: {
@@ -84,20 +86,16 @@ const TONE_STYLE: Record<Tone, { border: string; text: string }> = {
   danger: { border: "border-l-[3px] border-l-[var(--color-danger)]", text: "text-[var(--color-danger)]" },
 };
 
-/** Explicit workflow state, never expressed by colour alone. */
-function workflowState(detail: ObligationDetail | null): { label: string; tone: Tone; explanation: string } {
+/** Explicit workflow state, never expressed by colour alone. Authority-bearing
+ * labels consume the server-derived truth layer rather than recomputing release
+ * authority in the browser. */
+export function workflowState(detail: ObligationDetail | null): { label: string; tone: Tone; explanation: string } {
   if (!detail) return { label: "Loading", tone: "neutral", explanation: "" };
-  const { aggregate, execution } = detail;
+  const { aggregate, execution, truth } = detail;
+  const releaseAuthority = truth.tameion_control_truth.execution_release_authority;
 
   if (execution?.status === "SETTLED" && aggregate.state === "RECONCILED") {
     return { label: "Reconciled", tone: "success", explanation: "Settlement matches the authorized obligation exactly." };
-  }
-  if (execution?.status === "BLOCKED" || aggregate.execution_state === "BLOCKED") {
-    return {
-      label: "Blocked",
-      tone: "danger",
-      explanation: "A pre-submit or reconciliation check failed. No unauthorized movement occurred.",
-    };
   }
   if (execution?.status === "UNKNOWN") {
     return {
@@ -109,18 +107,40 @@ function workflowState(detail: ObligationDetail | null): { label: string; tone: 
   if (execution?.status === "FAILED") {
     return { label: "Execution failed", tone: "danger", explanation: "Provider confirmed the attempt failed." };
   }
-  if (aggregate.execution_state === "SUBMITTED" || aggregate.execution_state === "SUBMITTING") {
-    return { label: "Submitted to provider", tone: "info", explanation: "Simulated Arc Testnet submission in flight." };
+  if (releaseAuthority === "BLOCKED" || releaseAuthority === "REVOKED") {
+    return {
+      label: "Blocked",
+      tone: "danger",
+      explanation: "Execution authority is no longer usable. Review the control and evidence state before any new attempt.",
+    };
   }
-  if (detail.pae_sealed && aggregate.state === "AUTHORIZED") {
+  if (releaseAuthority === "EXPIRED") {
+    return { label: "PAE expired", tone: "warning", explanation: "The sealed payment authority expired and cannot be submitted." };
+  }
+  if (releaseAuthority === "SUBMITTED_TO_PROVIDER") {
+    return { label: "Submitted to provider", tone: "info", explanation: "Provider/chain settlement truth is pending or being reconciled." };
+  }
+  if (releaseAuthority === "IN_DOUBT_PROVIDER_SUBMISSION") {
+    return { label: "Submission state in doubt", tone: "warning", explanation: "The provider may have received the request. Tameion will reconcile provider truth and will not blind-retry." };
+  }
+  if (releaseAuthority === "RESERVED_FOR_EXECUTION") {
+    return { label: "Execution reserved", tone: "info", explanation: "The PAE has been claimed for one idempotent execution attempt." };
+  }
+  if (releaseAuthority === "SUSPENDED_KILL_SWITCH") {
+    return { label: "Execution suspended", tone: "warning", explanation: "A kill switch prevents release of the currently sealed PAE." };
+  }
+  if (releaseAuthority === "TAMEION_PAE_REVERIFY_REQUIRED") {
     return {
       label: "Authorized — PAE sealed",
       tone: "success",
-      explanation: "Human authorization is bound to a signed Payment Authorization Envelope, ready for execution.",
+      explanation: "Human authorization and assurance are sealed; the Execution Worker must still re-verify current state before submission.",
     };
   }
+  if (releaseAuthority === "CONSUMED") {
+    return { label: "PAE consumed", tone: "neutral", explanation: "This payment authority has already been consumed and cannot be reused." };
+  }
   if (aggregate.state === "APPROVAL_PENDING") {
-    return { label: "Awaiting human authorization", tone: "neutral", explanation: "No approval has been recorded yet." };
+    return { label: "Awaiting human authorization", tone: "neutral", explanation: "No Tameion execution authority has been granted." };
   }
   return { label: aggregate.state, tone: "neutral", explanation: "" };
 }
@@ -494,6 +514,34 @@ export function CommandCenter() {
               </div>
               <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
             </div>
+          )}
+
+          {detail && (
+            <section aria-label="Payment authority boundary" className="grid gap-3 border-b border-[var(--color-border)] pb-4 md:grid-cols-3">
+              <article className="space-y-1 border-l-2 border-[var(--color-border)] pl-3" data-testid="source-truth">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Source-system truth</h3>
+                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.source_truth.role}</p>
+                <p className="mono text-[11px] text-[var(--color-ink-muted)]">
+                  {detail.truth.source_truth.source.source_kind} · {detail.truth.source_truth.source.source_system_id}
+                </p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Record {detail.truth.source_truth.source.record_id} · state {detail.truth.source_truth.obligation_state}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Source approval {detail.truth.source_truth.source.approval_state} · execution authority {detail.truth.source_truth.source.execution_authority}</p>
+              </article>
+              <article className="space-y-1 border-l-2 border-[var(--color-ink)] pl-3" data-testid="tameion-control-truth">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Tameion control truth</h3>
+                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.tameion_control_truth.role}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
+              </article>
+              <article className="space-y-1 border-l-2 border-[var(--color-warning)] pl-3" data-testid="settlement-truth">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Settlement truth</h3>
+                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
+                <p className="mono text-[11px] text-[var(--color-ink-muted)]">Provider reference {detail.truth.settlement_truth.provider_ref ?? "None"}</p>
+                <p className="text-[11px] font-semibold text-[var(--color-ink)]">NO ASSURANCE, NO EXECUTION</p>
+              </article>
+            </section>
           )}
 
           <nav className="flex gap-5 border-b border-[var(--color-border)]">
