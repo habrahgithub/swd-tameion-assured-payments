@@ -179,7 +179,7 @@ describe("#26 NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER", () => {
     expect(client.getWalletTokenBalance).toHaveBeenCalledTimes(1);
     expect(client.estimateTransferFee).toHaveBeenCalledTimes(1);
     expect(client.listTransactions).toHaveBeenCalledWith({
-      walletIds: [resumeFrom.sourceWallet.id], blockchain: "ARC-TESTNET", txType: "OUTBOUND", pageSize: 1, order: "DESC",
+      walletIds: [resumeFrom.sourceWallet.id], txType: "OUTBOUND", pageSize: 1, order: "DESC",
     });
     expect(prohibited.requestTestnetTokens).not.toHaveBeenCalled();
     expect(prohibited.createWallets).not.toHaveBeenCalled();
@@ -384,13 +384,16 @@ describe("#26 NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER", () => {
     const result = await runConnectivitySpike({ resumeFrom, ...binding, client, pollIntervalMs: 1 });
     expect(result.status).toBe("COMPLETE");
     expect(client.listTransactions).toHaveBeenCalledTimes(1);
-    expect(client.listTransactions).toHaveBeenCalledWith({
+    const [query] = vi.mocked(client.listTransactions).mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(query).toStrictEqual({
       walletIds: [resumeFrom.sourceWallet.id],
-      blockchain: "ARC-TESTNET",
       txType: "OUTBOUND",
       pageSize: 1,
       order: "DESC",
     });
+    // B7-B: the provider rejects a blockchain filter on this query; it must never be sent.
+    expect(Object.keys(query).sort()).toEqual(["order", "pageSize", "txType", "walletIds"]);
+    expect(query).not.toHaveProperty("blockchain");
   });
 
   it("stops without submitting when the source wallet already has a prior outbound transaction", async () => {

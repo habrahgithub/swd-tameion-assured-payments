@@ -31,7 +31,7 @@
 import type { FeeLevel } from "@circle-fin/developer-controlled-wallets";
 import { z } from "zod";
 
-import { createCircleArcSpikeExecutionClient, ARC_TESTNET_BLOCKCHAIN } from "./circle-arc-client";
+import { createCircleArcSpikeExecutionClient } from "./circle-arc-client";
 import {
   decimalToAtomicAtScale,
   computeJ0dExecutionIdentity,
@@ -124,7 +124,6 @@ export interface J0ConnectivitySpikeResult {
 export interface J0dSpikeExecutionClient extends J0dPreflightClient {
   listTransactions(input: {
     walletIds: string[];
-    blockchain: typeof ARC_TESTNET_BLOCKCHAIN;
     txType: "OUTBOUND";
     pageSize: 1;
     order: "DESC";
@@ -207,7 +206,6 @@ const providerTransactionListSchema = z.object({
 async function readPriorOutboundTransaction(client: J0dSpikeExecutionClient, walletId: string): Promise<string | null> {
   const response = await client.listTransactions({
     walletIds: [walletId],
-    blockchain: ARC_TESTNET_BLOCKCHAIN,
     txType: "OUTBOUND",
     pageSize: 1,
     order: "DESC",
