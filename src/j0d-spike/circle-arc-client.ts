@@ -35,3 +35,23 @@ export function createCircleArcReadOnlyClient() {
     estimateTransferFee: client.estimateTransferFee.bind(client),
   };
 }
+
+/**
+ * Intent-bound execution capability for the J0-D spike (#26). Exposes the
+ * three read-only preflight operations (so provider truth can be re-read
+ * immediately before submission), a read-only transaction listing/lookup for
+ * no-blind-retry, and `createTransaction`. It deliberately does NOT expose
+ * wallet-set/wallet creation or the faucet: a resumed, intent-bound transfer
+ * is structurally unable to mint wallets or request testnet funds.
+ */
+export function createCircleArcSpikeExecutionClient() {
+  const client = createCircleArcSpikeClient();
+  return {
+    getWallet: client.getWallet.bind(client),
+    getWalletTokenBalance: client.getWalletTokenBalance.bind(client),
+    estimateTransferFee: client.estimateTransferFee.bind(client),
+    listTransactions: client.listTransactions.bind(client),
+    getTransaction: client.getTransaction.bind(client),
+    createTransaction: client.createTransaction.bind(client),
+  };
+}

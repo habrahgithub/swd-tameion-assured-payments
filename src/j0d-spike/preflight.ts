@@ -1,16 +1,28 @@
 import { z } from "zod";
 
 import { ARC_TESTNET_BLOCKCHAIN, createCircleArcReadOnlyClient } from "./circle-arc-client";
-import type { J0dResumeContext } from "./connectivity-spike";
+import {
+  J0D_INTENT_VERSION,
+  J0D_SPIKE_AMOUNT,
+  J0D_SPIKE_ASSET,
+  J0D_SPIKE_CLASSIFICATION,
+  J0D_SPIKE_FEE_LEVEL,
+  MAX_PROVIDER_NUMERIC_LENGTH,
+  atomicToDecimalAtScale,
+  computeJ0dExecutionIdentity,
+  computeJ0dIntentFingerprint,
+  decimalToAtomicAtScale,
+  evmAddressSchema,
+  j0dExactIntentSchema,
+  j0dExecutionIdentitySchema,
+  j0dIdempotencyKeyForExecutionIdentity,
+  j0dIntentFingerprintSchema,
+  verifiedUsdcTokenSchema,
+  walletIdSchema,
+  type VerifiedUsdcToken,
+} from "./intent";
 
-export const J0D_SPIKE_AMOUNT = "0.01" as const;
-export const J0D_SPIKE_ASSET = "USDC" as const;
-export const J0D_SPIKE_FEE_LEVEL = "MEDIUM" as const;
-
-const walletIdSchema = z.string().min(1).max(128);
-const evmAddressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
-const tokenIdSchema = z.string().min(1).max(256);
-const MAX_PROVIDER_NUMERIC_LENGTH = 128;
+export { J0D_SPIKE_AMOUNT, J0D_SPIKE_ASSET, J0D_SPIKE_FEE_LEVEL };
 
 export const j0dResumeContextSchema = z.object({
   walletSetId: walletIdSchema,
@@ -24,6 +36,7 @@ export const j0dResumeContextSchema = z.object({
     issue.addIssue({ code: "custom", path: ["destinationWallet", "address"], message: "source and destination addresses must differ" });
   }
 });
+export type J0dResumeContext = z.infer<typeof j0dResumeContextSchema>;
 
 const verifiedWalletSchema = z.object({
   id: walletIdSchema,
@@ -31,30 +44,6 @@ const verifiedWalletSchema = z.object({
   blockchain: z.literal(ARC_TESTNET_BLOCKCHAIN),
   wallet_set_id: walletIdSchema,
   state: z.literal("LIVE"),
-}).strict();
-
-const verifiedUsdcTokenSchema = z.object({
-  id: tokenIdSchema,
-  symbol: z.literal(J0D_SPIKE_ASSET),
-  blockchain: z.literal(ARC_TESTNET_BLOCKCHAIN),
-  is_native: z.literal(true),
-  decimals: z.number().int().min(0).max(36),
-  token_address: z.string().max(256).nullable(),
-}).strict();
-
-const exactIntentSchema = z.object({
-  classification: z.literal("INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION"),
-  network: z.literal(ARC_TESTNET_BLOCKCHAIN),
-  asset: z.literal(J0D_SPIKE_ASSET),
-  amount: z.literal(J0D_SPIKE_AMOUNT),
-  fee_level: z.literal(J0D_SPIKE_FEE_LEVEL),
-  estimated_network_fee: z.string().min(1).max(128),
-  minimum_required_total: z.string().min(1).max(128),
-  source_wallet_id: walletIdSchema,
-  source_wallet_address: evmAddressSchema,
-  destination_wallet_id: walletIdSchema,
-  destination_wallet_address: evmAddressSchema,
-  provider_token: verifiedUsdcTokenSchema,
 }).strict();
 
 export const j0dPreflightResultSchema = z.discriminatedUnion("readiness", [
@@ -66,7 +55,11 @@ export const j0dPreflightResultSchema = z.discriminatedUnion("readiness", [
     destination_wallet: verifiedWalletSchema,
     source_usdc_balance: z.string().min(1).max(128),
     source_usdc_token: verifiedUsdcTokenSchema,
-    exact_intent: exactIntentSchema,
+    exact_intent: j0dExactIntentSchema,
+    /** SHA-256 integrity binding over exact_intent. Not authorization. */
+    intent_fingerprint: j0dIntentFingerprintSchema,
+    execution_identity: j0dExecutionIdentitySchema,
+    idempotency_key: z.string().uuid(),
     captured_at: z.string().datetime({ offset: true }),
   }).strict(),
   z.object({
@@ -114,7 +107,6 @@ export function j0dPreflightHttpStatus(result: J0dPreflightResult): number {
   return 502;
 }
 type VerifiedWallet = z.infer<typeof verifiedWalletSchema>;
-type VerifiedUsdcToken = z.infer<typeof verifiedUsdcTokenSchema>;
 
 const providerWalletTruthSchema = z.object({
   id: z.string(),
@@ -219,24 +211,6 @@ function normalizeWallet(
       state: wallet.state,
     }),
   };
-}
-
-function decimalToAtomicAtScale(value: string, decimals: number): bigint | null {
-  if (typeof value !== "string" || value.length > MAX_PROVIDER_NUMERIC_LENGTH) return null;
-  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 36) return null;
-  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(value);
-  if (!match) return null;
-  const fraction = match[2] ?? "";
-  if (fraction.length > decimals) return null;
-  return BigInt(match[1]) * 10n ** BigInt(decimals) + BigInt((fraction || "0").padEnd(decimals, "0"));
-}
-
-function atomicToDecimalAtScale(value: bigint, decimals: number): string {
-  if (decimals === 0) return value.toString(10);
-  const divisor = 10n ** BigInt(decimals);
-  const whole = value / divisor;
-  const fraction = (value % divisor).toString(10).padStart(decimals, "0");
-  return `${whole.toString(10)}.${fraction}`;
 }
 
 function normalizeProviderSymbol(value: unknown): string | null {
@@ -427,6 +401,28 @@ export async function runJ0dPreflight(
     );
   }
 
+  const readAt = capturedAt(now);
+  const exactIntent = j0dExactIntentSchema.safeParse({
+    intent_version: J0D_INTENT_VERSION,
+    classification: J0D_SPIKE_CLASSIFICATION,
+    network: ARC_TESTNET_BLOCKCHAIN,
+    asset: J0D_SPIKE_ASSET,
+    amount: J0D_SPIKE_AMOUNT,
+    fee_level: J0D_SPIKE_FEE_LEVEL,
+    estimated_network_fee: estimatedNetworkFee,
+    minimum_required_total: minimumRequiredTotal,
+    wallet_set_id: source.wallet.wallet_set_id,
+    source_wallet_id: source.wallet.id,
+    source_wallet_address: source.wallet.address,
+    destination_wallet_id: destination.wallet.id,
+    destination_wallet_address: destination.wallet.address,
+    provider_token: pinnedUsdc.token,
+    preflight_captured_at: readAt,
+  });
+  if (!exactIntent.success) {
+    return blocked("INVALID_FEE_ESTIMATE", "The contemplated transfer intent could not be represented exactly from provider truth.", now);
+  }
+
   return j0dPreflightResultSchema.parse({
     dispatch_profile: "J0_CONNECTIVITY_SPIKE",
     action: "READ_ONLY_PREFLIGHT",
@@ -435,20 +431,10 @@ export async function runJ0dPreflight(
     destination_wallet: destination.wallet,
     source_usdc_balance: pinnedUsdc.amount,
     source_usdc_token: pinnedUsdc.token,
-    exact_intent: {
-      classification: "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION",
-      network: ARC_TESTNET_BLOCKCHAIN,
-      asset: J0D_SPIKE_ASSET,
-      amount: J0D_SPIKE_AMOUNT,
-      fee_level: J0D_SPIKE_FEE_LEVEL,
-      estimated_network_fee: estimatedNetworkFee,
-      minimum_required_total: minimumRequiredTotal,
-      source_wallet_id: source.wallet.id,
-      source_wallet_address: source.wallet.address,
-      destination_wallet_id: destination.wallet.id,
-      destination_wallet_address: destination.wallet.address,
-      provider_token: pinnedUsdc.token,
-    },
-    captured_at: capturedAt(now),
+    exact_intent: exactIntent.data,
+    intent_fingerprint: computeJ0dIntentFingerprint(exactIntent.data),
+    execution_identity: computeJ0dExecutionIdentity(exactIntent.data),
+    idempotency_key: j0dIdempotencyKeyForExecutionIdentity(computeJ0dExecutionIdentity(exactIntent.data)),
+    captured_at: readAt,
   });
 }

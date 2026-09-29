@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 /**
  * J0 Arc Connectivity Spike (blueprint: "J0 Arc Connectivity Spike
  * Boundary"). Classification: INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION.
@@ -7,30 +5,45 @@ import { randomUUID } from "node:crypto";
  * This module is deliberately isolated from the product runtime:
  *  - it has no import of AuthorityStore, the PAE signer, or ExecutionWorker;
  *  - it never produces or consumes a PAE;
- *  - it creates and uses its own disposable wallet set/wallets, never the
+ *  - it uses only the recovered disposable spike wallet set/wallets, never the
  *    product's source wallet;
- *  - NO_VALID_PAE_NO_EXECUTION_REGARDLESS_OF_INTERFACE applies to product
- *    execution interfaces, not to this spike, but this spike also cannot
- *    become a product execution path — there is no code path from here
- *    into `src/execution/worker.ts` or `src/pipeline/*`.
+ *  - there is no code path from here into `src/execution/worker.ts` or
+ *    `src/pipeline/*`.
  *
- * Dispatch profile: J0_CONNECTIVITY_SPIKE. Allowed: one deliberately tiny
- * disposable testnet transfer using a dedicated spike wallet/context that
- * is not reachable by product execution APIs.
+ * #26 invariant: NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER.
  *
- * Fail-closed contract: any provider error, any timeout, or an ambiguous
- * transaction state returns/throws a clear, typed result — it never
- * fabricates a transaction hash or guesses at success. On an ambiguous
- * final transaction state, this function returns status "UNKNOWN" and does
- * not retry submission (a second call to this function would submit a new,
- * distinct transaction — it is not a safe automatic retry path; that is
- * intentional, since the whole point of the spike is one deliberate
- * transfer, decided by whoever invokes it).
+ * Submission is resume-only and intent-bound. The caller must supply the
+ * recovered wallet context, the exact intent produced by the read-only
+ * preflight (and approved by Prime out-of-band), and that intent's SHA-256
+ * fingerprint. Immediately before submission this module re-runs the same
+ * read-only preflight against current provider truth and refuses to submit
+ * unless the re-derived intent is identical in every material field —
+ * including the current MEDIUM fee estimate (no tolerance band). The
+ * execution capability has no wallet-creation or faucet method, so a
+ * resumed transfer can never mint wallets or request testnet funds.
+ *
+ * Fail-closed contract: every failed check throws a typed
+ * J0ConnectivitySpikeError before `createTransaction`; provider error text is
+ * never propagated. After submission an ambiguous state returns "UNKNOWN" and
+ * is never blind-retried.
  */
 
-import type { AccountType, Blockchain, FeeLevel } from "@circle-fin/developer-controlled-wallets";
+import type { FeeLevel } from "@circle-fin/developer-controlled-wallets";
+import { z } from "zod";
 
-import { createCircleArcSpikeClient, ARC_TESTNET_BLOCKCHAIN } from "./circle-arc-client";
+import { createCircleArcSpikeExecutionClient, ARC_TESTNET_BLOCKCHAIN } from "./circle-arc-client";
+import {
+  computeJ0dExecutionIdentity,
+  computeJ0dIntentFingerprint,
+  diffMaterialIntentFields,
+  j0dExactIntentSchema,
+  j0dIdempotencyKeyForExecutionIdentity,
+  j0dIntentFingerprintSchema,
+  type J0dExactIntent,
+} from "./intent";
+import { j0dResumeContextSchema, runJ0dPreflight, type J0dPreflightClient, type J0dResumeContext } from "./preflight";
+
+export type { J0dResumeContext } from "./preflight";
 
 export class J0ConnectivitySpikeNotConfiguredError extends Error {
   constructor(message: string) {
@@ -39,10 +52,39 @@ export class J0ConnectivitySpikeNotConfiguredError extends Error {
   }
 }
 
+export type J0ConnectivitySpikeStage =
+  | "INVALID_RESUME_CONTEXT"
+  | "INVALID_APPROVED_INTENT"
+  | "INTENT_FINGERPRINT_MISMATCH"
+  | "RESUME_CONTEXT_INTENT_MISMATCH"
+  | "PROVIDER_TRUTH_BLOCKED"
+  | "FUNDING_REQUIRED"
+  | "FEE_ESTIMATE_CHANGED"
+  | "STALE_INTENT"
+  | "PRIOR_TRANSACTION_CHECK_FAILED"
+  | "PRIOR_OUTBOUND_TRANSACTION_EXISTS"
+  | "SUBMISSION_OUTCOME_UNKNOWN";
+
+/** Stages that stop before `createTransaction` is ever called. */
+export const J0D_PRE_SUBMISSION_STAGES: ReadonlySet<J0ConnectivitySpikeStage> = new Set([
+  "INVALID_RESUME_CONTEXT",
+  "INVALID_APPROVED_INTENT",
+  "INTENT_FINGERPRINT_MISMATCH",
+  "RESUME_CONTEXT_INTENT_MISMATCH",
+  "PROVIDER_TRUTH_BLOCKED",
+  "FUNDING_REQUIRED",
+  "FEE_ESTIMATE_CHANGED",
+  "STALE_INTENT",
+  "PRIOR_TRANSACTION_CHECK_FAILED",
+  "PRIOR_OUTBOUND_TRANSACTION_EXISTS",
+]);
+
 export class J0ConnectivitySpikeError extends Error {
   constructor(
     message: string,
-    public readonly stage: string,
+    public readonly stage: J0ConnectivitySpikeStage,
+    /** Sanitized, application-owned detail only — never provider error text. */
+    public readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "J0ConnectivitySpikeError";
@@ -52,9 +94,14 @@ export class J0ConnectivitySpikeError extends Error {
 export interface J0ConnectivitySpikeResult {
   dispatch_profile: "J0_CONNECTIVITY_SPIKE";
   classification: "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION";
-  network: "ARC_TESTNET";
+  network: "ARC-TESTNET";
   asset: "USDC";
-  amount: string;
+  amount: "0.01";
+  fee_level: "MEDIUM";
+  provider_token_id: string;
+  estimated_network_fee: string;
+  intent_fingerprint: string;
+  execution_identity: string;
   wallet_set_id: string;
   source_wallet_id: string;
   source_wallet_address: string;
@@ -69,24 +116,18 @@ export interface J0ConnectivitySpikeResult {
 }
 
 /**
- * The subset of the Circle Developer-Controlled Wallets client this spike
- * uses. Narrowed to an interface so tests can inject a fake without
- * touching the network, and so this module never depends on more of the
- * SDK's surface than it actually needs.
+ * The only Circle capability the intent-bound spike receives: the read-only
+ * preflight operations, read-only transaction lookup, and one submission
+ * method. No wallet creation, no faucet, no signing.
  */
-export interface CircleSpikeClient {
-  createWalletSet(input: { name: string; idempotencyKey: string }): Promise<{ data?: { walletSet?: { id?: string } } }>;
-  createWallets(input: {
-    blockchains: Blockchain[];
-    count: number;
-    walletSetId: string;
-    accountType: AccountType;
-    idempotencyKey: string;
-  }): Promise<{ data?: { wallets?: Array<{ id?: string; address?: string }> } }>;
-  requestTestnetTokens(input: { address: string; blockchain: string; native?: boolean; usdc?: boolean }): Promise<unknown>;
-  getWalletTokenBalance(input: {
-    id: string;
-  }): Promise<{ data?: { tokenBalances?: Array<{ amount?: string; token?: { id?: string; symbol?: string } }> } }>;
+export interface J0dSpikeExecutionClient extends J0dPreflightClient {
+  listTransactions(input: {
+    walletIds: string[];
+    blockchain: typeof ARC_TESTNET_BLOCKCHAIN;
+    txType: "OUTBOUND";
+    pageSize: 1;
+    order: "DESC";
+  }): Promise<unknown>;
   createTransaction(input: {
     walletId: string;
     tokenId: string;
@@ -94,40 +135,39 @@ export interface CircleSpikeClient {
     destinationAddress: string;
     fee: { type: "level"; config: { feeLevel: FeeLevel } };
     idempotencyKey: string;
-  }): Promise<{ data?: { id?: string } }>;
-  getTransaction(input: { id: string }): Promise<{ data?: { transaction?: { state?: string; txHash?: string } } }>;
-}
-
-/** A previously-created disposable wallet-set/wallet pair, recovered via
- * Circle's own read-only APIs (`listWalletSets`/`listWallets`) outside this
- * module. Passing it in skips wallet creation entirely, so a failure after
- * wallet creation (e.g. a faucet 403) is resumable without minting another
- * disposable wallet set on every retry. */
-export interface J0dResumeContext {
-  walletSetId: string;
-  sourceWallet: { id: string; address: string };
-  destinationWallet: { id: string; address: string };
+  }): Promise<unknown>;
+  getTransaction(input: { id: string }): Promise<unknown>;
 }
 
 export interface J0dStageEvidence {
-  stage: "WALLET_CONTEXT_READY";
+  stage: "PRE_SUBMISSION_VERIFIED";
+  intent_fingerprint: string;
+  execution_identity: string;
+  idempotency_key: string;
   wallet_set_id: string;
   source_wallet_id: string;
   source_wallet_address: string;
   destination_wallet_id: string;
   destination_wallet_address: string;
+  provider_token_id: string;
+  amount: string;
+  fee_level: string;
+  estimated_network_fee: string;
 }
 
 export interface RunConnectivitySpikeOptions {
-  client?: CircleSpikeClient;
+  /** Recovered disposable wallet context. Required: fresh wallet creation is not reachable. */
+  resumeFrom: J0dResumeContext;
+  /** Exact intent returned by the read-only preflight and approved by Prime. */
+  approvedIntent: J0dExactIntent;
+  /** SHA-256 fingerprint of `approvedIntent` as returned by the preflight. */
+  intentFingerprint: string;
+  client?: J0dSpikeExecutionClient;
   pollIntervalMs?: number;
-  balanceTimeoutMs?: number;
   transactionTimeoutMs?: number;
   now?: () => Date;
-  /** Resume from an already-created wallet-set/wallet pair instead of creating a new one. */
-  resumeFrom?: J0dResumeContext;
-  /** Called as soon as the wallet context is known (fresh or resumed) — before the
-   * faucet call — so wallet identifiers are captured durably even if a later stage fails. */
+  /** Called after every binding check passes and immediately before submission, so the
+   * fingerprint and idempotency key are logged even if the invocation dies mid-submission. */
   onStageEvidence?: (evidence: J0dStageEvidence) => void;
 }
 
@@ -140,18 +180,10 @@ async function delay(ms: number): Promise<void> {
 }
 
 /**
- * Would perform exactly one deliberately tiny disposable Arc Testnet USDC
- * transfer using a freshly created, dedicated spike wallet set — two EOA
- * wallets on ARC-TESTNET, funded from Circle's testnet faucet, then one
- * 0.01 USDC transfer between them — entirely outside the Tameion product
- * execution service, returning the resulting evidence.
- *
- * Fails closed (throws J0ConnectivitySpikeNotConfiguredError) if the
- * Circle Developer-Controlled Wallet credentials actually consumed by this
- * path (CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET) are not configured, rather
- * than fabricating a result. Arc Testnet routing is selected by the Circle
- * SDK blockchain literal ARC-TESTNET; this module does not call an Arc RPC
- * endpoint directly and therefore does not require an ARC_API_KEY.
+ * Fails closed (throws J0ConnectivitySpikeNotConfiguredError) if the Circle
+ * Developer-Controlled Wallet credentials consumed by this path are not
+ * configured. Arc Testnet routing is selected by the Circle SDK blockchain
+ * literal ARC-TESTNET; no ARC_API_KEY is required.
  */
 export function assertJ0dProviderConfigured(): void {
   if (!process.env.CIRCLE_API_KEY || !process.env.CIRCLE_ENTITY_SECRET) {
@@ -162,149 +194,198 @@ export function assertJ0dProviderConfigured(): void {
   }
 }
 
-export async function runConnectivitySpike(options: RunConnectivitySpikeOptions = {}): Promise<J0ConnectivitySpikeResult> {
+const providerTransactionListSchema = z.object({
+  data: z.object({
+    transactions: z.array(z.object({
+      id: z.string().min(1),
+      transactionType: z.literal("OUTBOUND"),
+    }).passthrough()).max(1),
+  }).passthrough(),
+}).passthrough();
+
+async function readPriorOutboundTransaction(client: J0dSpikeExecutionClient, walletId: string): Promise<string | null> {
+  const response = await client.listTransactions({
+    walletIds: [walletId],
+    blockchain: ARC_TESTNET_BLOCKCHAIN,
+    txType: "OUTBOUND",
+    pageSize: 1,
+    order: "DESC",
+  });
+  const parsed = providerTransactionListSchema.safeParse(response);
+  if (!parsed.success) throw new Error("prior outbound check response invalid");
+  return parsed.data.data.transactions[0]?.id ?? null;
+}
+
+const providerCreateTransactionSchema = z.object({
+  data: z.object({ id: z.string().min(1).max(256) }).passthrough(),
+}).passthrough();
+
+const providerGetTransactionSchema = z.object({
+  data: z.object({
+    transaction: z.object({
+      state: z.string().max(64).optional(),
+      txHash: z.string().max(256).optional(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+const FEE_FIELDS = new Set(["estimated_network_fee", "minimum_required_total"]);
+
+/**
+ * Binds the caller's inputs to each other before any provider call:
+ * strict resume context, strict internally-consistent intent, matching
+ * fingerprint, and resume context that agrees with the intent.
+ */
+export function verifyJ0dIntentBinding(input: {
+  resumeFrom: unknown;
+  approvedIntent: unknown;
+  intentFingerprint: unknown;
+}): { resumeFrom: J0dResumeContext; approvedIntent: J0dExactIntent; intentFingerprint: string } {
+  const resume = j0dResumeContextSchema.safeParse(input.resumeFrom);
+  if (!resume.success) {
+    throw new J0ConnectivitySpikeError("Refusing to submit: the recovered wallet context is missing or invalid.", "INVALID_RESUME_CONTEXT");
+  }
+  const intent = j0dExactIntentSchema.safeParse(input.approvedIntent);
+  if (!intent.success) {
+    throw new J0ConnectivitySpikeError("Refusing to submit: the approved preflight intent is missing or invalid.", "INVALID_APPROVED_INTENT");
+  }
+  const fingerprint = j0dIntentFingerprintSchema.safeParse(input.intentFingerprint);
+  if (!fingerprint.success || computeJ0dIntentFingerprint(intent.data) !== fingerprint.data) {
+    throw new J0ConnectivitySpikeError("Refusing to submit: the intent fingerprint does not match the approved intent.", "INTENT_FINGERPRINT_MISMATCH");
+  }
+  const context = resume.data;
+  const approved = intent.data;
+  if (
+    context.walletSetId !== approved.wallet_set_id ||
+    context.sourceWallet.id !== approved.source_wallet_id ||
+    context.sourceWallet.address.toLowerCase() !== approved.source_wallet_address.toLowerCase() ||
+    context.destinationWallet.id !== approved.destination_wallet_id ||
+    context.destinationWallet.address.toLowerCase() !== approved.destination_wallet_address.toLowerCase()
+  ) {
+    throw new J0ConnectivitySpikeError("Refusing to submit: the recovered wallet context disagrees with the approved intent.", "RESUME_CONTEXT_INTENT_MISMATCH");
+  }
+  return { resumeFrom: context, approvedIntent: approved, intentFingerprint: fingerprint.data };
+}
+
+/**
+ * Submits exactly one 0.01 native Arc Testnet USDC transfer, and only the
+ * transfer described by the approved preflight intent. Every check below
+ * runs before `createTransaction`; any failure throws a typed pre-submission
+ * error and nothing is submitted.
+ */
+export async function runConnectivitySpike(options: RunConnectivitySpikeOptions): Promise<J0ConnectivitySpikeResult> {
   const now = options.now ?? (() => new Date());
   const pollIntervalMs = options.pollIntervalMs ?? 5000;
-  const balanceTimeoutMs = options.balanceTimeoutMs ?? 2 * 60 * 1000;
   const transactionTimeoutMs = options.transactionTimeoutMs ?? 3 * 60 * 1000;
+
+  // 1. Caller-supplied binding: context <-> intent <-> fingerprint. No provider call yet.
+  const { resumeFrom, approvedIntent, intentFingerprint } = verifyJ0dIntentBinding(options);
 
   if (!options.client) {
     assertJ0dProviderConfigured();
   }
-
-  const client: CircleSpikeClient = options.client ?? createCircleArcSpikeClient();
+  const client: J0dSpikeExecutionClient = options.client ?? createCircleArcSpikeExecutionClient();
   const capturedAt = nowIso(now);
 
-  // 1. Dedicated disposable wallet set + two EOA wallets on Arc Testnet —
-  // or, if a prior run already created one, resume from it instead of
-  // minting another disposable context.
-  let walletSetId: string;
-  let sourceWallet: { id: string; address: string };
-  let destinationWallet: { id: string; address: string };
-
-  if (options.resumeFrom) {
-    walletSetId = options.resumeFrom.walletSetId;
-    sourceWallet = options.resumeFrom.sourceWallet;
-    destinationWallet = options.resumeFrom.destinationWallet;
-  } else {
-    try {
-      const walletSetResponse = await client.createWalletSet({
-        name: `tameion-j0d-spike-${capturedAt}`,
-        idempotencyKey: randomUUID(),
-      });
-      const id = walletSetResponse.data?.walletSet?.id;
-      if (!id) throw new Error("Circle createWalletSet returned no wallet set id");
-      walletSetId = id;
-    } catch (error) {
-      throw new J0ConnectivitySpikeError(`Failed to create spike wallet set: ${(error as Error).message}`, "CREATE_WALLET_SET");
-    }
-
-    try {
-      const walletsResponse = await client.createWallets({
-        blockchains: [ARC_TESTNET_BLOCKCHAIN],
-        count: 2,
-        walletSetId,
-        accountType: "EOA",
-        idempotencyKey: randomUUID(),
-      });
-      const wallets = walletsResponse.data?.wallets ?? [];
-      if (wallets.length < 2) {
-        throw new Error(`Expected 2 wallets, Circle returned ${wallets.length}`);
-      }
-      const [first, second] = wallets;
-      if (!first.id || !first.address || !second.id || !second.address) {
-        throw new Error("Circle createWallets response missing id/address");
-      }
-      sourceWallet = { id: first.id, address: first.address };
-      destinationWallet = { id: second.id, address: second.address };
-    } catch (error) {
-      throw new J0ConnectivitySpikeError(`Failed to create spike wallets: ${(error as Error).message}`, "CREATE_WALLETS");
-    }
+  // 2. Re-derive the intent from current provider truth using the same
+  // read-only preflight that produced the approved intent.
+  const current = await runJ0dPreflight(resumeFrom, { client, now });
+  if (current.readiness === "BLOCKED_EXTERNAL") {
+    throw new J0ConnectivitySpikeError(
+      "Refusing to submit: current provider truth failed read-only verification.",
+      "PROVIDER_TRUTH_BLOCKED",
+      { blocker: current.blocker },
+    );
+  }
+  if (current.readiness === "FUNDING_REQUIRED") {
+    throw new J0ConnectivitySpikeError(
+      "Refusing to submit: the source wallet no longer covers the transfer plus estimated network fee. No faucet request was made.",
+      "FUNDING_REQUIRED",
+      {
+        source_usdc_balance: current.source_usdc_balance,
+        minimum_required_total: current.minimum_required_total,
+        funding_address: current.funding_address,
+      },
+    );
   }
 
-  // Wallet context is now known (fresh or resumed) — hand it to the caller
-  // immediately, before the faucet call, so a later failure still leaves
-  // durable evidence instead of requiring a manual listWalletSets() hunt.
+  // 3. Stale-intent rule: every material field must be identical, including the
+  // current MEDIUM fee estimate. No tolerance band.
+  const changed = diffMaterialIntentFields(approvedIntent, current.exact_intent);
+  if (changed.length > 0) {
+    const feeOnly = changed.every((field) => FEE_FIELDS.has(field));
+    throw new J0ConnectivitySpikeError(
+      feeOnly
+        ? "Refusing to submit: the current MEDIUM fee estimate differs from the approved intent. Run a fresh preflight and obtain fresh authorization."
+        : "Refusing to submit: current provider truth differs from the approved intent. Run a fresh preflight and obtain fresh authorization.",
+      feeOnly ? "FEE_ESTIMATE_CHANGED" : "STALE_INTENT",
+      {
+        changed_fields: changed,
+        approved_estimated_network_fee: approvedIntent.estimated_network_fee,
+        current_estimated_network_fee: current.exact_intent.estimated_network_fee,
+      },
+    );
+  }
+
+  // 4. No blind retry across invocations: check whether any prior OUTBOUND
+  // transaction exists for the disposable source wallet.
+  let priorOutboundId: string | null;
+  try {
+    priorOutboundId = await readPriorOutboundTransaction(client, approvedIntent.source_wallet_id);
+  } catch {
+    throw new J0ConnectivitySpikeError("Refusing to submit: prior outbound transaction status could not be verified.", "PRIOR_TRANSACTION_CHECK_FAILED");
+  }
+  if (priorOutboundId !== null) {
+    throw new J0ConnectivitySpikeError(
+      "Refusing to submit: the source wallet already has an outbound transaction. Reconcile it from provider truth; do not resubmit.",
+      "PRIOR_OUTBOUND_TRANSACTION_EXISTS",
+      { provider_transaction_ids: [priorOutboundId] },
+    );
+  }
+
+  // 5. The full intent remains authorization evidence; identity excludes fee/timestamp.
+  const executionIdentity = computeJ0dExecutionIdentity(approvedIntent);
+  const idempotencyKey = j0dIdempotencyKeyForExecutionIdentity(executionIdentity);
   options.onStageEvidence?.({
-    stage: "WALLET_CONTEXT_READY",
-    wallet_set_id: walletSetId,
-    source_wallet_id: sourceWallet.id,
-    source_wallet_address: sourceWallet.address,
-    destination_wallet_id: destinationWallet.id,
-    destination_wallet_address: destinationWallet.address,
+    stage: "PRE_SUBMISSION_VERIFIED",
+    intent_fingerprint: intentFingerprint,
+    execution_identity: executionIdentity,
+    idempotency_key: idempotencyKey,
+    wallet_set_id: approvedIntent.wallet_set_id,
+    source_wallet_id: approvedIntent.source_wallet_id,
+    source_wallet_address: approvedIntent.source_wallet_address,
+    destination_wallet_id: approvedIntent.destination_wallet_id,
+    destination_wallet_address: approvedIntent.destination_wallet_address,
+    provider_token_id: approvedIntent.provider_token.id,
+    amount: approvedIntent.amount,
+    fee_level: approvedIntent.fee_level,
+    estimated_network_fee: approvedIntent.estimated_network_fee,
   });
 
-  // 2. Check whether the source wallet already holds USDC (e.g. this is a
-  // resumed context that was already funded) before touching the faucet at
-  // all — avoids an unnecessary/duplicate faucet request.
-  let usdcTokenId: string | null = null;
-  try {
-    const balanceResponse = await client.getWalletTokenBalance({ id: sourceWallet.id });
-    const usdc = (balanceResponse.data?.tokenBalances ?? []).find((b) => b.token?.symbol === "USDC");
-    if (usdc && Number(usdc.amount) > 0 && usdc.token?.id) {
-      usdcTokenId = usdc.token.id;
-    }
-  } catch (error) {
-    throw new J0ConnectivitySpikeError(`Balance check failed before funding: ${(error as Error).message}`, "BALANCE_CHECK");
-  }
-
-  if (!usdcTokenId) {
-    // 2a. Fund the source wallet from Circle's testnet faucet (native gas + USDC).
-    try {
-      await client.requestTestnetTokens({
-        address: sourceWallet.address,
-        blockchain: ARC_TESTNET_BLOCKCHAIN,
-        native: true,
-        usdc: true,
-      });
-    } catch (error) {
-      throw new J0ConnectivitySpikeError(`Faucet funding request failed: ${(error as Error).message}`, "FAUCET_REQUEST");
-    }
-
-    // 2b. Poll the source wallet balance until USDC arrives (bounded).
-    const balancePollDeadline = Date.now() + balanceTimeoutMs;
-    while (Date.now() < balancePollDeadline) {
-      await delay(pollIntervalMs);
-      try {
-        const balanceResponse = await client.getWalletTokenBalance({ id: sourceWallet.id });
-        const usdc = (balanceResponse.data?.tokenBalances ?? []).find((b) => b.token?.symbol === "USDC");
-        if (usdc && Number(usdc.amount) > 0 && usdc.token?.id) {
-          usdcTokenId = usdc.token.id;
-          break;
-        }
-      } catch (error) {
-        throw new J0ConnectivitySpikeError(`Balance check failed while awaiting faucet funds: ${(error as Error).message}`, "BALANCE_POLL");
-      }
-    }
-    if (!usdcTokenId) {
-      throw new J0ConnectivitySpikeError(
-        "Faucet did not fund the spike wallet with testnet USDC within the polling window; no transfer was attempted.",
-        "FAUCET_TIMEOUT",
-      );
-    }
-  }
-
-  // 4. Exactly one deliberately tiny (0.01 USDC) disposable transfer.
-  const idempotencyKey = randomUUID();
-  const amount = "0.01";
   let transactionId: string;
   try {
     const transferResponse = await client.createTransaction({
-      walletId: sourceWallet.id,
-      tokenId: usdcTokenId,
-      amount: [amount],
-      destinationAddress: destinationWallet.address,
-      fee: { type: "level", config: { feeLevel: "MEDIUM" } },
+      walletId: approvedIntent.source_wallet_id,
+      tokenId: approvedIntent.provider_token.id,
+      amount: [approvedIntent.amount],
+      destinationAddress: approvedIntent.destination_wallet_address,
+      fee: { type: "level", config: { feeLevel: approvedIntent.fee_level } },
       idempotencyKey,
     });
-    const id = transferResponse.data?.id;
-    if (!id) throw new Error("Circle createTransaction returned no transaction id");
-    transactionId = id;
-  } catch (error) {
-    throw new J0ConnectivitySpikeError(`Transfer submission failed: ${(error as Error).message}`, "CREATE_TRANSACTION");
+    const parsed = providerCreateTransactionSchema.safeParse(transferResponse);
+    if (!parsed.success) throw new Error("malformed");
+    transactionId = parsed.data.data.id;
+  } catch {
+    // The request may or may not have been accepted. Never retry blindly:
+    // reconcile from provider truth (listTransactions / idempotency key).
+    throw new J0ConnectivitySpikeError(
+      "Transfer submission outcome is unknown. Do not resubmit; reconcile from Circle provider truth using the idempotency key.",
+      "SUBMISSION_OUTCOME_UNKNOWN",
+      { intent_fingerprint: intentFingerprint, execution_identity: executionIdentity, idempotency_key: idempotencyKey },
+    );
   }
 
-  // 5. Query provider truth until a terminal state or a bounded timeout —
+  // 6. Query provider truth until a terminal state or a bounded timeout —
   // never blind-retry the submission itself.
   let finalState: string | null = null;
   let txHash: string | null = null;
@@ -312,10 +393,17 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions 
   const txPollDeadline = Date.now() + transactionTimeoutMs;
   while (Date.now() < txPollDeadline) {
     await delay(pollIntervalMs);
-    const statusResponse = await client.getTransaction({ id: transactionId });
-    const tx = statusResponse.data?.transaction;
-    const state = tx?.state ?? null;
-    txHash = tx?.txHash ?? null;
+    let statusResponse: unknown;
+    try {
+      statusResponse = await client.getTransaction({ id: transactionId });
+    } catch {
+      continue; // transient read failure; bounded by the deadline, result stays UNKNOWN
+    }
+    const parsed = providerGetTransactionSchema.safeParse(statusResponse);
+    if (!parsed.success) continue;
+    const tx = parsed.data.data.transaction;
+    const state = tx.state ?? null;
+    txHash = tx.txHash ?? null;
     if (state === "COMPLETE" || (state && terminalFailureStates.has(state))) {
       finalState = state;
       break;
@@ -327,15 +415,20 @@ export async function runConnectivitySpike(options: RunConnectivitySpikeOptions 
 
   return {
     dispatch_profile: "J0_CONNECTIVITY_SPIKE",
-    classification: "INFRASTRUCTURE_CONNECTIVITY_SPIKE_NOT_PRODUCT_EXECUTION",
-    network: "ARC_TESTNET",
-    asset: "USDC",
-    amount,
-    wallet_set_id: walletSetId,
-    source_wallet_id: sourceWallet.id,
-    source_wallet_address: sourceWallet.address,
-    destination_wallet_id: destinationWallet.id,
-    destination_wallet_address: destinationWallet.address,
+    classification: approvedIntent.classification,
+    network: approvedIntent.network,
+    asset: approvedIntent.asset,
+    amount: approvedIntent.amount,
+    fee_level: approvedIntent.fee_level,
+    provider_token_id: approvedIntent.provider_token.id,
+    estimated_network_fee: approvedIntent.estimated_network_fee,
+    intent_fingerprint: intentFingerprint,
+    execution_identity: executionIdentity,
+    wallet_set_id: approvedIntent.wallet_set_id,
+    source_wallet_id: approvedIntent.source_wallet_id,
+    source_wallet_address: approvedIntent.source_wallet_address,
+    destination_wallet_id: approvedIntent.destination_wallet_id,
+    destination_wallet_address: approvedIntent.destination_wallet_address,
     idempotency_key: idempotencyKey,
     provider_transaction_id: transactionId,
     provider_tx_hash: txHash,

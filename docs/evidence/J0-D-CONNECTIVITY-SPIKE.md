@@ -60,38 +60,92 @@ Local WSL currently has no Circle credentials, so the live recovered-wallet bala
 from a credentialed deployment/runtime after this change is deployed. J0-D remains
 `IN_PROGRESS` until a separately authorized testnet transfer reaches a truthful terminal state.
 
-## Safe continuation path (not yet executed)
+Recorded on #26 (not re-run by this change): the deployed read-only preflight reported
+`FUNDING_REQUIRED` because the recovered source wallet balance is 0.
 
-Circle's public web faucet (`faucet.circle.com`) supports Arc Testnet USDC, is permissionless,
-and provides 20 testnet USDC per address every two hours. Continuation plan once manually funded:
+## Intent-bound execution (#26)
 
-1. Fund the existing recovered source wallet address (`0x8a5e...3e95`) via the public faucet.
-2. Re-invoke `runConnectivitySpike({ resumeFrom: { walletSetId, sourceWallet, destinationWallet } })`
-   (hardening added in this same change — see "Resumability hardening" below) so no new
-   disposable wallet set is created.
-3. The balance-check-first ordering (also added in this hardening pass) will detect the existing
-   funded balance and skip the faucet call entirely, proceeding straight to the one authorized
-   0.01 USDC transfer.
-4. Poll to terminal state; on `UNKNOWN`, do not resubmit.
+Invariant: **NO APPROVED PREFLIGHT INTENT, NO J0-D TRANSFER.**
+
+- `src/j0d-spike/intent.ts` is the single exact-intent contract. The preflight's
+  `READY_FOR_EXPLICIT_AUTHORIZATION` result carries `exact_intent` (intent version, classification,
+  `ARC-TESTNET`, native USDC provider token id/decimals/native flag, amount `0.01`, fee level
+  `MEDIUM`, estimated network fee, minimum required total, wallet set, source/destination wallet
+  id/address, `preflight_captured_at`) and `intent_fingerprint` = SHA-256 over its RFC 8785
+  canonical JSON. The fingerprint is an integrity binding, not authorization.
+- `POST /api/j0d/run-connectivity-spike` is resume-only. Its strict body requires the
+  confirmation literal, `resumeFrom`, the exact `approvedIntent`, and the matching
+  `intentFingerprint`. A bare confirmation, a missing field, an extra field, a fingerprint mismatch,
+  or a resume context that disagrees with the intent is refused before any provider call.
+- Wallet-set/wallet creation and the faucet were removed from `runConnectivitySpike`, and its
+  Circle capability (`createCircleArcSpikeExecutionClient`) does not expose them. A resumed
+  transfer with insufficient native USDC stops with `FUNDING_REQUIRED`; no faucet call is possible.
+- Immediately before submission the spike re-runs the same read-only preflight against current
+  provider truth and stops (`PROVIDER_TRUTH_BLOCKED`, `FUNDING_REQUIRED`, `STALE_INTENT`, or
+  `FEE_ESTIMATE_CHANGED`) unless every material intent field is identical. A different current
+  `MEDIUM` fee estimate — in either direction — requires a fresh preflight and fresh Prime
+  authorization; no tolerance band exists.
+- Immediately before submission it queries Circle for prior outbound existence with
+  `walletIds: [sourceWalletId]`, `blockchain: ARC-TESTNET`, `txType: OUTBOUND`, `pageSize: 1`,
+  and `order: DESC`. Zero rows means only that no outbound is visible in Circle's current provider
+  truth at query time. Exactly one valid outbound blocks with
+  `PRIOR_OUTBOUND_TRANSACTION_EXISTS`. A malformed response, missing id, wrong or missing
+  direction, more than one row, or provider error fails closed. This existence query is not a
+  durable ledger or lock and does not guarantee production exactly-once execution.
+- Only then does it call `createTransaction` once, with exactly the approved source wallet,
+  provider token id, `["0.01"]`, destination address, and `MEDIUM`, using a Circle idempotency key
+  derived deterministically from the stable execution identity. A thrown or malformed submission response
+  is `SUBMISSION_OUTCOME_UNKNOWN` and is never retried. Errors carry only application-owned text.
+
+### Residual at-most-once risk (not resolved)
+
+There is no durable cross-serverless J0-D ledger or lock. Concurrent invocations can both pass the
+prior-outbound existence check before Circle's provider truth exposes either transaction. The
+stable execution identity and its idempotency key improve same-transfer replay consistency while
+excluding volatile fee, minimum-total, and preflight-timestamp fields; Circle's provider-side
+idempotency semantics have not been live-verified. This spike is intended for one deliberately
+invoked J0-D testnet connectivity run, not as a production exactly-once guarantee. Invoke once,
+only after a fresh `READY_FOR_EXPLICIT_AUTHORIZATION` preflight and Prime's explicit approval of
+that exact intent.
+
+## Continuation path (not yet executed)
+
+1. Fund the recovered source wallet address (`0x8a5e...3e95`) with native Arc Testnet USDC through
+   the public faucet (`faucet.circle.com`). The code never requests faucet funds.
+2. Run the read-only preflight (`POST /api/j0d/preflight`) until it returns
+   `READY_FOR_EXPLICIT_AUTHORIZATION`, and present its `exact_intent` + `intent_fingerprint`
+   to Prime as the authorization evidence. The separate `execution_identity` and
+   `idempotency_key` bind the immutable transfer identity for provider replay handling.
+3. Only after an independent review of this code and Prime's explicit approval of that exact intent:
+   `POST /api/j0d/run-connectivity-spike` once with the confirmation literal, `resumeFrom`,
+   `approvedIntent`, and `intentFingerprint`. Any provider-truth change stops before submission.
+4. Poll to terminal state; on `UNKNOWN`, do not resubmit — reconcile from provider truth.
 5. Update this document with the final `provider_transaction_id` / `provider_tx_hash` / `status`.
 
-## Resumability hardening (this change)
+## Earlier resumability hardening (superseded by #26)
 
-`runConnectivitySpike` previously had no way to resume after a post-wallet-creation failure other
-than manually querying Circle's API out-of-band (as done in step 3 above) and had no mechanism to
-avoid re-hitting the faucet if a wallet was already funded. This change adds:
+The first recovery pass added `resumeFrom`, wallet-context stage evidence before the faucet call,
+and a balance check before the faucet. #26 replaces that flow: fresh wallet creation and all faucet
+calls are gone from the spike, and stage evidence is now emitted as `PRE_SUBMISSION_VERIFIED`
+immediately before submission with the intent fingerprint, stable execution identity, and
+idempotency key recorded separately.
 
-- `options.resumeFrom` — skip wallet-set/wallet creation entirely when a prior context is supplied.
-- `options.onStageEvidence` — invoked with the wallet-set/wallet IDs as soon as they're known
-  (fresh or resumed), before the faucet call, so a mid-run failure still leaves durable evidence
-  (logged via Vercel function logs from the API route) instead of requiring a manual
-  `listWalletSets()`/`listWallets()` recovery.
-- Balance is now checked *before* the faucet call; if the source wallet already holds USDC
-  (e.g. a resumed, already-funded context), the faucet is skipped entirely.
+## Replay guard and residual concurrency
 
-See `tests/j0d-spike.test.ts` for the corresponding fake-client orchestration tests (resume skips
-creation calls; already-funded wallet skips the faucet call; `onStageEvidence` fires with the
-wallet context before a simulated faucet failure).
+Immediately before submission, the spike makes one provider-filtered Circle `OUTBOUND`
+existence query: `walletIds: [sourceWalletId]`, `blockchain: ARC-TESTNET`, `txType: OUTBOUND`,
+`pageSize: 1`, `order: DESC`. Zero rows means no outbound is visible in current Circle provider
+truth at that time; exactly one valid outbound blocks. Malformed or ambiguous responses, missing
+ids, wrong or missing directions, more than one row, and provider errors fail closed.
+
+The stable execution identity hashes the immutable classification, network, native USDC token
+identity/scale, exact amount, MEDIUM fee level, wallet set, and source/destination identifiers
+and addresses. It excludes volatile fee estimate, minimum total, and preflight timestamp fields.
+The full `intent_fingerprint` binds the exact Prime authorization evidence and includes those
+freshness fields; any fee change stops execution pending fresh preflight and authorization. The
+Circle idempotency key derives from the separate stable execution identity. This can improve
+same-transfer replay consistency, but does not remove the race or establish provider idempotency
+semantics, which have not been live-verified.
 
 ## What has NOT happened
 
