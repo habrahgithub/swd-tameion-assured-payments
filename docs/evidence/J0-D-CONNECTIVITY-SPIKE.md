@@ -21,10 +21,11 @@ honestly; it does not mark J0-D resolved.
 3. This context was independently recovered (read-only) via `client.listWalletSets()` and
    `client.listWallets({ walletSetId, blockchain: "ARC-TESTNET" })` against the live API —
    confirmed both wallets exist, are `LIVE`, and hold zero token balance.
-4. **Hypothesis tested and disproven:** that `native: true` (unnecessary since Arc uses USDC as
-   its gas asset) was causing the 403. Re-tested the funding call with `usdc: true, native: false`
-   against the recovered source wallet address. Result: identical `403`, with SDK-extracted
-   provider body `{"code":3,"message":"Forbidden"}`. The 403 is not request-shape-dependent.
+4. **Hypothesis tested and disproven:** that the `native: true` request flag itself was causing
+   the 403. Re-tested the funding call with `usdc: true, native: false` against the recovered
+   source wallet address. Result: identical `403`, with SDK-extracted provider body
+   `{"code":3,"message":"Forbidden"}`. This shows the 403 is not caused by that request flag; it
+   does **not** imply native Arc USDC funding is unnecessary for gas.
 
 ## Root cause classification
 
@@ -33,6 +34,31 @@ returning a generic, parameter-independent `Forbidden` for this API key/account 
 `ARC-TESTNET`. Most consistent with an account/API-key scope gap (faucet access not enabled for
 this key, or ARC-TESTNET faucet support not enabled for this account tier) rather than a code
 defect in this repository. Not fixable by changing `runConnectivitySpike`'s request parameters.
+
+## Read-only recovered-wallet preflight
+
+Directive #22 adds a separate read-only preflight at `POST /api/j0d/preflight`. It accepts the
+previously recovered wallet context and uses only non-submitting Circle provider operations:
+`getWallet`, `getWalletTokenBalance`, and `estimateTransferFee`. It cannot create wallets, request
+faucet funds, sign, or submit a transaction, and it has no import path into the product
+PAE/ExecutionWorker pipeline.
+
+The route requires the explicit literal `READ_J0D_PREFLIGHT_ONLY` and returns one of:
+
+- `READY_FOR_EXPLICIT_AUTHORIZATION` — both wallets still match the recovered Arc Testnet
+  context and are `LIVE`; exactly one **native `ARC-TESTNET` USDC** balance is pinned from Circle
+  metadata; and the source balance covers both the 0.01 USDC transfer and Circle's current
+  `MEDIUM` estimated network fee. The response includes that token identity, fee estimate, and the
+  exact contemplated intent. This is **not authorization** and cannot auto-submit it.
+- `FUNDING_REQUIRED` — provider wallet/token truth is valid but the source wallet does not cover
+  the transfer plus estimated network fee; the response identifies the funding address. It does
+  not call the faucet.
+- `BLOCKED_EXTERNAL` — credentials/provider truth/context validation failed; no transfer is
+  attempted and no provider result is fabricated.
+
+Local WSL currently has no Circle credentials, so the live recovered-wallet balance must be checked
+from a credentialed deployment/runtime after this change is deployed. J0-D remains
+`IN_PROGRESS` until a separately authorized testnet transfer reaches a truthful terminal state.
 
 ## Safe continuation path (not yet executed)
 

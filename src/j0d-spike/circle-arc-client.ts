@@ -21,3 +21,17 @@ export function createCircleArcSpikeClient() {
 }
 
 export const ARC_TESTNET_BLOCKCHAIN = "ARC-TESTNET" as const;
+
+/**
+ * Read-only capability wrapper for J0-D preflight. The returned object does
+ * not expose wallet creation, faucet, signing, or transaction submission
+ * methods even though the underlying authenticated SDK client supports them.
+ */
+export function createCircleArcReadOnlyClient() {
+  const client = createCircleArcSpikeClient();
+  return {
+    getWallet: client.getWallet.bind(client),
+    getWalletTokenBalance: client.getWalletTokenBalance.bind(client),
+    estimateTransferFee: client.estimateTransferFee.bind(client),
+  };
+}
