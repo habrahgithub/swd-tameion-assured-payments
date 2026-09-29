@@ -34,6 +34,7 @@ type AssessmentResponse = {
     missing_evidence: string[];
     uncertainty_signal: boolean;
   };
+  race?: DurableAssessmentRecord["race"];
   provider_used: string;
   provider_mode: DurableAssessmentRecord["provider_mode"];
   assessment_hash: string;
@@ -60,6 +61,7 @@ function responseFor(state: DemoState, operation: AssessmentOperation): Assessme
       missing_evidence: record.missing_evidence,
       uncertainty_signal: record.uncertainty_signal,
     },
+    ...(record.race ? { race: record.race } : {}),
     provider_used: record.provider_name,
     provider_mode: record.provider_mode,
     assessment_hash: sealed.hash,
@@ -232,7 +234,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const record = state.getRecord(id)!;
   const isLiveNvidia = Boolean(process.env.NVIDIA_API_KEY);
   const provider = isLiveNvidia ? new NvidiaProvider() : new DeterministicFallbackProvider();
-  const decision = await assessObligation(buildFinanceAgentContext(record), provider);
+  const decision = await assessObligation(buildFinanceAgentContext(record, aggregateVersion), provider);
   if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
 
   const assessmentRecord: DurableAssessmentRecord = {
@@ -245,6 +247,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     evidence_ids: decision.evidence_ids,
     missing_evidence: decision.missing_evidence,
     uncertainty_signal: decision.uncertainty_signal,
+    race: decision.race,
     provider_name: provider.name,
     provider_mode: !isLiveNvidia ? "NOT_LIVE_AI" : "LIVE_AI",
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),

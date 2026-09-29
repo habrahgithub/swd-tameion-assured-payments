@@ -145,6 +145,14 @@ describe("negative path: missing human authorization", () => {
     expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, "missing", "0".repeat(64))).toThrow(/no sealed Finance Agent assessment/);
   });
 
+  it("refuses to approve a legacy PAY assessment without validated RACE readiness proof", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
+    const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { race: undefined });
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash))
+      .toThrow(/missing valid application-owned RACE findings or readiness proof/);
+  });
+
   it("refuses to approve an obligation the Finance Agent decided HOLD or ESCALATE", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));

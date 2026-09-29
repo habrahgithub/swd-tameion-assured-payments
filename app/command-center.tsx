@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { RaceAssessment } from "../src/agent/schema";
 import {
   assessmentReviewSnapshot,
   currentReviewedAssessment,
@@ -45,6 +46,7 @@ interface ObligationDetail {
     aggregate_version: string;
     decision: "PAY" | "HOLD" | "ESCALATE";
     reasons: string[];
+    race?: RaceAssessment;
   } | null;
   demo_arc_trust_seeded: boolean;
   pae_sealed: boolean;
@@ -150,6 +152,36 @@ function EvidencePanel({ value }: { value: unknown }) {
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
+  );
+}
+
+function RacePanel({ race }: { race?: RaceAssessment }) {
+  if (!race) return <p className="text-[12px] text-[var(--color-warning)]">Legacy assessment has no validated RACE data; reassess before authorization.</p>;
+  return (
+    <section className="space-y-2 rounded border border-[var(--color-border)] p-3" data-testid="race-remediation">
+      <p className="text-[12px] font-semibold uppercase tracking-wide">RACE — {race.result.decision_summary}</p>
+      <div className="text-[11px] text-[var(--color-ink-muted)]">
+        <p><strong>Action taken:</strong> {race.action_taken.summary}</p>
+        <ul className="list-disc pl-5">{race.action_taken.checks.map((check, index) => <li key={index}>{check}</li>)}</ul>
+        <p><strong>Caveats:</strong> {race.caveats.missing_context.length ? race.caveats.missing_context.join(", ") : "No typed missing context"}; uncertainty {race.caveats.uncertainty_signal ? "flagged" : "not flagged"}.</p>
+        <p><strong>Validated evidence IDs:</strong> {race.evidence.evidence_ids.join(", ") || "None"}</p>
+        <p><strong>Due-date fact:</strong> {race.evidence.authoritative_facts.due_date ?? "Not stated"} ({race.evidence.authoritative_facts.due_date_position} as of {race.evidence.authoritative_facts.as_of_date}).</p>
+      </div>
+      {race.result.validated_findings.length > 0 && (
+        <ul className="space-y-2 text-[12px]">
+          {race.remediation.map((item) => (
+            <li key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2">
+              <p><strong>{item.finding_code}:</strong> {item.reason}</p>
+              <p><strong>Required action:</strong> {item.required_action}</p>
+              <p><strong>Required evidence/context:</strong> {item.required_evidence.join("; ") || "None specified"}</p>
+              <p><strong>Owner:</strong> {item.owner_role}; reassessment {item.reassess_after_resolution ? "allowed after resolution" : "not allowed"}.</p>
+              {item.escalation_target && <p><strong>Escalate to:</strong> {item.escalation_target}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-[11px] text-[var(--color-ink-muted)]">Model explanation (non-authoritative): {race.caveats.model_explanation || "None returned."}</p>
+    </section>
   );
 }
 
@@ -363,6 +395,7 @@ export function CommandCenter() {
         aggregate_version?: unknown;
         decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
         assessment_hash?: unknown;
+        race?: unknown;
       };
       const snapshot = assessmentReviewSnapshot({
         obligation_id: data.decision?.obligation_id,
@@ -371,6 +404,7 @@ export function CommandCenter() {
         aggregate_version: data.aggregate_version,
         decision: data.decision?.decision,
         reasons: data.decision?.reasons,
+        race: data.race,
       });
       if (snapshot) {
         setDisplayedAssessment(snapshot);
@@ -520,6 +554,7 @@ export function CommandCenter() {
                     <Field label="Aggregate version" value={displayedAssessment.aggregate_version} />
                     <Field label="Decision" value={displayedAssessment.decision} />
                     <ul className="list-disc pl-5 text-[12px]">{displayedAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                    <RacePanel race={displayedAssessment.race} />
                   </div>
                 )}
                 {!displayedAssessment && currentAssessment && (
@@ -530,9 +565,11 @@ export function CommandCenter() {
                     <Field label="Aggregate version" value={currentAssessment.aggregate_version} />
                     <Field label="Decision" value={currentAssessment.decision} />
                     <ul className="list-disc pl-5 text-[12px]">{currentAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                    <RacePanel race={currentAssessment.race} />
                     <button
                       type="button"
                       className="text-[12px] font-semibold underline"
+                      disabled={!currentAssessment.race}
                       onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment))}
                     >
                       Review this assessment for authorization
@@ -561,6 +598,7 @@ export function CommandCenter() {
                     <Field label="Assessment aggregate version" value={authorizationAssessment.aggregate_version} />
                     <Field label="Decision reviewed" value={authorizationAssessment.decision} />
                     <ul className="list-disc pl-5">{authorizationAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                    <RacePanel race={authorizationAssessment.race} />
                   </dl>
                 )}
                 <div className="flex gap-3">

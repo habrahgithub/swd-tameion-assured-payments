@@ -134,6 +134,25 @@ describe("AuthorityStore.sealAssessment: missing / modified / duplicate / stale 
     expect(verifyDurableAssessmentRecordHash(sealed.record, sealed.hash)).toBe(true);
   });
 
+  it("RACE/remediation snapshots cannot mutate append-only assessment history", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate());
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const exposed = store.getCurrentAssessment("ORG-DEMO-001", "OBL-J0C-002")!;
+    exposed.record.race!.remediation.push({
+      finding_code: "OTHER_REQUIRES_HUMAN_REVIEW",
+      reason: "tamper",
+      required_action: "tamper",
+      required_evidence: [],
+      owner_role: "tamper",
+      reassess_after_resolution: true,
+      escalation_target: "tamper",
+    });
+    const stored = store.getCurrentAssessment("ORG-DEMO-001", "OBL-J0C-002")!;
+    expect(stored.record.race?.remediation).toHaveLength(0);
+    expect(verifyDurableAssessmentRecordHash(stored.record, stored.hash)).toBe(true);
+  });
+
   it("deterministic-fallback assessments are always sealed as NOT_LIVE_AI, never mistaken for live model output", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate());

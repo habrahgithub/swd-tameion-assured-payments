@@ -22,6 +22,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         aggregate_version: currentAssessment.record.aggregate_version,
         decision: currentAssessment.record.decision,
         reasons: currentAssessment.record.reasons,
+        ...(currentAssessment.record.race ? { race: currentAssessment.record.race } : {}),
       } : null,
       demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
       pae_sealed: Boolean(sealed),

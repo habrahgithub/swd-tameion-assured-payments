@@ -100,10 +100,10 @@ function createDurableFetch(options: {
         choices: [{ message: { content: JSON.stringify({
           obligation_id: "OBL-J0C-001",
           decision: "HOLD",
-          reasons: ["Provider returned a valid test assessment."],
+          finding_codes: [],
           evidence_ids: ["EVD-J0C-001"],
-          missing_evidence: ["destination_trust_seed"],
           uncertainty_signal: true,
+          explanation: "Provider returned a valid test assessment.",
         }) } }],
       });
     }
@@ -168,6 +168,9 @@ describe("assessment request idempotency across durable CAS races", () => {
     const completedData = await completed.json();
     const repeatedData = await repeated.json();
     expect(repeatedData.assessment_hash).toBe(completedData.assessment_hash);
+    expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(repeatedData.race).toEqual(completedData.race);
+    expect(completedData.decision.reasons.join(" ")).not.toContain("Provider returned a valid test assessment.");
   });
 
   it("reapplies an obtained provider result after an unrelated CAS winner without calling the provider again", async () => {
@@ -234,6 +237,8 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(durable.providerCalls).toBe(1);
     expect(durable.snapshot?.authority.assessments).toHaveLength(1);
     expect(durable.snapshot?.assessment_operations[0].status).toBe("COMPLETED");
+    const recovered = await replay.json();
+    expect(recovered.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
   });
 
   it("blocks a different key while an assessment operation is unresolved", async () => {
@@ -437,12 +442,29 @@ describe("assessment request idempotency across durable CAS races", () => {
       ...sealTestAssessment(new DemoState().store, DEMO_ORGANIZATION_ID, "OBL-J0C-001", 1).record,
       assessment_id: `ASM-${operationId}`,
     };
+    const changed = mismatch as { assessment_id?: string; obligation_id?: string; aggregate_version?: string };
     seed.assessment_operations.push({
       idempotency_key: operationId,
       obligation_id: "OBL-J0C-001",
       aggregate_version: 1,
       status: "PROVIDER_RESULT_DURABLE",
-      provider_result: { ...valid, ...mismatch },
+      provider_result: {
+        ...valid,
+        ...changed,
+        ...(changed.obligation_id || changed.aggregate_version ? {
+          race: {
+            ...valid.race!,
+            evidence: {
+              ...valid.race!.evidence,
+              authoritative_facts: {
+                ...valid.race!.evidence.authoritative_facts,
+                ...(changed.obligation_id ? { obligation_id: changed.obligation_id } : {}),
+                ...(changed.aggregate_version ? { aggregate_version: changed.aggregate_version } : {}),
+              },
+            },
+          },
+        } : {}),
+      },
     });
     const durable = createDurableFetch({ seedSnapshot: seed });
     globalThis.fetch = durable.fetcher as typeof fetch;

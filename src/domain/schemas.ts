@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { raceAssessmentSchema } from "../agent/schema";
 
 /**
  * Core Zod schemas shared by the Finance Agent, Safety Kernel, PAE signer/
@@ -72,6 +73,8 @@ export const durableAssessmentRecordSchema = z
     evidence_ids: z.array(boundedAscii()),
     missing_evidence: z.array(boundedAscii()),
     uncertainty_signal: z.boolean(),
+    /** Optional only for immutable pre-#17 records; every new assessment carries RACE. */
+    race: raceAssessmentSchema.optional(),
     provider_name: boundedAscii(),
     /** LIVE_AI only for a real model call that actually returned parseable
      * output; deterministic/mock/fallback reasoning is always NOT_LIVE_AI;
@@ -82,7 +85,21 @@ export const durableAssessmentRecordSchema = z
     provider_mode: z.enum(["LIVE_AI", "NOT_LIVE_AI", "BLOCKED_EXTERNAL"]),
     assessed_at: rfc3339Millis,
   })
-  .strict();
+  .strict()
+  .superRefine((record, ctx) => {
+    const race = record.race;
+    if (!race) return; // immutable pre-#17 assessment history remains readable
+    const facts = race.evidence.authoritative_facts;
+    if (race.result.decision !== record.decision) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "RACE decision must match the sealed assessment decision" });
+    }
+    if (facts.obligation_id !== record.obligation_id || facts.aggregate_version !== record.aggregate_version) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "RACE authoritative identity must match the sealed assessment" });
+    }
+    if (JSON.stringify(race.evidence.evidence_ids) !== JSON.stringify(record.evidence_ids)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "RACE evidence must match the sealed assessment evidence" });
+    }
+  });
 export type DurableAssessmentRecord = z.infer<typeof durableAssessmentRecordSchema>;
 
 /** DURABLE-APPROVAL-RECORD-P0-1 canonical payload. */

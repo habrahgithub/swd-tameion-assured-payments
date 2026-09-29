@@ -1,6 +1,20 @@
 import { sealDurableAssessmentRecord, verifyDurableAssessmentRecordHash } from "../pae/durable-records";
 import type { DurableAssessmentRecord } from "../domain/schemas";
 
+function cloneAssessmentRecord(record: DurableAssessmentRecord): DurableAssessmentRecord {
+  return {
+    ...record,
+    reasons: [...record.reasons],
+    evidence_ids: [...record.evidence_ids],
+    missing_evidence: [...record.missing_evidence],
+    ...(record.race ? { race: structuredClone(record.race) } : {}),
+  };
+}
+
+function cloneSealedAssessment(assessment: SealedAssessment): SealedAssessment {
+  return { record: cloneAssessmentRecord(assessment.record), hash: assessment.hash };
+}
+
 /**
  * The P0 ObligationAuthorityAggregate: one root per (organization_id,
  * obligation_id) that owns aggregate_version and is the single concurrency/
@@ -161,7 +175,7 @@ export class AuthorityStore {
         return history.map(({ record, hash }) => ({
           organization_id: key.slice(0, separator),
           obligation_id: key.slice(separator + 2),
-          record: { ...record, reasons: [...record.reasons], evidence_ids: [...record.evidence_ids], missing_evidence: [...record.missing_evidence] },
+          record: cloneAssessmentRecord(record),
           hash,
         }));
       }),
@@ -196,7 +210,7 @@ export class AuthorityStore {
     const history = this.sealedAssessments.get(key) ?? [];
     history.push({ record: sealed.record, hash: sealed.assessment_hash });
     this.sealedAssessments.set(key, history);
-    return sealed;
+    return { record: cloneAssessmentRecord(sealed.record), assessment_hash: sealed.assessment_hash };
   }
 
   getSealedAssessment(
@@ -204,19 +218,17 @@ export class AuthorityStore {
     obligationId: string,
   ): { record: DurableAssessmentRecord; hash: string } | undefined {
     const history = this.sealedAssessments.get(this.key(organizationId, obligationId));
-    return history?.at(-1);
+    const latest = history?.at(-1);
+    return latest ? cloneSealedAssessment(latest) : undefined;
   }
 
   getAssessmentHistory(organizationId: string, obligationId: string): SealedAssessment[] {
-    return (this.sealedAssessments.get(this.key(organizationId, obligationId)) ?? []).map((item) => ({
-      record: item.record,
-      hash: item.hash,
-    }));
+    return (this.sealedAssessments.get(this.key(organizationId, obligationId)) ?? []).map(cloneSealedAssessment);
   }
 
   getCurrentAssessment(organizationId: string, obligationId: string): SealedAssessment | undefined {
     const current = this.get(organizationId, obligationId);
-    return [...(this.sealedAssessments.get(this.key(organizationId, obligationId)) ?? [])]
+    return this.getAssessmentHistory(organizationId, obligationId)
       .reverse()
       .find((assessment) => assessment.record.aggregate_version === String(current.aggregate_version));
   }
@@ -347,6 +359,18 @@ export class AuthorityStore {
     }
     if (!verifyDurableAssessmentRecordHash(sealed.record, sealed.hash)) {
       throw new AuthorityError("Cannot approve: sealed assessment failed hash-integrity verification", "AUT-011");
+    }
+    const race = sealed.record.race;
+    if (
+      !race ||
+      race.result.decision !== sealed.record.decision ||
+      race.evidence.authoritative_facts.obligation_id !== obligationId ||
+      race.evidence.authoritative_facts.aggregate_version !== sealed.record.aggregate_version ||
+      race.evidence.authoritative_facts.aggregate_version !== String(current.aggregate_version) ||
+      JSON.stringify(race.evidence.evidence_ids) !== JSON.stringify(sealed.record.evidence_ids) ||
+      (sealed.record.decision === "PAY" && (race.result.validated_findings.length > 0 || race.remediation.length > 0))
+    ) {
+      throw new AuthorityError("Cannot approve: assessment is missing valid application-owned RACE findings or readiness proof; reassess before authorization", "AUT-014");
     }
     if (sealed.record.aggregate_version !== String(current.aggregate_version)) {
       throw new AuthorityError(
