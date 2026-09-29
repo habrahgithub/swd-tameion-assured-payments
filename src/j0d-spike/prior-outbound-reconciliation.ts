@@ -4,11 +4,14 @@ import { ARC_TESTNET_BLOCKCHAIN, createCircleArcPriorOutboundReadClient } from "
 import { walletIdSchema } from "./intent";
 
 /**
- * Read-only J0-D prior-outbound reconciliation (#40 B7-A).
+ * Read-only J0-D prior-outbound reconciliation (#40 B7-A, B7-B).
  *
- * Issues exactly the same provider query the intent-bound spike uses for its
- * no-blind-retry check (source wallet, ARC-TESTNET, OUTBOUND, pageSize 1,
- * DESC) and reports only the sanitized structure of what Circle returned.
+ * Issues one provider listing chosen from a fixed probe enum and reports only
+ * the sanitized structure of what Circle returned. FULL_CURRENT is exactly the
+ * query the intent-bound spike uses for its no-blind-retry check (source
+ * wallet, ARC-TESTNET, OUTBOUND, pageSize 1, DESC); the other probes drop
+ * filters one step at a time so a provider rejection can be isolated (#40
+ * B7-B). Callers select a probe but can never supply query parameters.
  * It deliberately draws no conclusion about whether a prior outbound
  * transaction exists: an omitted `data.transactions` field is reported as
  * omitted, not as empty. The spike's guard logic is unchanged by this module.
@@ -16,9 +19,20 @@ import { walletIdSchema } from "./intent";
 
 export const J0D_PRIOR_OUTBOUND_CONFIRMATION = "READ_J0D_PRIOR_OUTBOUND_ONLY" as const;
 
+export const J0D_PRIOR_OUTBOUND_PROBES = ["FULL_CURRENT", "WALLET_TXTYPE", "WALLET_ONLY", "UNFILTERED_ONE"] as const;
+
+export const j0dPriorOutboundProbeSchema = z.enum(J0D_PRIOR_OUTBOUND_PROBES);
+
+export type J0dPriorOutboundProbe = z.infer<typeof j0dPriorOutboundProbeSchema>;
+
+/**
+ * sourceWalletId stays required for every probe, including UNFILTERED_ONE,
+ * which validates it but does not send it to the provider.
+ */
 export const j0dPriorOutboundRequestSchema = z.object({
   confirm: z.literal(J0D_PRIOR_OUTBOUND_CONFIRMATION),
   sourceWalletId: walletIdSchema,
+  probe: j0dPriorOutboundProbeSchema,
 }).strict();
 
 const providerIdentifierSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
@@ -39,17 +53,33 @@ const providerErrorSchema = z.object({
   message: z.string().max(300).nullable(),
 }).strict();
 
-const querySchema = z.object({
-  wallet_id: walletIdSchema,
-  blockchain: z.literal(ARC_TESTNET_BLOCKCHAIN),
-  tx_type: z.literal("OUTBOUND"),
+/**
+ * Effective query per probe. `custody_type` is never passed by this module:
+ * SDK 10.8.1's `listTransactions` sends `custodyType=DEVELOPER` when it is
+ * omitted, so it is on the wire for every probe and is reported as such.
+ */
+const sharedQueryShape = {
+  custody_type: z.literal("DEVELOPER"),
   page_size: z.literal(1),
   order: z.literal("DESC"),
-}).strict();
+};
+
+const querySchema = z.union([
+  z.object({
+    wallet_id: walletIdSchema,
+    blockchain: z.literal(ARC_TESTNET_BLOCKCHAIN),
+    tx_type: z.literal("OUTBOUND"),
+    ...sharedQueryShape,
+  }).strict(),
+  z.object({ wallet_id: walletIdSchema, tx_type: z.literal("OUTBOUND"), ...sharedQueryShape }).strict(),
+  z.object({ wallet_id: walletIdSchema, ...sharedQueryShape }).strict(),
+  z.object(sharedQueryShape).strict(),
+]);
 
 const baseResultShape = {
   dispatch_profile: z.literal("J0_CONNECTIVITY_SPIKE"),
   action: z.literal("READ_ONLY_PRIOR_OUTBOUND_RECONCILIATION"),
+  probe: j0dPriorOutboundProbeSchema,
   query: querySchema,
   captured_at: z.string().datetime({ offset: true }),
 };
@@ -78,15 +108,18 @@ export const j0dPriorOutboundResultSchema = z.discriminatedUnion("provider_query
 
 export type J0dPriorOutboundResult = z.infer<typeof j0dPriorOutboundResultSchema>;
 
+type ProbePaging = { pageSize: 1; order: "DESC" };
+
+/** The only listing inputs this path can produce, one per probe. */
+export type J0dPriorOutboundListInput =
+  | (ProbePaging & { walletIds: [string]; blockchain: typeof ARC_TESTNET_BLOCKCHAIN; txType: "OUTBOUND" })
+  | (ProbePaging & { walletIds: [string]; txType: "OUTBOUND" })
+  | (ProbePaging & { walletIds: [string] })
+  | ProbePaging;
+
 /** The only Circle capability this path receives: one read-only listing method. */
 export interface J0dPriorOutboundReadClient {
-  listTransactions(input: {
-    walletIds: [string];
-    blockchain: typeof ARC_TESTNET_BLOCKCHAIN;
-    txType: "OUTBOUND";
-    pageSize: 1;
-    order: "DESC";
-  }): Promise<unknown>;
+  listTransactions(input: J0dPriorOutboundListInput): Promise<unknown>;
 }
 
 export interface RunJ0dPriorOutboundReconciliationOptions {
@@ -160,23 +193,52 @@ export function sanitizeProviderError(error: unknown): z.infer<typeof providerEr
   return providerErrorSchema.parse({ name, status, code, message: sanitizeProviderMessage(source.message) });
 }
 
+/** Fixed probe-to-query mapping; nothing caller-supplied beyond the validated wallet id reaches it. */
+function probeQuery(probe: J0dPriorOutboundProbe, walletId: string): {
+  input: J0dPriorOutboundListInput;
+  description: z.infer<typeof querySchema>;
+} {
+  const paging = { pageSize: 1, order: "DESC" } as const;
+  const shared = { custody_type: "DEVELOPER", page_size: 1, order: "DESC" } as const;
+  switch (probe) {
+    case "FULL_CURRENT":
+      return {
+        input: { walletIds: [walletId], blockchain: ARC_TESTNET_BLOCKCHAIN, txType: "OUTBOUND", ...paging },
+        description: { wallet_id: walletId, blockchain: ARC_TESTNET_BLOCKCHAIN, tx_type: "OUTBOUND", ...shared },
+      };
+    case "WALLET_TXTYPE":
+      return {
+        input: { walletIds: [walletId], txType: "OUTBOUND", ...paging },
+        description: { wallet_id: walletId, tx_type: "OUTBOUND", ...shared },
+      };
+    case "WALLET_ONLY":
+      return {
+        input: { walletIds: [walletId], ...paging },
+        description: { wallet_id: walletId, ...shared },
+      };
+    case "UNFILTERED_ONE":
+      return { input: { ...paging }, description: { ...shared } };
+    default: {
+      const unreachable: never = probe;
+      throw new Error(`Unknown J0-D prior-outbound probe: ${String(unreachable)}`);
+    }
+  }
+}
+
 export async function runJ0dPriorOutboundReconciliation(
   sourceWalletId: string,
+  probe: J0dPriorOutboundProbe,
   options: RunJ0dPriorOutboundReconciliationOptions = {},
 ): Promise<J0dPriorOutboundResult> {
   const now = options.now ?? (() => new Date());
   const walletId = walletIdSchema.parse(sourceWalletId);
-  const query = querySchema.parse({
-    wallet_id: walletId,
-    blockchain: ARC_TESTNET_BLOCKCHAIN,
-    tx_type: "OUTBOUND",
-    page_size: 1,
-    order: "DESC",
-  });
+  const selectedProbe = j0dPriorOutboundProbeSchema.parse(probe);
+  const { input, description } = probeQuery(selectedProbe, walletId);
   const base = {
     dispatch_profile: "J0_CONNECTIVITY_SPIKE",
     action: "READ_ONLY_PRIOR_OUTBOUND_RECONCILIATION",
-    query,
+    probe: selectedProbe,
+    query: querySchema.parse(description),
   } as const;
 
   let client = options.client;
@@ -194,13 +256,7 @@ export async function runJ0dPriorOutboundReconciliation(
 
   let response: unknown;
   try {
-    response = await client.listTransactions({
-      walletIds: [walletId],
-      blockchain: ARC_TESTNET_BLOCKCHAIN,
-      txType: "OUTBOUND",
-      pageSize: 1,
-      order: "DESC",
-    });
+    response = await client.listTransactions(input);
   } catch (error) {
     return j0dPriorOutboundResultSchema.parse({
       ...base,

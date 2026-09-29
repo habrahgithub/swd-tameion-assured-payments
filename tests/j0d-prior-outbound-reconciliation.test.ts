@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sdk = vi.hoisted(() => ({ fakeClient: null as Record<string, ReturnType<typeof vi.fn>> | null, initiateCalls: 0 }));
@@ -17,8 +18,10 @@ vi.mock("@circle-fin/developer-controlled-wallets", async (importOriginal) => {
 import { POST } from "../app/api/j0d/reconcile-prior-outbound/route";
 import { createCircleArcPriorOutboundReadClient } from "../src/j0d-spike/circle-arc-client";
 import {
+  J0D_PRIOR_OUTBOUND_PROBES,
   runJ0dPriorOutboundReconciliation,
   sanitizeProviderMessage,
+  type J0dPriorOutboundProbe,
   type J0dPriorOutboundReadClient,
 } from "../src/j0d-spike/prior-outbound-reconciliation";
 
@@ -31,6 +34,36 @@ const expectedQuery = {
   pageSize: 1,
   order: "DESC",
 };
+
+/** Exact SDK input and reported query description per probe (#40 B7-B). */
+const probeCases: Array<[J0dPriorOutboundProbe, Record<string, unknown>, Record<string, unknown>]> = [
+  [
+    "FULL_CURRENT",
+    { walletIds: [sourceWalletId], blockchain: "ARC-TESTNET", txType: "OUTBOUND", pageSize: 1, order: "DESC" },
+    { wallet_id: sourceWalletId, blockchain: "ARC-TESTNET", tx_type: "OUTBOUND", custody_type: "DEVELOPER", page_size: 1, order: "DESC" },
+  ],
+  [
+    "WALLET_TXTYPE",
+    { walletIds: [sourceWalletId], txType: "OUTBOUND", pageSize: 1, order: "DESC" },
+    { wallet_id: sourceWalletId, tx_type: "OUTBOUND", custody_type: "DEVELOPER", page_size: 1, order: "DESC" },
+  ],
+  [
+    "WALLET_ONLY",
+    { walletIds: [sourceWalletId], pageSize: 1, order: "DESC" },
+    { wallet_id: sourceWalletId, custody_type: "DEVELOPER", page_size: 1, order: "DESC" },
+  ],
+  [
+    "UNFILTERED_ONE",
+    { pageSize: 1, order: "DESC" },
+    { custody_type: "DEVELOPER", page_size: 1, order: "DESC" },
+  ],
+];
+
+const prohibitedSdkMethods = [
+  "createTransaction", "createWallets", "createWalletSet", "requestTestnetTokens", "signTransaction",
+  "signMessage", "signTypedData", "getWallet", "getWalletTokenBalance", "estimateTransferFee",
+  "getTransaction", "cancelTransaction", "accelerateTransaction", "createContractExecutionTransaction",
+];
 
 function restoreEnv(name: string, value: string | undefined) {
   if (value === undefined) delete process.env[name];
@@ -65,9 +98,9 @@ function readClient(response: unknown): J0dPriorOutboundReadClient & { listTrans
 
 async function reconcile(response: unknown) {
   const client = readClient(response);
-  const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, { client, now: fixedNow });
+  const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "FULL_CURRENT", { client, now: fixedNow });
   expect(client.listTransactions).toHaveBeenCalledTimes(1);
-  expect(client.listTransactions).toHaveBeenCalledWith(expectedQuery);
+  expect(client.listTransactions.mock.calls[0]).toStrictEqual([expectedQuery]);
   return result;
 }
 
@@ -98,7 +131,8 @@ describe("J0-D prior-outbound reconciliation: sanitized provider structure", () 
     expect(result).toEqual({
       dispatch_profile: "J0_CONNECTIVITY_SPIKE",
       action: "READ_ONLY_PRIOR_OUTBOUND_RECONCILIATION",
-      query: { wallet_id: sourceWalletId, blockchain: "ARC-TESTNET", tx_type: "OUTBOUND", page_size: 1, order: "DESC" },
+      probe: "FULL_CURRENT",
+      query: { wallet_id: sourceWalletId, blockchain: "ARC-TESTNET", tx_type: "OUTBOUND", custody_type: "DEVELOPER", page_size: 1, order: "DESC" },
       provider_query: "SUCCEEDED",
       data_present: true,
       transactions_present: true,
@@ -208,7 +242,7 @@ describe("J0-D prior-outbound reconciliation: sanitized provider structure", () 
       error: { config: { headers: { Authorization: `Bearer ${process.env.CIRCLE_API_KEY}` } } },
     });
     const client = { listTransactions: vi.fn(() => Promise.reject(providerError)) };
-    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, { client, now: fixedNow });
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "FULL_CURRENT", { client, now: fixedNow });
 
     expect(result.provider_query).toBe("FAILED");
     if (result.provider_query !== "FAILED") throw new Error("unreachable");
@@ -227,14 +261,14 @@ describe("J0-D prior-outbound reconciliation: sanitized provider structure", () 
   it("reports non-Error and malformed provider failures without leaking their payload", async () => {
     for (const thrown of ["raw string failure", { name: "Bad Name!", status: 42, code: "has spaces", message: 12 }, null]) {
       const client = { listTransactions: vi.fn(() => Promise.reject(thrown)) };
-      const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, { client, now: fixedNow });
+      const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "FULL_CURRENT", { client, now: fixedNow });
       expect(result).toMatchObject({
         provider_query: "FAILED",
         provider_error: { name: "ProviderError", status: null, code: null, message: null },
       });
     }
     const requestError = { listTransactions: vi.fn(() => Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { name: "ConnectionRefusedError", code: "ECONNREFUSED" }))) };
-    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, { client: requestError, now: fixedNow });
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "FULL_CURRENT", { client: requestError, now: fixedNow });
     expect(result).toMatchObject({
       provider_query: "FAILED",
       provider_error: { name: "ConnectionRefusedError", status: null, code: "ECONNREFUSED", message: "connect ECONNREFUSED" },
@@ -250,16 +284,43 @@ describe("J0-D prior-outbound reconciliation: sanitized provider structure", () 
 
 describe("J0-D prior-outbound reconciliation API", () => {
   it.each([
-    ["missing confirmation", { sourceWalletId }],
-    ["wrong confirmation literal", { confirm: "READ_J0D_PREFLIGHT_ONLY", sourceWalletId }],
-    ["execution confirmation literal", { confirm: "RUN_J0D_CONNECTIVITY_SPIKE_ONCE", sourceWalletId }],
-    ["missing source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY" }],
-    ["empty source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId: "" }],
-    ["non-string source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId: [sourceWalletId] }],
-    ["extra execution field", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, execute: true }],
-    ["extra query override", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, pageSize: 50 }],
+    ["missing confirmation", { sourceWalletId, probe: "FULL_CURRENT" }],
+    ["wrong confirmation literal", { confirm: "READ_J0D_PREFLIGHT_ONLY", sourceWalletId, probe: "FULL_CURRENT" }],
+    ["execution confirmation literal", { confirm: "RUN_J0D_CONNECTIVITY_SPIKE_ONCE", sourceWalletId, probe: "FULL_CURRENT" }],
+    ["missing source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", probe: "FULL_CURRENT" }],
+    ["missing source wallet for UNFILTERED_ONE", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", probe: "UNFILTERED_ONE" }],
+    ["empty source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId: "", probe: "FULL_CURRENT" }],
+    ["non-string source wallet", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId: [sourceWalletId], probe: "FULL_CURRENT" }],
+    ["extra execution field", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT", execute: true }],
+    ["extra query override", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT", pageSize: 50 }],
+    ["missing probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId }],
+    ["null probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: null }],
+    ["unknown probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "WALLET_BLOCKCHAIN" }],
+    ["lowercase probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "full_current" }],
+    ["padded probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: " FULL_CURRENT" }],
+    ["array probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: ["FULL_CURRENT"] }],
+    ["object probe", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: { txType: "INBOUND" } }],
+    ["numeric probe index", { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: 0 }],
+    ...([
+      ["walletIds", ["another-wallet"]],
+      ["blockchain", "ETH-SEPOLIA"],
+      ["txType", "INBOUND"],
+      ["custodyType", "ENDUSER"],
+      ["pageSize", 50],
+      ["order", "ASC"],
+      ["includeAll", true],
+      ["pageAfter", "cursor"],
+      ["state", "COMPLETE"],
+      ["txHash", "0xabc"],
+      ["destinationAddress", "0x591a1002127b1605d9dbb51348787bbe3014b2b9"],
+      ["query", { blockchain: "ETH-SEPOLIA" }],
+      ["params", { txType: "INBOUND" }],
+    ] as const).map(([field, value]) => [
+      `arbitrary query override ${field} with UNFILTERED_ONE`,
+      { confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "UNFILTERED_ONE", [field]: value },
+    ] as [string, unknown]),
     ["non-JSON body", "not json"],
-    ["array body", [{ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId }]],
+    ["array body", [{ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT" }]],
   ])("rejects %s with HTTP 400 before any provider client is created", async (_label, body) => {
     useFakeCredentials();
     const listTransactions = vi.fn();
@@ -273,7 +334,7 @@ describe("J0-D prior-outbound reconciliation API", () => {
   it("fails closed with HTTP 503 when the runtime has no Circle credentials", async () => {
     delete process.env.CIRCLE_API_KEY;
     delete process.env.CIRCLE_ENTITY_SECRET;
-    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId }));
+    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT" }));
     expect(response.status).toBe(503);
     const body = await response.json();
     expect(body.result.provider_query).toBe("NOT_CONFIGURED");
@@ -281,23 +342,19 @@ describe("J0-D prior-outbound reconciliation API", () => {
 
   it("reaches only listTransactions with the exact query through the full route and SDK boundary", async () => {
     useFakeCredentials();
-    const prohibited = [
-      "createTransaction", "createWallets", "createWalletSet", "requestTestnetTokens", "signTransaction",
-      "signMessage", "signTypedData", "getWallet", "getWalletTokenBalance", "estimateTransferFee",
-      "getTransaction", "cancelTransaction", "accelerateTransaction", "createContractExecutionTransaction",
-    ];
+    const prohibited = prohibitedSdkMethods;
     const fullClient: Record<string, ReturnType<typeof vi.fn>> = {
       listTransactions: vi.fn(async () => ({ data: { transactions: [outboundTransaction] } })),
     };
     for (const method of prohibited) fullClient[method] = vi.fn(() => Promise.reject(new Error("must never be called")));
     sdk.fakeClient = fullClient;
 
-    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId }));
+    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT" }));
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result.first_transaction.id).toBe(outboundTransaction.id);
     expect(fullClient.listTransactions).toHaveBeenCalledTimes(1);
-    expect(fullClient.listTransactions).toHaveBeenCalledWith(expectedQuery);
+    expect(fullClient.listTransactions.mock.calls[0]).toStrictEqual([expectedQuery]);
     for (const method of prohibited) expect(fullClient[method], method).not.toHaveBeenCalled();
   });
 
@@ -306,10 +363,126 @@ describe("J0-D prior-outbound reconciliation API", () => {
     sdk.fakeClient = {
       listTransactions: vi.fn(() => Promise.reject(Object.assign(new Error("Internal"), { name: "InternalServerError", status: 500, code: 500 }))),
     };
-    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId }));
+    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe: "FULL_CURRENT" }));
     expect(response.status).toBe(502);
     const body = await response.json();
     expect(body.result.provider_error).toEqual({ name: "InternalServerError", status: 500, code: 500, message: "Internal" });
+  });
+});
+
+describe("J0-D prior-outbound reconciliation: fixed query isolation probes (#40 B7-B)", () => {
+  it("exposes exactly the four fixed probes", () => {
+    expect(J0D_PRIOR_OUTBOUND_PROBES).toEqual(["FULL_CURRENT", "WALLET_TXTYPE", "WALLET_ONLY", "UNFILTERED_ONE"]);
+    expect(probeCases.map(([probe]) => probe)).toEqual([...J0D_PRIOR_OUTBOUND_PROBES]);
+  });
+
+  it.each(probeCases)("%s sends exactly its fixed SDK input and reports its effective query", async (probe, sdkInput, description) => {
+    const client = readClient({ data: { transactions: [] } });
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, probe, { client, now: fixedNow });
+
+    expect(client.listTransactions).toHaveBeenCalledTimes(1);
+    expect(client.listTransactions.mock.calls[0]).toStrictEqual([sdkInput]);
+    expect(Object.keys(client.listTransactions.mock.calls[0][0]).sort()).toEqual(Object.keys(sdkInput).sort());
+    expect(result).toStrictEqual({
+      dispatch_profile: "J0_CONNECTIVITY_SPIKE",
+      action: "READ_ONLY_PRIOR_OUTBOUND_RECONCILIATION",
+      probe,
+      query: description,
+      provider_query: "SUCCEEDED",
+      data_present: true,
+      transactions_present: true,
+      transactions_is_array: true,
+      transactions_count: 0,
+      first_transaction: null,
+      captured_at: "2026-09-29T06:10:00.000Z",
+    });
+  });
+
+  it("UNFILTERED_ONE validates the source wallet but never sends it to the provider", async () => {
+    const client = readClient({ data: { transactions: [] } });
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "UNFILTERED_ONE", { client, now: fixedNow });
+    expect(JSON.stringify(client.listTransactions.mock.calls)).not.toContain(sourceWalletId);
+    expect(JSON.stringify(result)).not.toContain(sourceWalletId);
+    await expect(runJ0dPriorOutboundReconciliation("", "UNFILTERED_ONE", { client, now: fixedNow })).rejects.toThrow();
+    expect(client.listTransactions).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(probeCases)("%s reports a provider failure with the same sanitized error shape", async (probe, _sdkInput, description) => {
+    const client = {
+      listTransactions: vi.fn(() => Promise.reject(Object.assign(new Error("API parameter invalid"), { name: "BadRequestError", status: 400, code: 2 }))),
+    };
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, probe, { client, now: fixedNow });
+    expect(result).toStrictEqual({
+      dispatch_profile: "J0_CONNECTIVITY_SPIKE",
+      action: "READ_ONLY_PRIOR_OUTBOUND_RECONCILIATION",
+      probe,
+      query: description,
+      provider_query: "FAILED",
+      provider_error: { name: "BadRequestError", status: 400, code: 2, message: "API parameter invalid" },
+      captured_at: "2026-09-29T06:10:00.000Z",
+    });
+  });
+
+  it("UNFILTERED_ONE reports only the permitted first-transaction fields of whatever wallet the provider returns", async () => {
+    const otherWalletTx = { ...outboundTransaction, id: "0a1b2c3d-0000-4000-8000-000000000001", walletId: "5d0c1f5e-0000-4000-8000-00000000000a", transactionType: "INBOUND" };
+    const client = readClient({ data: { transactions: [otherWalletTx] } });
+    const result = await runJ0dPriorOutboundReconciliation(sourceWalletId, "UNFILTERED_ONE", { client, now: fixedNow });
+    expect(result).toMatchObject({
+      probe: "UNFILTERED_ONE",
+      transactions_count: 1,
+      first_transaction: { is_object: true, id: otherWalletTx.id, transaction_type: "INBOUND", state: "COMPLETE", wallet_id: otherWalletTx.walletId },
+    });
+    const serialized = JSON.stringify(result);
+    for (const raw of [otherWalletTx.txHash, otherWalletTx.destinationAddress, otherWalletTx.sourceAddress, "0.001", "amounts"]) {
+      expect(serialized).not.toContain(raw);
+    }
+  });
+
+  it.each([
+    ["unknown probe", "WALLET_BLOCKCHAIN"],
+    ["lowercase probe", "full_current"],
+    ["empty probe", ""],
+    ["undefined probe", undefined],
+    ["object probe", { walletIds: [sourceWalletId], txType: "INBOUND" }],
+  ])("the module rejects %s before any provider client is created", async (_label, probe) => {
+    useFakeCredentials();
+    const listTransactions = vi.fn();
+    sdk.fakeClient = { listTransactions };
+    await expect(runJ0dPriorOutboundReconciliation(sourceWalletId, probe as J0dPriorOutboundProbe, { now: fixedNow })).rejects.toThrow();
+    expect(sdk.initiateCalls).toBe(0);
+    expect(listTransactions).not.toHaveBeenCalled();
+  });
+
+  it.each(probeCases)("%s reaches only listTransactions with its exact query through the full route and SDK boundary", async (probe, sdkInput, description) => {
+    useFakeCredentials();
+    const fullClient: Record<string, ReturnType<typeof vi.fn>> = {
+      listTransactions: vi.fn(async () => ({ data: { transactions: [outboundTransaction] } })),
+    };
+    for (const method of prohibitedSdkMethods) fullClient[method] = vi.fn(() => Promise.reject(new Error("must never be called")));
+    sdk.fakeClient = fullClient;
+
+    const response = await POST(routeRequest({ confirm: "READ_J0D_PRIOR_OUTBOUND_ONLY", sourceWalletId, probe }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result.probe).toBe(probe);
+    expect(body.result.query).toStrictEqual(description);
+    expect(sdk.initiateCalls).toBe(1);
+    expect(fullClient.listTransactions).toHaveBeenCalledTimes(1);
+    expect(fullClient.listTransactions.mock.calls[0]).toStrictEqual([sdkInput]);
+    for (const method of prohibitedSdkMethods) expect(fullClient[method], method).not.toHaveBeenCalled();
+  });
+
+  it("pinned SDK 10.8.1 injects custodyType DEVELOPER when listTransactions omits it", () => {
+    const require = createRequire(import.meta.url);
+    const sdkPackage = JSON.parse(
+      readFileSync(require.resolve("@circle-fin/developer-controlled-wallets/package.json"), "utf8"),
+    ) as { version: string };
+    expect(sdkPackage.version).toBe("10.8.1");
+    const bundle = readFileSync(
+      require.resolve("@circle-fin/developer-controlled-wallets/package.json").replace(/package\.json$/, "dist/developer-controlled-wallets.es.js"),
+      "utf8",
+    );
+    expect(bundle).toMatch(/Transactions\.listTransactions\(\w+,\w+\?\?"DEVELOPER",/);
   });
 });
 
