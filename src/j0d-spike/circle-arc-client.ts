@@ -37,6 +37,18 @@ export function createCircleArcReadOnlyClient() {
 }
 
 /**
+ * Read-only capability for J0-D prior-outbound reconciliation (#40 B7-A).
+ * Exposes only `listTransactions`: no wallet lookup/creation, faucet,
+ * signing, fee estimation, or transaction submission is reachable from it.
+ */
+export function createCircleArcPriorOutboundReadClient() {
+  const client = createCircleArcSpikeClient();
+  return {
+    listTransactions: client.listTransactions.bind(client),
+  };
+}
+
+/**
  * Intent-bound execution capability for the J0-D spike (#26). Exposes the
  * three read-only preflight operations (so provider truth can be re-read
  * immediately before submission), a read-only transaction listing/lookup for
