@@ -1,8 +1,9 @@
 import type { AiProvider } from "./ai-provider";
-import { FINDING_CATALOG, findingCodeSchema, remediationFor, type FindingCode } from "./finding-catalog";
+import { FINDING_CATALOG, remediationFor, type FindingCode } from "./finding-catalog";
 import {
   financeAgentModelRecommendationSchema,
   type FinanceAgentContext,
+  type ModelProposedFindingCode,
   type MissingContextCode,
   type RaceAssessment,
 } from "./schema";
@@ -21,13 +22,6 @@ export interface FinanceAgentDecision {
   uncertainty_signal: boolean;
   race: RaceAssessment;
 }
-
-const MODEL_RECOMMENDABLE_CODES = new Set<FindingCode>([
-  "DUPLICATE_SOURCE",
-  "POTENTIAL_DUPLICATE",
-  "NORMALIZATION_REVIEW_REQUIRED",
-  "OTHER_REQUIRES_HUMAN_REVIEW",
-]);
 
 const MISSING_CONTEXT_BY_FINDING: Partial<Record<FindingCode, MissingContextCode>> = {
   DUE_DATE_NOT_STATED: "DUE_DATE_SOURCE",
@@ -73,25 +67,21 @@ export async function assessObligation(
   }
 
   const codes = deterministicFindings(context);
-  for (const modelCode of parsed.data.finding_codes) {
-    const code = findingCodeSchema.parse(modelCode);
-    if (MODEL_RECOMMENDABLE_CODES.has(code)) codes.add(code);
-  }
+  const modelProposedFindings: ModelProposedFindingCode[] = parsed.data.finding_codes;
+  const unsupportedProposals = modelProposedFindings.filter((code) => !codes.has(code));
+  if (unsupportedProposals.length > 0) codes.add("MODEL_OUTPUT_INVALID");
 
   const hasEscalationFinding = [...codes].some((code) => FINDING_CATALOG[code].severity === "ESCALATE");
-  if ((parsed.data.decision === "HOLD" || parsed.data.decision === "ESCALATE") && parsed.data.finding_codes.length === 0 && codes.size === 0) {
-    codes.add("MODEL_OUTPUT_INVALID");
-  }
-  if (parsed.data.decision === "ESCALATE" && !hasEscalationFinding && ![...codes].some((code) => FINDING_CATALOG[code].severity === "ESCALATE")) {
+  if ((parsed.data.decision === "HOLD" || parsed.data.decision === "ESCALATE") && !hasEscalationFinding && codes.size === 0) {
     codes.add("MODEL_OUTPUT_INVALID");
   }
 
   return normalize(context, {
     codes: [...codes],
-    modelDecision: parsed.data.decision,
     evidenceIds: context.evidence_ids,
     uncertaintySignal: parsed.data.uncertainty_signal,
     explanation: parsed.data.explanation,
+    modelProposedFindings,
     promptIdentity: provider.promptIdentity ?? null,
   });
 }
@@ -111,10 +101,10 @@ function normalizeFailure(context: FinanceAgentContext, code: FindingCode, provi
   codes.add(code);
   return normalize(context, {
     codes: [...codes],
-    modelDecision: "HOLD",
     evidenceIds: context.evidence_ids,
     uncertaintySignal: true,
     explanation: "",
+    modelProposedFindings: [],
     promptIdentity: provider.promptIdentity ?? null,
   });
 }
@@ -123,10 +113,10 @@ function normalize(
   context: FinanceAgentContext,
   input: {
     codes: FindingCode[];
-    modelDecision: "PAY" | "HOLD" | "ESCALATE";
     evidenceIds: string[];
     uncertaintySignal: boolean;
     explanation: string;
+    modelProposedFindings: ModelProposedFindingCode[];
     promptIdentity: AiProvider["promptIdentity"];
   },
 ): FinanceAgentDecision {
@@ -140,9 +130,7 @@ function normalize(
     ? "ESCALATE"
     : findings.length > 0
       ? "HOLD"
-      : input.modelDecision === "PAY"
-        ? "PAY"
-        : "HOLD";
+      : "PAY";
   const finalCodes = findings.length === 0 && decision !== "PAY" ? ["MODEL_OUTPUT_INVALID" as const] : uniqueCodes;
   const finalFindings = finalCodes.map((code) => ({
     code,
@@ -172,6 +160,8 @@ function normalize(
     caveats: {
       missing_context: missingContext,
       uncertainty_signal: input.uncertaintySignal || normalizedDecision !== "PAY",
+      model_proposed_findings: input.modelProposedFindings,
+      model_proposed_findings_authority: "NON_AUTHORITATIVE",
       model_explanation: input.explanation,
       model_explanation_authority: "NON_AUTHORITATIVE",
     },

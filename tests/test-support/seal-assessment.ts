@@ -32,6 +32,8 @@ export function sealTestAssessment(
     caveats: {
       missing_context: code ? [code === "OTHER_REQUIRES_HUMAN_REVIEW" ? "HUMAN_DECISION" : "PROVIDER_RESPONSE"] : [],
       uncertainty_signal: decision !== "PAY",
+      model_proposed_findings: [],
+      model_proposed_findings_authority: "NON_AUTHORITATIVE",
       model_explanation: "Test fixture.",
       model_explanation_authority: "NON_AUTHORITATIVE" as const,
     },

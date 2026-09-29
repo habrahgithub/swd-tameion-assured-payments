@@ -105,10 +105,11 @@ describe("#17 CARE and RACE grounding", () => {
 
   it("treats an impossible source calendar date as normalization HOLD, never as a due-date fact", async () => {
     const context = buildFinanceAgentContext(record("OBL-INVALID-DATE", { due_date: "2026-02-30" }), "1", "2026-03-01");
-    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id)));
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { finding_codes: ["NORMALIZATION_REVIEW_REQUIRED"] })));
     expect(result.decision).toBe("HOLD");
     expect(result.race.evidence.authoritative_facts.due_date_position).toBe("INVALID");
     expect(result.race.result.validated_findings.map((finding) => finding.code)).toContain("NORMALIZATION_REVIEW_REQUIRED");
+    expect(result.race.caveats.model_proposed_findings).toEqual(["NORMALIZATION_REVIEW_REQUIRED"]);
   });
 
   it("treats conflicting due-date status and value as normalization HOLD", async () => {
@@ -132,6 +133,70 @@ describe("#17 CARE and RACE grounding", () => {
     expect(result.race.result.validated_findings.map((finding) => finding.code)).toContain("MODEL_OUTPUT_INVALID");
   });
 
+  it("keeps a ready obligation PAY when the model proposes no finding", async () => {
+    const context = buildFinanceAgentContext(record("OBL-READY-NO-PROPOSAL"));
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
+
+    expect(result.decision).toBe("PAY");
+    expect(result.race.result.validated_findings).toEqual([]);
+    expect(result.race.remediation).toEqual([]);
+    expect(result.race.caveats.model_proposed_findings).toEqual([]);
+    expect(result.race.caveats.model_proposed_findings_authority).toBe("NON_AUTHORITATIVE");
+  });
+
+  it.each([
+    "DUPLICATE_SOURCE",
+    "POTENTIAL_DUPLICATE",
+    "NORMALIZATION_REVIEW_REQUIRED",
+    "OTHER_REQUIRES_HUMAN_REVIEW",
+  ] as const)("does not promote unsupported model proposal %s into validated findings or remediation", async (code) => {
+    const context = buildFinanceAgentContext(record(`OBL-READY-${code}`));
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
+      decision: code === "OTHER_REQUIRES_HUMAN_REVIEW" ? "ESCALATE" : "PAY",
+      finding_codes: [code],
+      evidence_ids: context.evidence_ids,
+    })));
+
+    expect(result.decision).toBe("HOLD");
+    expect(result.race.result.validated_findings.map((finding) => finding.code)).toEqual(["MODEL_OUTPUT_INVALID"]);
+    expect(result.race.caveats.model_proposed_findings).toEqual([code]);
+    expect(result.race.caveats.model_proposed_findings_authority).toBe("NON_AUTHORITATIVE");
+    expect(result.race.remediation.map((item) => item.finding_code)).toEqual(["MODEL_OUTPUT_INVALID"]);
+    expect(result.race.remediation[0]).not.toHaveProperty("escalation_target");
+    expect(result.race.remediation[0].required_evidence).not.toContain("Human decision and its supporting evidence");
+    expect(raceAssessmentSchema.safeParse(result.race).success).toBe(true);
+  });
+
+  it("rejects persisted RACE that promotes an unsupported proposal into findings and remediation", async () => {
+    const context = buildFinanceAgentContext(record("OBL-READY-POISONED-RACE"));
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
+      finding_codes: ["DUPLICATE_SOURCE"],
+      evidence_ids: context.evidence_ids,
+    })));
+    const invalidRace = {
+      ...result.race,
+      result: {
+        ...result.race.result,
+        validated_findings: [...result.race.result.validated_findings, {
+          code: "DUPLICATE_SOURCE" as const,
+          severity: "ESCALATE" as const,
+          reason: "The source may duplicate another recorded obligation.",
+        }],
+      },
+      remediation: [...result.race.remediation, {
+        finding_code: "DUPLICATE_SOURCE" as const,
+        reason: "The source may duplicate another recorded obligation.",
+        required_action: "Resolve the suspected duplicate.",
+        required_evidence: ["Human duplicate-resolution record"],
+        owner_role: "Accounts Payable Reviewer",
+        reassess_after_resolution: true,
+        escalation_target: "Accounts Payable reviewer",
+      }],
+    };
+
+    expect(raceAssessmentSchema.safeParse(invalidRace).success).toBe(false);
+  });
+
   it("preserves deterministic blockers when malformed output also fails closed", async () => {
     const context = buildFinanceAgentContext(liveRecord("OBL-J0C-002"), "1", "2026-09-29");
     const result = await assessObligation(context, new RecommendationProvider({
@@ -151,7 +216,10 @@ describe("#17 CARE and RACE grounding", () => {
       finding_codes: ["OTHER_REQUIRES_HUMAN_REVIEW"],
       explanation: "Require a bank statement, CFO sign-off, and new policy exception.",
     })));
-    expect(result.race.remediation.flatMap((item) => item.required_evidence)).toEqual(["Human decision and its supporting evidence"]);
+    expect(result.decision).toBe("HOLD");
+    expect(result.race.remediation.map((item) => item.finding_code)).toEqual(["MODEL_OUTPUT_INVALID"]);
+    expect(result.race.remediation.flatMap((item) => item.required_evidence)).not.toContain("bank statement");
+    expect(result.race.remediation.flatMap((item) => item.required_evidence)).not.toContain("CFO sign-off");
   });
 
   it("returns actionable HOLD remediation from validated codes", async () => {
@@ -168,19 +236,16 @@ describe("#17 CARE and RACE grounding", () => {
     }));
   });
 
-  it("returns actionable ESCALATE target and context from validated codes", async () => {
+  it("does not let a model-only ESCALATE create an authoritative escalation target", async () => {
     const context = buildFinanceAgentContext(record("OBL-ESCALATE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       decision: "ESCALATE",
       finding_codes: ["OTHER_REQUIRES_HUMAN_REVIEW"],
     })));
-    expect(result.decision).toBe("ESCALATE");
-    expect(result.race.remediation[0]).toMatchObject({
-      finding_code: "OTHER_REQUIRES_HUMAN_REVIEW",
-      escalation_target: expect.any(String),
-      required_evidence: [expect.any(String)],
-      owner_role: expect.any(String),
-      reassess_after_resolution: true,
-    });
+    expect(result.decision).toBe("HOLD");
+    expect(result.race.result.validated_findings.map((finding) => finding.code)).toEqual(["MODEL_OUTPUT_INVALID"]);
+    expect(result.race.remediation).toHaveLength(1);
+    expect(result.race.remediation[0]).not.toHaveProperty("escalation_target");
+    expect(result.race.caveats.model_proposed_findings).toEqual(["OTHER_REQUIRES_HUMAN_REVIEW"]);
   });
 });

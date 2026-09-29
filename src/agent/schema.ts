@@ -7,6 +7,8 @@ const modelFindingCodeSchema = z.enum([
   "NORMALIZATION_REVIEW_REQUIRED",
   "OTHER_REQUIRES_HUMAN_REVIEW",
 ]);
+export const modelProposedFindingCodeSchema = modelFindingCodeSchema;
+export type ModelProposedFindingCode = z.infer<typeof modelProposedFindingCodeSchema>;
 
 export const missingContextCodeSchema = z.enum([
   "DUE_DATE_SOURCE",
@@ -58,6 +60,9 @@ export const raceAssessmentSchema = z.object({
   caveats: z.object({
     missing_context: z.array(missingContextCodeSchema),
     uncertainty_signal: z.boolean(),
+    /** Optional only for immutable RACE records sealed before proposal audit was added. */
+    model_proposed_findings: z.array(modelProposedFindingCodeSchema).optional(),
+    model_proposed_findings_authority: z.literal("NON_AUTHORITATIVE").optional(),
     model_explanation: z.string().max(1000),
     model_explanation_authority: z.literal("NON_AUTHORITATIVE"),
   }).strict(),
@@ -101,6 +106,9 @@ export const raceAssessmentSchema = z.object({
   if (race.result.decision === "ESCALATE" && !race.result.validated_findings.some((finding) => finding.severity === "ESCALATE")) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "ESCALATE requires a validated escalation finding" });
   }
+  if ((race.caveats.model_proposed_findings === undefined) !== (race.caveats.model_proposed_findings_authority === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "model proposal audit data and its authority label must be present together" });
+  }
   const facts = race.evidence.authoritative_facts;
   const validDate = (date: string) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
@@ -119,6 +127,12 @@ export const raceAssessmentSchema = z.object({
           : "FUTURE";
   if (facts.due_date_position !== expectedDuePosition) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "due_date_position must match the application-derived calendar dates" });
+  }
+  for (const proposedCode of race.caveats.model_proposed_findings ?? []) {
+    const applicationPredicateProvesProposal = proposedCode === "NORMALIZATION_REVIEW_REQUIRED" && facts.due_date_position === "INVALID";
+    if (findingCodes.includes(proposedCode) && !applicationPredicateProvesProposal) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "a model proposal cannot be authoritative without a matching application predicate" });
+    }
   }
 });
 export type RaceAssessment = z.infer<typeof raceAssessmentSchema>;
