@@ -50,6 +50,8 @@ Copy `.env.example` to `.env.local` only when local configuration is needed. The
 
 The repository hygiene check rejects tracked environment files, common credential signatures, generated output, and secret-like `NEXT_PUBLIC_*` names. It reports only the affected filename and rule; it does not print matching content.
 
+The internal J1-D capability smoke route (`POST /api/internal/j1d/capability-smoke`) is preview-only, disabled unless `J1D_SMOKE_ENABLED=true`, and requires a deployment-managed `J1D_SMOKE_SECRET` of at least 32 bytes as a bearer token plus the fixed confirmation body. It sends only a server-built synthetic context to the pinned NVIDIA provider, does not read or persist obligation state, and must be invoked only under AXIS's separate one-request operational gate. Never put the secret in source, examples, logs, or client code.
+
 ## Current scope
 
 The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](docs/evidence/J0-EVENT-START-BASELINE.md).
