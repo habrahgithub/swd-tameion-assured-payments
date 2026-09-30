@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { AuthorityError } from "../../../../src/authority/aggregate";
-import { DEMO_ARC_TRUST_SEEDED, DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
+import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
 import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -61,7 +61,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         reasons: currentAssessment.record.reasons,
         ...(currentAssessment.record.race ? { race: currentAssessment.record.race } : {}),
       } : null,
-      demo_arc_trust_seeded: DEMO_ARC_TRUST_SEEDED,
+      demo_arc_trust_simulated: DEMO_ARC_TRUST_SIMULATED,
       pae_sealed: Boolean(sealed),
       execution: execution ?? null,
       execution_kill_switched: executionKillSwitched,

@@ -19,6 +19,7 @@ function baseAggregate(): AuthorityAggregate {
     counterparty_status: "VERIFIED",
     destination_ref: "DEST-J0C-003",
     destination_version: 1,
+    product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
     destination_address: `0x${"7".repeat(40)}`,
     destination_verification_status: "VERIFIED",
     destination_operational_status: "ACTIVE",

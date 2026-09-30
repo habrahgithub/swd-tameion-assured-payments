@@ -25,6 +25,13 @@ function record(id: string, overrides: Partial<LiveUsageObligationRecord> = {}):
   };
 }
 
+function trustedTestContext(input: LiveUsageObligationRecord, version = 0, asOfDate = new Date().toISOString().slice(0, 10)) {
+  return buildFinanceAgentContext(input, version, asOfDate, {
+    destination_status: "READY",
+    source: "CURRENT_PRODUCT_TRUST_EVIDENCE",
+  });
+}
+
 const liveRecords = (JSON.parse(readFileSync(new URL("../data/live-usage/LIVE_USAGE_SET.json", import.meta.url), "utf8")) as {
   records: LiveUsageObligationRecord[];
 }).records;
@@ -54,9 +61,35 @@ function recommendation(obligationId: string, overrides: Record<string, unknown>
 }
 
 describe("#17 CARE and RACE grounding", () => {
+  it("keeps simulated aggregate trust not ready while retaining source currency and evidence", async () => {
+    const source = liveRecord("OBL-J0C-002");
+    const context = buildFinanceAgentContext(source, "4", "2026-09-29", {
+      destination_status: "READY",
+      source: "SIMULATED_DEMO_FIXTURE",
+    });
+
+    expect(source.candidate_readiness.arc_product_destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(context.destination_ready).toBe(false);
+    expect(context.destination_status).toBe("NOT_READY_SIMULATED_FIXTURE");
+    expect(context.destination_readiness_source).toBe("SIMULATED_DEMO_FIXTURE");
+    expect(context.evidence_ids).toEqual(source.source_evidence.map((item) => item.evidence_id));
+
+    const evidenced = buildFinanceAgentContext(source, "4", "2026-09-29", {
+      destination_status: "READY",
+      source: "CURRENT_PRODUCT_TRUST_EVIDENCE",
+    });
+    expect(evidenced.destination_ready).toBe(true);
+    expect(evidenced.destination_readiness_source).toBe("CURRENT_PRODUCT_TRUST_EVIDENCE");
+
+    const sourceOnly = buildFinanceAgentContext(record("OBL-SOURCE-READY"));
+    expect(sourceOnly.destination_ready).toBe(false);
+    expect(sourceOnly.destination_status).toBe("NOT_READY_SOURCE_EVIDENCE_ONLY");
+    expect(sourceOnly.destination_readiness_source).toBe("IMMUTABLE_SOURCE_EVIDENCE");
+  });
+
   it("encodes the CARE boundary in the provider prompt and strictly validates actionable RACE", async () => {
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
-    const context = buildFinanceAgentContext(record("OBL-CARE"));
+    const context = trustedTestContext(record("OBL-CARE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
     expect(raceAssessmentSchema.safeParse(result.race).success).toBe(true);
     expect(raceAssessmentSchema.safeParse({
@@ -104,7 +137,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("treats an impossible source calendar date as normalization HOLD, never as a due-date fact", async () => {
-    const context = buildFinanceAgentContext(record("OBL-INVALID-DATE", { due_date: "2026-02-30" }), "1", "2026-03-01");
+    const context = trustedTestContext(record("OBL-INVALID-DATE", { due_date: "2026-02-30" }), 1, "2026-03-01");
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { finding_codes: ["NORMALIZATION_REVIEW_REQUIRED"] })));
     expect(result.decision).toBe("HOLD");
     expect(result.race.evidence.authoritative_facts.due_date_position).toBe("INVALID");
@@ -113,10 +146,10 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("treats conflicting due-date status and value as normalization HOLD", async () => {
-    const context = buildFinanceAgentContext(record("OBL-DATE-CONFLICT", {
+    const context = trustedTestContext(record("OBL-DATE-CONFLICT", {
       due_date: "2026-09-30",
       due_date_status: "NOT_STATED_ON_SOURCE",
-    }), "1", "2026-09-29");
+    }), 1, "2026-09-29");
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id)));
     expect(result.decision).toBe("HOLD");
     expect(result.race.evidence.authoritative_facts.due_date_position).toBe("INVALID");
@@ -124,7 +157,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("fails closed when the model invents a finding code", async () => {
-    const context = buildFinanceAgentContext(record("OBL-UNKNOWN-CODE"));
+    const context = trustedTestContext(record("OBL-UNKNOWN-CODE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       decision: "HOLD",
       finding_codes: ["REQUIRE_BANK_STATEMENT"],
@@ -134,7 +167,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("keeps a ready obligation PAY when the model proposes no finding", async () => {
-    const context = buildFinanceAgentContext(record("OBL-READY-NO-PROPOSAL"));
+    const context = trustedTestContext(record("OBL-READY-NO-PROPOSAL"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
 
     expect(result.decision).toBe("PAY");
@@ -150,7 +183,7 @@ describe("#17 CARE and RACE grounding", () => {
     "NORMALIZATION_REVIEW_REQUIRED",
     "OTHER_REQUIRES_HUMAN_REVIEW",
   ] as const)("does not promote unsupported model proposal %s into validated findings or remediation", async (code) => {
-    const context = buildFinanceAgentContext(record(`OBL-READY-${code}`));
+    const context = trustedTestContext(record(`OBL-READY-${code}`));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       decision: code === "OTHER_REQUIRES_HUMAN_REVIEW" ? "ESCALATE" : "PAY",
       finding_codes: [code],
@@ -168,7 +201,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("rejects persisted RACE that promotes an unsupported proposal into findings and remediation", async () => {
-    const context = buildFinanceAgentContext(record("OBL-READY-POISONED-RACE"));
+    const context = trustedTestContext(record("OBL-READY-POISONED-RACE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       finding_codes: ["DUPLICATE_SOURCE"],
       evidence_ids: context.evidence_ids,
@@ -210,7 +243,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("does not derive required evidence from model prose", async () => {
-    const context = buildFinanceAgentContext(record("OBL-MODEL-PROSE"));
+    const context = trustedTestContext(record("OBL-MODEL-PROSE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       decision: "ESCALATE",
       finding_codes: ["OTHER_REQUIRES_HUMAN_REVIEW"],
@@ -223,7 +256,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("returns actionable HOLD remediation from validated codes", async () => {
-    const context = buildFinanceAgentContext(record("OBL-HOLD", { business_purpose_confirmed: false }));
+    const context = trustedTestContext(record("OBL-HOLD", { business_purpose_confirmed: false }));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id)));
     expect(result.decision).toBe("HOLD");
     expect(result.race.remediation).toContainEqual(expect.objectContaining({
@@ -237,7 +270,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("does not let a model-only ESCALATE create an authoritative escalation target", async () => {
-    const context = buildFinanceAgentContext(record("OBL-ESCALATE"));
+    const context = trustedTestContext(record("OBL-ESCALATE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
       decision: "ESCALATE",
       finding_codes: ["OTHER_REQUIRES_HUMAN_REVIEW"],

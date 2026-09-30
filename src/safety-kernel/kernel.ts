@@ -1,5 +1,4 @@
-import type { AuthorityAggregate } from "../authority/aggregate";
-import type { AuthorityStore } from "../authority/aggregate";
+import { hasCurrentProductTrustEvidence, type AuthorityAggregate, type AuthorityStore } from "../authority/aggregate";
 import { verifyAtomicRoundtrip } from "../domain/numeric";
 import type { ControlResult } from "../domain/schemas";
 import { REQUIRED_CONTROL_IDS_P0 } from "../domain/schemas";
@@ -51,14 +50,14 @@ export function runSafetyKernel(aggregate: AuthorityAggregate, store: AuthorityS
 
   // SK-DESTINATION-TRUST: destination must be VERIFIED + ACTIVE.
   controls.push(
-    aggregate.destination_verification_status === "VERIFIED" && aggregate.destination_operational_status === "ACTIVE"
+    hasCurrentProductTrustEvidence(aggregate) && aggregate.destination_verification_status === "VERIFIED" && aggregate.destination_operational_status === "ACTIVE"
       ? pass("SK-DESTINATION-TRUST")
       : fail("SK-DESTINATION-TRUST", "BLOCK", "DST-003"),
   );
 
   // SK-SOURCE-WALLET-AUTHORITY: source wallet must be the exact ACTIVE org wallet.
   controls.push(
-    aggregate.source_wallet_status === "ACTIVE"
+    hasCurrentProductTrustEvidence(aggregate) && aggregate.source_wallet_status === "ACTIVE"
       ? pass("SK-SOURCE-WALLET-AUTHORITY")
       : fail("SK-SOURCE-WALLET-AUTHORITY", "BLOCK", "WDG-008"),
   );

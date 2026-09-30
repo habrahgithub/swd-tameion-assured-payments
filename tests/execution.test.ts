@@ -22,6 +22,7 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
     counterparty_status: "VERIFIED",
     destination_ref: "DEST-J0C-999",
     destination_version: 1,
+    product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
     destination_address: "0x1234567890abcdef1234567890abcdef12345678",
     destination_verification_status: "VERIFIED",
     destination_operational_status: "ACTIVE",

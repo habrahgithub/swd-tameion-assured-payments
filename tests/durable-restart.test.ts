@@ -7,6 +7,14 @@ import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal
 function assessEveryObligation(state: DemoState): void {
   for (const obligation of state.listObligations()) {
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, obligation.obligation_id);
+    // This suite exercises persistence mechanics using an explicit trusted
+    // test fixture; ordinary DemoState seeds remain simulated and fail closed.
+    state.store.seed({
+      ...aggregate,
+      destination_ref: `DEST-${obligation.obligation_id}-TEST-EVIDENCED`,
+      source_wallet_ref: "WALLET-SOURCE-TEST-EVIDENCED",
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+    });
     sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, obligation.obligation_id, aggregate.aggregate_version);
   }
 }

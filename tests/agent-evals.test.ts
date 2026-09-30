@@ -57,7 +57,10 @@ function isUnsafePay(decision: { decision: string; missing_evidence: string[] },
 
 describe("Finance Agent eval bank (zero unsafe PAY across 8 cases)", () => {
   it("case 1: complete, ready obligation -> safe PAY via deterministic fallback", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = buildFinanceAgentContext(record(), 0, new Date().toISOString().slice(0, 10), {
+      destination_status: "READY",
+      source: "CURRENT_PRODUCT_TRUST_EVIDENCE",
+    });
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     expect(decision.decision).toBe("PAY");
     expect(isUnsafePay(decision, true, true, true)).toBe(false);
@@ -75,7 +78,7 @@ describe("Finance Agent eval bank (zero unsafe PAY across 8 cases)", () => {
     expect(decision.decision).not.toBe("PAY");
   });
 
-  it("case 4: Arc destination not yet trust-seeded -> HOLD, never PAY", async () => {
+  it("case 4: product destination trust not separately evidenced -> HOLD, never PAY", async () => {
     const context = buildFinanceAgentContext(record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } }));
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     expect(decision.decision).not.toBe("PAY");

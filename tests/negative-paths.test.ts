@@ -5,6 +5,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { ExecutionWorker } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
 import { sealTestAssessment } from "./test-support/seal-assessment";
+import { DemoState, DEMO_ORGANIZATION_ID } from "../src/server/demo-state";
 
 /**
  * Closes out the minimum negative cases listed in the SWD methodology
@@ -84,6 +85,31 @@ describe("negative path: amount/asset/network mismatch", () => {
   });
 });
 
+describe("USD-only demo settlement boundary", () => {
+  it("does not seed the AED source amount as an Arc USDC candidate amount", () => {
+    const state = new DemoState();
+    const source = state.getRecord("OBL-J0C-001");
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001");
+
+    expect(source).toMatchObject({ amount: "5760.00", currency: "AED" });
+    expect(aggregate.amount).toBe("0.000000");
+    expect(aggregate.product_trust_provenance).toBe("SIMULATED_DEMO_FIXTURE");
+  });
+
+  it("does not let simulated demo trust pass destination or source-wallet Safety Kernel controls", async () => {
+    const state = new DemoState();
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002");
+    state.store.seed({ ...aggregate, state: "AUTHORIZED" });
+    const { runSafetyKernel } = await import("../src/safety-kernel/kernel");
+
+    const result = runSafetyKernel(state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002"), state.store);
+
+    expect(result.controlResults.find((control) => control.control_id === "SK-DESTINATION-TRUST")?.result).toBe("BLOCK");
+    expect(result.controlResults.find((control) => control.control_id === "SK-SOURCE-WALLET-AUTHORITY")?.result).toBe("BLOCK");
+  });
+
+});
+
 describe("negative path: missing human authorization", () => {
   function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAggregate {
     return {
@@ -99,6 +125,7 @@ describe("negative path: missing human authorization", () => {
       counterparty_status: "VERIFIED",
       destination_ref: "DEST-J0C-999",
       destination_version: 1,
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
       destination_address: `0x${"1".repeat(40)}`,
       destination_verification_status: "VERIFIED",
       destination_operational_status: "ACTIVE",
@@ -117,6 +144,23 @@ describe("negative path: missing human authorization", () => {
       ...overrides,
     };
   }
+
+  it("rejects direct authorization of a simulated aggregate even with a PAY assessment", () => {
+    const obligationId = "OBL-J0C-002";
+    const store = new AuthorityStore();
+    const aggregate = baseAggregate({ product_trust_provenance: "SIMULATED_DEMO_FIXTURE" });
+    store.seed(aggregate);
+    sealTestAssessment(store, DEMO_ORGANIZATION_ID, obligationId, aggregate.aggregate_version);
+    const assessment = store.getCurrentAssessment(DEMO_ORGANIZATION_ID, obligationId)!;
+
+    expect(() => store.approve(
+      DEMO_ORGANIZATION_ID,
+      obligationId,
+      aggregate.aggregate_version,
+      assessment.record.assessment_id,
+      assessment.hash,
+    )).toThrow(expect.objectContaining({ code: "AUT-016" }));
+  });
 
   it("the Safety Kernel BLOCKs on SK-FINANCIAL-AUTHORITY when the obligation was never approved", async () => {
     const store = new AuthorityStore();
@@ -158,6 +202,26 @@ describe("negative path: missing human authorization", () => {
     store.seed(baseAggregate({ state: "APPROVAL_PENDING" }));
     const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, { decision: "HOLD" });
     expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash)).toThrow(/sealed assessment decision is HOLD/);
+  });
+
+  it("independently blocks authorization of an AED assessment even when it says PAY", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ state: "APPROVAL_PENDING", amount: "0.000000" }));
+    const usdAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const aedFacts = {
+      ...usdAssessment.record.race!.evidence.authoritative_facts,
+      currency: "AED" as const,
+    };
+    const aedAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, {
+      race: {
+        ...usdAssessment.record.race!,
+        evidence: { ...usdAssessment.record.race!.evidence, authoritative_facts: aedFacts },
+      },
+    });
+
+    expect(aedAssessment.record.decision).toBe("PAY");
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, aedAssessment.record.assessment_id, aedAssessment.assessment_hash))
+      .toThrow(/Only USD obligations can be authorized for Arc Testnet USDC settlement/);
   });
 
   it("refuses approval when the human reviewed an older same-version assessment", () => {

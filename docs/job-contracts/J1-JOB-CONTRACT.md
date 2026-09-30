@@ -1,9 +1,12 @@
 # Job Contract — J1: Finance Agent Decision + Exact Human Authorization
 
-**Status:** DRAFTED_NOT_ADMITTED
-**Reason:** J0 has not reached MILESTONE_EXIT_GATE. J0-D (Arc connectivity spike) is still open
-(classified `EXTERNAL_CIRCLE_FAUCET_PERMISSION_BLOCKER`, pending manual public-faucet funding),
-and J0-B's NVIDIA live-auth check is `NVIDIA_LIVE = BLOCKED_AUTH` (deferred). Per the blueprint's
+**Status:** SUPERSEDED_BY_ISSUE_41
+**Authority:** GitHub issue #41 now admits J1-A on PR #10 at exact base/head
+`140959621e0181f077929527cc09f8149b92f1ae`. The older draft below is historical and does not
+govern current scope or authorization. At the time it was written, J0 had not reached its exit gate,
+J0-D (Arc connectivity spike) was classified as `EXTERNAL_CIRCLE_FAUCET_PERMISSION_BLOCKER`
+(pending manual public-faucet funding), and J0-B's NVIDIA live-auth check was
+`NVIDIA_LIVE = BLOCKED_AUTH` (deferred). Per the blueprint's
 Admission Rule ("One primary job at a time... at event start admit J0 only") and Admission
 Invariant `NO_SUMMARY_ONLY_JOB_MAY_ENTER_EXECUTING`, this contract may not enter `EXECUTING` and
 no `execution_token` may be issued until AXIS/Prime runs `MILESTONE_EXIT_GATE` on J0 and explicitly

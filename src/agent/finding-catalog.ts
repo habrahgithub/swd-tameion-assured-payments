@@ -40,8 +40,8 @@ export const FINDING_CATALOG: Record<FindingCode, FindingDefinition> = {
   },
   DESTINATION_NOT_READY: {
     severity: "HOLD",
-    reason: "The Arc product destination and source-wallet trust seed are pending.",
-    required_action: "Complete the admitted J0-D destination and source-wallet trust-seed process.",
+    reason: "Current Arc product destination or source-wallet readiness is not verified and active.",
+    required_action: "Resolve the current destination or source-wallet readiness blocker.",
     required_evidence: ["Verified destination readiness and source-wallet trust-seed record"],
     owner_role: "Treasury Operations",
     reassess_after_resolution: true,
@@ -64,9 +64,9 @@ export const FINDING_CATALOG: Record<FindingCode, FindingDefinition> = {
   },
   UNSUPPORTED_SETTLEMENT_CURRENCY: {
     severity: "ESCALATE",
-    reason: "The settlement currency is outside the application-supported set.",
-    required_action: "Resolve the currency policy question through the authorized finance authority.",
-    required_evidence: ["Approved settlement-currency policy or exception decision"],
+    reason: "Only USD source obligations are eligible for Arc Testnet USDC settlement; no currency conversion is admitted.",
+    required_action: "Keep this obligation assessable and visible, but do not authorize it as an Arc USDC candidate.",
+    required_evidence: ["A separately admitted settlement-currency policy decision"],
     owner_role: "Finance Policy Owner",
     reassess_after_resolution: true,
     escalation_target: "Authorized finance policy authority",

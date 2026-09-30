@@ -40,7 +40,7 @@ interface AggregateView {
 interface ObligationDetail {
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
-  record: Record<string, unknown>;
+  record: Record<string, unknown> & { amount: string; currency: string };
   current_assessment: {
     obligation_id: string;
     assessment_id: string;
@@ -50,7 +50,7 @@ interface ObligationDetail {
     reasons: string[];
     race?: RaceAssessment;
   } | null;
-  demo_arc_trust_seeded: boolean;
+  demo_arc_trust_simulated: boolean;
   pae_sealed: boolean;
   execution: { status: string; provider_ref: string | null } | null;
   execution_kill_switched: boolean;
@@ -459,8 +459,9 @@ export function CommandCenter() {
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
         <p className="max-w-sm text-right text-[12px] leading-5 text-[var(--color-ink-muted)]">
-          Execution here is simulated (no live Circle/Arc credentials in this build). Arc destination trust
-          shown is a labeled simulation, not a completed J0-D spike.
+          Execution and demo destination/source-wallet trust are simulated fixtures. J0-D connectivity completed
+          with disposable wallets; product destination/source-wallet trust remains separately gated unless
+          supported by current, non-simulated evidence. J0-C source evidence retains its original pending status.
         </p>
       </header>
 
@@ -563,13 +564,19 @@ export function CommandCenter() {
           <div className="min-h-[320px]">
             {panel === "obligations" && detail && (
               <dl className="max-w-md">
-                <Field label="Amount (authoritative)" value={`${detail.aggregate.amount} ${detail.aggregate.asset}`} />
+                <Field label="Source obligation amount (source truth)" value={`${detail.record.amount} ${detail.record.currency}`} />
+                <Field
+                  label="Settlement amount (execution rail)"
+                  value={detail.record.currency === "USD"
+                    ? `${detail.aggregate.amount} ${detail.aggregate.asset}`
+                    : `Not applicable — unsupported ${detail.record.currency}`}
+                />
                 <Field label="Network" value={detail.aggregate.network} />
                 <Field label="Aggregate version" value={String(detail.aggregate.aggregate_version)} />
                 <Field label="Source wallet" value={detail.aggregate.source_wallet_ref} />
                 <Field
                   label="Destination trust"
-                  value={`${detail.aggregate.destination_verification_status} / ${detail.aggregate.destination_operational_status}${detail.demo_arc_trust_seeded ? " (simulated)" : ""}`}
+                  value={`${detail.aggregate.destination_verification_status} / ${detail.aggregate.destination_operational_status}${detail.demo_arc_trust_simulated ? " (simulated demo fixture; not product-trust evidence)" : ""}`}
                 />
               </dl>
             )}

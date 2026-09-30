@@ -10,12 +10,13 @@ import {
   type DemoState,
 } from "../../../../../src/server/demo-state";
 import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
+import { hasCurrentProductTrustEvidence } from "../../../../../src/authority/aggregate";
 import type { DurableAssessmentRecord } from "../../../../../src/domain/schemas";
 
-export const maxDuration = 30;
+export const maxDuration = 65;
 
 const MAX_PERSISTENCE_ATTEMPTS = 4;
-const RESERVED_OPERATION_TIMEOUT_MS = 25_000;
+const RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
@@ -37,6 +38,9 @@ type AssessmentResponse = {
   race?: DurableAssessmentRecord["race"];
   provider_used: string;
   provider_mode: DurableAssessmentRecord["provider_mode"];
+  model_id?: string;
+  model_config_version?: string;
+  runtime_config_sha256?: string;
   assessment_hash: string;
 };
 
@@ -64,6 +68,9 @@ function responseFor(state: DemoState, operation: AssessmentOperation): Assessme
     ...(record.race ? { race: record.race } : {}),
     provider_used: record.provider_name,
     provider_mode: record.provider_mode,
+    ...(record.model_id ? { model_id: record.model_id } : {}),
+    ...(record.model_config_version ? { model_config_version: record.model_config_version } : {}),
+    ...(record.runtime_config_sha256 ? { runtime_config_sha256: record.runtime_config_sha256 } : {}),
     assessment_hash: sealed.hash,
   };
 }
@@ -234,8 +241,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const record = state.getRecord(id)!;
   const isLiveNvidia = Boolean(process.env.NVIDIA_API_KEY);
   const provider = isLiveNvidia ? new NvidiaProvider() : new DeterministicFallbackProvider();
-  const decision = await assessObligation(buildFinanceAgentContext(record, aggregateVersion), provider);
+  const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
+  const productTrustEvidence = hasCurrentProductTrustEvidence(aggregate);
+  const destinationReady = productTrustEvidence && aggregate.destination_verification_status === "VERIFIED" &&
+    aggregate.destination_operational_status === "ACTIVE" && aggregate.source_wallet_status === "ACTIVE";
+  const readinessOverlay = {
+    destination_status: destinationReady ? "READY" : productTrustEvidence
+      ? `${aggregate.destination_verification_status}/${aggregate.destination_operational_status}/${aggregate.source_wallet_status}`
+      : aggregate.product_trust_provenance === "SIMULATED_DEMO_FIXTURE"
+        ? "NOT_READY_SIMULATED_FIXTURE"
+        : "NOT_READY_TRUST_EVIDENCE_REQUIRED",
+    source: destinationReady ? "CURRENT_PRODUCT_TRUST_EVIDENCE" as const
+      : aggregate.product_trust_provenance === "SIMULATED_DEMO_FIXTURE" ? "SIMULATED_DEMO_FIXTURE" as const
+        : "UNVERIFIED_CURRENT_TRUST" as const,
+  };
+  const decision = await assessObligation(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay), provider);
   if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
+
+  const runtimeIdentity = provider.runtimeIdentity;
+  if (!runtimeIdentity) throw new Error("Assessment provider did not expose a durable runtime identity.");
 
   const assessmentRecord: DurableAssessmentRecord = {
     assessment_id: `ASM-${idempotencyKey}`,
@@ -248,7 +272,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     missing_evidence: decision.missing_evidence,
     uncertainty_signal: decision.uncertainty_signal,
     race: decision.race,
-    provider_name: provider.name,
+    provider_name: runtimeIdentity.provider_name,
+    model_id: runtimeIdentity.model_id,
+    model_config_version: runtimeIdentity.model_config_version,
+    runtime_config_sha256: runtimeIdentity.runtime_config_sha256,
     provider_mode: !isLiveNvidia ? "NOT_LIVE_AI" : "LIVE_AI",
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),
   };

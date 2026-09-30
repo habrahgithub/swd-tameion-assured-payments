@@ -24,6 +24,13 @@ function record(overrides: Partial<LiveUsageObligationRecord> = {}): LiveUsageOb
   };
 }
 
+function trustedTestContext(input: LiveUsageObligationRecord) {
+  return buildFinanceAgentContext(input, 0, new Date().toISOString().slice(0, 10), {
+    destination_status: "READY",
+    source: "CURRENT_PRODUCT_TRUST_EVIDENCE",
+  });
+}
+
 class ThrowingProvider implements AiProvider {
   readonly name = "throwing-test-provider";
   async assess(): Promise<unknown> {
@@ -95,25 +102,25 @@ function payOutput(obligationId: string, evidenceIds: string[] = ["EVID-J0C-002-
 
 describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
   it("recommends PAY for a complete, evidence-backed obligation via the deterministic fallback", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     expect(decision.decision).toBe("PAY");
     expect(decision.race.prompt_identity).toBeNull();
   });
 
   it("(14) never defaults to PAY when the provider fails outright", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new ThrowingProvider());
     expect(decision.decision).toBe("HOLD");
   });
 
   it("wasProviderCallFailure distinguishes a failed live call from a genuine model HOLD", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const failedCallDecision = await assessObligation(context, new ThrowingProvider());
     expect(wasProviderCallFailure(failedCallDecision)).toBe(true);
 
     const genuineHoldDecision = await assessObligation(
-      buildFinanceAgentContext(record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" })),
+      trustedTestContext(record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" })),
       new DeterministicFallbackProvider(),
     );
     expect(genuineHoldDecision.decision).toBe("HOLD");
@@ -121,20 +128,20 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
   });
 
   it("(14) never defaults to PAY when provider output fails schema validation", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new MalformedJsonProvider());
     expect(decision.decision).toBe("HOLD");
   });
 
   it("(14) never defaults to PAY when evidence is missing on the input side", async () => {
-    const context = buildFinanceAgentContext(record({ source_evidence: [] }));
+    const context = trustedTestContext(record({ source_evidence: [] }));
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     expect(decision.decision).toBe("HOLD");
     expect(decision.race.result.validated_findings.map((finding) => finding.code)).toContain("SOURCE_EVIDENCE_MISSING");
   });
 
   it("(13) rejects prompt-injected output that tries to smuggle approval/signing/execution fields", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new PromptInjectionProvider(context.obligation_id));
     // The strict schema has no field for approved/signing_key_id/execute_now,
     // so this parse fails and the agent fails closed to HOLD.
@@ -145,13 +152,13 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
   });
 
   it("(13) rejects a PAY response that tries to define arbitrary evidence requirements", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new OverclaimingPayProvider(context.obligation_id));
     expect(decision.decision).toBe("HOLD");
   });
 
   it("rejects PAY without a real, supplied evidence citation", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     for (const evidenceIds of [[], ["EVID-J0C-999"]]) {
       const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id, evidenceIds)));
       expect(decision.decision).toBe("HOLD");
@@ -171,8 +178,19 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     }
   });
 
+  it("keeps non-USD obligations assessable but applies the currency blocker outside model prose", async () => {
+    for (const currency of ["AED", "EUR"]) {
+      const context = trustedTestContext(record({ currency }));
+      const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
+
+      expect(decision.decision).toBe("ESCALATE");
+      expect(decision.race.result.validated_findings.map((finding) => finding.code)).toContain("UNSUPPORTED_SETTLEMENT_CURRENCY");
+      expect(decision.race.evidence.authoritative_facts.currency).toBe(currency);
+    }
+  });
+
   it("(12) the agent module has no capability to approve/sign/execute — only a decision object crosses the boundary", async () => {
-    const context = buildFinanceAgentContext(record());
+    const context = trustedTestContext(record());
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     const allowedKeys = ["obligation_id", "decision", "reasons", "evidence_ids", "missing_evidence", "uncertainty_signal", "race"];
     expect(Object.keys(decision).sort()).toEqual([...allowedKeys].sort());

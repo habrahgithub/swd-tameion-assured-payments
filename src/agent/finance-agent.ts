@@ -92,6 +92,7 @@ function deterministicFindings(context: FinanceAgentContext): Set<FindingCode> {
   if (context.due_date_position === "INVALID") findings.add("NORMALIZATION_REVIEW_REQUIRED");
   else if (context.due_date_position === "NOT_STATED") findings.add("DUE_DATE_NOT_STATED");
   if (!context.destination_ready) findings.add("DESTINATION_NOT_READY");
+  if (context.currency !== "USD") findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
   if (!context.business_purpose_confirmed) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
   return findings;
 }
@@ -180,6 +181,7 @@ function normalize(
         business_purpose_confirmed: context.business_purpose_confirmed,
         source_evidence_present: context.evidence_present,
         destination_status: context.destination_status,
+        destination_readiness_source: context.destination_readiness_source,
       },
     },
     remediation: finalCodes.map(remediationFor),

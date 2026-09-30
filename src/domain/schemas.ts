@@ -76,6 +76,9 @@ export const durableAssessmentRecordSchema = z
     /** Optional only for immutable pre-#17 records; every new assessment carries RACE. */
     race: raceAssessmentSchema.optional(),
     provider_name: boundedAscii(),
+    model_id: boundedAscii().optional(),
+    model_config_version: boundedAscii().optional(),
+    runtime_config_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     /** LIVE_AI only for a real model call that actually returned parseable
      * output; deterministic/mock/fallback reasoning is always NOT_LIVE_AI;
      * BLOCKED_EXTERNAL is a live call that was attempted but failed before

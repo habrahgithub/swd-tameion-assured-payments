@@ -69,6 +69,8 @@ export interface AuthorityAggregate {
   counterparty_status: "VERIFIED" | "ON_HOLD" | "BLOCKED";
   destination_ref: string;
   destination_version: number;
+  /** Provenance for current product destination/source-wallet trust. Missing legacy values fail closed. */
+  product_trust_provenance?: "SIMULATED_DEMO_FIXTURE" | "CURRENT_PRODUCT_EVIDENCE";
   destination_address: string;
   destination_verification_status: "PENDING_VERIFICATION" | "VERIFIED";
   destination_operational_status: "ACTIVE" | "ON_HOLD" | "BLOCKED" | "SUPERSEDED";
@@ -84,6 +86,12 @@ export interface AuthorityAggregate {
   execution_state: ExecutionState;
   execution_idempotency_key: string | null;
   reviewed_aggregate_version: number | null;
+}
+
+export function hasCurrentProductTrustEvidence(aggregate: AuthorityAggregate): boolean {
+  return aggregate.product_trust_provenance === "CURRENT_PRODUCT_EVIDENCE" &&
+    !aggregate.destination_ref.includes("SIMULATED") &&
+    !aggregate.source_wallet_ref.includes("SIMULATED");
 }
 
 export interface SealedAssessment {
@@ -371,6 +379,12 @@ export class AuthorityStore {
       (sealed.record.decision === "PAY" && (race.result.validated_findings.length > 0 || race.remediation.length > 0))
     ) {
       throw new AuthorityError("Cannot approve: assessment is missing valid application-owned RACE findings or readiness proof; reassess before authorization", "AUT-014");
+    }
+    if (race.evidence.authoritative_facts.currency !== "USD") {
+      throw new AuthorityError("Only USD obligations can be authorized for Arc Testnet USDC settlement", "AUT-015");
+    }
+    if (!hasCurrentProductTrustEvidence(current)) {
+      throw new AuthorityError("Cannot authorize without separately evidenced current product destination and source-wallet trust", "AUT-016");
     }
     if (sealed.record.aggregate_version !== String(current.aggregate_version)) {
       throw new AuthorityError(

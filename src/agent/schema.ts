@@ -72,7 +72,7 @@ export const raceAssessmentSchema = z.object({
       obligation_id: z.string().min(1),
       aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
       amount: z.string().min(1),
-      currency: z.enum(["AED", "USD"]),
+      currency: z.string().regex(/^[A-Z]{3}$/),
       due_date: z.string().nullable(),
       due_date_status: z.enum(["STATED_ON_SOURCE", "NOT_STATED_ON_SOURCE"]),
       due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
@@ -81,6 +81,7 @@ export const raceAssessmentSchema = z.object({
       business_purpose_confirmed: z.boolean(),
       source_evidence_present: z.boolean(),
       destination_status: z.string().min(1),
+      destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
     }).strict(),
   }).strict(),
   remediation: z.array(remediationItemSchema),
@@ -167,7 +168,7 @@ export const financeAgentContextSchema = z
     aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
     as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     amount: z.string(),
-    currency: z.enum(["AED", "USD"]),
+    currency: z.string().regex(/^[A-Z]{3}$/),
     service_category: z.string(),
     recurrence: z.enum(["MONTHLY", "YEARLY", "ONE_TIME"]),
     due_date: z.string().nullable(),
@@ -179,6 +180,7 @@ export const financeAgentContextSchema = z
     evidence_present: z.boolean(),
     destination_ready: z.boolean(),
     destination_status: z.string(),
+    destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
       due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
   })
   .strict();

@@ -51,17 +51,14 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.due_date]));
     const selection = selectSoleCandidate(decisions, dueDates);
 
-    // Because every real obligation's Arc destination readiness is still
-    // PENDING_J0_D_TRUST_SEED (J0-D has not run — no live credentials), the
-    // deterministic fallback correctly HOLDs all five: J0-D must complete
-    // before any of them is truly execution-ready. This is the expected,
-    // honest state of this environment, not a defect in the assessment.
+    // This unit-level path intentionally uses only the immutable J0-C source
+    // snapshot, whose historical destination field remains pending. The live
+    // assessment route separately supplies the current aggregate overlay.
     expect(selection.selected_obligation_id).toBeNull();
 
     // Prove the rest of the pipeline (approval -> Safety Kernel -> PAE ->
-    // execution -> reconciliation) against one obligation once we simulate
-    // that its destination trust seed HAS been established (i.e. the state
-    // J0-D is responsible for producing).
+    // execution -> reconciliation) against a clearly test-only fixture with
+    // current product-trust provenance set explicitly for this valid path.
     const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === "OBL-J0C-003")!;
     const [wholePart, fractionalPart] = candidateRecord.amount.split(".");
     const sixDpAmount = `${wholePart}.${fractionalPart.padEnd(6, "0")}`;
@@ -80,8 +77,9 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       counterparty_status: "VERIFIED",
       destination_ref: "DEST-J0C-003-SEEDED",
       destination_version: 1,
-      // Placeholder post-J0-D trust-seed address (this test does not perform
-      // a live J0-D spike — see the module-level comment).
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+      // Test-only destination value; the test exercises the trusted path and
+      // does not assert that J0-D established product destination trust.
       destination_address: `0x${"0".repeat(40)}`,
       destination_verification_status: "VERIFIED",
       destination_operational_status: "ACTIVE",
@@ -99,10 +97,8 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       reviewed_aggregate_version: null,
     };
     store.seed(aggregate);
-    // Simulating the post-J0-D-trust-seed world (see comment above): with a
-    // ready destination this obligation would be the sole PAY candidate, so
-    // record that decision explicitly rather than relying on the pre-seed
-    // HOLD computed above.
+    // The explicit provenance above is test-only so this integration test can
+    // continue exercising a valid approval/PAE/worker path.
     sealTestAssessment(store, "ORG-DEMO-001", candidateRecord.obligation_id, 1);
 
     const { sealed } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {

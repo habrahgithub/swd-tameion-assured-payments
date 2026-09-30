@@ -167,8 +167,18 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(durable.snapshot?.authority.assessments).toHaveLength(1);
     const completedData = await completed.json();
     const repeatedData = await repeated.json();
+    expect(completedData).toMatchObject({
+      provider_used: "NVIDIA Build",
+      provider_mode: "LIVE_AI",
+      model_id: "nvidia/nemotron-3-super-120b-a12b",
+      model_config_version: "p0-nvidia-nemotron3super-v1",
+    });
+    expect(completedData.runtime_config_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(repeatedData.assessment_hash).toBe(completedData.assessment_hash);
+    expect(repeatedData.runtime_config_sha256).toBe(completedData.runtime_config_sha256);
     expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(completedData.race.evidence.authoritative_facts.destination_status).toBe("NOT_READY_SIMULATED_FIXTURE");
+    expect(completedData.race.evidence.authoritative_facts.destination_readiness_source).toBe("SIMULATED_DEMO_FIXTURE");
     expect(repeatedData.race).toEqual(completedData.race);
     expect(completedData.decision.reasons.join(" ")).not.toContain("Provider returned a valid test assessment.");
   });
@@ -288,7 +298,7 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(response.status).toBe(409);
     expect(durable.snapshot?.assessment_operations[0].status).toBe("UNKNOWN");
     expect(blocked.status).toBe(409);
-    expect(durable.providerCalls).toBe(1);
+    expect(durable.providerCalls).toBe(2);
     expect(durable.snapshot?.authority.assessments).toHaveLength(0);
   });
 
@@ -332,7 +342,7 @@ describe("assessment request idempotency across durable CAS races", () => {
       obligation_id: "OBL-J0C-001",
       aggregate_version: 1,
       status: "RESERVED",
-      reserved_at: Date.now() - 60_000,
+      reserved_at: Date.now() - 90_000,
     });
     const durable = createDurableFetch({ seedSnapshot: seed });
     globalThis.fetch = durable.fetcher as typeof fetch;
@@ -380,6 +390,13 @@ describe("assessment request idempotency across durable CAS races", () => {
     const seeded = new DemoState();
     for (const obligation of seeded.listObligations()) {
       const aggregate = seeded.store.get(DEMO_ORGANIZATION_ID, obligation.obligation_id);
+      // Test-only genuine-provenance marker for the authorization/idempotency boundary.
+      seeded.store.seed({
+        ...aggregate,
+        destination_ref: `DEST-${obligation.obligation_id}-TEST-EVIDENCED`,
+        source_wallet_ref: "WALLET-SOURCE-TEST-EVIDENCED",
+        product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+      });
       sealTestAssessment(seeded.store, DEMO_ORGANIZATION_ID, obligation.obligation_id, aggregate.aggregate_version);
     }
     const obligationId = "OBL-J0C-001";

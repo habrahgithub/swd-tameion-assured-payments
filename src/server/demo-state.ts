@@ -29,25 +29,21 @@ import { SupabaseDemoStateRepository } from "./supabase-demo-state-repository";
  * Production load and compare-and-set this snapshot through Supabase on
  * every request. Local development/test may use the memory adapter.
  *
- * DEMO_ARC_TRUST_SEEDED: the real J0-C dataset marks every obligation's Arc
- * destination readiness as PENDING_J0_D_TRUST_SEED (J0-D has not run — see
- * src/j0d-spike/connectivity-spike.ts). To keep the golden path
- * demonstrable with mocks per DIR-TAMEION-PROTOTYPE-CLAUDE-001 ("Claude may
- * implement and test the complete execution flow using mocks/simulators/
- * test fixtures before the retained J2 testnet-transfer approval"), this
- * demo seeds a SIMULATED post-J0-D destination trust state. The UI must
- * always show this simulation banner so nobody mistakes it for a completed
- * J0-D or a real payment.
+ * The seeded destination/source-wallet status below is a simulated demo
+ * fixture only. J0-D completed a connectivity spike with disposable wallets;
+ * it did not establish per-obligation product trust. J1 readiness therefore
+ * requires separate current, non-simulated product-trust evidence. The
+ * immutable J0-C source record retains its historical pending value.
  */
 export const DEMO_ORGANIZATION_ID = "ORG-DEMO-001";
 export const DEMO_SIGNING_KEY_ID = "TAMEION-DEMO-PAE-KEY-1";
-export const DEMO_ARC_TRUST_SEEDED = true;
+export const DEMO_ARC_TRUST_SIMULATED = true;
 
 export interface DemoObligationSummary {
   obligation_id: string;
   service_category: string;
   amount: string;
-  currency: "AED" | "USD";
+  currency: string;
   recurrence: string;
   due_date: string | null;
   commercial_terms: string;
@@ -302,7 +298,8 @@ function loadLiveUsageSet(): LiveUsageObligationRecord[] {
   return parsed.records;
 }
 
-function toUsdcAmount(rawAmount: string): string {
+function toUsdcAmount(rawAmount: string, currency: string): string {
+  if (currency !== "USD") return "0.000000";
   const [whole, fractional] = rawAmount.split(".");
   return `${whole}.${fractional.padEnd(6, "0")}`;
 }
@@ -338,7 +335,7 @@ export class DemoState {
         obligation_id: record.obligation_id,
         aggregate_version: 1,
         state: "APPROVAL_PENDING",
-        amount: toUsdcAmount(record.amount),
+        amount: toUsdcAmount(record.amount, record.currency),
         asset: "USDC",
         network: "ARC_TESTNET",
         counterparty_id: `CP-${record.obligation_id}`,
@@ -346,12 +343,13 @@ export class DemoState {
         counterparty_status: "VERIFIED",
         destination_ref: `DEST-${record.obligation_id}-SIMULATED`,
         destination_version: 1,
+        product_trust_provenance: "SIMULATED_DEMO_FIXTURE",
         destination_address: simulatedDestinationAddress(record.obligation_id),
-        destination_verification_status: DEMO_ARC_TRUST_SEEDED ? "VERIFIED" : "PENDING_VERIFICATION",
-        destination_operational_status: DEMO_ARC_TRUST_SEEDED ? "ACTIVE" : "ON_HOLD",
+        destination_verification_status: DEMO_ARC_TRUST_SIMULATED ? "VERIFIED" : "PENDING_VERIFICATION",
+        destination_operational_status: DEMO_ARC_TRUST_SIMULATED ? "ACTIVE" : "ON_HOLD",
         source_wallet_ref: "WALLET-SOURCE-P0-1-SIMULATED",
         source_wallet_version: 1,
-        source_wallet_status: "ACTIVE",
+        source_wallet_status: DEMO_ARC_TRUST_SIMULATED ? "ACTIVE" : "INACTIVE",
         evidence_hashes: record.source_evidence.map((e) => syntheticEvidenceHash(e.evidence_id)),
         policy_version: "POLICY-P0-1",
         business_hold: false,

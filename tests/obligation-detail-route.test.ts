@@ -20,6 +20,9 @@ describe("obligation detail truth-layer API", () => {
     expect(body.truth.settlement_truth.provider_target).toBe("CIRCLE_DCW");
     expect(body.truth.settlement_truth.runtime).toBe("SIMULATED");
     expect(body.truth.settlement_truth.status).toBe("NOT_SUBMITTED");
+    expect(body.demo_arc_trust_simulated).toBe(true);
+    expect(body.aggregate.product_trust_provenance).toBe("SIMULATED_DEMO_FIXTURE");
+    expect(body.record).toMatchObject({ amount: "5760.00", currency: "AED" });
   });
 
   it("projects a transaction kill switch from server authority state into the truth layer", async () => {

@@ -11,6 +11,12 @@ export class AiProviderError extends Error {
 export interface AiProvider {
   readonly name: string;
   readonly promptIdentity?: { version: string; sha256: string } | null;
+  readonly runtimeIdentity?: {
+    provider_name: string;
+    model_id: string;
+    model_config_version: string;
+    runtime_config_sha256: string;
+  };
   /** Returns raw, untrusted model output. The caller must independently validate/parse it. */
   assess(context: FinanceAgentContext): Promise<unknown>;
 }
@@ -47,6 +53,25 @@ judgment. Return exactly one JSON object matching this schema, with no extra key
 `;
 export const CARE_PROMPT_SHA256 = createHash("sha256").update(CARE_SYSTEM_PROMPT, "utf8").digest("hex");
 
+export const NVIDIA_RUNTIME_CONFIG = Object.freeze({
+  endpoint: "https://integrate.api.nvidia.com/v1",
+  request_path: "/chat/completions",
+  method: "POST",
+  model_id: "nvidia/nemotron-3-super-120b-a12b",
+  model_config_version: "p0-nvidia-nemotron3super-v1",
+  temperature: 1.0,
+  top_p: 0.95,
+  max_tokens: 4096,
+  timeout_ms: 30_000,
+  max_transport_attempts: 2,
+  reasoning_effort: "high",
+  stream: false,
+});
+
+function runtimeHash(config: object): string {
+  return createHash("sha256").update(JSON.stringify(config), "utf8").digest("hex");
+}
+
 /**
  * NVIDIA Build provider, pinned to the frozen Tameion model per the
  * dependency baseline (nvidia/nemotron-3-super-120b-a12b via
@@ -59,9 +84,13 @@ export const CARE_PROMPT_SHA256 = createHash("sha256").update(CARE_SYSTEM_PROMPT
 export class NvidiaProvider implements AiProvider {
   readonly name = "nvidia-nemotron-3-super-120b-a12b";
   readonly promptIdentity = { version: CARE_PROMPT_VERSION, sha256: CARE_PROMPT_SHA256 };
-  private static readonly MODEL = "nvidia/nemotron-3-super-120b-a12b";
-  private static readonly BASE_URL = "https://integrate.api.nvidia.com/v1";
-  static readonly REQUEST_TIMEOUT_MS = 15_000;
+  readonly runtimeIdentity = {
+    provider_name: "NVIDIA Build",
+    model_id: NVIDIA_RUNTIME_CONFIG.model_id,
+    model_config_version: NVIDIA_RUNTIME_CONFIG.model_config_version,
+    runtime_config_sha256: runtimeHash(NVIDIA_RUNTIME_CONFIG),
+  };
+  static readonly REQUEST_TIMEOUT_MS = NVIDIA_RUNTIME_CONFIG.timeout_ms;
 
   async assess(context: FinanceAgentContext): Promise<unknown> {
     const apiKey = process.env.NVIDIA_API_KEY;
@@ -69,32 +98,51 @@ export class NvidiaProvider implements AiProvider {
       throw new AiProviderError("NVIDIA_API_KEY is not configured in this environment");
     }
 
-    const response = await fetch(`${NvidiaProvider.BASE_URL}/chat/completions`, {
-      method: "POST",
-      signal: AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS),
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: NvidiaProvider.MODEL,
-        temperature: 0,
-        messages: [
-          { role: "system", content: CARE_SYSTEM_PROMPT },
-          { role: "user", content: JSON.stringify(context) },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new AiProviderError(`NVIDIA API returned HTTP ${response.status}`);
+    let response: Response | undefined;
+    for (let attempt = 1; attempt <= NVIDIA_RUNTIME_CONFIG.max_transport_attempts; attempt += 1) {
+      try {
+        response = await fetch(`${NVIDIA_RUNTIME_CONFIG.endpoint}${NVIDIA_RUNTIME_CONFIG.request_path}`, {
+          method: NVIDIA_RUNTIME_CONFIG.method,
+          signal: AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS),
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: NVIDIA_RUNTIME_CONFIG.model_id,
+            temperature: NVIDIA_RUNTIME_CONFIG.temperature,
+            top_p: NVIDIA_RUNTIME_CONFIG.top_p,
+            max_tokens: NVIDIA_RUNTIME_CONFIG.max_tokens,
+            reasoning_effort: NVIDIA_RUNTIME_CONFIG.reasoning_effort,
+            stream: NVIDIA_RUNTIME_CONFIG.stream,
+            messages: [
+              { role: "system", content: CARE_SYSTEM_PROMPT },
+              { role: "user", content: JSON.stringify(context) },
+            ],
+          }),
+        });
+      } catch (error) {
+        if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
+          throw new AiProviderError(error instanceof Error ? `NVIDIA transport failed: ${error.message}` : "NVIDIA transport failed");
+        }
+        continue;
+      }
+      if (response.status >= 500 && attempt < NVIDIA_RUNTIME_CONFIG.max_transport_attempts) continue;
+      break;
     }
 
+    if (!response) throw new AiProviderError("NVIDIA transport returned no response");
+    if (!response.ok) throw new AiProviderError(`NVIDIA API returned HTTP ${response.status}`);
+
     const body = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ finish_reason?: string; message?: { content?: string | null; refusal?: string | null } }>;
     };
-    const content = body.choices?.[0]?.message?.content;
-    if (!content) {
+    const choice = body.choices?.[0];
+    if (choice?.message?.refusal || choice?.finish_reason === "content_filter") {
+      throw new AiProviderError("NVIDIA provider refused the assessment");
+    }
+    const content = choice?.message?.content;
+    if (typeof content !== "string" || !content) {
       throw new AiProviderError("NVIDIA API response had no message content");
     }
 
@@ -118,6 +166,12 @@ export class NvidiaProvider implements AiProvider {
 export class DeterministicFallbackProvider implements AiProvider {
   readonly name = "deterministic-fallback (NOT the judged Finance Agent reasoning)";
   readonly promptIdentity = null;
+  readonly runtimeIdentity = {
+    provider_name: "Deterministic fallback",
+    model_id: "deterministic-fallback",
+    model_config_version: "deterministic-fallback-v1",
+    runtime_config_sha256: runtimeHash({ provider_name: "Deterministic fallback", model_config_version: "deterministic-fallback-v1" }),
+  };
 
   async assess(context: FinanceAgentContext): Promise<unknown> {
     const hasBlocker = !context.evidence_present || context.due_date_position === "NOT_STATED" ||
