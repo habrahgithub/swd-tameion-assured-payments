@@ -42,15 +42,15 @@ interface ObligationDetail {
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
   record: Record<string, unknown> & { amount: string; currency: string };
-  current_assessment: {
+    current_assessment: {
     obligation_id: string;
     assessment_id: string;
     assessment_hash: string;
     aggregate_version: string;
     decision: "PAY" | "HOLD" | "ESCALATE";
     reasons: string[];
-    provider_used: string;
-    provider_mode: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL";
+    provider_used?: string;
+    provider_mode?: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL";
     race?: RaceAssessment;
   } | null;
   demo_arc_trust_simulated: boolean;
@@ -212,9 +212,10 @@ function RacePanel({ race }: { race?: RaceAssessment }) {
  * as a green "go" — it is an advisory proposal that still requires human
  * authorization and Safety Kernel PASS before any release authority. */
 function decisionTone(decision: "PAY" | "HOLD" | "ESCALATE"): Tone {
-  if (decision === "PAY") return "success";
   if (decision === "ESCALATE") return "danger";
-  return "warning";
+  if (decision === "HOLD") return "warning";
+  // PAY is advisory-only — never styled as a green "go" success signal.
+  return "neutral";
 }
 
 /** Provider/runtime truth display — advisory-only provenance, never
@@ -283,14 +284,14 @@ function AdvisoryAssessmentCard({
   const { border, text } = TONE_STYLE[tone];
   const race = assessment.race;
   const findings = race?.result.validated_findings ?? [];
-  const decisionLabelClass =
+    const decisionLabelClass =
     stale
       ? "text-[var(--color-danger)]"
-      : tone === "success"
-        ? "text-[var(--status-success-text)]"
-        : tone === "warning"
-          ? "text-[var(--status-hold-text)]"
-          : "text-[var(--status-blocked-text)]";
+      : tone === "warning"
+        ? "text-[var(--status-hold-text)]"
+        : tone === "danger"
+          ? "text-[var(--status-blocked-text)]"
+          : "text-[var(--color-ink-muted)]";
 
   return (
     <div
@@ -625,7 +626,7 @@ export function CommandCenter() {
           const truth = snapshot.provider_truth;
           return {
             ...current,
-            current_assessment: truth
+                        current_assessment: truth
               ? {
                   obligation_id: snapshot.obligation_id,
                   assessment_id: snapshot.assessment_id,
@@ -644,8 +645,6 @@ export function CommandCenter() {
                   aggregate_version: snapshot.aggregate_version,
                   decision: snapshot.decision,
                   reasons: snapshot.reasons,
-                  provider_used: "unknown",
-                  provider_mode: snapshot.decision === "PAY" ? "LIVE_AI" : "NOT_LIVE_AI",
                   ...(snapshot.race ? { race: snapshot.race } : {}),
                 },
           };
