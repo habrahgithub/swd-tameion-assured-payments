@@ -8,6 +8,7 @@ import {
   currentReviewedAssessment,
   shouldKeepAssessmentRecoveryKey,
   type AssessmentReviewSnapshot,
+  type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
 
 interface ObligationSummary {
@@ -48,6 +49,8 @@ interface ObligationDetail {
     aggregate_version: string;
     decision: "PAY" | "HOLD" | "ESCALATE";
     reasons: string[];
+    provider_used: string;
+    provider_mode: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL";
     race?: RaceAssessment;
   } | null;
   demo_arc_trust_simulated: boolean;
@@ -200,8 +203,187 @@ function RacePanel({ race }: { race?: RaceAssessment }) {
           ))}
         </ul>
       )}
-      <p className="text-[11px] text-[var(--color-ink-muted)]">Model explanation (non-authoritative): {race.caveats.model_explanation || "None returned."}</p>
+            <p className="text-[11px] text-[var(--color-ink-muted)]">Model explanation (non-authoritative): {race.caveats.model_explanation || "None returned."}</p>
     </section>
+  );
+}
+
+/** Maps an advisory decision to its presentation tone. PAY is never shown
+ * as a green "go" — it is an advisory proposal that still requires human
+ * authorization and Safety Kernel PASS before any release authority. */
+function decisionTone(decision: "PAY" | "HOLD" | "ESCALATE"): Tone {
+  if (decision === "PAY") return "success";
+  if (decision === "ESCALATE") return "danger";
+  return "warning";
+}
+
+/** Provider/runtime truth display — advisory-only provenance, never
+ * authority-bearing. Surfaces model/runtime identity so the operator can
+ * see how the decision was produced, in a clearly non-authoritative way. */
+function ProviderTruthRow({ truth }: { truth?: ProviderRuntimeTruth }) {
+  if (!truth) return null;
+  return (
+    <div className="flex items-center gap-2">
+      <RuntimeBadge mode={truth.provider_mode} />
+      <span className="text-[11px] text-[var(--color-ink-muted)]">
+        {truth.provider_used} · advisory only, non-authoritative
+      </span>
+    </div>
+  );
+}
+
+/** Progressive disclosure for immutable audit fields (assessment identity,
+ * version, provider runtime configuration, evidence IDs) so they support
+ * review without crowding the dominant advisory status. */
+function EvidenceAndRuntimeDetail({ assessment }: { assessment: AssessmentReviewSnapshot }) {
+  const { provider_truth: providerTruth, race } = assessment;
+  return (
+    <details className="rounded border border-[var(--color-border)] px-3 py-2 text-xs">
+      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">Evidence &amp; runtime detail</summary>
+      <div className="mt-2 space-y-1">
+        <Field label="Assessment ID" value={assessment.assessment_id} />
+        <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5">
+          <dt className="text-[13px] text-[var(--color-ink-muted)]">Assessment hash</dt>
+          <dd className="mono text-[13px] font-medium break-all text-[var(--color-ink)]">{assessment.assessment_hash}</dd>
+        </div>
+        <Field label="Aggregate version" value={assessment.aggregate_version} />
+        {providerTruth?.model_id && <Field label="Model" value={providerTruth.model_id} />}
+        {providerTruth?.model_config_version && <Field label="Config version" value={providerTruth.model_config_version} />}
+        {providerTruth?.runtime_config_sha256 && <Field label="Runtime config" value={providerTruth.runtime_config_sha256} />}
+        {race?.evidence.evidence_ids.length ? (
+          <p className="text-[11px] text-[var(--color-ink-muted)]">Evidence IDs: {race.evidence.evidence_ids.join(", ")}</p>
+        ) : null}
+        {race?.evidence.authoritative_facts && (
+          <p className="text-[11px] text-[var(--color-ink-muted)]">
+            Due-date fact: {race.evidence.authoritative_facts.due_date ?? "Not stated"} ({race.evidence.authoritative_facts.due_date_position} as of {race.evidence.authoritative_facts.as_of_date})
+          </p>
+        )}
+            </div>
+    </details>
+  );
+}
+
+/** Unified advisory assessment display — the dominant status for the
+ * Assessment panel. Renders the Finance Agent's PAY/HOLD/ESCALATE proposal
+ * with rationale, deterministic findings, catalog-derived remediation,
+ * provider/runtime truth, and progressive disclosure for hash/evidence/
+ * runtime detail. Always explicit about current vs superseded state. */
+function AdvisoryAssessmentCard({
+  assessment,
+  label,
+  stale,
+  action,
+}: {
+  assessment: AssessmentReviewSnapshot;
+  label: string;
+  stale?: boolean;
+  action?: React.ReactNode;
+}) {
+  const tone = stale ? "danger" : decisionTone(assessment.decision);
+  const { border, text } = TONE_STYLE[tone];
+  const race = assessment.race;
+  const findings = race?.result.validated_findings ?? [];
+  const decisionLabelClass =
+    stale
+      ? "text-[var(--color-danger)]"
+      : tone === "success"
+        ? "text-[var(--status-success-text)]"
+        : tone === "warning"
+          ? "text-[var(--status-hold-text)]"
+          : "text-[var(--status-blocked-text)]";
+
+  return (
+    <div
+      className={`space-y-2 border-l-2 pl-3 ${stale ? "border-[var(--color-danger)] bg-[var(--color-warning-bg)]" : border}`}
+      data-testid={stale ? "superseded-assessment-snapshot" : "reviewed-assessment-snapshot"}
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <p className={`text-[12px] font-semibold uppercase tracking-wide ${stale ? "text-[var(--color-danger)]" : text}`}>
+          {label}
+          {stale && " — superseded"}
+        </p>
+        <span className={`text-[11px] font-semibold uppercase ${decisionLabelClass}`} aria-label={`Advisory decision: ${assessment.decision}`}>
+          Advisory — {assessment.decision}
+        </span>
+      </div>
+
+      {/* Concise rationale from the RACE decision summary */}
+      {race?.result.decision_summary && (
+        <p className={`text-[13px] ${stale ? "text-[var(--color-danger)] line-through" : "text-[var(--color-ink)]"}`}>
+          {race.result.decision_summary}
+        </p>
+      )}
+
+      {/* Reasons (application-owned summaries) */}
+      <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+        {assessment.reasons.map((reason, index) => (
+          <li key={index}>{reason}</li>
+        ))}
+      </ul>
+
+      {/* Deterministic findings — the application-owned blockers */}
+      {findings.length > 0 && (
+        <div className="space-y-1 border-l-[3px] border-l-[var(--color-warning)] pl-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+            Deterministic findings ({findings.length})
+          </p>
+          <ul className="space-y-0.5">
+            {findings.map((finding) => (
+              <li key={finding.code} className="flex items-baseline justify-between gap-2">
+                <span className="text-[12px]">{finding.code} — {finding.reason}</span>
+                <span
+                  className={`text-[11px] font-semibold ${
+                    finding.severity === "ESCALATE" ? "text-[var(--status-blocked-text)]" : "text-[var(--status-hold-text)]"
+                  }`}
+                  aria-label={`Severity: ${finding.severity}`}
+                >
+                  {finding.severity}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Catalog-derived remediation */}
+      {race && findings.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+            Remediation
+          </p>
+          {race.remediation.map((item) => (
+            <div key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2">
+              <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
+              <p className="text-[11px] text-[var(--color-ink-muted)]">
+                <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess {item.reassess_after_resolution ? "permitted" : "not permitted"}
+              </p>
+              <p className="text-[11px] text-[var(--color-ink-muted)]">
+                <strong>Evidence required:</strong> {item.required_evidence.join("; ")}
+              </p>
+              {item.escalation_target && (
+                <p className="text-[11px] text-[var(--color-danger)]">Escalate to: {item.escalation_target}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Provider/runtime truth — advisory-only */}
+      <ProviderTruthRow truth={assessment.provider_truth} />
+
+      {/* Progressive disclosure for hash/evidence/runtime */}
+      <EvidenceAndRuntimeDetail assessment={assessment} />
+
+      {/* Stale state explanation */}
+      {stale && (
+        <p className="text-[12px] text-[var(--color-danger)]">
+          This assessment is bound to aggregate v{assessment.aggregate_version}, which is no longer current.
+          Review the current sealed assessment before authorization.
+        </p>
+      )}
+
+      {action}
+    </div>
   );
 }
 
@@ -389,7 +571,7 @@ export function CommandCenter() {
     }
   };
 
-  const runAssessment = () => {
+    const runAssessment = () => {
     const obligationId = selectedId;
     setDisplayedAssessment(null);
     return run("assess", async () => {
@@ -416,6 +598,11 @@ export function CommandCenter() {
         decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
         assessment_hash?: unknown;
         race?: unknown;
+        provider_used?: unknown;
+        provider_mode?: unknown;
+        model_id?: unknown;
+        model_config_version?: unknown;
+        runtime_config_sha256?: unknown;
       };
       const snapshot = assessmentReviewSnapshot({
         obligation_id: data.decision?.obligation_id,
@@ -425,12 +612,44 @@ export function CommandCenter() {
         decision: data.decision?.decision,
         reasons: data.decision?.reasons,
         race: data.race,
+        provider_used: data.provider_used,
+        provider_mode: data.provider_mode,
+        ...(data.model_id ? { model_id: data.model_id } : {}),
+        ...(data.model_config_version ? { model_config_version: data.model_config_version } : {}),
+        ...(data.runtime_config_sha256 ? { runtime_config_sha256: data.runtime_config_sha256 } : {}),
       });
       if (snapshot) {
         setDisplayedAssessment(snapshot);
-        setDetail((current) => current && current.aggregate.aggregate_version === Number(snapshot.aggregate_version)
-          ? { ...current, current_assessment: snapshot }
-          : current);
+        setDetail((current) => {
+          if (!current || current.aggregate.aggregate_version !== Number(snapshot.aggregate_version)) return current;
+          const truth = snapshot.provider_truth;
+          return {
+            ...current,
+            current_assessment: truth
+              ? {
+                  obligation_id: snapshot.obligation_id,
+                  assessment_id: snapshot.assessment_id,
+                  assessment_hash: snapshot.assessment_hash,
+                  aggregate_version: snapshot.aggregate_version,
+                  decision: snapshot.decision,
+                  reasons: snapshot.reasons,
+                  provider_used: truth.provider_used,
+                  provider_mode: truth.provider_mode,
+                  ...(snapshot.race ? { race: snapshot.race } : {}),
+                }
+              : {
+                  obligation_id: snapshot.obligation_id,
+                  assessment_id: snapshot.assessment_id,
+                  assessment_hash: snapshot.assessment_hash,
+                  aggregate_version: snapshot.aggregate_version,
+                  decision: snapshot.decision,
+                  reasons: snapshot.reasons,
+                  provider_used: "unknown",
+                  provider_mode: snapshot.decision === "PAY" ? "LIVE_AI" : "NOT_LIVE_AI",
+                  ...(snapshot.race ? { race: snapshot.race } : {}),
+                },
+          };
+        });
       }
     }
     return result;
@@ -438,7 +657,9 @@ export function CommandCenter() {
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
-  const assessedCount = obligations.filter((o) => o.assessed).length;
+    const assessedCount = obligations.filter((o) => o.assessed).length;
+  const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
+  const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
@@ -579,13 +800,15 @@ export function CommandCenter() {
                   value={`${detail.aggregate.destination_verification_status} / ${detail.aggregate.destination_operational_status}${detail.demo_arc_trust_simulated ? " (simulated demo fixture; not product-trust evidence)" : ""}`}
                 />
               </dl>
-            )}
+                        )}
 
             {panel === "assessment" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
                   The Finance Agent reads this obligation and returns exactly one PAY / HOLD / ESCALATE
-                  recommendation with reasons. It cannot approve, sign, or execute anything.
+                  recommendation with reasons. It cannot approve, sign, or execute anything. A PAY
+                  recommendation is advisory only — it still requires human authorization and a
+                  Safety Kernel PASS before any release authority.
                 </p>
                 <div className="flex items-center justify-between gap-3 border-l-[3px] border-l-[var(--color-border)] px-3 py-2">
                   <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
@@ -593,46 +816,85 @@ export function CommandCenter() {
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
-                {assessedCount < obligations.length && (
+                <PrimaryButton disabled={busy || !selectedId} onClick={runAssessment}>
+                  Run assessment
+                </PrimaryButton>
+
+                {!allAssessed && (
                   <p className="text-[12px] text-[var(--color-warning)]">
                     Authorization is refused for every obligation until all {obligations.length} have been assessed.
                   </p>
                 )}
-                <PrimaryButton disabled={busy || !selectedId} onClick={runAssessment}>
-                  Run assessment
-                </PrimaryButton>
-                {displayedAssessment && authorizationAssessment && (
-                  <div className="space-y-2 border-l-2 border-[var(--color-ink)] pl-3" data-testid="displayed-assessment-snapshot">
-                    <p className="text-[12px] font-semibold uppercase tracking-wide">Displayed assessment under review</p>
-                    <Field label="Assessment" value={displayedAssessment.assessment_id} />
-                    <Field label="Assessment hash" value={displayedAssessment.assessment_hash} />
-                    <Field label="Aggregate version" value={displayedAssessment.aggregate_version} />
-                    <Field label="Decision" value={displayedAssessment.decision} />
-                    <ul className="list-disc pl-5 text-[12px]">{displayedAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
-                    <RacePanel race={displayedAssessment.race} />
+
+                {payCandidateCount > 0 && (
+                  <p className="text-[12px] text-[var(--color-ink-muted)]">
+                    {payCandidateCount} obligation{payCandidateCount !== 1 ? "s" : ""} carry a PAY recommendation,
+                    {payCandidateCount === obligations.length && allAssessed ? " but all must still authorize." : " but none are authorized yet."}
+                  </p>
+                )}
+
+                {/* Genuine-lane explanation: HOLD / no candidate → no authorization → no PAE → no release */}
+                {!allAssessed || payCandidateCount === 0 ? (
+                  <div className="rounded border border-[var(--status-hold-border)] bg-[var(--status-hold-surface)] px-3 py-2 text-[12px] text-[var(--status-hold-text)]">
+                    <p className="font-semibold">Genuine payment lane: no execution release</p>
+                    <p>
+                      {allAssessed
+                        ? "All obligations are assessed, but no PAY candidate exists. The sealed HOLD assessments provide no execution-release authority."
+                        : "Not all obligations have been assessed. Every obligation requires a sealed assessment before the Safety Kernel or PAE can run."}
+                    </p>
+                    <p className="mt-1 text-[var(--color-ink-muted)]">
+                      Result: J1_NO_CANDIDATE / STOP — no payment execution, no signed PAE, no provider submission.
+                    </p>
                   </div>
+                ) : (
+                  <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-ink-muted)]">
+                    <p className="font-semibold">Genuine payment lane status</p>
+                    <p>
+                      PAY recommendation detected — this is advisory only. A signed Payment Authorization
+                      Envelope and Safety Kernel PASS are still required before any execution authority is
+                      granted. The genuine lane remains STOP until authorization and PAE sealing complete.
+                    </p>
+                  </div>
+                )}
+
+                {displayedAssessment && authorizationAssessment && (
+                  <AdvisoryAssessmentCard
+                    assessment={displayedAssessment}
+                    label="Displayed assessment under review"
+                    action={
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold underline text-[var(--color-warning)]"
+                        disabled={!displayedAssessment.race}
+                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
+                      >
+                        Discard review selection
+                      </button>
+                    }
+                  />
                 )}
                 {!displayedAssessment && currentAssessment && (
-                  <div className="space-y-2 border-l-2 border-[var(--color-border)] pl-3" data-testid="available-assessment-snapshot">
-                    <p className="text-[12px] font-semibold uppercase tracking-wide">Current sealed assessment</p>
-                    <Field label="Assessment" value={currentAssessment.assessment_id} />
-                    <Field label="Assessment hash" value={currentAssessment.assessment_hash} />
-                    <Field label="Aggregate version" value={currentAssessment.aggregate_version} />
-                    <Field label="Decision" value={currentAssessment.decision} />
-                    <ul className="list-disc pl-5 text-[12px]">{currentAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
-                    <RacePanel race={currentAssessment.race} />
-                    <button
-                      type="button"
-                      className="text-[12px] font-semibold underline"
-                      disabled={!currentAssessment.race}
-                      onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment))}
-                    >
-                      Review this assessment for authorization
-                    </button>
+                  <div className="space-y-2">
+                    <AdvisoryAssessmentCard
+                      assessment={currentAssessment}
+                      label="Current sealed assessment"
+                      action={
+                        <button
+                          type="button"
+                          className="text-[12px] font-semibold underline"
+                          disabled={!currentAssessment.race}
+                          onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
+                        >
+                          Review this assessment for authorization
+                        </button>
+                      }
+                    />
                   </div>
                 )}
-                {displayedAssessment && !authorizationAssessment && (
-                  <p className="text-[12px] text-[var(--color-danger)]">The displayed assessment is no longer current. Review the current assessment before authorization.</p>
+                {displayedAssessment && !authorizationAssessment && displayedAssessment !== currentAssessment && (
+                  <p className="text-[12px] text-[var(--color-danger)]">
+                    The displayed assessment is no longer current. Review the current sealed assessment before authorization.
+                  </p>
                 )}
                 {lastResult?.label === "assess" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "assess" && <EvidencePanel value={lastResult.data} />}

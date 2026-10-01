@@ -25,7 +25,7 @@ describe("obligation detail truth-layer API", () => {
     expect(body.record).toMatchObject({ amount: "5760.00", currency: "AED" });
   });
 
-  it("projects a transaction kill switch from server authority state into the truth layer", async () => {
+    it("projects a transaction kill switch from server authority state into the truth layer", async () => {
     const state = await getDemoState();
     state.store.activateKillSwitch("TRANSACTION_DISABLED", "OBL-J0C-001");
     try {
@@ -39,6 +39,21 @@ describe("obligation detail truth-layer API", () => {
       expect(body.truth.tameion_control_truth.execution_release_authority).toBe("NOT_GRANTED");
     } finally {
       state.store.deactivateKillSwitch("TRANSACTION_DISABLED", "OBL-J0C-001");
+    }
+  });
+
+  it("projects provider/runtime truth from the sealed assessment into current_assessment", async () => {
+    const response = await GET(
+      new Request("http://localhost/api/obligations/OBL-J0C-001"),
+      { params: Promise.resolve({ id: "OBL-J0C-001" }) },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    if (body.current_assessment) {
+      expect(body.current_assessment).toHaveProperty("provider_used");
+      expect(body.current_assessment).toHaveProperty("provider_mode");
+      expect(["LIVE_AI", "NOT_LIVE_AI", "BLOCKED_EXTERNAL"]).toContain(body.current_assessment.provider_mode);
+      expect(typeof body.current_assessment.provider_used).toBe("string");
     }
   });
 });

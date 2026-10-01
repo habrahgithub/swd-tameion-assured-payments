@@ -24,7 +24,7 @@ const response = {
 };
 
 describe("human-reviewed assessment snapshot", () => {
-  it("captures exactly the identity, version, decision, and reasons shown to the human", () => {
+    it("captures exactly the identity, version, decision, and reasons shown to the human", () => {
     expect(assessmentReviewSnapshot(response)).toEqual(response);
   });
 
@@ -63,12 +63,52 @@ describe("human-reviewed assessment snapshot", () => {
     expect(legacy?.race?.caveats).not.toHaveProperty("model_proposed_findings_authority");
   });
 
-  it("rejects a displayed snapshot if application-owned remediation changes", () => {
+    it("rejects a displayed snapshot if application-owned remediation changes", () => {
     const displayed = assessmentReviewSnapshot(response)!;
     const current = assessmentReviewSnapshot({
       ...response,
       race: { ...response.race, remediation: [{ ...response.race.remediation[0], required_action: "Different action" }] },
     });
     expect(currentReviewedAssessment(displayed, current, "OBL-J0C-001", 3)).toBeNull();
+  });
+});
+
+describe("provider/runtime truth in snapshot", () => {
+  it("captures provider_used, provider_mode, and optional model/runtime fields when present", () => {
+    const withProvider = {
+      ...response,
+      provider_used: "deterministic-fallback-v1",
+      provider_mode: "NOT_LIVE_AI",
+      model_id: "gpt-oss-fallback",
+      model_config_version: "care-v1",
+      runtime_config_sha256: "b".repeat(64),
+    };
+    const snapshot = assessmentReviewSnapshot(withProvider);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.provider_truth).toEqual({
+      provider_used: "deterministic-fallback-v1",
+      provider_mode: "NOT_LIVE_AI",
+      model_id: "gpt-oss-fallback",
+      model_config_version: "care-v1",
+      runtime_config_sha256: "b".repeat(64),
+    });
+  });
+
+  it("omits provider_truth when provider_used or provider_mode is absent", () => {
+    const snapshot = assessmentReviewSnapshot(response);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.provider_truth).toBeUndefined();
+  });
+
+  it("omits provider_truth when provider_mode has an invalid value", () => {
+    const bad = assessmentReviewSnapshot({ ...response, provider_used: "test", provider_mode: "FAKE" });
+    expect(bad).not.toBeNull();
+    expect(bad!.provider_truth).toBeUndefined();
+  });
+
+  it("distinguishes snapshots when provider truth changes", () => {
+    const base = assessmentReviewSnapshot({ ...response, provider_used: "a", provider_mode: "NOT_LIVE_AI" });
+    const changed = assessmentReviewSnapshot({ ...response, provider_used: "b", provider_mode: "NOT_LIVE_AI" });
+    expect(currentReviewedAssessment(base, changed, "OBL-J0C-001", 3)).toBeNull();
   });
 });
