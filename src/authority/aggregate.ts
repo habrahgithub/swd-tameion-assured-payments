@@ -175,18 +175,34 @@ export class AuthorityStore {
   }
 
   exportSnapshot(): AuthorityStoreSnapshot {
+    // Assessments are persisted append-only: the Supabase CAS RPC
+    // tameion_state_compare_and_set requires the previously persisted
+    // authority.assessments array to remain an exact prefix of the next one.
+    // Flattening the per-obligation map directly would group each obligation's
+    // whole history, so sealing a later assessment for an obligation that
+    // already has history inserts it ahead of records sealed for later
+    // obligations, mutating the old prefix and failing the CAS. Emitting global
+    // append order instead keeps every new record at the array tail. Ordering
+    // by the immutable ISO record.assessed_at (fixed-width RFC3339 millis, so
+    // lexicographic == chronological) reproduces the already-chronological
+    // persisted prefix; Array.prototype.sort is stable, so tied timestamps keep
+    // the deterministic store order and hydrate -> export stays identical.
+    const assessments = [...this.sealedAssessments.entries()].flatMap(([key, history]) => {
+      const separator = key.indexOf("::");
+      return history.map(({ record, hash }) => ({
+        organization_id: key.slice(0, separator),
+        obligation_id: key.slice(separator + 2),
+        record: cloneAssessmentRecord(record),
+        hash,
+      }));
+    });
+    assessments.sort((a, b) =>
+      a.record.assessed_at < b.record.assessed_at ? -1 : a.record.assessed_at > b.record.assessed_at ? 1 : 0,
+    );
     return {
       aggregates: [...this.aggregates.values()].map((aggregate) => ({ ...aggregate, evidence_hashes: [...aggregate.evidence_hashes] })),
       kill_switches: [...this.killSwitches].sort(),
-      assessments: [...this.sealedAssessments.entries()].flatMap(([key, history]) => {
-        const separator = key.indexOf("::");
-        return history.map(({ record, hash }) => ({
-          organization_id: key.slice(0, separator),
-          obligation_id: key.slice(separator + 2),
-          record: cloneAssessmentRecord(record),
-          hash,
-        }));
-      }),
+      assessments,
     };
   }
 

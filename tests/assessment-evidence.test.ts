@@ -164,3 +164,79 @@ describe("AuthorityStore.sealAssessment: missing / modified / duplicate / stale 
     expect(sealed.record.provider_mode).toBe("NOT_LIVE_AI");
   });
 });
+
+describe("assessment snapshot export: global append order (CAS prefix identity)", () => {
+  // The Supabase CAS RPC tameion_state_compare_and_set requires the previously
+  // persisted authority.assessments array to remain an exact prefix of the next
+  // one. These fixtures reproduce the live preview-pr10 shape: several records
+  // for an early obligation, then records for later obligations, all in global
+  // chronological order.
+  function sealedEntry(obligationId: string, suffix: string, assessedAt: string) {
+    const record: DurableAssessmentRecord = {
+      assessment_id: `ASM-${obligationId}-${suffix}`,
+      organization_id: "ORG-DEMO-001",
+      obligation_id: obligationId,
+      aggregate_version: "1",
+      decision: "HOLD",
+      reasons: ["Chronological snapshot fixture."],
+      evidence_ids: ["EVID-1"],
+      missing_evidence: [],
+      uncertainty_signal: false,
+      provider_name: "test-fixture-provider",
+      provider_mode: "NOT_LIVE_AI",
+      assessed_at: assessedAt,
+    };
+    const { record: sealed, assessment_hash } = sealDurableAssessmentRecord(record);
+    return { organization_id: "ORG-DEMO-001", obligation_id: obligationId, record: sealed, hash: assessment_hash };
+  }
+
+  function chronologicalSnapshot() {
+    return {
+      aggregates: [
+        baseAggregate({ obligation_id: "OBL-J0C-001" }),
+        baseAggregate({ obligation_id: "OBL-J0C-002" }),
+        baseAggregate({ obligation_id: "OBL-J0C-005" }),
+      ],
+      kill_switches: [],
+      assessments: [
+        sealedEntry("OBL-J0C-001", "1", "2026-01-01T00:00:00.000Z"),
+        sealedEntry("OBL-J0C-001", "2", "2026-01-01T00:01:00.000Z"),
+        sealedEntry("OBL-J0C-002", "1", "2026-01-01T00:02:00.000Z"),
+        sealedEntry("OBL-J0C-002", "2", "2026-01-01T00:03:00.000Z"),
+        sealedEntry("OBL-J0C-005", "1", "2026-01-01T00:04:00.000Z"),
+      ],
+    };
+  }
+
+  it("hydrate -> export preserves the exact chronological snapshot shape and hashes", () => {
+    const snapshot = chronologicalSnapshot();
+    const store = AuthorityStore.fromSnapshot(snapshot);
+    expect(store.exportSnapshot().assessments).toEqual(snapshot.assessments);
+  });
+
+  it("a later assessment for an already-assessed obligation keeps the persisted prefix and appends at the tail", () => {
+    const persisted = chronologicalSnapshot();
+    const store = AuthorityStore.fromSnapshot(persisted);
+    const before = store.exportSnapshot().assessments;
+    expect(before).toEqual(persisted.assessments);
+
+    // OBL-J0C-002 already has 2 sealed assessments; sealing a new one must not
+    // reorder the four earlier records nor insert ahead of the OBL-J0C-005 tail.
+    const later = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, {
+      assessed_at: "2026-01-01T00:05:00.000Z",
+    });
+    const after = store.exportSnapshot().assessments;
+
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after.at(-1)).toMatchObject({ obligation_id: "OBL-J0C-002", hash: later.assessment_hash });
+
+    // Per-obligation retrieval semantics are unchanged by global ordering.
+    expect(store.getAssessmentHistory("ORG-DEMO-001", "OBL-J0C-002").map((item) => item.record.assessment_id))
+      .toEqual(["ASM-OBL-J0C-002-1", "ASM-OBL-J0C-002-2", later.record.assessment_id]);
+
+    // The exported shape is itself stable across a further hydrate -> export.
+    const rehydrated = AuthorityStore.fromSnapshot(store.exportSnapshot());
+    expect(rehydrated.exportSnapshot().assessments).toEqual(after);
+  });
+});
