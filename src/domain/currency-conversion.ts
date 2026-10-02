@@ -93,6 +93,12 @@ function convertUsdPassthrough(amount: string): SettlementConversion {
   const decimals = fractional.length;
 
   const usdcAtomic = scaleToUsdc(integer, decimals);
+  if (usdcAtomic === "0") {
+    throw new NumericSafetyError(
+      `USD amount "${amount}" produces zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
   return {
     settlementAmount: formatUsdcAmount(usdcAtomic),
     settlementAtomic: usdcAtomic,
@@ -124,6 +130,12 @@ function convertAedToUsd(amount: string): SettlementConversion {
   const quotient = numerator / denominator;
   const remainder = numerator % denominator;
   const usdcAtomic = remainder * 2n >= denominator ? quotient + 1n : quotient;
+  if (usdcAtomic === 0n) {
+    throw new NumericSafetyError(
+      `AED amount "${amount}" rounds to zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
 
   return {
     settlementAmount: formatUsdcAmount(usdcAtomic.toString(10)),

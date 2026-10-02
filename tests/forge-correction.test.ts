@@ -221,6 +221,60 @@ describe("F2: hydrated stale snapshot/source truth", () => {
 });
 
 describe("F3: fail-open numeric/material change", () => {
+  it("P4a: positive AED amount rounding to zero USDC must throw", () => {
+    expect(() => convertSourceToSettlement("0.0000018", "AED")).toThrow();
+  });
+
+  it("P4d: zero USD passthrough must throw for decimal zero", () => {
+    expect(() => convertSourceToSettlement("0.00", "USD")).toThrow();
+  });
+
+  it("P4d: zero USD passthrough must throw for integer zero", () => {
+    expect(() => convertSourceToSettlement("0", "USD")).toThrow();
+  });
+
+  it("P4b: zero-rounded AED material change must throw without changing aggregate", () => {
+    const store = new AuthorityStore();
+    store.seed(
+      baseAggregate({
+        amount: "1568.413887",
+        source_amount: "5760.00",
+        source_currency: "AED",
+        settlement_conversion_rate: "3.6725",
+      }),
+    );
+    const before = store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002");
+
+    expect(() =>
+      store.applyMaterialChange(DEMO_ORGANIZATION_ID, "OBL-J0C-002", 1, {
+        source_amount: "0.0000018",
+        source_currency: "AED",
+      }),
+    ).toThrow();
+    expect(store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002")).toEqual(before);
+  });
+
+  it("P4b2: zero USD material change must throw without changing aggregate", () => {
+    const store = new AuthorityStore();
+    store.seed(
+      baseAggregate({
+        amount: "21.000000",
+        source_amount: "21.00",
+        source_currency: "USD",
+        settlement_conversion_rate: null,
+      }),
+    );
+    const before = store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002");
+
+    expect(() =>
+      store.applyMaterialChange(DEMO_ORGANIZATION_ID, "OBL-J0C-002", 1, {
+        source_amount: "0.00",
+        source_currency: "USD",
+      }),
+    ).toThrow();
+    expect(store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-002")).toEqual(before);
+  });
+
   it("P3: USD >6 decimals must throw/fail closed (not truncate)", () => {
     expect(() => convertSourceToSettlement("21.1234567", "USD")).toThrow();
   });
