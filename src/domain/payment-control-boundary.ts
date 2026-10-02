@@ -85,6 +85,16 @@ export interface PaymentTruthLayerInput {
   settlement_status: string;
   provider_ref: string | null;
   settlement_runtime: "SIMULATED" | "LIVE";
+  /** 6-decimal canonical USDC settlement amount (e.g. "1568.413887"). */
+  settlement_amount: string;
+  /** Atomic integer of settlement_amount (e.g. "1568413887"). */
+  settlement_atomic_amount: string;
+  /** Original source amount preserved exactly (e.g. "5760.00"). */
+  source_amount: string;
+  /** Original source currency (e.g. "AED", "USD"). */
+  source_currency: string;
+  /** Conversion rate applied, or null for USD passthrough (e.g. "3.6725"). */
+  settlement_conversion_rate: string | null;
 }
 
 export type ExecutionReleaseAuthority =
@@ -140,6 +150,11 @@ export function buildPaymentTruthLayers(input: PaymentTruthLayerInput) {
       runtime: input.settlement_runtime,
       status: input.settlement_status,
       provider_ref: input.provider_ref,
+      settlement_amount: input.settlement_amount,
+      settlement_atomic_amount: input.settlement_atomic_amount,
+      source_amount: input.source_amount,
+      source_currency: input.source_currency,
+      settlement_conversion_rate: input.settlement_conversion_rate,
     },
   };
 }

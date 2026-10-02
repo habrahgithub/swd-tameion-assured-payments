@@ -7,6 +7,7 @@ import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
 import { adaptDirectEvidenceObligation, type CanonicalPaymentObligation } from "../domain/payment-control-boundary";
+import { convertSourceToSettlement } from "../domain/currency-conversion";
 import {
   durableApprovalRecordSchema,
   durableAssuranceRecordSchema,
@@ -299,9 +300,7 @@ function loadLiveUsageSet(): LiveUsageObligationRecord[] {
 }
 
 function toUsdcAmount(rawAmount: string, currency: string): string {
-  if (currency !== "USD") return "0.000000";
-  const [whole, fractional] = rawAmount.split(".");
-  return `${whole}.${fractional.padEnd(6, "0")}`;
+  return convertSourceToSettlement(rawAmount, currency).settlementAmount;
 }
 
 export class DemoState {
@@ -359,6 +358,9 @@ export class DemoState {
         execution_state: "NONE",
         execution_idempotency_key: null,
         reviewed_aggregate_version: null,
+        source_amount: record.amount,
+        source_currency: record.currency,
+        settlement_conversion_rate: record.currency === "USD" ? null : convertSourceToSettlement(record.amount, record.currency).conversionRate,
       };
       this.store.seed(aggregate);
     }

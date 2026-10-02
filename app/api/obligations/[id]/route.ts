@@ -47,6 +47,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       settlement_status: providerStatus,
       provider_ref: execution?.provider_ref ?? null,
       settlement_runtime: settlementRuntime,
+      settlement_amount: aggregate.amount,
+      settlement_atomic_amount: (() => {
+        const [whole, fractional] = aggregate.amount.split(".");
+        return (BigInt(whole) * 1_000_000n + BigInt(fractional)).toString(10);
+      })(),
+      source_amount: aggregate.source_amount ?? aggregate.amount,
+      source_currency: aggregate.source_currency ?? "USDC",
+      settlement_conversion_rate: aggregate.settlement_conversion_rate ?? null,
     });
     return NextResponse.json({
       truth,

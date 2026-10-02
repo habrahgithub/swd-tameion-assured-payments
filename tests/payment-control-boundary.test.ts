@@ -63,6 +63,11 @@ describe("ERP-native payment control boundary", () => {
       settlement_status: "NOT_SUBMITTED",
       provider_ref: null,
       settlement_runtime: "SIMULATED",
+      settlement_amount: "1250.000000",
+      settlement_atomic_amount: "1250000000",
+      source_amount: canonicalSource("ERP", "APPROVED").amount,
+      source_currency: "USD",
+      settlement_conversion_rate: null,
     });
 
     expect(truth.source_truth.source.approval_state).toBe("APPROVED");

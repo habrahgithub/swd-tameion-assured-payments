@@ -6,7 +6,9 @@ import {
   type ModelProposedFindingCode,
   type MissingContextCode,
   type RaceAssessment,
-} from "./schema";
+ } from "./schema";
+import { isSettleableCurrency } from "../domain/currency-conversion";
+
 
 /** Compatibility prefix retained for the route's live-provider fail-closed classification. */
 export const PROVIDER_CALL_FAILURE_REASON_PREFIX = "AI provider call failed:";
@@ -92,7 +94,7 @@ function deterministicFindings(context: FinanceAgentContext): Set<FindingCode> {
   if (context.due_date_position === "INVALID") findings.add("NORMALIZATION_REVIEW_REQUIRED");
   else if (context.due_date_position === "NOT_STATED") findings.add("DUE_DATE_NOT_STATED");
   if (!context.destination_ready) findings.add("DESTINATION_NOT_READY");
-  if (context.currency !== "USD") findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
+  if (!isSettleableCurrency(context.currency)) findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
   if (!context.business_purpose_confirmed) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
   return findings;
 }

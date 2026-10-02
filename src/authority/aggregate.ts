@@ -1,5 +1,6 @@
 import { sealDurableAssessmentRecord, verifyDurableAssessmentRecordHash } from "../pae/durable-records";
 import type { DurableAssessmentRecord } from "../domain/schemas";
+import { isSettleableCurrency, convertSourceToSettlement } from "../domain/currency-conversion";
 
 function cloneAssessmentRecord(record: DurableAssessmentRecord): DurableAssessmentRecord {
   return {
@@ -86,6 +87,16 @@ export interface AuthorityAggregate {
   execution_state: ExecutionState;
   execution_idempotency_key: string | null;
   reviewed_aggregate_version: number | null;
+  /** Original source amount preserved exactly (e.g. "5760.00"); present on aggregates
+   * seeded from a source obligation record so the conversion can be re-derived or
+   * detected as stale. */
+  source_amount?: string;
+  /** Original source currency (e.g. "AED", "USD"); present on aggregates seeded from
+   * a source obligation record. */
+  source_currency?: string;
+  /** Conversion rate applied to derive the USDC settlement amount, or null for USD
+   * passthrough (no conversion needed). e.g. "3.6725" for AED→USD. */
+  settlement_conversion_rate?: string | null;
 }
 
 export function hasCurrentProductTrustEvidence(aggregate: AuthorityAggregate): boolean {
@@ -422,8 +433,11 @@ export class AuthorityStore {
     ) {
       throw new AuthorityError("Cannot approve: assessment is missing valid application-owned RACE findings or readiness proof; reassess before authorization", "AUT-014");
     }
-    if (race.evidence.authoritative_facts.currency !== "USD") {
-      throw new AuthorityError("Only USD obligations can be authorized for Arc Testnet USDC settlement", "AUT-015");
+    if (!isSettleableCurrency(race.evidence.authoritative_facts.currency)) {
+      throw new AuthorityError(
+        `Only USD and AED obligations can be authorized for Arc Testnet USDC settlement (AED is converted to USD at the fixed policy rate)`,
+        "AUT-015",
+      );
     }
     if (!hasCurrentProductTrustEvidence(current)) {
       throw new AuthorityError("Cannot authorize without separately evidenced current product destination and source-wallet trust", "AUT-016");
@@ -507,11 +521,29 @@ export class AuthorityStore {
         | "source_wallet_version"
         | "source_wallet_status"
         | "policy_version"
+        | "source_amount"
+        | "source_currency"
+        | "settlement_conversion_rate"
       >
     >,
-  ): AuthorityAggregate {
+    ): AuthorityAggregate {
     const current = this.get(organizationId, obligationId);
     this.requireVersion(current, expectedVersion);
+    // If source amount or currency changes, re-derive the USDC settlement amount
+    // from the new source so a stale conversion is never reused. This is the
+    // stale-source-amount guarantee: a material source change always bumps the
+    // version and re-derives the authoritative settlement amount.
+    if (patch.source_amount !== undefined || patch.source_currency !== undefined) {
+      const sourceAmount = patch.source_amount ?? current.source_amount;
+      const sourceCurrency = patch.source_currency ?? current.source_currency;
+      if (sourceAmount && sourceCurrency) {
+        const conversion = convertSourceToSettlement(sourceAmount, sourceCurrency);
+        patch.amount = conversion.settlementAmount;
+        patch.settlement_conversion_rate = conversion.conversionRate;
+        patch.source_amount = sourceAmount;
+        patch.source_currency = sourceCurrency;
+      }
+    }
     return this.write({
       ...current,
       ...patch,

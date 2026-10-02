@@ -64,7 +64,7 @@ export const FINDING_CATALOG: Record<FindingCode, FindingDefinition> = {
   },
   UNSUPPORTED_SETTLEMENT_CURRENCY: {
     severity: "ESCALATE",
-    reason: "Only USD source obligations are eligible for Arc Testnet USDC settlement; no currency conversion is admitted.",
+    reason: "Only USD and AED source obligations are eligible for Arc Testnet USDC settlement; AED is converted to USD at a fixed policy rate (1 USD = 3.6725 AED).",
     required_action: "Keep this obligation assessable and visible, but do not authorize it as an Arc USDC candidate.",
     required_evidence: ["A separately admitted settlement-currency policy decision"],
     owner_role: "Finance Policy Owner",

@@ -4,8 +4,9 @@ import { paeUnsignedPayloadSchema, type PaeUnsignedPayload } from "../src/domain
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
 import { ExecutionWorker } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
-import { sealTestAssessment } from "./test-support/seal-assessment";
+import { sealTestAssessment, currentAssessmentReview } from "./test-support/seal-assessment";
 import { DemoState, DEMO_ORGANIZATION_ID } from "../src/server/demo-state";
+import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 
 /**
  * Closes out the minimum negative cases listed in the SWD methodology
@@ -86,13 +87,18 @@ describe("negative path: amount/asset/network mismatch", () => {
 });
 
 describe("USD-only demo settlement boundary", () => {
-  it("does not seed the AED source amount as an Arc USDC candidate amount", () => {
+  it("seeds the AED source amount as an Arc USDC candidate with derived USD settlement", () => {
     const state = new DemoState();
     const source = state.getRecord("OBL-J0C-001");
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001");
 
+    // Source evidence remains exactly as the original — AED 5760.00.
     expect(source).toMatchObject({ amount: "5760.00", currency: "AED" });
-    expect(aggregate.amount).toBe("0.000000");
+    // AED is admitted via conversion: USD = 5760.00 / 3.6725 = 1568.413887 (round-half-up).
+    expect(aggregate.amount).toBe("1568.413887");
+    expect(aggregate.source_amount).toBe("5760.00");
+    expect(aggregate.source_currency).toBe("AED");
+    expect(aggregate.settlement_conversion_rate).toBe("3.6725");
     expect(aggregate.product_trust_provenance).toBe("SIMULATED_DEMO_FIXTURE");
   });
 
@@ -204,13 +210,41 @@ describe("negative path: missing human authorization", () => {
     expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash)).toThrow(/sealed assessment decision is HOLD/);
   });
 
-  it("independently blocks authorization of an AED assessment even when it says PAY", () => {
+    it("independently blocks authorization of an unsupported-currency (EUR) assessment even when it says PAY", () => {
     const store = new AuthorityStore();
     store.seed(baseAggregate({ state: "APPROVAL_PENDING", amount: "0.000000" }));
+    const usdAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const eurFacts = {
+      ...usdAssessment.record.race!.evidence.authoritative_facts,
+      currency: "EUR" as const,
+    };
+    const eurAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, {
+      race: {
+        ...usdAssessment.record.race!,
+        evidence: { ...usdAssessment.record.race!.evidence, authoritative_facts: eurFacts },
+      },
+    });
+
+    expect(eurAssessment.record.decision).toBe("PAY");
+    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, eurAssessment.record.assessment_id, eurAssessment.assessment_hash))
+      .toThrow(/Only USD and AED obligations can be authorized/);
+  });
+
+  it("admits AED authorization when the assessment says PAY with AED currency (conversion admitted)", () => {
+    const store = new AuthorityStore();
+    const aedUsdcAmount = "1568.413887";
+    store.seed(baseAggregate({
+      state: "APPROVAL_PENDING",
+      amount: aedUsdcAmount,
+      source_amount: "5760.00",
+      source_currency: "AED",
+      settlement_conversion_rate: "3.6725",
+    }));
     const usdAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
     const aedFacts = {
       ...usdAssessment.record.race!.evidence.authoritative_facts,
       currency: "AED" as const,
+      amount: "5760.00",
     };
     const aedAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, {
       race: {
@@ -220,8 +254,18 @@ describe("negative path: missing human authorization", () => {
     });
 
     expect(aedAssessment.record.decision).toBe("PAY");
-    expect(() => store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, aedAssessment.record.assessment_id, aedAssessment.assessment_hash))
-      .toThrow(/Only USD obligations can be authorized for Arc Testnet USDC settlement/);
+    const { aggregate } = approveAndSealPae(store, "TEST-SIGNING-KEY-1", {
+      organizationId: "ORG-DEMO-001",
+      obligationId: "OBL-J0C-002",
+      expectedVersion: 1,
+      ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
+      actorId: "USR-DEMO-OPERATOR",
+      actorRole: "FINANCE_APPROVER",
+      policyVersion: "POLICY-P0-1",
+      reasonText: "Reviewed AED obligation with derived USD settlement.",
+    });
+    expect(aggregate.state).toBe("AUTHORIZED");
+    expect(aggregate.amount).toBe("1568.413887");
   });
 
   it("refuses approval when the human reviewed an older same-version assessment", () => {
@@ -280,5 +324,44 @@ describe("negative path: missing human authorization", () => {
     store.cancel("ORG-DEMO-001", "OBL-A", authorizedA.aggregate_version);
     const authorizedB = store.approve("ORG-DEMO-001", "OBL-B", 1, assessmentB.record.assessment_id, assessmentB.assessment_hash);
     expect(authorizedB.state).toBe("AUTHORIZED");
+  });
+
+  it("stale/changed source amount invalidates prior-settlement authority snapshot (re-derivation, not reuse)", () => {
+    const store = new AuthorityStore();
+    // Seed an AED obligation with source_amount tracking.
+    store.seed(
+      baseAggregate({
+        state: "APPROVAL_PENDING",
+        amount: "1568.413887",
+        source_amount: "5760.00",
+        source_currency: "AED",
+        settlement_conversion_rate: "3.6725",
+      }),
+    );
+    const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
+    const authorized = store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash);
+    expect(authorized.state).toBe("AUTHORIZED");
+    expect(authorized.amount).toBe("1568.413887");
+    expect(authorized.source_amount).toBe("5760.00");
+
+    // Simulate a material source amount change (stale conversion must be invalidated).
+    // applyMaterialChange bumps version and re-derives the USDC amount from the new AED source.
+    const changed = store.applyMaterialChange(
+      "ORG-DEMO-001",
+      "OBL-J0C-002",
+      authorized.aggregate_version,
+      { source_amount: "10000.00", source_currency: "AED" },
+    );
+    // 10000 AED / 3.6725 = 2722.940776... (round-half-up) → 2722.940776
+    expect(changed.state).toBe("APPROVAL_PENDING");
+    expect(changed.aggregate_version).toBe(authorized.aggregate_version + 1);
+    expect(changed.amount).toBe("2722.940776");
+    expect(changed.source_amount).toBe("10000.00");
+
+    // The old AUTHORIZED snapshot is now stale — the sealed assessment is bound to the old version,
+    // so re-approval with the old assessment hash must fail (cannot reuse the stale conversion).
+    expect(() =>
+      store.approve("ORG-DEMO-001", "OBL-J0C-002", changed.aggregate_version, assessment.record.assessment_id, assessment.assessment_hash),
+    ).toThrow(/bound to aggregate_version 1/);
   });
 });

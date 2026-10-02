@@ -178,8 +178,8 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     }
   });
 
-  it("keeps non-USD obligations assessable but applies the currency blocker outside model prose", async () => {
-    for (const currency of ["AED", "EUR"]) {
+  it("blocks unsupported settlement currencies (e.g. EUR) via the currency blocker outside model prose", async () => {
+    for (const currency of ["EUR", "GBP"]) {
       const context = trustedTestContext(record({ currency }));
       const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
 
@@ -187,6 +187,15 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
       expect(decision.race.result.validated_findings.map((finding) => finding.code)).toContain("UNSUPPORTED_SETTLEMENT_CURRENCY");
       expect(decision.race.evidence.authoritative_facts.currency).toBe(currency);
     }
+  });
+
+  it("admits AED for settlement conversion (no currency blocker on AED)", async () => {
+    const context = trustedTestContext(record({ currency: "AED" }));
+    const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
+
+    // AED should NOT trigger the UNSUPPORTED_SETTLEMENT_CURRENCY finding.
+    expect(decision.race.result.validated_findings.map((finding) => finding.code)).not.toContain("UNSUPPORTED_SETTLEMENT_CURRENCY");
+    expect(decision.race.evidence.authoritative_facts.currency).toBe("AED");
   });
 
   it("(12) the agent module has no capability to approve/sign/execute — only a decision object crosses the boundary", async () => {
