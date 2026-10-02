@@ -1,18 +1,40 @@
-# Demo Runbook — Tameion (Issue #42 / TAMEION-DEMO-PREP-001)
+# Demo Runbook — Tameion (Issue #42 / TAMEION-DEMO-PREP-001; Gate 4 reconciliation — issue #50)
 
 Operator guide to stand up, verify, and replay **two separate** demo surfaces.
-Run from HEAD `812bd49fc60d5bb679f5a9705e3a49e8964dc260`, branch
-`demo/judge-pack-42-update`:
+Current exact deployed carrier: HEAD `ebd74b8855755f6cedbe24f09d2956fea3468c33`,
+branch `prototype/claude-autonomy` (PR #52 merged). Vercel deployment
+`dpl_DX4zcw74x3boSsMn8FDoH26fqrHR` was verified `READY`/HTTP 200 at this exact
+head at the most recent AXIS adjudication (`GATE3_PASS_WITH_DEFERRED_FINDINGS`,
+issue #50 comment 5948433512 — see "Gate status" below):
 
 - **Surface A — genuine J3 Command Center golden path.** Real obligations,
-  real pipeline, fail-closed. Terminal state: `J1_NO_CANDIDATE / STOP`.
+  real pipeline, fail-closed. Terminal state: `J1_NO_CANDIDATE / STOP`. Now
+  includes a sixth, read-only **Operational Report** panel (issue #15-A; see
+  Step 6 below) alongside the original five panels.
 - **Surface B — isolated synthetic happy-path demo** (admitted #44, merged
   PR #47). Explicitly labeled `SIMULATED_HAPPY_PATH` / `FAKE_TESTNET_ADAPTER` /
   `NOT_VENDOR_PAYMENT` in every response field. Demonstrates real application
   control flow on synthetic, non-economic fixture data only.
 
 Never present Surface B as proof of a genuine J1 candidate, genuine trust
-evidence, or a real vendor/Circle/Arc transaction.
+evidence, or a real vendor/Circle/Arc transaction. Never present the
+Operational Report (Surface A, Step 6) as proof of a paid/settled or executed
+obligation — it is a read-only HOLD/ESCALATE projection only.
+**Paid/Reconciled and Execution Register remain deferred** until authoritative
+settled/execution truth exists (issue #50 roadmap).
+
+## Gate status (bind before demo)
+
+- Deferred, not submission-blocking (issue #50 comment 5948433512): `--color-accent`
+  and the reserved `--color-attestation` token (`app/globals.css`) currently
+  share the same value (`#c5a059`). No current UI consumes
+  `--color-attestation`, so there is no present visual ambiguity with a live
+  attestation/irrevocable-action signal.
+- A true rendered-browser desktop + compact-responsive QA pass has not yet
+  been completed (Chromium was unavailable in the Gate 3 review environment).
+  Vercel independently confirms the exact deployment above is `READY`. This
+  pass remains required before Gate 5 submission freeze — do not claim it as
+  done.
 
 ## Truth boundary — operator must assert these before demo
 
@@ -134,6 +156,30 @@ This is the terminal state for every genuine obligation in this build:
 otherwise), so it is **not reachable** on the genuine path in this build —
 correct, since no PAE is sealed.
 
+### Step 6 — Operational Report (read-only, HOLD/ESCALATE Attention Required)
+The sixth panel, **Operational Report**, is independent of the PAE/authorization
+state above — it is reachable and populated regardless of whether any PAE is
+sealed. Source: `src/client/hold-escalate-report.ts`, wired into
+`app/command-center.tsx` (issue #15/#14, PR #51).
+
+1. Open the **Operational Report** panel. The aggregate summary shows total
+   obligations, `HOLD`, `ESCALATE`, `Unassessed`, and `PAY (out of scope)`
+   counts across all 5 genuine obligations.
+2. Select any obligation to see its report line: supplier/source reference
+   (source system, record id/type, source approval state, execution
+   authority), obligation amount, effective decision, and assessment truth
+   (status, assessment id/hash, assessment time, provider mode/used).
+3. Before an obligation is assessed, the report defaults **fail-closed to
+   `HOLD`** with an explicit "Fail-closed — default HOLD" banner and reason
+   (`UNASSESSED`). After assessment, it reflects the actual sealed `HOLD`/
+   `ESCALATE` decision; a `PAY` decision is shown truthfully but labeled
+   **out of scope** — "Advisory only... has not been settled or authorized."
+4. **Judge check:** this report never shows a settled, paid, or executed
+   state. It reads only sealed-assessment and obligation truth; it has no
+   code path into execution, PAE, or reconciliation state. Paid/Reconciled
+   and Execution Register are **not** implemented and remain deferred
+   (issue #50 roadmap) until authoritative settled/execution truth exists.
+
 ## Surface B — isolated synthetic happy-path demo (`SIMULATED_HAPPY_PATH`)
 
 > Separate from Surface A. Never run this to "show the real path completing" —
@@ -220,5 +266,10 @@ curl -s -X POST http://localhost:3000/api/internal/demo/simulated-happy-path \
   `src/demo/simulated-happy-path.ts`,
   `app/api/internal/demo/simulated-happy-path/route.ts`,
   `tests/simulated-happy-path.test.ts`
+- Operational Report — HOLD/ESCALATE Attention Required (issue #15/#14, merged
+  PR #51): `src/client/hold-escalate-report.ts`,
+  `tests/hold-escalate-report.test.ts`
+- Gate 3/Gate 4 adjudication and deferred findings: issue #50 comments
+  5948433512 (Gate 3) and 5948610225 (Gate 4 writer rebind)
 - This demo pack: `docs/demo/JUDGE-WALKTHROUGH.md`,
   `docs/demo/DEMO-RUNBOOK.md`, `docs/demo/DEMO-EVIDENCE-CHECKLIST.md`
