@@ -14,8 +14,8 @@
   --color-ink-muted: #5b6577;
   --color-border: #e2e8f0;
   --color-border-strong: #cbd5e1;
-  --color-accent: #92702f;
-  --color-accent-ink: #4a3818;
+  --color-accent: #c5a059;
+  --color-accent-ink: #0b132b;
   /* Institutional gold/brass — reserved for cryptographic attestation and
      irrevocable-action affordances, per the ported design system. */
   --color-attestation: #c5a059;
