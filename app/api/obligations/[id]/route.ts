@@ -52,13 +52,15 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       truth,
       aggregate,
       record,
-      current_assessment: currentAssessment ? {
+            current_assessment: currentAssessment ? {
         obligation_id: currentAssessment.record.obligation_id,
         assessment_id: currentAssessment.record.assessment_id,
         assessment_hash: currentAssessment.hash,
         aggregate_version: currentAssessment.record.aggregate_version,
         decision: currentAssessment.record.decision,
         reasons: currentAssessment.record.reasons,
+        provider_used: currentAssessment.record.provider_name,
+        provider_mode: currentAssessment.record.provider_mode,
         ...(currentAssessment.record.race ? { race: currentAssessment.record.race } : {}),
       } : null,
       demo_arc_trust_simulated: DEMO_ARC_TRUST_SIMULATED,
