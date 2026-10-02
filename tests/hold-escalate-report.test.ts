@@ -316,5 +316,3 @@ describe("buildHoldEscalateSummary", () => {
     expect(summary).toEqual({ total: 0, hold: 0, escalate: 0, unassessed: 0, pay: 0 });
   });
 });
-
-
