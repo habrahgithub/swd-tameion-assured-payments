@@ -97,6 +97,9 @@ function buildSeedAggregate(obligationId: string, options: SeedOptions): Authori
     execution_state: "NONE",
     execution_idempotency_key: null,
     reviewed_aggregate_version: null,
+    source_amount: "10.00",
+    source_currency: "USD",
+    settlement_conversion_rate: null,
   };
 }
 
@@ -124,7 +127,7 @@ function buildAssessmentRecord(obligationId: string, aggregateVersion: number): 
       authoritative_facts: {
         obligation_id: obligationId,
         aggregate_version: String(aggregateVersion),
-        amount: "10.000000",
+        amount: "10.00",
         currency: "USD",
         due_date: "2099-01-01",
         due_date_status: "STATED_ON_SOURCE",

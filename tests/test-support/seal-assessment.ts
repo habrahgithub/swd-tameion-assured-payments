@@ -22,6 +22,13 @@ export function sealTestAssessment(
   counter += 1;
   const decision = overrides.decision ?? "PAY";
   const code: "MODEL_OUTPUT_INVALID" | "OTHER_REQUIRES_HUMAN_REVIEW" | null = decision === "PAY" ? null : decision === "HOLD" ? "MODEL_OUTPUT_INVALID" : "OTHER_REQUIRES_HUMAN_REVIEW";
+
+  // F1: derive authoritative facts from the aggregate's source truth so that
+  // authorize() can verify the assessment matches the aggregate's source.
+  const aggregate = store.get(organizationId, obligationId);
+  const sourceAmount = aggregate?.source_amount ?? "10.00";
+  const sourceCurrency = aggregate?.source_currency ?? "USD";
+
   const defaultRace: RaceAssessment = {
     result: {
       decision,
@@ -42,8 +49,8 @@ export function sealTestAssessment(
       authoritative_facts: {
         obligation_id: obligationId,
         aggregate_version: String(aggregateVersion),
-        amount: "10.00",
-        currency: "USD" as const,
+        amount: sourceAmount,
+        currency: sourceCurrency as "USD",
         due_date: "2026-01-01",
         due_date_status: "STATED_ON_SOURCE" as const,
         due_date_position: "FUTURE" as const,

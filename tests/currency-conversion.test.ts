@@ -100,20 +100,17 @@ describe("currency conversion", () => {
     });
   });
 
-  describe("convertSourceToSettlement — unsupported currencies", () => {
-    it("rejects EUR as unsupported", () => {
-      const result = convertSourceToSettlement("250.00", "EUR");
-      expect(result.isAdmitted).toBe(false);
+    describe("convertSourceToSettlement — unsupported currencies", () => {
+    it("throws for EUR (fail-closed, no conversion)", () => {
+      expect(() => convertSourceToSettlement("250.00", "EUR")).toThrow();
     });
 
-    it("rejects GBP as unsupported", () => {
-      const result = convertSourceToSettlement("100.00", "GBP");
-      expect(result.isAdmitted).toBe(false);
+    it("throws for GBP (fail-closed)", () => {
+      expect(() => convertSourceToSettlement("100.00", "GBP")).toThrow();
     });
 
-    it("rejects JPY as unsupported", () => {
-      const result = convertSourceToSettlement("1000", "JPY");
-      expect(result.isAdmitted).toBe(false);
+    it("throws for JPY (fail-closed)", () => {
+      expect(() => convertSourceToSettlement("1000", "JPY")).toThrow();
     });
   });
 
@@ -126,13 +123,13 @@ describe("currency conversion", () => {
       expect(toUsdcSettlementAmount("21.00", "USD")).toBe("21.000000");
     });
 
-    it("returns 0.000000 for EUR (fail-closed, no conversion)", () => {
-      expect(toUsdcSettlementAmount("250.00", "EUR")).toBe("0.000000");
+    it("throws for EUR (fail-closed, never returns 0.000000)", () => {
+      expect(() => toUsdcSettlementAmount("250.00", "EUR")).toThrow();
     });
 
-    it("returns 0.000000 for any unsupported currency", () => {
-      expect(toUsdcSettlementAmount("100.00", "GBP")).toBe("0.000000");
-      expect(toUsdcSettlementAmount("1000", "JPY")).toBe("0.000000");
+    it("throws for any unsupported currency", () => {
+      expect(() => toUsdcSettlementAmount("100.00", "GBP")).toThrow();
+      expect(() => toUsdcSettlementAmount("1000", "JPY")).toThrow();
     });
   });
 

@@ -69,28 +69,36 @@ export function convertSourceToSettlement(
     return convertAedToUsd(sourceAmount);
   }
 
-  // Unsupported currency — fail closed with zero amount.
-  return {
-    settlementAmount: "0.000000",
-    settlementAtomic: "0",
-    sourceAmount,
-    sourceCurrency,
-    conversionRate: null,
-    isAdmitted: false,
-  };
+  // Unsupported currency — fail closed by throwing, never return a zero amount.
+  throw new NumericSafetyError(
+    `Unsupported settlement currency "${sourceCurrency}": only USD and AED are admitted for Arc Testnet USDC settlement (1 USD = ${AED_PER_USD_RATE} AED)`,
+    "NUM-004",
+  );
 }
 
-/** Returns just the 6-decimal USDC settlement amount, or "0.000000" for unsupported. */
+/** Returns just the 6-decimal USDC settlement amount; throws for unsupported currencies. */
 export function toUsdcSettlementAmount(sourceAmount: string, sourceCurrency: string): string {
   return convertSourceToSettlement(sourceAmount, sourceCurrency).settlementAmount;
 }
 
 function convertUsdPassthrough(amount: string): SettlementConversion {
   const [whole, fractional] = parseDecimalParts(amount);
+  if (fractional.length > USDC_DECIMALS) {
+    throw new NumericSafetyError(
+      `USD amount "${amount}" has more than ${USDC_DECIMALS} decimal places; refusing to truncate settlement precision`,
+      "NUM-002",
+    );
+  }
   const integer = BigInt(whole) * 10n ** BigInt(fractional.length) + BigInt(fractional || "0");
   const decimals = fractional.length;
 
   const usdcAtomic = scaleToUsdc(integer, decimals);
+  if (usdcAtomic === "0") {
+    throw new NumericSafetyError(
+      `USD amount "${amount}" produces zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
   return {
     settlementAmount: formatUsdcAmount(usdcAtomic),
     settlementAtomic: usdcAtomic,
@@ -106,6 +114,13 @@ function convertAedToUsd(amount: string): SettlementConversion {
   const aedInteger = BigInt(whole) * 10n ** BigInt(fractional.length) + BigInt(fractional || "0");
   const aedDecimals = fractional.length;
 
+  if (aedInteger === 0n) {
+    throw new NumericSafetyError(
+      `AED amount "${amount}" converts to zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
+
   // USD = AED / (36725/10000) = AED * 10000 / 36725
   // USD_atomic_6dp = aedInteger * DEN * 10^6 / (10^aedDecimals * NUM)
   const numerator = aedInteger * AED_PER_USD_DENOMINATOR * USDC_SCALE;
@@ -115,6 +130,12 @@ function convertAedToUsd(amount: string): SettlementConversion {
   const quotient = numerator / denominator;
   const remainder = numerator % denominator;
   const usdcAtomic = remainder * 2n >= denominator ? quotient + 1n : quotient;
+  if (usdcAtomic === 0n) {
+    throw new NumericSafetyError(
+      `AED amount "${amount}" rounds to zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
 
   return {
     settlementAmount: formatUsdcAmount(usdcAtomic.toString(10)),

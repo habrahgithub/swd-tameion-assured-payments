@@ -7,7 +7,7 @@ import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
 import { adaptDirectEvidenceObligation, type CanonicalPaymentObligation } from "../domain/payment-control-boundary";
-import { convertSourceToSettlement } from "../domain/currency-conversion";
+import { convertSourceToSettlement, isSettleableCurrency } from "../domain/currency-conversion";
 import {
   durableApprovalRecordSchema,
   durableAssuranceRecordSchema,
@@ -300,6 +300,9 @@ function loadLiveUsageSet(): LiveUsageObligationRecord[] {
 }
 
 function toUsdcAmount(rawAmount: string, currency: string): string {
+  // During DemoState seeding, unsupported currencies (e.g. EUR in fixtures) fail
+  // closed to a zero settlement — they cannot proceed to authorization.
+  if (!isSettleableCurrency(currency)) return "0.000000";
   return convertSourceToSettlement(rawAmount, currency).settlementAmount;
 }
 
@@ -360,7 +363,7 @@ export class DemoState {
         reviewed_aggregate_version: null,
         source_amount: record.amount,
         source_currency: record.currency,
-        settlement_conversion_rate: record.currency === "USD" ? null : convertSourceToSettlement(record.amount, record.currency).conversionRate,
+        settlement_conversion_rate: !isSettleableCurrency(record.currency) ? null : record.currency === "USD" ? null : convertSourceToSettlement(record.amount, record.currency).conversionRate,
       };
       this.store.seed(aggregate);
     }
