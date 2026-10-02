@@ -67,6 +67,18 @@ interface ObligationDetail {
 }
 
 type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation" | "report";
+type ObligationListStatus = "loading" | "error" | "ready";
+type ObligationListPresentation = "loading" | "error" | "empty" | "ready";
+
+export function obligationListState(
+  status: ObligationListStatus,
+  error: string | null,
+  count: number,
+): ObligationListPresentation {
+  if (status === "loading") return "loading";
+  if (status === "error" || error) return "error";
+  return count === 0 ? "empty" : "ready";
+}
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "obligations", label: "Obligations" },
@@ -525,8 +537,53 @@ function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; c
   );
 }
 
+function SimulatedDemoStages({ value }: { value: Record<string, unknown> }) {
+  const happyPath = value.happy_path as {
+    label: string;
+    provider_label: string;
+    vendor_notice: string;
+    obligation_id: string;
+    obligation: { obligation_id: string; state: string };
+    assessment: { decision: string; provider_mode: string };
+    human_authorization: { state: string };
+    assurance: { pae_state: string; safety_kernel_overall: string };
+    execution: { status: string; provider_label: string };
+    reconciliation: { aggregate_state: string; execution_status: string };
+  };
+  return (
+    <div className="space-y-3 border-t border-[var(--color-border)] pt-3" data-testid="simulated-demo-result">
+      <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
+        {happyPath.label} / {happyPath.provider_label} / {happyPath.vendor_notice}
+      </p>
+      <p className="mono break-all text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation: {happyPath.obligation_id}</p>
+      <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        <DemoStage title="Obligation" value={`${happyPath.obligation.obligation_id} · ${happyPath.obligation.state}`} />
+        <DemoStage title="Assessment" value={`${happyPath.assessment.decision} · ${happyPath.assessment.provider_mode}`} />
+        <DemoStage title="Human Authorization" value={happyPath.human_authorization.state} />
+        <DemoStage title="Assurance & Execution" value={`Safety Kernel ${happyPath.assurance.safety_kernel_overall} · PAE ${happyPath.assurance.pae_state} · ${happyPath.execution.provider_label} ${happyPath.execution.status}`} />
+        <DemoStage title="Reconciliation / Evidence" value={`${happyPath.reconciliation.aggregate_state} · execution ${happyPath.reconciliation.execution_status}`} />
+      </ol>
+      <p className="text-[11px] text-[var(--color-ink-muted)]">Server-derived pipeline result only. It remains separate from genuine obligations, real payment authority, and vendor settlement.</p>
+    </div>
+  );
+}
+
+function DemoStage({ title, value }: { title: string; value: string }) {
+  return (
+    <li className="min-w-0 border-l-2 border-[var(--color-warning)] pl-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{title}</p>
+      <p className="mt-1 break-words text-[12px] font-medium text-[var(--color-ink)]">{value}</p>
+    </li>
+  );
+}
+
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
+  const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
+  const [obligationsError, setObligationsError] = useState<string | null>(null);
+  const [demoStatus, setDemoStatus] = useState<"idle" | "loading" | "error" | "result">("idle");
+  const [demoResult, setDemoResult] = useState<Record<string, unknown> | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
@@ -535,18 +592,51 @@ export function CommandCenter() {
   const [busy, setBusy] = useState(false);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
 
-  const refreshObligations = async () => {
-    const response = await fetch("/api/obligations");
-    const data = await response.json();
-    setObligations(data.obligations);
-    return data.obligations as ObligationSummary[];
+  const refreshObligations = async (showLoading = false) => {
+    if (showLoading) setObligationsStatus("loading");
+    setObligationsError(null);
+    try {
+      const response = await fetch("/api/obligations");
+      const data = await response.json();
+      if (!response.ok || !Array.isArray(data.obligations)) {
+        throw new Error(typeof data.error === "string" ? data.error : `Obligations unavailable (HTTP ${response.status}).`);
+      }
+      const fetched = data.obligations as ObligationSummary[];
+      setObligations(fetched);
+      setObligationsStatus("ready");
+      if (fetched.length === 0) setSelectedId("");
+      return fetched;
+    } catch (error) {
+      setObligations([]);
+      setSelectedId("");
+      setObligationsStatus("error");
+      setObligationsError(error instanceof Error ? error.message : "Obligations could not be loaded.");
+      return [];
+    }
   };
 
   useEffect(() => {
-    void refreshObligations().then((fetched) => {
+    void refreshObligations(true).then((fetched) => {
       if (fetched[0]) setSelectedId(fetched[0].obligation_id);
     });
   }, []);
+
+  const runSimulatedDemo = async () => {
+    setDemoStatus("loading");
+    setDemoResult(null);
+    setDemoError(null);
+    try {
+      const result = await postJson("/api/internal/demo/simulated-happy-path", { confirm: "RUN_SIMULATED_HAPPY_PATH" });
+      if (!result.ok || !result.data || typeof result.data !== "object" || !("happy_path" in result.data)) {
+        throw new Error(actionErrorMessage(result.data));
+      }
+      setDemoResult(result.data as Record<string, unknown>);
+      setDemoStatus("result");
+    } catch (error) {
+      setDemoError(error instanceof Error ? error.message : "The simulated demo could not be run.");
+      setDemoStatus("error");
+    }
+  };
 
   const refreshDetail = async (id: string) => {
     const response = await fetch(`/api/obligations/${id}`);
@@ -713,19 +803,39 @@ export function CommandCenter() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
-      <header className="flex items-baseline justify-between border-b border-[var(--color-border)] pb-4">
+      <header className="flex flex-col items-start justify-between gap-3 border-b border-[var(--color-border)] pb-4 sm:flex-row sm:items-baseline">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
-        <p className="max-w-sm text-right text-[12px] leading-5 text-[var(--color-ink-muted)]">
+        <p className="max-w-none text-left text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-right">
           Execution and demo destination/source-wallet trust are simulated fixtures. J0-D connectivity completed
           with disposable wallets; product destination/source-wallet trust remains separately gated unless
           supported by current, non-simulated evidence. J0-C source evidence retains its original pending status.
         </p>
       </header>
+
+      <section aria-label="Simulated demo" className="space-y-3 rounded border border-[var(--color-warning)] bg-[var(--color-surface)] p-3 sm:p-4">
+        <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
+            <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Runs the isolated in-memory demo pipeline with a fake adapter. This result is separate from genuine obligations and cannot represent a vendor payment.</p>
+          </div>
+          <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
+            {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
+          </PrimaryButton>
+        </div>
+        {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
+        {demoStatus === "error" && (
+          <div role="alert" className="flex flex-col items-start gap-2 border-l-[3px] border-l-[var(--color-danger)] pl-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
+            <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
+          </div>
+        )}
+        {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
+      </section>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">
         <aside className="md:border-r md:pr-4">
@@ -733,11 +843,11 @@ export function CommandCenter() {
             Obligations
           </p>
           {/* Ledger header row — columnar alignment for operator scan */}
-          <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+          {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             <span>Id</span>
             <span className="tabular text-right">Amount</span>
             <span className="tabular text-right">Status</span>
-          </div>
+          </div>}
           <ul className="border-y border-[var(--color-border)]">
             {obligations.map((o) => {
               const statusColor = o.assessed
@@ -786,6 +896,20 @@ export function CommandCenter() {
               );
             })}
           </ul>
+          {obligationListState(obligationsStatus, obligationsError, obligations.length) !== "ready" && (
+            <div className="space-y-2 border-b border-[var(--color-border)] px-3 py-4">
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading genuine obligations…</p>}
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "error" && <>
+                <p role="alert" className="text-[13px] text-[var(--color-danger)]">Genuine obligations are unavailable. No synthetic demo data has been added to this list. {obligationsError}</p>
+                <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry genuine obligations</button>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">Use the separate simulated demo above to view a clearly labeled synthetic workflow.</p>
+              </>}
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
+                <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">The genuine lane remains empty; a simulated demo is available above and is never treated as payable.</p>
+              </>}
+            </div>
+          )}
         </aside>
 
         <section className="flex flex-col gap-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 md:p-5">
@@ -796,6 +920,19 @@ export function CommandCenter() {
                 <p className="text-[12px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
               </div>
               <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
+            </div>
+          )}
+
+          {!selected && (
+            <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
+              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Genuine obligations are not selected.</p>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
+                {obligationsStatus === "loading"
+                  ? "The genuine source list is loading."
+                  : obligationsStatus === "error"
+                    ? "The genuine source list is unavailable. Retry it or use the separately labeled simulated demo above."
+                    : "There are no genuine obligations to show. The simulated demo above is separate and is not payable."}
+              </p>
             </div>
           )}
 
@@ -827,12 +964,12 @@ export function CommandCenter() {
             </section>
           )}
 
-          <nav className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
+          <nav aria-label="Command Center surfaces" className="flex flex-nowrap gap-1 overflow-x-auto border-b border-[var(--color-border)]">
             {PANELS.map((p) => (
               <button
                 key={p.key}
                 onClick={() => setPanel(p.key)}
-                className={`border-b-2 px-3 py-2 text-[13px] font-medium transition ${
+                className={`shrink-0 border-b-2 px-2 py-2 text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${
                   panel === p.key
                     ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                     : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"

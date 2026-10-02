@@ -167,9 +167,28 @@ export interface SimulatedHappyPathResult {
   vendor_notice: typeof NOT_VENDOR_PAYMENT_LABEL;
   organization_id: string;
   obligation_id: string;
+  obligation: {
+    obligation_id: string;
+    state: ObligationState;
+  };
   aggregate_state: ObligationState;
+  assessment: {
+    decision: DurableAssessmentRecord["decision"];
+    provider_mode: DurableAssessmentRecord["provider_mode"];
+  };
+  human_authorization: {
+    state: string;
+  };
+  assurance: {
+    pae_state: AuthorityAggregate["pae_state"];
+    safety_kernel_overall: "PASS" | "HOLD" | "BLOCK";
+  };
+  reconciliation: {
+    aggregate_state: ObligationState;
+    execution_status: ExecutionRecord["status"];
+  };
   safety_kernel_overall: "PASS" | "HOLD" | "BLOCK";
-  execution: ExecutionRecord;
+  execution: ExecutionRecord & { provider_label: typeof FAKE_PROVIDER_LABEL };
   provider_submission_count: number;
 }
 
@@ -191,6 +210,7 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
       destinationVerified: true,
     }),
   );
+  const seededObligation = store.get(SIMULATED_ORGANIZATION_ID, obligationId);
   store.sealAssessment(buildAssessmentRecord(obligationId, 1));
 
   const current = store.getCurrentAssessment(SIMULATED_ORGANIZATION_ID, obligationId);
@@ -198,7 +218,7 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     throw new SimulatedDemoGuardError("Failed to seal the synthetic happy-path assessment fixture", "DEMO-002");
   }
 
-  const { aggregate, sealed, safetyKernel } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+  const { aggregate, sealed, safetyKernel, approvalRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
     organizationId: SIMULATED_ORGANIZATION_ID,
     obligationId,
     expectedVersion: 1,
@@ -221,9 +241,28 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     vendor_notice: NOT_VENDOR_PAYMENT_LABEL,
     organization_id: SIMULATED_ORGANIZATION_ID,
     obligation_id: obligationId,
+    obligation: {
+      obligation_id: seededObligation.obligation_id,
+      state: seededObligation.state,
+    },
     aggregate_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).state,
+    assessment: {
+      decision: current.record.decision,
+      provider_mode: current.record.provider_mode,
+    },
+    human_authorization: {
+      state: approvalRecord.record.new_state,
+    },
+    assurance: {
+      pae_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).pae_state,
+      safety_kernel_overall: safetyKernel.overall,
+    },
+    reconciliation: {
+      aggregate_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).state,
+      execution_status: execution.status,
+    },
     safety_kernel_overall: safetyKernel.overall,
-    execution,
+    execution: { ...execution, provider_label: FAKE_PROVIDER_LABEL },
     provider_submission_count: adapter.getSubmissionCount(),
   };
 }

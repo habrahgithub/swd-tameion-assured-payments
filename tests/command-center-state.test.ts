@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { workflowState } from "../app/command-center";
+import { obligationListState, workflowState } from "../app/command-center";
+
+describe("Command Center obligation list presentation", () => {
+  it("distinguishes loading, error, empty and populated genuine lists", () => {
+    expect(obligationListState("loading", null, 0)).toBe("loading");
+    expect(obligationListState("error", "unavailable", 0)).toBe("error");
+    expect(obligationListState("ready", null, 0)).toBe("empty");
+    expect(obligationListState("ready", null, 1)).toBe("ready");
+  });
+});
 
 function detailWithReleaseAuthority(releaseAuthority: string) {
   return {
