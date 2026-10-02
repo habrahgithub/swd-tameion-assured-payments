@@ -1,10 +1,14 @@
-# Demo Evidence & Screenshots Checklist (Issue #42 / TAMEION-DEMO-PREP-001)
+# Demo Evidence & Screenshots Checklist (Issue #42 / TAMEION-DEMO-PREP-001; Gate 4 reconciliation — issue #50)
 
 Evidence-capture map tied to PASS/HOLD/BLOCK states across **two separate
-surfaces**:
+surfaces**, at current exact deployed carrier HEAD
+`ebd74b8855755f6cedbe24f09d2956fea3468c33` (branch `prototype/claude-autonomy`,
+PR #52 merged; Vercel deployment `dpl_DX4zcw74x3boSsMn8FDoH26fqrHR` verified
+`READY`/HTTP 200 at this exact head — issue #50 comment 5948433512):
 
 - **Surface A** — genuine J3 Command Center golden path. Terminal state:
-  `J1_NO_CANDIDATE / STOP`.
+  `J1_NO_CANDIDATE / STOP`. Now six panels: the original five plus a
+  read-only Operational Report panel (issue #15-A).
 - **Surface B** — isolated synthetic happy-path demo (admitted #44, merged
   PR #47), labeled `SIMULATED_HAPPY_PATH` / `FAKE_TESTNET_ADAPTER` /
   `NOT_VENDOR_PAYMENT`. Reaches `PASS` / `SETTLED` / `RECONCILED` with exactly
@@ -13,6 +17,12 @@ surfaces**:
 
 Mark each item **PASS** before declaring the demo honest. A checked box means
 the screenshot/evidence was captured **and** matches the stated expectation.
+
+Deferred, not submission-blocking (issue #50 comment 5948433512): the
+`--color-accent` / reserved `--color-attestation` token collision in
+`app/globals.css`, and the still-outstanding true rendered-browser QA pass
+(Chromium was unavailable in the Gate 3 review environment) — required before
+Gate 5 submission freeze, independent of Vercel's confirmed `READY` state.
 
 ## Pre-flight — verification gates (must be green)
 
@@ -99,6 +109,24 @@ the screenshot/evidence was captured **and** matches the stated expectation.
 ### Panel 5 — Attack (not reachable — requires a sealed PAE)
 - [ ] "Simulate changed-destination attack" button is **disabled** (no sealed PAE).
 
+### Panel 6 — Operational Report (read-only, HOLD/ESCALATE Attention Required)
+- [ ] Aggregate summary shows total obligations, `HOLD`, `ESCALATE`,
+      `Unassessed`, and `PAY (out of scope)` counts.
+- [ ] Before assessment, selected obligation shows the "Fail-closed — default
+      HOLD" banner with an `UNASSESSED` reason.
+- [ ] After assessment, the report line reflects the actual sealed `HOLD`/
+      `ESCALATE` decision; any `PAY` decision is labeled "Advisory only... has
+      not been settled or authorized."
+- [ ] Supplier/source reference (source system, record id/type, source
+      approval state, execution authority) and assessment truth
+      (status/assessment id/hash/time/provider mode) are visible per
+      obligation.
+- [ ] Confirm no execution, PAE, or reconciliation state is read or implied by
+      this panel (source: `src/client/hold-escalate-report.ts` imports only
+      obligation/assessment types).
+- [ ] `tests/hold-escalate-report.test.ts` run and passing (fail-closed
+      defaults, summary aggregation, out-of-scope PAY labeling).
+
 ## Surface B — isolated synthetic happy-path demo (`SIMULATED_HAPPY_PATH`)
 
 - [ ] Trigger confirmed local/Preview-only: production (`VERCEL_ENV ===
@@ -148,6 +176,9 @@ the screenshot/evidence was captured **and** matches the stated expectation.
 - [ ] Surface B is never described as proving a genuine J1 candidate or
       genuine trust evidence — only real application control-flow correctness
       on synthetic fixtures.
+- [ ] The Operational Report (Panel 6) is never described as a paid, settled,
+      or executed state — Paid/Reconciled and Execution Register are not
+      implemented and remain deferred (issue #50 roadmap).
 - [ ] All `npm run verify` gates green.
 
 ## Sign-off
