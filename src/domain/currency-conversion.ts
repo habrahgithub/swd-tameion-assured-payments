@@ -87,6 +87,12 @@ export function toUsdcSettlementAmount(sourceAmount: string, sourceCurrency: str
 
 function convertUsdPassthrough(amount: string): SettlementConversion {
   const [whole, fractional] = parseDecimalParts(amount);
+  if (fractional.length > USDC_DECIMALS) {
+    throw new NumericSafetyError(
+      `USD amount "${amount}" has more than ${USDC_DECIMALS} decimal places; refusing to truncate settlement precision`,
+      "NUM-002",
+    );
+  }
   const integer = BigInt(whole) * 10n ** BigInt(fractional.length) + BigInt(fractional || "0");
   const decimals = fractional.length;
 
@@ -105,6 +111,13 @@ function convertAedToUsd(amount: string): SettlementConversion {
   const [whole, fractional] = parseDecimalParts(amount);
   const aedInteger = BigInt(whole) * 10n ** BigInt(fractional.length) + BigInt(fractional || "0");
   const aedDecimals = fractional.length;
+
+  if (aedInteger === 0n) {
+    throw new NumericSafetyError(
+      `AED amount "${amount}" converts to zero USDC settlement; refusal to produce a zero-value settlement`,
+      "NUM-003",
+    );
+  }
 
   // USD = AED / (36725/10000) = AED * 10000 / 36725
   // USD_atomic_6dp = aedInteger * DEN * 10^6 / (10^aedDecimals * NUM)

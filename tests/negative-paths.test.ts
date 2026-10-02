@@ -147,6 +147,9 @@ describe("negative path: missing human authorization", () => {
       execution_state: "NONE",
       execution_idempotency_key: null,
       reviewed_aggregate_version: null,
+      source_amount: "21.00",
+      source_currency: "USD",
+      settlement_conversion_rate: null,
       ...overrides,
     };
   }

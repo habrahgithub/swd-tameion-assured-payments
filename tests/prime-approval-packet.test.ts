@@ -11,7 +11,7 @@ function baseAggregate(): AuthorityAggregate {
     obligation_id: "OBL-J0C-003",
     aggregate_version: 1,
     state: "APPROVAL_PENDING",
-    amount: "5.000000",
+    amount: "21.000000",
     asset: "USDC",
     network: "ARC_TESTNET",
     counterparty_id: "CP-J0C-003",
@@ -35,6 +35,9 @@ function baseAggregate(): AuthorityAggregate {
     execution_state: "NONE",
     execution_idempotency_key: null,
     reviewed_aggregate_version: null,
+    source_amount: "21.00",
+    source_currency: "USD",
+    settlement_conversion_rate: null,
   };
 }
 
@@ -58,7 +61,7 @@ describe("J2 Prime approval packet", () => {
 
     expect(packet.obligation_id).toBe("OBL-J0C-003");
     expect(packet.obligation_version).toBe("2"); // post-approval N+1
-    expect(packet.amount).toBe("5.000000 USDC");
+    expect(packet.amount).toBe("21.000000 USDC");
     expect(packet.network).toBe("ARC_TESTNET");
     expect(packet.source_wallet_identity).toContain("WALLET-SOURCE-P0-1");
     expect(packet.destination_identity).toContain("0x7777777777777777777777777777777777777777");

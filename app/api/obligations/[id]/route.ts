@@ -52,8 +52,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         const [whole, fractional] = aggregate.amount.split(".");
         return (BigInt(whole) * 1_000_000n + BigInt(fractional)).toString(10);
       })(),
-      source_amount: aggregate.source_amount ?? aggregate.amount,
-      source_currency: aggregate.source_currency ?? "USDC",
+      source_amount: aggregate.source_amount ?? "UNKNOWN",
+      source_currency: aggregate.source_currency ?? "UNKNOWN",
       settlement_conversion_rate: aggregate.settlement_conversion_rate ?? null,
     });
     return NextResponse.json({

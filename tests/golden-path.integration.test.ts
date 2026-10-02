@@ -95,6 +95,9 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       execution_state: "NONE",
       execution_idempotency_key: null,
       reviewed_aggregate_version: null,
+      source_amount: candidateRecord.amount,
+      source_currency: candidateRecord.currency,
+      settlement_conversion_rate: candidateRecord.currency === "USD" ? null : "3.6725",
     };
     store.seed(aggregate);
     // The explicit provenance above is test-only so this integration test can

@@ -439,6 +439,50 @@ export class AuthorityStore {
         "AUT-015",
       );
     }
+    // F1: The aggregate must carry established source truth for the conversion.
+    // A legacy or stale snapshot with no source_amount/source_currency must fail closed
+    // rather than authorizing against a zero-derived settlement.
+    const authAmount = race.evidence.authoritative_facts.amount;
+    const authCurrency = race.evidence.authoritative_facts.currency;
+    if (!current.source_amount || !current.source_currency) {
+      throw new AuthorityError(
+        "Cannot approve: aggregate lacks source_amount/source_currency; fail-closed — no settlement authority without established source truth",
+        "AUT-017",
+      );
+    }
+    if (authAmount !== current.source_amount) {
+      throw new AuthorityError(
+        `Cannot approve: assessment source amount (${authAmount}) does not match aggregate source_amount (${current.source_amount})`,
+        "AUT-014",
+      );
+    }
+    if (authCurrency !== current.source_currency) {
+      throw new AuthorityError(
+        `Cannot approve: assessment source currency (${authCurrency}) does not match aggregate source_currency (${current.source_currency})`,
+        "AUT-014",
+      );
+    }
+    // F1: The aggregate settlement amount must equal a fresh deterministic conversion
+    // from the current source amount/currency — never a stale pre-computed value.
+    const freshConversion = convertSourceToSettlement(current.source_amount, current.source_currency);
+    if (current.amount !== freshConversion.settlementAmount) {
+      throw new AuthorityError(
+        `Cannot approve: aggregate settlement amount (${current.amount}) does not match fresh conversion of source (${current.source_amount} ${current.source_currency} → ${freshConversion.settlementAmount})`,
+        "AUT-014",
+      );
+    }
+    if (freshConversion.isAdmitted === false) {
+      throw new AuthorityError(
+        "Cannot approve: source currency is not an admitted settlement currency",
+        "AUT-015",
+      );
+    }
+    if (freshConversion.settlementAmount === "0.000000") {
+      throw new AuthorityError(
+        "Cannot approve: fresh conversion produced a zero-value settlement amount",
+        "AUT-014",
+      );
+    }
     if (!hasCurrentProductTrustEvidence(current)) {
       throw new AuthorityError("Cannot authorize without separately evidenced current product destination and source-wallet trust", "AUT-016");
     }
@@ -533,16 +577,44 @@ export class AuthorityStore {
     // from the new source so a stale conversion is never reused. This is the
     // stale-source-amount guarantee: a material source change always bumps the
     // version and re-derives the authoritative settlement amount.
-    if (patch.source_amount !== undefined || patch.source_currency !== undefined) {
+    const hasSourceAmount = patch.source_amount !== undefined;
+    const hasSourceCurrency = patch.source_currency !== undefined;
+    if (hasSourceAmount || hasSourceCurrency) {
+      // P5: partial patches (only one of source_amount/source_currency) must fail closed.
+      if (hasSourceAmount !== hasSourceCurrency) {
+        throw new AuthorityError(
+          "Cannot apply material change: source_amount and source_currency must be patched together, not individually",
+          "OPS-004",
+        );
+      }
       const sourceAmount = patch.source_amount ?? current.source_amount;
       const sourceCurrency = patch.source_currency ?? current.source_currency;
-      if (sourceAmount && sourceCurrency) {
-        const conversion = convertSourceToSettlement(sourceAmount, sourceCurrency);
-        patch.amount = conversion.settlementAmount;
-        patch.settlement_conversion_rate = conversion.conversionRate;
-        patch.source_amount = sourceAmount;
-        patch.source_currency = sourceCurrency;
+      if (!sourceAmount || !sourceCurrency) {
+        throw new AuthorityError(
+          "Cannot apply material change: aggregate has no established source_amount/source_currency to re-derive settlement from",
+          "OPS-004",
+        );
       }
+      // P6: unsupported currency must throw/fail closed rather than writing 0.000000.
+      if (!isSettleableCurrency(sourceCurrency)) {
+        throw new AuthorityError(
+          `Cannot apply material change: source currency "${sourceCurrency}" is not an admitted settlement currency (USD, AED)`,
+          "AUT-015",
+        );
+      }
+      const conversion = convertSourceToSettlement(sourceAmount, sourceCurrency);
+      // Do not mutate the caller's patch object; build a derived patch instead.
+      return this.write({
+        ...current,
+        ...patch,
+        amount: conversion.settlementAmount,
+        settlement_conversion_rate: conversion.conversionRate,
+        source_amount: sourceAmount,
+        source_currency: sourceCurrency,
+        state: "APPROVAL_PENDING",
+        pae_state: current.pae_state === "UNUSED" || current.pae_state === "RESERVED" ? "REVOKED" : current.pae_state,
+        aggregate_version: current.aggregate_version + 1,
+      });
     }
     return this.write({
       ...current,
