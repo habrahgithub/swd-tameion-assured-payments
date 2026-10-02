@@ -10,6 +10,13 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
+import {
+  buildHoldEscalateReport,
+  buildHoldEscalateSummary,
+  type HoldEscalateReportInput,
+  type HoldEscalateReportLine,
+  type HoldEscalateSummary,
+} from "../src/client/hold-escalate-report";
 
 interface ObligationSummary {
   obligation_id: string;
@@ -59,7 +66,7 @@ interface ObligationDetail {
   execution_kill_switched: boolean;
 }
 
-type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation";
+type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation" | "report";
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "obligations", label: "Obligations" },
@@ -67,6 +74,7 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "authorization", label: "Authorization" },
   { key: "assurance", label: "Assurance & Execution" },
   { key: "reconciliation", label: "Reconciliation & Evidence" },
+  { key: "report", label: "Operational Report" },
 ];
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -662,11 +670,45 @@ export function CommandCenter() {
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
-  const authorizationAssessment = currentReviewedAssessment(
+    const authorizationAssessment = currentReviewedAssessment(
     displayedAssessment,
     currentAssessment,
     selectedId,
     aggregateVersion,
+  );
+
+  // HOLD/ESCALATE operational report — read-only, derived from authoritative
+  // current assessment and obligation state. Fails closed when truth is
+  // missing or stale. See src/client/hold-escalate-report.ts.
+  const reportInput: HoldEscalateReportInput | null = useMemo(() => {
+    if (!detail || !selectedId) return null;
+    return {
+      obligation_id: selectedId,
+      amount: detail.record.amount,
+      currency: detail.record.currency,
+      aggregate_version: detail.aggregate.aggregate_version,
+      source: {
+        source_system_id: detail.truth.source_truth.source.source_system_id,
+        record_id: detail.truth.source_truth.source.record_id,
+        record_type: detail.truth.source_truth.source.record_type,
+        approval_state: detail.truth.source_truth.source.approval_state,
+        execution_authority: detail.truth.source_truth.source.execution_authority,
+      },
+      assessment: detail.current_assessment,
+    };
+  }, [detail, selectedId]);
+  const report = useMemo(() => (reportInput ? buildHoldEscalateReport(reportInput) : null), [reportInput]);
+  const reportSummary = useMemo(
+    () =>
+      buildHoldEscalateSummary(
+        obligations.map((o) => ({
+          obligation_id: o.obligation_id,
+          assessed: o.assessed,
+          decision: o.decision,
+          provider_mode: o.provider_mode,
+        })),
+      ),
+    [obligations],
   );
 
   return (
@@ -1060,7 +1102,178 @@ export function CommandCenter() {
                 )}
                 {lastResult?.label === "attack" && <ActionResultBanner result={lastResult} />}
                 {lastResult?.label === "attack" && <EvidencePanel value={lastResult.data} />}
-                {detail && <EvidencePanel value={detail} />}
+                                {detail && <EvidencePanel value={detail} />}
+              </div>
+            )}
+
+            {panel === "report" && (
+              <div className="max-w-xl space-y-4">
+                <section aria-label="HOLD/ESCALATE aggregate summary" className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                    Operational report — HOLD/ESCALATE obligations
+                  </p>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <Field label="Total obligations" value={String(reportSummary.total)} />
+                    <Field label="HOLD" value={String(reportSummary.hold)} />
+                    <Field label="ESCALATE" value={String(reportSummary.escalate)} />
+                    <Field label="Unassessed" value={String(reportSummary.unassessed)} />
+                    <Field label="PAY (out of scope)" value={String(reportSummary.pay)} />
+                  </dl>
+                </section>
+
+                {!report && (
+                  <p className="text-[12px] text-[var(--color-ink-muted)]">
+                    Select an obligation to view its HOLD/ESCALATE operational report.
+                  </p>
+                )}
+
+                {report && report.fail_closed && report.fail_closed_reason && (
+                  <div className="rounded border-l-[3px] border-l-[var(--color-danger)] bg-[var(--color-danger-bg)] px-3 py-2">
+                    <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
+                      Fail-closed — default HOLD
+                    </p>
+                    <p className="text-[12px] text-[var(--color-danger)]">{report.fail_closed_reason}</p>
+                  </div>
+                )}
+
+                {report && (
+                  <section aria-label={`Operational report for ${report.obligation_id}`} className="space-y-3">
+                    {/* Supplier / source reference */}
+                    <div className="space-y-1 border-l-2 border-[var(--color-ink)] pl-3">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                        Supplier / source reference
+                      </h3>
+                      <Field label="Source system" value={report.supplier_reference.source_system_id} />
+                      <Field label="Record ID" value={report.supplier_reference.record_id} />
+                      <Field label="Record type" value={report.supplier_reference.record_type} />
+                      <Field label="Source approval" value={report.supplier_reference.approval_state} />
+                      <Field label="Execution authority" value={report.supplier_reference.execution_authority} />
+                    </div>
+
+                    {/* Amount */}
+                    <div className="space-y-1 border-l-2 border-[var(--color-ink-muted)] pl-3">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                        Amount
+                      </h3>
+                      <Field label="Obligation amount" value={`${report.amount} ${report.currency}`} />
+                    </div>
+
+                    {/* Decision banner — never color-only */}
+                    <div
+                      className="border-l-[3px] pl-3 py-2"
+                      style={{
+                        borderLeftColor: report.decision === "ESCALATE"
+                          ? "var(--status-blocked-border)"
+                          : report.decision === "PAY" ? "var(--color-border)" : "var(--status-hold-border)",
+                      }}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
+                          Decision: {report.decision}
+                        </p>
+                        <span
+                          className="text-[11px] font-semibold uppercase"
+                          style={{
+                            color: report.decision === "ESCALATE"
+                              ? "var(--status-blocked-text)"
+                              : report.decision === "PAY" ? "var(--color-ink-muted)" : "var(--status-hold-text)",
+                          }}
+                          aria-label={`Effective decision: ${report.decision}${report.fail_closed ? " (fail-closed HOLD)" : ""}`}
+                        >
+                          {report.status}
+                          {report.fail_closed && " · fail-closed"}
+                        </span>
+                      </div>
+                      {!report.in_scope && (
+                        <p className="text-[12px] text-[var(--color-ink-muted)]">
+                          Advisory only — PAY is outside the HOLD/ESCALATE report scope and has
+                          not been settled or authorized.
+                        </p>
+                      )}
+                                        </div>
+
+                    {/* Assessment truth */}
+                    <div className="space-y-1 border-l-2 border-[var(--color-border)] pl-3">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                        Assessment truth
+                      </h3>
+                      <Field label="Status" value={report.status} />
+                      {report.assessment_id && <Field label="Assessment ID" value={report.assessment_id} />}
+                      {report.assessment_hash && (
+                        <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5">
+                          <dt className="text-[13px] text-[var(--color-ink-muted)]">Assessment hash</dt>
+                          <dd className="mono text-[13px] font-medium break-all text-[var(--color-ink)]">
+                            {report.assessment_hash}
+                          </dd>
+                        </div>
+                      )}
+                      {report.assessment_time && <Field label="Assessment time" value={report.assessment_time} />}
+                      {report.provider_mode && (
+                        <div className="flex items-center gap-2 border-b border-[var(--color-border)] py-1.5">
+                          <span className="text-[11px] font-semibold uppercase text-[var(--color-ink-muted)]">Provider mode</span>
+                          <RuntimeBadge mode={report.provider_mode} />
+                        </div>
+                      )}
+                      {report.provider_used && (
+                        <p className="text-[11px] text-[var(--color-ink-muted)] border-b border-[var(--color-border)] py-1.5">
+                            Provider: {report.provider_used} (advisory only, non-authoritative)
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Reasons */}
+                    {report.reasons.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                          Reasons
+                        </p>
+                        <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+                          {report.reasons.map((reason, index) => (
+                            <li key={index}>{reason}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Evidence gap */}
+                    {report.evidence_gap.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                          Evidence gap
+                        </p>
+                        <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+                          {report.evidence_gap.map((gap, index) => (
+                            <li key={index}>{gap}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Remediation */}
+                    {report.remediation.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+                          Remediation
+                        </p>
+                        {report.remediation.map((item) => (
+                          <div key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2 space-y-1">
+                            <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
+                            <p className="text-[11px] text-[var(--color-ink-muted)]">
+                              <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess{" "}
+                              {item.reassess_after_resolution ? "permitted" : "not permitted"}
+                            </p>
+                            <p className="text-[11px] text-[var(--color-ink-muted)]">
+                              <strong>Evidence required:</strong> {item.required_evidence.join("; ")}
+                            </p>
+                            {item.escalation_target && (
+                              <p className="text-[11px] text-[var(--color-danger)]">Escalate to: {item.escalation_target}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
               </div>
             )}
           </div>
