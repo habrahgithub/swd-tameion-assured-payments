@@ -80,6 +80,89 @@ export function obligationListState(
   return count === 0 ? "empty" : "ready";
 }
 
+/** Deterministic error text for a failed /api/obligations fetch. Never
+ * derived from a thrown parse exception: an upstream 500 with an empty body
+ * makes `response.json()` throw a native, engine-specific message ("The
+ * string did not match the expected pattern." on WebKit, "Unexpected end of
+ * JSON input" on V8) that is not a usable operator-facing explanation. */
+export function obligationsFetchErrorMessage(status: number, body: unknown | null): string {
+  if (body && typeof body === "object" && "error" in body && typeof (body as { error: unknown }).error === "string") {
+    return (body as { error: string }).error;
+  }
+  return `Obligations unavailable (HTTP ${status}).`;
+}
+
+/** Best-effort JSON parse of a response body that may be empty or malformed
+ * (e.g. an upstream 500 with no body). Never throws. */
+function tryParseJson(text: string): unknown | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Coverage copy for the Assessment panel header. Distinguishes an
+ * unavailable or still-loading genuine list from a verified-empty one so
+ * neither is ever reported as a false "0/0 obligations assessed". */
+export function assessmentCoverageLabel(
+  presentation: ObligationListPresentation,
+  assessedCount: number,
+  total: number,
+): string {
+  if (presentation === "loading") return "Genuine obligations are loading — assessment coverage is not yet known.";
+  if (presentation === "error") return "Genuine obligations are unavailable — assessment coverage cannot be determined.";
+  if (presentation === "empty") return "No genuine obligations are currently available to assess.";
+  return `${assessedCount}/${total} obligations assessed`;
+}
+
+/** The "assess all N" authorization-gate reminder. Only meaningful once the
+ * genuine list is actually populated — otherwise it previously degraded to
+ * the nonsensical "assess all 0". */
+export function assessmentGateCopy(
+  presentation: ObligationListPresentation,
+  allAssessed: boolean,
+  total: number,
+): string | null {
+  if (presentation !== "ready" || allAssessed) return null;
+  return `Authorization is refused for every obligation until all ${total} have been assessed.`;
+}
+
+export type KillSwitchPresentation = "no-selection" | "allowed" | "disabled";
+
+/** Never report "Execution allowed" when there is no selected obligation —
+ * that implies a real, checked state when none has been verified yet. */
+export function killSwitchPresentation(
+  hasDetail: boolean,
+  executionKillSwitched: boolean | undefined,
+): KillSwitchPresentation {
+  if (!hasDetail) return "no-selection";
+  return executionKillSwitched ? "disabled" : "allowed";
+}
+
+export function killSwitchLabel(presentation: KillSwitchPresentation): string {
+  if (presentation === "no-selection") return "No obligation selected";
+  return presentation === "disabled" ? "Execution disabled" : "Execution allowed";
+}
+
+/** The aggregate-version fragment shown in the Authorization panel's intent
+ * sentence. Never the bare "v?" placeholder when nothing is selected. */
+export function aggregateVersionLabel(aggregateVersion: number | undefined, hasSelection: boolean): string {
+  if (!hasSelection) return "no obligation selected";
+  if (aggregateVersion === undefined) return "loading";
+  return String(aggregateVersion);
+}
+
+/** When the genuine list is unavailable or still loading, the HOLD/ESCALATE
+ * operational-report summary must say so instead of rendering an all-zero
+ * table that looks like a verified, reportable empty state. */
+export function reportSummaryUnavailableReason(presentation: ObligationListPresentation): string | null {
+  if (presentation === "error") return "Genuine obligations are unavailable — this operational report cannot be produced.";
+  if (presentation === "loading") return "Genuine obligations are loading — this operational report is not yet available.";
+  return null;
+}
+
 const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "obligations", label: "Obligations" },
   { key: "assessment", label: "Assessment" },
@@ -438,6 +521,9 @@ function actionErrorMessage(data: unknown): string {
   if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
     return (data as { error: string }).error;
   }
+  if (data && typeof data === "object" && "code" in data && typeof (data as { code: unknown }).code === "string") {
+    return `The request did not succeed (${(data as { code: string }).code}).`;
+  }
   return "The request did not succeed.";
 }
 
@@ -587,6 +673,7 @@ export function CommandCenter() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -597,11 +684,16 @@ export function CommandCenter() {
     setObligationsError(null);
     try {
       const response = await fetch("/api/obligations");
-      const data = await response.json();
-      if (!response.ok || !Array.isArray(data.obligations)) {
-        throw new Error(typeof data.error === "string" ? data.error : `Obligations unavailable (HTTP ${response.status}).`);
+      // Read as text first: an upstream failure (e.g. HTTP 500 with an
+      // empty body) must never reach response.json() directly, since a
+      // malformed or empty body makes JSON parsing throw a native,
+      // engine-specific exception instead of a usable error message.
+      const text = await response.text();
+      const data = tryParseJson(text);
+      if (!response.ok || !data || typeof data !== "object" || !Array.isArray((data as { obligations?: unknown }).obligations)) {
+        throw new Error(obligationsFetchErrorMessage(response.status, data));
       }
-      const fetched = data.obligations as ObligationSummary[];
+      const fetched = (data as { obligations: ObligationSummary[] }).obligations;
       setObligations(fetched);
       setObligationsStatus("ready");
       if (fetched.length === 0) setSelectedId("");
@@ -638,11 +730,24 @@ export function CommandCenter() {
     }
   };
 
-  const refreshDetail = async (id: string) => {
-    const response = await fetch(`/api/obligations/${id}`);
-    const data = await response.json();
-    setDetail(data);
-    return data as ObligationDetail;
+  const refreshDetail = async (id: string): Promise<ObligationDetail | null> => {
+    try {
+      const response = await fetch(`/api/obligations/${id}`);
+      // Same root-cause guard as refreshObligations: never let an empty or
+      // malformed body reach response.json() directly.
+      const text = await response.text();
+      const data = tryParseJson(text);
+      if (!response.ok || !data || typeof data !== "object") {
+        throw new Error(obligationsFetchErrorMessage(response.status, data));
+      }
+      setDetail(data as ObligationDetail);
+      setDetailError(null);
+      return data as ObligationDetail;
+    } catch (error) {
+      setDetail(null);
+      setDetailError(error instanceof Error ? error.message : "Obligation detail could not be loaded.");
+      return null;
+    }
   };
 
   useEffect(() => {
@@ -757,6 +862,8 @@ export function CommandCenter() {
     const assessedCount = obligations.filter((o) => o.assessed).length;
   const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
   const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
+  const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
+  const killSwitchView = killSwitchPresentation(Boolean(detail), detail?.execution_kill_switched);
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
@@ -936,6 +1043,16 @@ export function CommandCenter() {
             </div>
           )}
 
+          {selected && !detail && detailError && (
+            <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-3">
+              <p className="text-[13px] font-semibold text-[var(--color-danger)]">Obligation detail is unavailable.</p>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">{detailError}</p>
+              <button type="button" onClick={() => void refreshDetail(selectedId)} className="mt-1 text-[12px] font-semibold underline">
+                Retry obligation detail
+              </button>
+            </div>
+          )}
+
           {detail && (
             <section aria-label="Payment authority boundary" className="grid gap-3 border-b border-[var(--color-border)] pb-4 md:grid-cols-3">
               <article className="space-y-1 border-l-2 border-[var(--color-border)] pl-3" data-testid="source-truth">
@@ -964,7 +1081,7 @@ export function CommandCenter() {
             </section>
           )}
 
-          <nav aria-label="Command Center surfaces" className="flex flex-nowrap gap-1 overflow-x-auto border-b border-[var(--color-border)]">
+          <nav aria-label="Command Center surfaces" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
             {PANELS.map((p) => (
               <button
                 key={p.key}
@@ -980,7 +1097,7 @@ export function CommandCenter() {
             ))}
           </nav>
 
-          <div className="min-h-[320px]">
+          <div className="min-h-[120px]">
             {panel === "obligations" && detail && (
               <dl className="max-w-md">
                 <Field label="Source obligation amount (source truth)" value={`${detail.record.amount} ${detail.record.currency}`} />
@@ -1010,7 +1127,7 @@ export function CommandCenter() {
                 </p>
                 <div className="flex items-center justify-between gap-3 border-l-[3px] border-l-[var(--color-border)] px-3 py-2">
                   <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-                    {assessedCount}/{obligations.length} obligations assessed
+                    {assessmentCoverageLabel(listPresentation, assessedCount, obligations.length)}
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
@@ -1018,9 +1135,9 @@ export function CommandCenter() {
                   Run assessment
                 </PrimaryButton>
 
-                {!allAssessed && (
+                {assessmentGateCopy(listPresentation, allAssessed, obligations.length) && (
                   <p className="text-[12px] text-[var(--color-warning)]">
-                    Authorization is refused for every obligation until all {obligations.length} have been assessed.
+                    {assessmentGateCopy(listPresentation, allAssessed, obligations.length)}
                   </p>
                 )}
 
@@ -1102,7 +1219,7 @@ export function CommandCenter() {
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  Authorizing this exact intent (aggregate v{aggregateVersion ?? "?"}) atomically advances
+                  Authorizing this exact intent (aggregate version: {aggregateVersionLabel(aggregateVersion, Boolean(selectedId))}) atomically advances
                   reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
                   control PASSes — seals a signed Payment Authorization Envelope.
                 </p>
@@ -1154,7 +1271,7 @@ export function CommandCenter() {
 
                 <div
                   className={`flex flex-wrap items-center justify-between gap-3 border-l-[3px] px-3 py-2 ${
-                    detail?.execution_kill_switched
+                    killSwitchView === "disabled"
                       ? "border-l-[var(--color-danger)] bg-[var(--color-surface)]"
                       : "border-l-[var(--color-border)]"
                   }`}
@@ -1162,10 +1279,14 @@ export function CommandCenter() {
                   <div>
                     <p
                       className={`text-[13px] font-semibold uppercase tracking-wide ${
-                        detail?.execution_kill_switched ? "text-[var(--color-danger)]" : "text-[var(--color-ink-muted)]"
+                        killSwitchView === "disabled"
+                          ? "text-[var(--color-danger)]"
+                          : killSwitchView === "no-selection"
+                            ? "text-[var(--color-ink-muted)]"
+                            : "text-[var(--status-pass-text)]"
                       }`}
                     >
-                      Kill switch: {detail?.execution_kill_switched ? "Execution disabled" : "Execution allowed"}
+                      Kill switch: {killSwitchLabel(killSwitchView)}
                     </p>
                     <p className="text-[12px] text-[var(--color-ink-muted)]">
                       Checked by both the Safety Kernel (pre-approval) and the Execution Worker (pre-submit).
@@ -1269,13 +1390,19 @@ export function CommandCenter() {
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                     Operational report — HOLD/ESCALATE obligations
                   </p>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
-                    <Field label="Total obligations" value={String(reportSummary.total)} />
-                    <Field label="HOLD" value={String(reportSummary.hold)} />
-                    <Field label="ESCALATE" value={String(reportSummary.escalate)} />
-                    <Field label="Unassessed" value={String(reportSummary.unassessed)} />
-                    <Field label="PAY (out of scope)" value={String(reportSummary.pay)} />
-                  </dl>
+                  {reportSummaryUnavailableReason(listPresentation) ? (
+                    <p role="alert" className="text-[12px] text-[var(--color-danger)]">
+                      {reportSummaryUnavailableReason(listPresentation)}
+                    </p>
+                  ) : (
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      <Field label="Total obligations" value={String(reportSummary.total)} />
+                      <Field label="HOLD" value={String(reportSummary.hold)} />
+                      <Field label="ESCALATE" value={String(reportSummary.escalate)} />
+                      <Field label="Unassessed" value={String(reportSummary.unassessed)} />
+                      <Field label="PAY (out of scope)" value={String(reportSummary.pay)} />
+                    </dl>
+                  )}
                 </section>
 
                 {!report && (
