@@ -69,18 +69,14 @@ export function convertSourceToSettlement(
     return convertAedToUsd(sourceAmount);
   }
 
-  // Unsupported currency — fail closed with zero amount.
-  return {
-    settlementAmount: "0.000000",
-    settlementAtomic: "0",
-    sourceAmount,
-    sourceCurrency,
-    conversionRate: null,
-    isAdmitted: false,
-  };
+  // Unsupported currency — fail closed by throwing, never return a zero amount.
+  throw new NumericSafetyError(
+    `Unsupported settlement currency "${sourceCurrency}": only USD and AED are admitted for Arc Testnet USDC settlement (1 USD = ${AED_PER_USD_RATE} AED)`,
+    "NUM-004",
+  );
 }
 
-/** Returns just the 6-decimal USDC settlement amount, or "0.000000" for unsupported. */
+/** Returns just the 6-decimal USDC settlement amount; throws for unsupported currencies. */
 export function toUsdcSettlementAmount(sourceAmount: string, sourceCurrency: string): string {
   return convertSourceToSettlement(sourceAmount, sourceCurrency).settlementAmount;
 }
