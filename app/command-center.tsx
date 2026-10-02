@@ -712,7 +712,7 @@ export function CommandCenter() {
   );
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-6 py-8">
+    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
       <header className="flex items-baseline justify-between border-b border-[var(--color-border)] pb-4">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
@@ -727,52 +727,72 @@ export function CommandCenter() {
         </p>
       </header>
 
-      <div className="grid grid-cols-[280px_1fr] gap-5">
-        <aside className="border-r border-[var(--color-border)] pr-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">
+        <aside className="md:border-r md:pr-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Obligations
           </p>
-          <ul>
-            {obligations.map((o) => (
-              <li key={o.obligation_id}>
-                <button
-                  onClick={() => {
-                    setSelectedId(o.obligation_id);
-                    setLastResult(null);
-                    setDisplayedAssessment(null);
-                  }}
-                  className={`flex w-full flex-col gap-0.5 border-b border-[var(--color-border)] px-2 py-2 text-left transition ${
-                    o.obligation_id === selectedId ? "bg-[var(--color-surface)]" : "hover:bg-[var(--color-surface)]"
-                  }`}
-                >
-                  <span className="flex items-baseline justify-between gap-2">
-                    <span className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-ink)]">
+          {/* Ledger header row — columnar alignment for operator scan */}
+          <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+            <span>Id</span>
+            <span className="tabular text-right">Amount</span>
+            <span className="tabular text-right">Status</span>
+          </div>
+          <ul className="border-y border-[var(--color-border)]">
+            {obligations.map((o) => {
+              const statusColor = o.assessed
+                ? o.decision === "ESCALATE"
+                  ? "var(--status-blocked-text)"
+                  : o.decision === "HOLD"
+                    ? "var(--status-hold-text)"
+                    : o.decision === "PAY"
+                      ? "var(--color-ink)"
+                      : "var(--color-ink)"
+                : "var(--color-ink-muted)";
+              return (
+                <li key={o.obligation_id}>
+                  <button
+                    onClick={() => {
+                      setSelectedId(o.obligation_id);
+                      setLastResult(null);
+                      setDisplayedAssessment(null);
+                    }}
+                    className={`grid w-full grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-0.5 px-2 py-1.5 text-left transition ${
+                      o.obligation_id === selectedId
+                        ? "border-l-2 border-l-[var(--color-accent)] bg-[var(--color-surface)]"
+                        : "hover:bg-[var(--color-surface)]"
+                    }`}
+                  >
+                    <span className="mono text-[12px] font-medium text-[var(--color-ink)] col-span-1">
                       <span
                         aria-label={o.assessed ? "assessed" : "not yet assessed"}
                         title={o.assessed ? `Assessed: ${o.decision}` : "Not yet assessed"}
-                        className="inline-block h-1.5 w-1.5 rounded-full"
+                        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                         style={{ background: o.assessed ? "var(--status-pass-text)" : "var(--color-border-strong)" }}
-                      />
+                      />{" "}
                       {o.obligation_id}
                     </span>
-                    <span className="tabular shrink-0 text-[12px] text-[var(--color-ink-muted)]">
+                    <span className="tabular text-right text-[12px] text-[var(--color-ink-muted)]">
                       {o.amount} {o.currency}
                     </span>
-                  </span>
-                  <span className="truncate text-[12px] text-[var(--color-ink-muted)]">
-                    {o.service_category.replaceAll("_", " ").toLowerCase()}
-                  </span>
+                    <span className="tabular text-right text-[12px] font-medium" style={{ color: statusColor }}>
+                      {o.assessed ? (o.decision ?? "—") : "UNASSESSED"}
+                    </span>
+                    <span className="col-span-3 truncate text-[11px] text-[var(--color-ink-muted)]">
+                      {o.service_category.replaceAll("_", " ").toLowerCase()}
+                    </span>
                 </button>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </aside>
 
-        <section className="flex flex-col gap-4">
+        <section className="flex flex-col gap-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 md:p-5">
           {selected && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-base font-semibold text-[var(--color-ink)]">{selected.obligation_id}</h2>
+                <h2 className="mono text-base font-semibold text-[var(--color-ink)]">{selected.obligation_id}</h2>
                 <p className="text-[12px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
               </div>
               <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
@@ -807,14 +827,14 @@ export function CommandCenter() {
             </section>
           )}
 
-          <nav className="flex gap-5 border-b border-[var(--color-border)]">
+          <nav className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
             {PANELS.map((p) => (
               <button
                 key={p.key}
                 onClick={() => setPanel(p.key)}
-                className={`border-b-2 pb-2 text-[13px] font-medium transition ${
+                className={`border-b-2 px-3 py-2 text-[13px] font-medium transition ${
                   panel === p.key
-                    ? "border-[var(--color-ink)] text-[var(--color-ink)]"
+                    ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                     : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
                 }`}
               >
