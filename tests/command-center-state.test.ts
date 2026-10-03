@@ -310,8 +310,8 @@ describe("unknown truth never asserts inactive or no-submission", () => {
   });
 
   it("does not assert inactive while detail is loading or failed", () => {
-    expect(ksp("loading", undefined)).toBe("no-selection");
-    expect(ksp("failed", undefined)).toBe("no-selection");
+    expect(ksp("loading", undefined)).toBe("loading");
+    expect(ksp("failed", undefined)).toBe("failed");
   });
 
   it("asserts inactive only from an explicit false on loaded detail", () => {
@@ -380,5 +380,25 @@ describe("trace exposes due-date and readiness provenance and qualifies complete
   it("qualifies source-to-context completeness as UNVERIFIED", () => {
     const facts = stepNamed(buildAssessmentTrace(race()), "SUPPLIED_FACTS").items.join(" | ");
     expect(facts).toContain("Source-to-context completeness: UNVERIFIED");
+  });
+});
+
+describe("selected-but-loading or failed detail is named as such, never as no selection", () => {
+  it("names a loading selected detail", () => {
+    expect(killSwitchLabel(ksp("loading", undefined))).toContain("loading");
+    expect(killSwitchLabel(ksp("loading", undefined))).not.toContain("No obligation selected");
+  });
+  it("names a failed selected detail", () => {
+    expect(killSwitchLabel(ksp("failed", undefined))).toContain("unavailable");
+    expect(killSwitchLabel(ksp("failed", undefined))).not.toContain("No obligation selected");
+  });
+  it("keeps no-selection only when nothing is selected", () => {
+    expect(killSwitchLabel(ksp("none", undefined))).toBe("No obligation selected");
+  });
+});
+
+describe("first unmet prerequisite is named for Execution and Reconciliation before assessment", () => {
+  it("names assessment as the first unmet prerequisite before all are assessed", () => {
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
   });
 });

@@ -69,37 +69,77 @@ describe("action results apply only to the still-selected obligation identity", 
 });
 
 describe("assessment recovery key is retained until identity-matched success or explicit terminal rejection", () => {
-  const validSuccess = { assessment_id: "ASM-1", decision: { obligation_id: "OBL-A", decision: "HOLD" } };
+  const validSuccess = fullReceipt("OBL-A", "1");
 
   it("releases only on a valid, identity-matched 200 receipt", () => {
-    expect(assessmentKeyDisposition({ status: 200, data: validSuccess, obligationId: "OBL-A" })).toBe("RELEASE");
+    expect(assessmentKeyDisposition({ status: 200, data: validSuccess, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RELEASE");
   });
 
   it("retains on an empty 200 body", () => {
-    expect(assessmentKeyDisposition({ status: 200, data: null, obligationId: "OBL-A" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 200, data: null, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("retains on an HTML 200 body (parsed as null)", () => {
-    expect(assessmentKeyDisposition({ status: 200, data: null, obligationId: "OBL-A" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 200, data: null, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("retains on a structurally invalid 200 JSON body", () => {
-    expect(assessmentKeyDisposition({ status: 200, data: { ok: true }, obligationId: "OBL-A" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 200, data: { ok: true }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("retains on a 200 receipt bound to a different obligation", () => {
-    expect(assessmentKeyDisposition({ status: 200, data: validSuccess, obligationId: "OBL-B" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 200, data: validSuccess, obligationId: "OBL-B", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("retains on a network failure (status 0)", () => {
-    expect(assessmentKeyDisposition({ status: 0, data: { error: "network" }, obligationId: "OBL-A" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 0, data: { error: "network" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("retains on a transient server error", () => {
-    expect(assessmentKeyDisposition({ status: 500, data: { error: "boom" }, obligationId: "OBL-A" })).toBe("RETAIN");
+    expect(assessmentKeyDisposition({ status: 500, data: { error: "boom" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
   it("releases on the existing explicit terminal rejection ASM-001", () => {
-    expect(assessmentKeyDisposition({ status: 409, data: { code: "ASM-001", error: "terminal" }, obligationId: "OBL-A" })).toBe("RELEASE");
+    expect(assessmentKeyDisposition({ status: 409, data: { code: "ASM-001", error: "terminal" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RELEASE");
+  });
+});
+
+import { assessmentReceiptIdentity, assessmentReceiptSnapshot, isCurrentGeneration } from "../src/client/command-center-requests";
+
+const HASH = "a".repeat(64);
+const fullReceipt = (obligationId: string, version: string) => ({
+  assessment_id: "ASM-1", assessment_hash: HASH, aggregate_version: version,
+  decision: { obligation_id: obligationId, decision: "HOLD", reasons: ["reason"] },
+  provider_used: "NVIDIA", provider_mode: "LIVE_AI",
+});
+
+describe("selection generation binds A→B→A action completions", () => {
+  it("drops a completion issued under an earlier generation even when the same obligation is selected again", () => {
+    expect(isCurrentGeneration(1, 3)).toBe(false);
+  });
+  it("applies only under the generation that issued it", () => {
+    expect(isCurrentGeneration(3, 3)).toBe(true);
+  });
+});
+
+describe("recovery key release requires the complete receipt validator used for snapshot construction", () => {
+  it("releases on a complete receipt bound to the selected obligation and requested version", () => {
+    expect(assessmentKeyDisposition({ status: 200, data: fullReceipt("OBL-A", "1"), obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RELEASE");
+  });
+  it("retains on the weak shape with an empty assessment_id and obligation-only decision", () => {
+    expect(assessmentKeyDisposition({ status: 200, data: { assessment_id: "", decision: { obligation_id: "OBL-A" } }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
+  });
+  it("retains when the receipt's aggregate version differs from the requested one", () => {
+    expect(assessmentKeyDisposition({ status: 200, data: fullReceipt("OBL-A", "2"), obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
+  });
+  it("retains on an equal-version receipt bound to a different obligation", () => {
+    expect(assessmentKeyDisposition({ status: 200, data: fullReceipt("OBL-B", "1"), obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
+  });
+  it("exposes a snapshot only for a receipt the validator accepts", () => {
+    expect(assessmentReceiptSnapshot(fullReceipt("OBL-A", "1"))).not.toBeNull();
+    expect(assessmentReceiptSnapshot({ assessment_id: "", decision: { obligation_id: "OBL-A" } })).toBeNull();
+  });
+  it("reports the receipt's identity for mismatch checks", () => {
+    expect(assessmentReceiptIdentity(fullReceipt("OBL-B", "1"))).toEqual({ obligation_id: "OBL-B", aggregate_version: "1" });
   });
 });

@@ -9,7 +9,7 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
-import { assessmentKeyDisposition, interpretPostResponse, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { assessmentKeyDisposition, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { buildAssessmentTrace } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
@@ -138,14 +138,20 @@ export type KillSwitchPresentation = "no-selection" | "inactive" | "engaged";
  * assessment and the Safety Kernel complete. */
 export type DetailState = "none" | "loading" | "failed" | "loaded";
 
-export function killSwitchPresentation(state: DetailState, value: unknown): KillSwitchPresentation | "unknown" {
-  if (state === "none" || state === "loading" || state === "failed") return "no-selection";
+export type KillSwitchView = KillSwitchPresentation | "unknown" | "loading" | "failed";
+
+export function killSwitchPresentation(state: DetailState, value: unknown): KillSwitchView {
+  if (state === "none") return "no-selection";
+  if (state === "loading") return "loading";
+  if (state === "failed") return "failed";
   if (typeof value !== "boolean") return "unknown";
   return value ? "engaged" : "inactive";
 }
 
-export function killSwitchLabel(presentation: KillSwitchPresentation | "unknown"): string {
+export function killSwitchLabel(presentation: KillSwitchView): string {
   if (presentation === "no-selection") return "No obligation selected";
+  if (presentation === "loading") return "Kill switch: selected obligation detail loading — not verified";
+  if (presentation === "failed") return "Kill switch: selected obligation detail unavailable — not verified";
   if (presentation === "unknown") return "Kill switch state unknown — not verified";
   if (presentation === "engaged") return "Execution disabled";
   return "Kill switch inactive — does not grant release";
@@ -795,6 +801,7 @@ export function CommandCenter() {
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
+  const selectionGeneration = useRef(0);
 
   const refreshObligations = async (showLoading = false) => {
     if (showLoading) setObligationsStatus("loading");
@@ -877,6 +884,7 @@ export function CommandCenter() {
 
   useEffect(() => {
     selectedRef.current = selectedId;
+    selectionGeneration.current += 1;
     detailGeneration.current += 1;
     setDisplayedAssessment(null);
     setDetail(null);
@@ -894,14 +902,16 @@ export function CommandCenter() {
 
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
     const targetId = selectedRef.current;
+    const generation = selectionGeneration.current;
+    const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     setBusy(true);
     try {
       const result = await action();
-      if (!isSameIdentity(selectedRef.current, targetId)) return;
+      if (!stillCurrent()) return;
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
     } catch {
-      if (!isSameIdentity(selectedRef.current, targetId)) return;
+      if (!stillCurrent()) return;
       setLastResult({
         label,
         data: { error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again." },
@@ -910,65 +920,41 @@ export function CommandCenter() {
         obligationId: targetId,
       });
     } finally {
-      if (isSameIdentity(selectedRef.current, targetId)) await refreshDetail(targetId);
+      if (stillCurrent()) await refreshDetail(targetId);
       await refreshObligations();
       setBusy(false);
     }
   };
 
-    const runAssessment = () => {
+  const runAssessment = () => {
     const obligationId = selectedId;
+    const generation = selectionGeneration.current;
+    const expectedVersion = detail?.aggregate?.aggregate_version !== undefined ? String(detail.aggregate.aggregate_version) : "";
     setDisplayedAssessment(null);
     return run("assess", async () => {
-    const storageKey = `tameion.assessment-request.${obligationId}`;
-    if (assessmentRequestKey.current?.obligationId !== obligationId) {
-      const persistedKey = localStorage.getItem(storageKey);
-      assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
-      if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
-    }
-    const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
-      "Idempotency-Key": assessmentRequestKey.current.key,
-    });
-    if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId }) === "RELEASE") {
-      localStorage.removeItem(storageKey);
-      assessmentRequestKey.current = null;
-    }
-    if (!isSameIdentity(selectedRef.current, obligationId)) return result;
-    if (result.status === 200 && result.ok && result.data && typeof result.data === "object") {
-      const data = result.data as {
-        assessment_id?: unknown;
-        aggregate_version?: unknown;
-        decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
-        assessment_hash?: unknown;
-        race?: unknown;
-        provider_used?: unknown;
-        provider_mode?: unknown;
-        model_id?: unknown;
-        model_config_version?: unknown;
-        runtime_config_sha256?: unknown;
-      };
-      const snapshot = assessmentReviewSnapshot({
-        obligation_id: data.decision?.obligation_id,
-        assessment_id: data.assessment_id,
-        assessment_hash: data.assessment_hash,
-        aggregate_version: data.aggregate_version,
-        decision: data.decision?.decision,
-        reasons: data.decision?.reasons,
-        race: data.race,
-        provider_used: data.provider_used,
-        provider_mode: data.provider_mode,
-        ...(data.model_id ? { model_id: data.model_id } : {}),
-        ...(data.model_config_version ? { model_config_version: data.model_config_version } : {}),
-        ...(data.runtime_config_sha256 ? { runtime_config_sha256: data.runtime_config_sha256 } : {}),
+      const storageKey = `tameion.assessment-request.${obligationId}`;
+      if (assessmentRequestKey.current?.obligationId !== obligationId) {
+        const persistedKey = localStorage.getItem(storageKey);
+        assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
+        if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
+      }
+      const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
+        "Idempotency-Key": assessmentRequestKey.current.key,
       });
-      if (snapshot) {
+      if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
+        localStorage.removeItem(storageKey);
+        assessmentRequestKey.current = null;
+      }
+      if (!isCurrentGeneration(generation, selectionGeneration.current) || !isSameIdentity(selectedRef.current, obligationId)) return result;
+      const snapshot = result.status === 200 && result.ok ? assessmentReceiptSnapshot(result.data) : null;
+      if (snapshot && snapshot.obligation_id === obligationId && snapshot.aggregate_version === expectedVersion) {
         setDisplayedAssessment(snapshot);
         setDetail((current) => {
           if (!current || current.aggregate.aggregate_version !== Number(snapshot.aggregate_version)) return current;
           const truth = snapshot.provider_truth;
           return {
             ...current,
-                        current_assessment: truth
+            current_assessment: truth
               ? {
                   obligation_id: snapshot.obligation_id,
                   assessment_id: snapshot.assessment_id,
@@ -992,8 +978,7 @@ export function CommandCenter() {
           };
         });
       }
-    }
-    return result;
+      return result;
     });
   };
 
@@ -1047,6 +1032,14 @@ export function CommandCenter() {
       ),
     [obligations],
   );
+
+  const firstUnmetPrerequisite = authorizationBlockers({
+    hasSelection: Boolean(selectedId),
+    allAssessed,
+    hasCurrentAssessment: Boolean(currentAssessment),
+    reviewed: Boolean(authorizationAssessment),
+    killSwitchEngaged: killSwitchView === "engaged",
+  })[0] ?? null;
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
 
@@ -1499,7 +1492,7 @@ export function CommandCenter() {
                   </button>
                 </div>
                 {!detail?.pae_sealed && (
-                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                  <p className="text-[12px] text-[var(--color-warning)]">{firstUnmetPrerequisite ?? "Authorize the obligation first."}</p>
                 )}
                 {currentResult?.label === "execute" && <ActionResultBanner result={currentResult} />}
                 {currentResult?.label === "execute" && <EvidencePanel value={currentResult.data} />}
@@ -1533,7 +1526,7 @@ export function CommandCenter() {
                   Simulate changed-destination attack
                 </PrimaryButton>
                 {!detail?.pae_sealed && (
-                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                  <p className="text-[12px] text-[var(--color-warning)]">{firstUnmetPrerequisite ?? "Authorize the obligation first."}</p>
                 )}
                 {currentResult?.label === "attack" && <ActionResultBanner result={currentResult} />}
                 {currentResult?.label === "attack" && <EvidencePanel value={currentResult.data} />}

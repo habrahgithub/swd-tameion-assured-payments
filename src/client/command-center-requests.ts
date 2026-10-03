@@ -14,6 +14,8 @@ export interface PostInterpretation {
   message: string;
 }
 
+import { assessmentReviewSnapshot, type AssessmentReviewSnapshot } from "./assessment-review-snapshot";
+
 export function interpretPostResponse(status: number, text: string): PostInterpretation {
   const data = parseJsonBody(text);
   const ok = status >= 200 && status < 300 && data !== null;
@@ -48,27 +50,63 @@ export function isSameIdentity(currentSelection: string, requestedSelection: str
   return currentSelection !== "" && currentSelection === requestedSelection;
 }
 
-/** The assessment recovery key is released only by a valid, identity-matched
- * success receipt or the explicit terminal rejection ASM-001. Every other
- * outcome (empty, HTML, malformed, structurally invalid, mismatched, network,
- * transient server error) retains it so the same request can be retried. */
+/** Generation binding: an action started under an earlier selection generation
+ * cannot mutate state, even when the same obligation is selected again (A→B→A). */
+export function isCurrentGeneration(requestGeneration: number, currentGeneration: number): boolean {
+  return requestGeneration === currentGeneration;
+}
+
+/** Maps an assessment receipt into the input the snapshot validator accepts. The
+ * same validator gates display and key release, so a receipt that cannot become
+ * a snapshot can never release the recovery key. */
+export function assessmentReceiptSnapshot(data: unknown): AssessmentReviewSnapshot | null {
+  if (!data || typeof data !== "object") return null;
+  const r = data as {
+    assessment_id?: unknown; aggregate_version?: unknown; assessment_hash?: unknown;
+    decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
+    race?: unknown; provider_used?: unknown; provider_mode?: unknown;
+    model_id?: unknown; model_config_version?: unknown; runtime_config_sha256?: unknown;
+  };
+  return assessmentReviewSnapshot({
+    obligation_id: r.decision?.obligation_id,
+    assessment_id: r.assessment_id,
+    assessment_hash: r.assessment_hash,
+    aggregate_version: r.aggregate_version,
+    decision: r.decision?.decision,
+    reasons: r.decision?.reasons,
+    race: r.race,
+    provider_used: r.provider_used,
+    provider_mode: r.provider_mode,
+    ...(r.model_id ? { model_id: r.model_id } : {}),
+    ...(r.model_config_version ? { model_config_version: r.model_config_version } : {}),
+    ...(r.runtime_config_sha256 ? { runtime_config_sha256: r.runtime_config_sha256 } : {}),
+  });
+}
+
+export function assessmentReceiptIdentity(data: unknown): { obligation_id: string | null; aggregate_version: string | null } {
+  const r = (data && typeof data === "object" ? data : {}) as { aggregate_version?: unknown; decision?: { obligation_id?: unknown } };
+  return {
+    obligation_id: typeof r.decision?.obligation_id === "string" ? r.decision.obligation_id : null,
+    aggregate_version: typeof r.aggregate_version === "string" ? r.aggregate_version : null,
+  };
+}
+
+/** The recovery key is released only when the complete receipt validator succeeds
+ * and the receipt is bound to the requested obligation and the expected aggregate
+ * version. An explicit terminal ASM-001 is also a release. Everything else keeps
+ * the key so an operator retry reuses it. */
 export function assessmentKeyDisposition(args: {
   status: number;
   data: unknown | null;
   obligationId: string;
+  expectedAggregateVersion: string;
 }): "RELEASE" | "RETAIN" {
-  const data = args.data;
-  if (args.status === 200 && data && typeof data === "object") {
-    const record = data as { assessment_id?: unknown; decision?: unknown };
-    const decision = record.decision as { obligation_id?: unknown } | undefined;
-    if (
-      typeof record.assessment_id === "string" &&
-      decision && typeof decision === "object" &&
-      decision.obligation_id === args.obligationId
-    ) {
-      return "RELEASE";
-    }
-  }
-  if (data && typeof data === "object" && (data as { code?: unknown }).code === "ASM-001") return "RELEASE";
-  return "RETAIN";
+  if (args.data && typeof args.data === "object" && (args.data as { code?: unknown }).code === "ASM-001") return "RELEASE";
+  if (args.status !== 200) return "RETAIN";
+  const snapshot = assessmentReceiptSnapshot(args.data);
+  if (!snapshot) return "RETAIN";
+  const identity = assessmentReceiptIdentity(args.data);
+  if (identity.obligation_id !== args.obligationId) return "RETAIN";
+  if (args.expectedAggregateVersion === "" || identity.aggregate_version !== args.expectedAggregateVersion) return "RETAIN";
+  return "RELEASE";
 }

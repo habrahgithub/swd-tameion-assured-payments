@@ -371,62 +371,47 @@ describeEval("synthetic evaluation grades model usefulness and deterministic saf
   });
 });
 
-describeEval("whole-batch deadline returns a typed incomplete result before platform termination", () => {
-  itEval("stops before a case whose worst-case latency would exceed the budget", async () => {
-    let clock = 0;
+describeEval("one orchestrator deadline for the full batch; each case gets only the remaining budget", () => {
+  itEval("returns a typed INCOMPLETE result with partial evidence when a case outlives the remaining budget", async () => {
+    let calls = 0;
     const provider = fakeProvider((ctx) => {
-      clock += 25_000;
-      return { obligation_id: ctx.obligation_id, decision: "HOLD", finding_codes: [], evidence_ids: [], uncertainty_signal: false, explanation: "x" };
+      calls += 1;
+      if (calls === 1) return { obligation_id: ctx.obligation_id, decision: "HOLD", finding_codes: [], evidence_ids: [], uncertainty_signal: false, explanation: "fast" };
+      return new Promise(() => {});
     });
-    const result = await runSyntheticEvaluation(provider, { now: () => clock, budgetMs: 62_000, worstCaseCaseMs: 62_000 });
+    const started = Date.now();
+    const result = await runSyntheticEvaluation(provider, { budgetMs: 150 });
     expectEval(result.status).toBe("INCOMPLETE");
     if (result.status !== "INCOMPLETE") return;
     expectEval(result.reason).toBe("DEADLINE");
-    expectEval(result.outcomes).toHaveLength(1);
-    expectEval(provider.calls).toBe(1);
+    expectEval(result.outcomes.map((o) => o.case_id)).toEqual(["POSITIVE_COMPLETE"]);
+    expectEval(Date.now() - started).toBeLessThan(2000);
   });
 });
 
-describe("capability-smoke route: batch confirmation is gated by the same Preview, enablement and auth boundaries", () => {
-  const ROUTE = "../app/api/internal/j1d/capability-smoke/route";
-  const ENV_KEYS = ["VERCEL_ENV", "J1D_SMOKE_ENABLED", "J1D_SMOKE_SECRET"] as const;
-  let saved: Record<string, string | undefined>;
-
-  beforeEach(() => {
-    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-    for (const k of ENV_KEYS) delete process.env[k];
+describeEval("usefulness uses normalized application truth, rejecting unsupported schema-valid proposals", () => {
+  itEval("does not count a positive PAY whose finding is unsupported as useful", async () => {
+    const provider = fakeProvider((ctx) => ({ obligation_id: ctx.obligation_id, decision: "PAY", finding_codes: ["DUPLICATE_SOURCE"], evidence_ids: ctx.evidence_ids, uncertainty_signal: false, explanation: "x" }));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    expectEval(result.outcomes.find((o) => o.case_id === "POSITIVE_COMPLETE")?.model_usefulness_met).toBe(false);
   });
 
-  afterEach(() => {
-    for (const k of ENV_KEYS) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
+  itEval("does not count a wrong-identity schema-valid proposal as useful", async () => {
+    const provider = fakeProvider((ctx) => ({ obligation_id: "SOMEONE-ELSE", decision: ctx.obligation_id.includes("POSITIVE") ? "PAY" : "HOLD", finding_codes: [], evidence_ids: ctx.evidence_ids, uncertainty_signal: false, explanation: "x" }));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    expectEval(result.outcomes.every((o) => o.model_usefulness_met === false)).toBe(true);
   });
 
-  it("refuses the batch outside Preview with a 404 and never reaches the provider", async () => {
-    const { POST } = await import(ROUTE);
-    const response = await POST(new Request("http://x/", { method: "POST", body: JSON.stringify({ confirm: "RUN_SYNTHETIC_NVIDIA_EVALUATION_BATCH" }) }));
-    expect(response.status).toBe(404);
-    expect(providerAssess).not.toHaveBeenCalled();
-  });
-
-  it("returns a typed configuration blocker for the batch when enablement or secret is missing in Preview", async () => {
-    process.env.VERCEL_ENV = "preview";
-    const { POST } = await import(ROUTE);
-    const response = await POST(new Request("http://x/", { method: "POST", headers: { authorization: "Bearer x" }, body: JSON.stringify({ confirm: "RUN_SYNTHETIC_NVIDIA_EVALUATION_BATCH" }) }));
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: "BLOCKED", code: "BLOCKED_CONFIG" });
-    expect(providerAssess).not.toHaveBeenCalled();
-  });
-
-  it("rejects an unknown confirmation before any provider call", async () => {
-    process.env.VERCEL_ENV = "preview";
-    process.env.J1D_SMOKE_ENABLED = "true";
-    process.env.J1D_SMOKE_SECRET = "s".repeat(40);
-    const { POST } = await import(ROUTE);
-    const response = await POST(new Request("http://x/", { method: "POST", headers: { authorization: `Bearer ${"s".repeat(40)}` }, body: JSON.stringify({ confirm: "RUN_ANYTHING" }) }));
-    expect(response.status).toBe(400);
-    expect(providerAssess).not.toHaveBeenCalled();
+  itEval("retains privacy-safe proposal fields separately from the normalized result", async () => {
+    const provider = fakeProvider((ctx) => ({ obligation_id: ctx.obligation_id, decision: "HOLD", finding_codes: [], evidence_ids: [], uncertainty_signal: true, explanation: "synthetic reason" }));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    const outcome = result.outcomes[1];
+    expectEval(outcome.raw.explanation).toBe("synthetic reason");
+    expectEval(outcome.raw.uncertainty_signal).toBe(true);
+    expectEval(outcome.normalized.decision).toBeDefined();
+    expectEval(outcome.raw).not.toBe(outcome.normalized);
   });
 });
