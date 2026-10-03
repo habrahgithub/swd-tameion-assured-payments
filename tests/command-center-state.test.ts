@@ -8,7 +8,9 @@ import {
   killSwitchPresentation,
   obligationListState,
   obligationsFetchErrorMessage,
+  pendingPrerequisiteLabel,
   reportSummaryUnavailableReason,
+  settlementDisplay,
   workflowState,
 } from "../app/command-center";
 
@@ -21,13 +23,8 @@ describe("Command Center obligation list presentation", () => {
   });
 });
 
-describe("Command Center fetch error presentation (root-cause: unguarded response.json())", () => {
+describe("Command Center fetch error presentation", () => {
   it("never leaks a native JSON-parse exception; reports the HTTP status instead", () => {
-    // Reproduces the confirmed production failure: an upstream 500 with an
-    // empty body makes response.json() throw a native, browser-specific
-    // parse error ("The string did not match the expected pattern." on
-    // WebKit, "Unexpected end of JSON input" on V8). Neither is a usable
-    // operator-facing message.
     expect(obligationsFetchErrorMessage(500, null)).toBe("Obligations unavailable (HTTP 500).");
   });
 
@@ -74,11 +71,15 @@ describe("Command Center kill-switch presentation", () => {
     expect(killSwitchLabel("no-selection")).toBe("No obligation selected");
   });
 
-  it("reflects the real server-derived kill-switch state once an obligation is selected", () => {
-    expect(killSwitchPresentation(true, false)).toBe("allowed");
-    expect(killSwitchLabel("allowed")).toBe("Execution allowed");
-    expect(killSwitchPresentation(true, true)).toBe("disabled");
-    expect(killSwitchLabel("disabled")).toBe("Execution disabled");
+  it("never encodes an inactive kill switch as 'Execution allowed' (release is separate, still NOT_GRANTED)", () => {
+    expect(killSwitchPresentation(true, false)).toBe("inactive");
+    expect(killSwitchLabel("inactive")).not.toBe("Execution allowed");
+    expect(killSwitchLabel("inactive")).toContain("does not grant release");
+  });
+
+  it("reflects an engaged kill switch", () => {
+    expect(killSwitchPresentation(true, true)).toBe("engaged");
+    expect(killSwitchLabel("engaged")).toBe("Execution disabled");
   });
 });
 
@@ -105,6 +106,30 @@ describe("Command Center operational report availability", () => {
   it("treats a verified-empty or populated list as a real, reportable summary", () => {
     expect(reportSummaryUnavailableReason("empty")).toBeNull();
     expect(reportSummaryUnavailableReason("ready")).toBeNull();
+  });
+});
+
+describe("Command Center unmet-prerequisite label (no 'awaiting authorization' before assessment)", () => {
+  it("names assessment as the first unmet prerequisite when no current assessment exists", () => {
+    expect(pendingPrerequisiteLabel(false)).toContain("Assessment required");
+    expect(pendingPrerequisiteLabel(false)).not.toContain("Awaiting human authorization");
+  });
+
+  it("names human authorization only after a current assessment exists", () => {
+    expect(pendingPrerequisiteLabel(true)).toBe("Awaiting human authorization");
+  });
+});
+
+describe("Command Center settlement display (AED source keeps derived settlement truth)", () => {
+  it("does not claim settlement is 'Not applicable' for an AED source with server settlement truth", () => {
+    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
+    expect(text).not.toContain("Not applicable");
+    expect(text).toContain("1568.413887 USDC");
+    expect(text).toContain("5760.00 AED");
+  });
+
+  it("reports unavailable settlement truth rather than a fabricated amount", () => {
+    expect(settlementDisplay({ currency: "AED", amount: "5760.00" }, undefined)).toContain("Unavailable");
   });
 });
 

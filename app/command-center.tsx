@@ -10,6 +10,7 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
+import { interpretPostResponse, isCurrentRequest, parseJsonBody } from "../src/client/command-center-requests";
 import {
   buildHoldEscalateReport,
   buildHoldEscalateSummary,
@@ -129,21 +130,40 @@ export function assessmentGateCopy(
   return `Authorization is refused for every obligation until all ${total} have been assessed.`;
 }
 
-export type KillSwitchPresentation = "no-selection" | "allowed" | "disabled";
+export type KillSwitchPresentation = "no-selection" | "inactive" | "engaged";
 
-/** Never report "Execution allowed" when there is no selected obligation —
- * that implies a real, checked state when none has been verified yet. */
+/** An inactive kill switch is one control fact only. It never grants release:
+ * payment authority remains separately NOT_GRANTED until human authorization,
+ * assessment and the Safety Kernel complete. */
 export function killSwitchPresentation(
   hasDetail: boolean,
   executionKillSwitched: boolean | undefined,
 ): KillSwitchPresentation {
   if (!hasDetail) return "no-selection";
-  return executionKillSwitched ? "disabled" : "allowed";
+  return executionKillSwitched ? "engaged" : "inactive";
 }
 
 export function killSwitchLabel(presentation: KillSwitchPresentation): string {
   if (presentation === "no-selection") return "No obligation selected";
-  return presentation === "disabled" ? "Execution disabled" : "Execution allowed";
+  if (presentation === "engaged") return "Execution disabled";
+  return "Kill switch inactive — does not grant release";
+}
+
+/** The first unmet prerequisite shown instead of a generic "awaiting authorization"
+ * when no current sealed assessment exists. */
+export function pendingPrerequisiteLabel(hasCurrentAssessment: boolean): string {
+  return hasCurrentAssessment ? "Awaiting human authorization" : "Assessment required before authorization";
+}
+
+/** Settlement display that keeps source truth and derived settlement separate.
+ * AED sources are settled through the fixed policy conversion; they are never
+ * reported as "Not applicable" when server settlement truth exists. */
+export function settlementDisplay(
+  source: { currency: string; amount: string },
+  settlement: { amount: string; asset: string } | undefined,
+): string {
+  if (!settlement) return `Unavailable — server settlement truth not loaded (source ${source.amount} ${source.currency}).`;
+  return `${settlement.amount} ${settlement.asset} (derived from source ${source.amount} ${source.currency} at fixed policy)`;
 }
 
 /** The aggregate-version fragment shown in the Authorization panel's intent
@@ -173,13 +193,17 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
 ];
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json();
-  return { ok: response.ok, status: response.status, data };
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const interpreted = interpretPostResponse(response.status, await response.text());
+    return { ok: interpreted.ok, status: interpreted.status, data: interpreted.data ?? { error: interpreted.message } };
+  } catch {
+    return { ok: false, status: 0, data: { error: "Network request failed; no response was received. Retry after reloading current state." } };
+  }
 }
 
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
@@ -246,7 +270,11 @@ export function workflowState(detail: ObligationDetail | null): { label: string;
     return { label: "PAE consumed", tone: "neutral", explanation: "This payment authority has already been consumed and cannot be reused." };
   }
   if (aggregate.state === "APPROVAL_PENDING") {
-    return { label: "Awaiting human authorization", tone: "neutral", explanation: "No Tameion execution authority has been granted." };
+    return {
+      label: pendingPrerequisiteLabel(Boolean(detail.current_assessment)),
+      tone: "neutral",
+      explanation: "No Tameion execution authority has been granted.",
+    };
   }
   return { label: aggregate.state, tone: "neutral", explanation: "" };
 }
@@ -678,6 +706,8 @@ export function CommandCenter() {
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
+  const detailGeneration = useRef(0);
+  const selectedRef = useRef("");
 
   const refreshObligations = async (showLoading = false) => {
     if (showLoading) setObligationsStatus("loading");
@@ -731,12 +761,19 @@ export function CommandCenter() {
   };
 
   const refreshDetail = async (id: string): Promise<ObligationDetail | null> => {
+    const requestId = ++detailGeneration.current;
+    const isCurrent = () =>
+      isCurrentRequest({
+        requestId,
+        currentRequestId: detailGeneration.current,
+        requestedSelection: id,
+        currentSelection: selectedRef.current,
+      });
     try {
       const response = await fetch(`/api/obligations/${id}`);
-      // Same root-cause guard as refreshObligations: never let an empty or
-      // malformed body reach response.json() directly.
       const text = await response.text();
-      const data = tryParseJson(text);
+      const data = parseJsonBody(text);
+      if (!isCurrent()) return null;
       if (!response.ok || !data || typeof data !== "object") {
         throw new Error(obligationsFetchErrorMessage(response.status, data));
       }
@@ -744,6 +781,7 @@ export function CommandCenter() {
       setDetailError(null);
       return data as ObligationDetail;
     } catch (error) {
+      if (!isCurrent()) return null;
       setDetail(null);
       setDetailError(error instanceof Error ? error.message : "Obligation detail could not be loaded.");
       return null;
@@ -751,7 +789,11 @@ export function CommandCenter() {
   };
 
   useEffect(() => {
+    selectedRef.current = selectedId;
+    detailGeneration.current += 1;
     setDisplayedAssessment(null);
+    setDetail(null);
+    setDetailError(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -769,8 +811,15 @@ export function CommandCenter() {
       const result = await action();
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
-      await Promise.all([refreshDetail(selectedId), refreshObligations()]);
+    } catch {
+      setLastResult({
+        label,
+        data: { error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again." },
+        ok: false,
+        status: 0,
+      });
     } finally {
+      await Promise.all([refreshDetail(selectedId), refreshObligations()]);
       setBusy(false);
     }
   };
@@ -1103,9 +1152,10 @@ export function CommandCenter() {
                 <Field label="Source obligation amount (source truth)" value={`${detail.record.amount} ${detail.record.currency}`} />
                 <Field
                   label="Settlement amount (execution rail)"
-                  value={detail.record.currency === "USD"
-                    ? `${detail.aggregate.amount} ${detail.aggregate.asset}`
-                    : `Not applicable — unsupported ${detail.record.currency}`}
+                  value={settlementDisplay(
+                    { currency: detail.record.currency, amount: detail.record.amount },
+                    detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
+                  )}
                 />
                 <Field label="Network" value={detail.aggregate.network} />
                 <Field label="Aggregate version" value={String(detail.aggregate.aggregate_version)} />
@@ -1271,7 +1321,7 @@ export function CommandCenter() {
 
                 <div
                   className={`flex flex-wrap items-center justify-between gap-3 border-l-[3px] px-3 py-2 ${
-                    killSwitchView === "disabled"
+                    killSwitchView === "engaged"
                       ? "border-l-[var(--color-danger)] bg-[var(--color-surface)]"
                       : "border-l-[var(--color-border)]"
                   }`}
@@ -1279,11 +1329,9 @@ export function CommandCenter() {
                   <div>
                     <p
                       className={`text-[13px] font-semibold uppercase tracking-wide ${
-                        killSwitchView === "disabled"
+                        killSwitchView === "engaged"
                           ? "text-[var(--color-danger)]"
-                          : killSwitchView === "no-selection"
-                            ? "text-[var(--color-ink-muted)]"
-                            : "text-[var(--status-pass-text)]"
+                          : "text-[var(--color-ink-muted)]"
                       }`}
                     >
                       Kill switch: {killSwitchLabel(killSwitchView)}
