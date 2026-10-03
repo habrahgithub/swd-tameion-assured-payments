@@ -11,6 +11,7 @@ import {
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
 import { interpretPostResponse, isCurrentRequest, parseJsonBody } from "../src/client/command-center-requests";
+import { buildAssessmentTrace } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
   buildHoldEscalateSummary,
@@ -214,6 +215,13 @@ export function authorizationBlockers(state: {
 
 export function reconciliationLeadLine(submissionStatus: string | null): string {
   return submissionStatus === null ? "No submission; nothing to reconcile." : `Submission status: ${submissionStatus}.`;
+}
+
+export function queueHeaderLabel(presentation: ObligationListPresentation, summary: HoldEscalateSummary): string {
+  if (presentation === "loading") return "Loading genuine queue — completion is not yet known.";
+  if (presentation === "error") return "Genuine queue unavailable — completion cannot be determined.";
+  if (presentation === "empty") return "No genuine obligations are in the queue.";
+  return queueCompletionLabel(summary);
 }
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
@@ -428,6 +436,33 @@ function EvidenceAndRuntimeDetail({ assessment }: { assessment: AssessmentReview
   );
 }
 
+function AssessmentTraceView({ race }: { race: RaceAssessment }) {
+  const steps = buildAssessmentTrace(race);
+  return (
+    <details className="rounded border border-[var(--color-border)] px-3 py-2 text-xs" data-testid="assessment-trace">
+      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">
+        Evidence trace — sourceIDs, facts, proposal, findings, catalog
+      </summary>
+      <ol className="mt-2 space-y-2">
+        {steps.map((step) => (
+          <li key={step.step} className="border-l-2 border-[var(--color-border)] pl-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+              {step.label} · {step.authority.replaceAll("_", " ").toLowerCase()}
+            </p>
+            {step.items.length > 0 ? (
+              <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink)]">
+                {step.items.map((item, index) => <li key={index}>{item}</li>)}
+              </ul>
+            ) : (
+              <p className="text-[12px] text-[var(--color-ink-muted)]">{step.empty_reason}</p>
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 /** Unified advisory assessment display — the dominant status for the
  * Assessment panel. Renders the Finance Agent's PAY/HOLD/ESCALATE proposal
  * with rationale, deterministic findings, catalog-derived remediation,
@@ -535,6 +570,8 @@ function AdvisoryAssessmentCard({
 
       {/* Provider/runtime truth — advisory-only */}
       <ProviderTruthRow truth={assessment.provider_truth} />
+
+      {race && <AssessmentTraceView race={race} />}
 
       {/* Progressive disclosure for hash/evidence/runtime */}
       <EvidenceAndRuntimeDetail assessment={assessment} />
@@ -1031,6 +1068,7 @@ export function CommandCenter() {
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Obligations
           </p>
+          <p className="mb-2 text-[12px] text-[var(--color-ink)]">{queueHeaderLabel(listPresentation, reportSummary)}</p>
           {/* Ledger header row — columnar alignment for operator scan */}
           {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             <span>Id</span>

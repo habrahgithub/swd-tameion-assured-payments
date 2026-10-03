@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import type { RaceAssessment } from "../src/agent/schema";
+import { buildAssessmentTrace, type AssessmentTraceStep } from "../src/client/command-center-state";
+
 import {
   aggregateVersionLabel,
   assessmentCoverageLabel,
@@ -199,5 +202,101 @@ describe("reconciliation leads with the absence of submission", () => {
 
   it("does not claim nothing to reconcile once a submission exists", () => {
     expect(reconciliationLeadLine("SUBMITTED")).not.toContain("nothing to reconcile");
+  });
+});
+
+import { queueHeaderLabel } from "../app/command-center";
+
+describe("obligations queue header distinguishes incomplete from completed states", () => {
+  const summary = (unassessed: number, pay = 0) => ({ total: 5, unassessed, hold: 5 - unassessed - pay, escalate: 0, pay });
+
+  it("never claims completion while the genuine queue is loading, unavailable or empty", () => {
+    expect(queueHeaderLabel("loading", summary(5))).not.toContain("Completed");
+    expect(queueHeaderLabel("error", summary(5))).not.toContain("Completed");
+    expect(queueHeaderLabel("empty", { total: 0, unassessed: 0, hold: 0, escalate: 0, pay: 0 })).not.toContain("Completed");
+  });
+
+  it("reports incomplete assessment while any obligation is unassessed", () => {
+    expect(queueHeaderLabel("ready", summary(5))).toContain("Incomplete");
+  });
+
+  it("reports completed no-candidate only after every obligation is assessed with no PAY", () => {
+    expect(queueHeaderLabel("ready", summary(0, 0))).toContain("Completed — no PAY candidate");
+  });
+});
+
+function race(overrides: Partial<{ evidence_ids: string[]; findings: Array<{ code: string; severity: "HOLD" | "ESCALATE"; reason: string }>; proposed: string[]; explanation: string }> = {}): RaceAssessment {
+  const findings = overrides.findings ?? [];
+  return {
+    result: { decision: findings.length ? "HOLD" : "PAY", decision_summary: "summary", validated_findings: findings },
+    action_taken: { summary: "checked", checks: [] },
+    caveats: {
+      missing_context: [],
+      uncertainty_signal: false,
+      model_proposed_findings: overrides.proposed ?? [],
+      model_proposed_findings_authority: "NON_AUTHORITATIVE",
+      model_explanation: overrides.explanation ?? "model text",
+      model_explanation_authority: "NON_AUTHORITATIVE",
+    },
+    evidence: {
+      evidence_ids: overrides.evidence_ids ?? ["SYN-EVD-001"],
+      authoritative_facts: {
+        obligation_id: "OBL-1", aggregate_version: "1", amount: "100.00", currency: "USD",
+        due_date: "2026-02-01", due_date_status: "STATED_ON_SOURCE", due_date_position: "FUTURE",
+        as_of_date: "2026-01-01", state_at_event_baseline: "OUTSTANDING", business_purpose_confirmed: true,
+        source_evidence_present: true, destination_status: "READY",
+      },
+    },
+    remediation: findings.map((f) => ({
+      finding_code: f.code, reason: f.reason, required_action: `Resolve ${f.code}`, required_evidence: ["doc"],
+      owner_role: "Treasury operations", reassess_after_resolution: true,
+      ...(f.severity === "ESCALATE" ? { escalation_target: "Finance controller" } : {}),
+    })),
+    prompt_identity: null,
+  } as unknown as RaceAssessment;
+}
+
+const stepNamed = (steps: AssessmentTraceStep[], step: AssessmentTraceStep["step"]) => steps.find((s) => s.step === step)!;
+
+describe("assessment trace hierarchy derived from existing RACE fields", () => {
+  it("orders the trace sourceIDs → facts → proposal → validated findings → catalog", () => {
+    expect(buildAssessmentTrace(race()).map((s) => s.step)).toEqual([
+      "SOURCE_IDS", "SUPPLIED_FACTS", "PROPOSAL", "VALIDATED_FINDINGS", "CATALOG",
+    ]);
+  });
+
+  it("lists only the supplied evidence IDs and claims none when none were supplied", () => {
+    expect(stepNamed(buildAssessmentTrace(race({ evidence_ids: ["SYN-EVD-001"] })), "SOURCE_IDS").items).toEqual(["SYN-EVD-001"]);
+    const empty = stepNamed(buildAssessmentTrace(race({ evidence_ids: [] })), "SOURCE_IDS");
+    expect(empty.items).toEqual([]);
+    expect(empty.empty_reason).toContain("no evidence is claimed");
+  });
+
+  it("labels the model proposal as non-authoritative and never as a finding", () => {
+    const proposal = stepNamed(buildAssessmentTrace(race({ explanation: "advisory text" })), "PROPOSAL");
+    expect(proposal.authority).toBe("NON_AUTHORITATIVE");
+    expect(proposal.items).toContain("advisory text");
+  });
+
+  it("shows proposed findings that the deterministic checks did not validate as rejected", () => {
+    const proposal = stepNamed(buildAssessmentTrace(race({ proposed: ["DUPLICATE_SOURCE"], findings: [] })), "PROPOSAL");
+    expect(proposal.items.join(" ")).toContain("DUPLICATE_SOURCE — not validated; rejected by deterministic checks");
+  });
+
+  it("maps each validated finding one-to-one onto a catalog remediation item", () => {
+    const steps = buildAssessmentTrace(race({ findings: [{ code: "DUE_DATE_NOT_STATED", severity: "HOLD", reason: "no due date" }] }));
+    const findings = stepNamed(steps, "VALIDATED_FINDINGS");
+    const catalog = stepNamed(steps, "CATALOG");
+    expect(findings.items).toHaveLength(1);
+    expect(catalog.items).toHaveLength(1);
+    expect(catalog.items[0]).toContain("DUE_DATE_NOT_STATED");
+    expect(catalog.items[0]).toContain("Treasury operations");
+  });
+
+  it("makes no investigation, raw-document or invented-data claim anywhere in the trace", () => {
+    const text = JSON.stringify(buildAssessmentTrace(race({ findings: [{ code: "DUE_DATE_NOT_STATED", severity: "HOLD", reason: "no due date" }] }))).toLowerCase();
+    expect(text).not.toContain("investigat");
+    expect(text).not.toContain("raw document");
+    expect(text).not.toContain("independent");
   });
 });
