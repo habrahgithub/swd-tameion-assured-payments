@@ -70,18 +70,18 @@ describe("Command Center assessment gate copy", () => {
 
 describe("Command Center kill-switch presentation", () => {
   it("shows 'no obligation selected' instead of implying execution is allowed", () => {
-    expect(killSwitchPresentation(false, undefined)).toBe("no-selection");
+    expect(killSwitchPresentation("none", undefined)).toBe("no-selection");
     expect(killSwitchLabel("no-selection")).toBe("No obligation selected");
   });
 
   it("never encodes an inactive kill switch as 'Execution allowed' (release is separate, still NOT_GRANTED)", () => {
-    expect(killSwitchPresentation(true, false)).toBe("inactive");
+    expect(killSwitchPresentation("loaded", false)).toBe("inactive");
     expect(killSwitchLabel("inactive")).not.toBe("Execution allowed");
     expect(killSwitchLabel("inactive")).toContain("does not grant release");
   });
 
   it("reflects an engaged kill switch", () => {
-    expect(killSwitchPresentation(true, true)).toBe("engaged");
+    expect(killSwitchPresentation("loaded", true)).toBe("engaged");
     expect(killSwitchLabel("engaged")).toBe("Execution disabled");
   });
 });
@@ -197,11 +197,11 @@ describe("authorization blockers name the first unmet prerequisite in order", ()
 
 describe("reconciliation leads with the absence of submission", () => {
   it("says there is nothing to reconcile when no submission exists", () => {
-    expect(reconciliationLeadLine(null)).toBe("No submission; nothing to reconcile.");
+    expect(reconciliationLeadLine("loaded", null)).toBe("No submission; nothing to reconcile.");
   });
 
   it("does not claim nothing to reconcile once a submission exists", () => {
-    expect(reconciliationLeadLine("SUBMITTED")).not.toContain("nothing to reconcile");
+    expect(reconciliationLeadLine("loaded", { status: "SUBMITTED" })).not.toContain("nothing to reconcile");
   });
 });
 
@@ -298,5 +298,87 @@ describe("assessment trace hierarchy derived from existing RACE fields", () => {
     expect(text).not.toContain("investigat");
     expect(text).not.toContain("raw document");
     expect(text).not.toContain("independent");
+  });
+});
+
+import { lifecycleStopLabel, killSwitchPresentation as ksp, reconciliationLeadLine as recon } from "../app/command-center";
+
+describe("unknown truth never asserts inactive or no-submission", () => {
+  it("does not assert inactive when the kill-switch field is absent", () => {
+    expect(ksp("loaded", undefined)).toBe("unknown");
+    expect(killSwitchLabel("unknown")).toContain("unknown");
+  });
+
+  it("does not assert inactive while detail is loading or failed", () => {
+    expect(ksp("loading", undefined)).toBe("no-selection");
+    expect(ksp("failed", undefined)).toBe("no-selection");
+  });
+
+  it("asserts inactive only from an explicit false on loaded detail", () => {
+    expect(ksp("loaded", false)).toBe("inactive");
+  });
+
+  it("does not assert no submission while detail is loading, failed or absent", () => {
+    for (const state of ["loading", "failed", "none"] as const) {
+      expect(recon(state, undefined)).not.toContain("No submission");
+    }
+  });
+
+  it("asserts no submission only from loaded detail with an explicit null execution", () => {
+    expect(recon("loaded", null)).toBe("No submission; nothing to reconcile.");
+    expect(recon("loaded", undefined)).not.toContain("No submission");
+  });
+});
+
+describe("one lifecycle truth for the genuine path (STOP before all assessed)", () => {
+  const ready = (total: number, assessed: number, pay = 0) => ({ presentation: "ready" as const, total, assessed, pay });
+
+  it("never claims completion while loading, unavailable or empty", () => {
+    expect(lifecycleStopLabel({ presentation: "loading", total: 0, assessed: 0, pay: 0 })).not.toContain("Completed");
+    expect(lifecycleStopLabel({ presentation: "error", total: 0, assessed: 0, pay: 0 })).not.toContain("Completed");
+    expect(lifecycleStopLabel({ presentation: "empty", total: 0, assessed: 0, pay: 0 })).not.toContain("Completed");
+  });
+
+  it("states STOP before all assessed, including zero of five", () => {
+    expect(lifecycleStopLabel(ready(5, 0))).toContain("STOP");
+    expect(lifecycleStopLabel(ready(5, 3))).toContain("STOP");
+  });
+
+  it("states completion only when all assessed and no PAY candidate exists", () => {
+    expect(lifecycleStopLabel(ready(5, 5, 0))).toContain("Completed");
+    expect(lifecycleStopLabel(ready(5, 5, 2))).not.toContain("Completed — no PAY");
+  });
+});
+
+describe("financial oracles cover USD, AED and unsupported currency explicitly", () => {
+  it("shows USD settlement with its source amount, not a not-applicable message", () => {
+    const text = settlementDisplay({ currency: "USD", amount: "100.00" }, { amount: "100.000000", asset: "USDC" });
+    expect(text).toContain("100.000000 USDC");
+    expect(text).not.toContain("Not applicable");
+  });
+
+  it("shows AED settlement as derived at the fixed policy", () => {
+    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
+    expect(text).toContain("derived from source 5760.00 AED");
+  });
+
+  it("does not present an unsupported currency as a derived settlement or a zero amount", () => {
+    const text = settlementDisplay({ currency: "EUR", amount: "300.00" }, { amount: "0.000000", asset: "USDC" });
+    expect(text).toContain("unsupported source currency EUR");
+    expect(text).not.toContain("0.000000 USDC");
+  });
+});
+
+describe("trace exposes due-date and readiness provenance and qualifies completeness as UNVERIFIED", () => {
+  it("states the due-date status and the destination readiness source from the record", () => {
+    const steps = buildAssessmentTrace(race());
+    const facts = stepNamed(steps, "SUPPLIED_FACTS").items.join(" | ");
+    expect(facts).toContain("Due date status: STATED_ON_SOURCE");
+    expect(facts).toContain("Destination readiness source:");
+  });
+
+  it("qualifies source-to-context completeness as UNVERIFIED", () => {
+    const facts = stepNamed(buildAssessmentTrace(race()), "SUPPLIED_FACTS").items.join(" | ");
+    expect(facts).toContain("Source-to-context completeness: UNVERIFIED");
   });
 });

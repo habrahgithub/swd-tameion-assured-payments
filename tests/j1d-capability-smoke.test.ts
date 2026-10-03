@@ -293,67 +293,96 @@ describeEval("synthetic evaluation cases are fixed, schema-valid and single-fact
   });
 });
 
-describeEval("synthetic evaluation harness calls the real provider path and never forces PAY", () => {
-  itEval("retains the model-chosen outcome and passes when it matches the fixed expectation", async () => {
-    const provider = fakeProvider((ctx) => ({
-      obligation_id: ctx.obligation_id,
-      decision: ctx.obligation_id.includes("POSITIVE") ? "PAY" : "HOLD",
-      finding_codes: [],
-      evidence_ids: ctx.obligation_id.includes("POSITIVE") ? ["SYN-EVD-001"] : [],
-      uncertainty_signal: false,
-      explanation: "synthetic fake",
-    }));
-    const result = await runSyntheticEvaluation(provider);
-    expectEval(result.status).toBe("EVALUATED");
-    if (result.status !== "EVALUATED") return;
-    expectEval(provider.calls).toBe(4);
-    expectEval(result.outcomes.every((o) => o.expectation_met)).toBe(true);
+describeEval("synthetic evaluation grades model usefulness and deterministic safety separately", () => {
+  const rawFor = (ctx: { obligation_id: string; evidence_ids: string[] }, decision: string, codes: string[] = []) => ({
+    obligation_id: ctx.obligation_id,
+    decision,
+    finding_codes: codes,
+    evidence_ids: decision === "PAY" ? ctx.evidence_ids : [],
+    uncertainty_signal: false,
+    explanation: "synthetic fake",
   });
 
-  itEval("records an unexpected outcome as a failure rather than passing it", async () => {
-    const provider = fakeProvider((ctx) => ({
-      obligation_id: ctx.obligation_id,
-      decision: "HOLD",
-      finding_codes: [],
-      evidence_ids: [],
-      uncertainty_signal: false,
-      explanation: "synthetic fake",
-    }));
-    const result = await runSyntheticEvaluation(provider);
+  itEval("passes when the model is useful and the deterministic layer is safe", async () => {
+    const provider = fakeProvider((ctx) => rawFor(ctx, ctx.obligation_id.includes("POSITIVE") ? "PAY" : "HOLD"));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
     if (result.status !== "EVALUATED") throw new Error("expected evaluation");
-    const positive = result.outcomes.find((o) => o.case_id === "POSITIVE_COMPLETE");
-    expectEval(positive?.expectation_met).toBe(false);
-    expectEval(result.failures).toBeGreaterThan(0);
+    expectEval(result.model_failures).toBe(0);
+    expectEval(result.safety_failures).toBe(0);
+    expectEval(provider.calls).toBe(4);
   });
 
-  itEval("rejects an unsupported proposal through the normalizer, never as PAY", async () => {
-    const provider = fakeProvider((ctx: { obligation_id: string; evidence_ids: string[] }) => ({
-      obligation_id: ctx.obligation_id,
-      decision: "PAY",
-      finding_codes: ["DUPLICATE_SOURCE"],
-      evidence_ids: ctx.evidence_ids,
-      uncertainty_signal: false,
-      explanation: "unsupported duplicate claim",
-    }));
-    const result = await runSyntheticEvaluation(provider);
+  itEval("fails the model on alwaysPAY negatives even though deterministic safety holds", async () => {
+    const provider = fakeProvider((ctx) => rawFor(ctx, "PAY"));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    expectEval(result.model_failures).toBe(3);
+    expectEval(result.safety_failures).toBe(0);
+    for (const outcome of result.outcomes.filter((o) => o.case_id !== "POSITIVE_COMPLETE")) {
+      expectEval(outcome.raw.decision).toBe("PAY");
+      expectEval(outcome.normalized.decision).not.toBe("PAY");
+      expectEval(outcome.model_usefulness_met).toBe(false);
+      expectEval(outcome.deterministic_safety_met).toBe(true);
+    }
+  });
+
+  itEval("fails the model on a malformed raw output while retaining that it was invalid", async () => {
+    const provider = fakeProvider(() => ({ decision: "MAYBE" }));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
     if (result.status !== "EVALUATED") throw new Error("expected evaluation");
     for (const outcome of result.outcomes) {
-      expectEval(outcome.decision).not.toBe("PAY");
-    }
-    // A PAY with no supplied evidence is rejected earlier by SOURCE_EVIDENCE_MISSING;
-    // every case that reaches the unsupported-finding check must be MODEL_OUTPUT_INVALID.
-    const reachedUnsupportedCheck = result.outcomes.filter((o) => o.case_id !== "NEGATIVE_EVIDENCE");
-    for (const outcome of reachedUnsupportedCheck) {
-      expectEval(outcome.codes).toContain("MODEL_OUTPUT_INVALID");
+      expectEval(outcome.raw.schema_valid).toBe(false);
+      expectEval(outcome.model_usefulness_met).toBe(false);
+      expectEval(outcome.deterministic_safety_met).toBe(true);
     }
   });
 
-  itEval("stops the batch on an authentication boundary with a typed blocker and no retry", async () => {
-    const provider = fakeProvider(() => {
-      throw new Error("NVIDIA request failed with HTTP 401");
+  itEval("keeps the raw unsupported proposal and its normalized rejection side by side", async () => {
+    const provider = fakeProvider((ctx) => rawFor(ctx, "PAY", ["DUPLICATE_SOURCE"]));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    for (const outcome of result.outcomes) {
+      expectEval(outcome.raw.finding_codes).toEqual(["DUPLICATE_SOURCE"]);
+      expectEval(outcome.normalized.decision).not.toBe("PAY");
+    }
+  });
+
+  itEval("records provider, model, configuration and prompt provenance per case", async () => {
+    const provider = fakeProvider((ctx) => rawFor(ctx, "HOLD"));
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    expectEval(result.outcomes[0].provenance?.model_id).toBe("fake");
+    expectEval(result.outcomes[0].provenance?.runtime_config_sha256).toBe("0".repeat(64));
+  });
+
+  itEval("stops at a mid-batch authentication boundary and retains the completed partial evidence", async () => {
+    let call = 0;
+    const provider = fakeProvider((ctx) => {
+      call += 1;
+      if (call === 3) throw new Error("NVIDIA request failed with HTTP 401");
+      return rawFor(ctx, "HOLD");
     });
-    const result = await runSyntheticEvaluation(provider);
-    expectEval(result).toEqual({ status: "BLOCKED", code: "PROVIDER_AUTH" });
+    const result = await runSyntheticEvaluation(provider, { now: () => 0 });
+    expectEval(result.status).toBe("BLOCKED");
+    if (result.status !== "BLOCKED") return;
+    expectEval(result.code).toBe("PROVIDER_AUTH");
+    expectEval(result.outcomes.map((o) => o.case_id)).toEqual(["POSITIVE_COMPLETE", "NEGATIVE_TRUST"]);
+    expectEval(provider.calls).toBe(3);
+  });
+});
+
+describeEval("whole-batch deadline returns a typed incomplete result before platform termination", () => {
+  itEval("stops before a case whose worst-case latency would exceed the budget", async () => {
+    let clock = 0;
+    const provider = fakeProvider((ctx) => {
+      clock += 25_000;
+      return { obligation_id: ctx.obligation_id, decision: "HOLD", finding_codes: [], evidence_ids: [], uncertainty_signal: false, explanation: "x" };
+    });
+    const result = await runSyntheticEvaluation(provider, { now: () => clock, budgetMs: 62_000, worstCaseCaseMs: 62_000 });
+    expectEval(result.status).toBe("INCOMPLETE");
+    if (result.status !== "INCOMPLETE") return;
+    expectEval(result.reason).toBe("DEADLINE");
+    expectEval(result.outcomes).toHaveLength(1);
     expectEval(provider.calls).toBe(1);
   });
 });

@@ -155,49 +155,101 @@ export function buildSyntheticEvaluationContext(id: SyntheticEvaluationCaseId): 
 export type SyntheticEvaluationOutcome = {
   case_id: SyntheticEvaluationCaseId;
   expected: "PAY" | "NOT_PAY";
-  decision: "PAY" | "HOLD" | "ESCALATE";
-  codes: string[];
-  expectation_met: boolean;
+  /** The model's raw output, validated only by schema; never normalized. */
+  raw: { schema_valid: boolean; decision: "PAY" | "HOLD" | "ESCALATE" | null; finding_codes: string[]; evidence_ids: string[] };
+  /** The deterministic normalizer's result for the same case. */
+  normalized: { decision: "PAY" | "HOLD" | "ESCALATE"; codes: string[]; prompt_identity: { version: string; sha256: string } | null };
+  provenance: { provider_name: string; model_id: string; model_config_version: string; runtime_config_sha256: string } | null;
+  model_usefulness_met: boolean;
+  deterministic_safety_met: boolean;
   authority: "NON_AUTHORITATIVE";
 };
 
 export type SyntheticEvaluationResult =
-  | { status: "EVALUATED"; outcomes: SyntheticEvaluationOutcome[]; failures: number }
-  | { status: "BLOCKED"; code: J1dCapabilitySmokeBlocker };
+  | { status: "EVALUATED"; outcomes: SyntheticEvaluationOutcome[]; model_failures: number; safety_failures: number }
+  | { status: "INCOMPLETE"; reason: "DEADLINE"; outcomes: SyntheticEvaluationOutcome[] }
+  | { status: "BLOCKED"; code: J1dCapabilitySmokeBlocker; outcomes: SyntheticEvaluationOutcome[] };
 
-/** Runs the four fixed cases through the real provider path and the real
- * normalizer. Never preinserts PAY. A provider access, rate, or transport
- * boundary stops the batch with a typed blocker and no retry. */
+/** Batch deadline inside the route's 65 s platform limit. Worst case per case is
+ * two 30 s attempts plus margin; a case that could exceed the budget is not
+ * started, and the typed incomplete result keeps the completed evidence. */
+const DEFAULT_BUDGET_MS = 62_000;
+const DEFAULT_WORST_CASE_CASE_MS = 62_000;
+
 export async function runSyntheticEvaluation(
   provider: Pick<AiProvider, "assess" | "runtimeIdentity">,
+  options: { now?: () => number; budgetMs?: number; worstCaseCaseMs?: number } = {},
 ): Promise<SyntheticEvaluationResult> {
+  const now = options.now ?? (() => Date.now());
+  const budgetMs = options.budgetMs ?? DEFAULT_BUDGET_MS;
+  const worstCaseCaseMs = options.worstCaseCaseMs ?? DEFAULT_WORST_CASE_CASE_MS;
+  const started = now();
   const outcomes: SyntheticEvaluationOutcome[] = [];
+
   for (const id of SYNTHETIC_EVALUATION_CASE_IDS) {
+    if (now() - started + worstCaseCaseMs > budgetMs) {
+      return { status: "INCOMPLETE", reason: "DEADLINE", outcomes };
+    }
+
     let thrown: unknown = null;
+    let rawOutput: unknown = undefined;
     const observed = {
       ...provider,
       assess: async (context: FinanceAgentContext) => {
         try {
-          return await provider.assess(context);
+          rawOutput = await provider.assess(context);
+          return rawOutput;
         } catch (error) {
           thrown = error;
           throw error;
         }
       },
     } as AiProvider;
-    const decision = await assessObligation(buildSyntheticEvaluationContext(id), observed);
-    if (thrown) return { status: "BLOCKED", code: classifyProviderError(thrown) };
-    if (wasProviderCallFailure(decision)) return { status: "BLOCKED", code: "PROVIDER_UNAVAILABLE" };
+    const context = buildSyntheticEvaluationContext(id);
+    const decision = await assessObligation(context, observed);
+    if (thrown) return { status: "BLOCKED", code: classifyProviderError(thrown), outcomes };
+    if (wasProviderCallFailure(decision)) return { status: "BLOCKED", code: "PROVIDER_UNAVAILABLE", outcomes };
 
+    const parsed = financeAgentModelRecommendationSchema.safeParse(rawOutput);
     const expected = EXPECTED_DECISION[id];
+    const rawDecision = parsed.success ? parsed.data.decision : null;
+    const modelUseful = parsed.success && (expected === "PAY" ? rawDecision === "PAY" : rawDecision !== "PAY");
+    // Safety can only be violated by a PAY on a case that must not pay; a refused
+    // positive is a usefulness miss, graded by model_usefulness_met.
+    const safe = expected === "NOT_PAY" ? decision.decision !== "PAY" : true;
+    const runtime = provider.runtimeIdentity;
     outcomes.push({
       case_id: id,
       expected,
-      decision: decision.decision,
-      codes: decision.race.result.validated_findings.map((finding) => finding.code),
-      expectation_met: expected === "PAY" ? decision.decision === "PAY" : decision.decision !== "PAY",
+      raw: {
+        schema_valid: parsed.success,
+        decision: rawDecision,
+        finding_codes: parsed.success ? [...parsed.data.finding_codes] : [],
+        evidence_ids: parsed.success ? [...parsed.data.evidence_ids] : [],
+      },
+      normalized: {
+        decision: decision.decision,
+        codes: decision.race.result.validated_findings.map((finding) => finding.code),
+        prompt_identity: decision.race.prompt_identity,
+      },
+      provenance: runtime
+        ? {
+            provider_name: runtime.provider_name,
+            model_id: runtime.model_id,
+            model_config_version: runtime.model_config_version,
+            runtime_config_sha256: runtime.runtime_config_sha256,
+          }
+        : null,
+      model_usefulness_met: modelUseful,
+      deterministic_safety_met: safe,
       authority: "NON_AUTHORITATIVE",
     });
   }
-  return { status: "EVALUATED", outcomes, failures: outcomes.filter((o) => !o.expectation_met).length };
+
+  return {
+    status: "EVALUATED",
+    outcomes,
+    model_failures: outcomes.filter((o) => !o.model_usefulness_met).length,
+    safety_failures: outcomes.filter((o) => !o.deterministic_safety_met).length,
+  };
 }

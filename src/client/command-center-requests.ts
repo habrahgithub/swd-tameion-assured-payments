@@ -41,3 +41,34 @@ export function isCurrentRequest(args: {
 }): boolean {
   return args.requestId === args.currentRequestId && args.requestedSelection === args.currentSelection && args.currentSelection !== "";
 }
+
+/** An action or detail result may mutate state only when it still belongs to the
+ * selected obligation. An empty selection never matches. */
+export function isSameIdentity(currentSelection: string, requestedSelection: string): boolean {
+  return currentSelection !== "" && currentSelection === requestedSelection;
+}
+
+/** The assessment recovery key is released only by a valid, identity-matched
+ * success receipt or the explicit terminal rejection ASM-001. Every other
+ * outcome (empty, HTML, malformed, structurally invalid, mismatched, network,
+ * transient server error) retains it so the same request can be retried. */
+export function assessmentKeyDisposition(args: {
+  status: number;
+  data: unknown | null;
+  obligationId: string;
+}): "RELEASE" | "RETAIN" {
+  const data = args.data;
+  if (args.status === 200 && data && typeof data === "object") {
+    const record = data as { assessment_id?: unknown; decision?: unknown };
+    const decision = record.decision as { obligation_id?: unknown } | undefined;
+    if (
+      typeof record.assessment_id === "string" &&
+      decision && typeof decision === "object" &&
+      decision.obligation_id === args.obligationId
+    ) {
+      return "RELEASE";
+    }
+  }
+  if (data && typeof data === "object" && (data as { code?: unknown }).code === "ASM-001") return "RELEASE";
+  return "RETAIN";
+}
