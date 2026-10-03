@@ -6,16 +6,18 @@ import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary"
 import {
   assessmentReviewSnapshot,
   currentReviewedAssessment,
-  shouldKeepAssessmentRecoveryKey,
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
+import { assessmentKeyDisposition, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { buildAssessmentTrace } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
   buildHoldEscalateSummary,
   type HoldEscalateReportInput,
   type HoldEscalateReportLine,
   type HoldEscalateSummary,
+  reportDecisionLabel,
 } from "../src/client/hold-escalate-report";
 
 interface ObligationSummary {
@@ -67,6 +69,183 @@ interface ObligationDetail {
 }
 
 type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation" | "report";
+type ObligationListStatus = "loading" | "error" | "ready";
+type ObligationListPresentation = "loading" | "error" | "empty" | "ready";
+
+export function obligationListState(
+  status: ObligationListStatus,
+  error: string | null,
+  count: number,
+): ObligationListPresentation {
+  if (status === "loading") return "loading";
+  if (status === "error" || error) return "error";
+  return count === 0 ? "empty" : "ready";
+}
+
+/** Deterministic error text for a failed /api/obligations fetch. Never
+ * derived from a thrown parse exception: an upstream 500 with an empty body
+ * makes `response.json()` throw a native, engine-specific message ("The
+ * string did not match the expected pattern." on WebKit, "Unexpected end of
+ * JSON input" on V8) that is not a usable operator-facing explanation. */
+export function obligationsFetchErrorMessage(status: number, body: unknown | null): string {
+  if (body && typeof body === "object" && "error" in body && typeof (body as { error: unknown }).error === "string") {
+    return (body as { error: string }).error;
+  }
+  return `Obligations unavailable (HTTP ${status}).`;
+}
+
+/** Best-effort JSON parse of a response body that may be empty or malformed
+ * (e.g. an upstream 500 with no body). Never throws. */
+function tryParseJson(text: string): unknown | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Coverage copy for the Assessment panel header. Distinguishes an
+ * unavailable or still-loading genuine list from a verified-empty one so
+ * neither is ever reported as a false "0/0 obligations assessed". */
+export function assessmentCoverageLabel(
+  presentation: ObligationListPresentation,
+  assessedCount: number,
+  total: number,
+): string {
+  if (presentation === "loading") return "Genuine obligations are loading — assessment coverage is not yet known.";
+  if (presentation === "error") return "Genuine obligations are unavailable — assessment coverage cannot be determined.";
+  if (presentation === "empty") return "No genuine obligations are currently available to assess.";
+  return `${assessedCount}/${total} obligations assessed`;
+}
+
+/** The "assess all N" authorization-gate reminder. Only meaningful once the
+ * genuine list is actually populated — otherwise it previously degraded to
+ * the nonsensical "assess all 0". */
+export function assessmentGateCopy(
+  presentation: ObligationListPresentation,
+  allAssessed: boolean,
+  total: number,
+): string | null {
+  if (presentation !== "ready" || allAssessed) return null;
+  return `Authorization is refused for every obligation until all ${total} have been assessed.`;
+}
+
+export type KillSwitchPresentation = "no-selection" | "inactive" | "engaged";
+
+/** An inactive kill switch is one control fact only. It never grants release:
+ * payment authority remains separately NOT_GRANTED until human authorization,
+ * assessment and the Safety Kernel complete. */
+export type DetailState = "none" | "loading" | "failed" | "loaded";
+
+export type KillSwitchView = KillSwitchPresentation | "unknown" | "loading" | "failed";
+
+export function killSwitchPresentation(state: DetailState, value: unknown): KillSwitchView {
+  if (state === "none") return "no-selection";
+  if (state === "loading") return "loading";
+  if (state === "failed") return "failed";
+  if (typeof value !== "boolean") return "unknown";
+  return value ? "engaged" : "inactive";
+}
+
+export function killSwitchLabel(presentation: KillSwitchView): string {
+  if (presentation === "no-selection") return "No obligation selected";
+  if (presentation === "loading") return "Kill switch: selected obligation detail loading — not verified";
+  if (presentation === "failed") return "Kill switch: selected obligation detail unavailable — not verified";
+  if (presentation === "unknown") return "Kill switch state unknown — not verified";
+  if (presentation === "engaged") return "Execution disabled";
+  return "Kill switch inactive — does not grant release";
+}
+
+export function lifecycleStopLabel(args: { presentation: ObligationListPresentation; total: number; assessed: number; pay: number }): string {
+  if (args.presentation === "loading") return "Genuine obligations are loading — lifecycle not yet known.";
+  if (args.presentation === "error") return "Genuine obligations are unavailable — lifecycle cannot be determined.";
+  if (args.presentation === "empty") return "No genuine obligations — nothing to assess or authorize.";
+  if (args.assessed < args.total) return `STOP — ${args.assessed} of ${args.total} assessed. Authorization is blocked until all are assessed.`;
+  if (args.pay > 0) return `Assessed — ${args.pay} PAY recommendation(s); advisory, still requires human authorization.`;
+  return "Completed — all assessed; no PAY candidate.";
+}
+
+/** The first unmet prerequisite shown instead of a generic "awaiting authorization"
+ * when no current sealed assessment exists. */
+export function pendingPrerequisiteLabel(hasCurrentAssessment: boolean): string {
+  return hasCurrentAssessment ? "Awaiting human authorization" : "Assessment required before authorization";
+}
+
+/** Settlement display that keeps source truth and derived settlement separate.
+ * AED sources are settled through the fixed policy conversion; they are never
+ * reported as "Not applicable" when server settlement truth exists. */
+export function settlementDisplay(
+  source: { currency: string; amount: string },
+  settlement: { amount: string; asset: string } | undefined,
+): string {
+  if (source.currency !== "AED" && source.currency !== "USD") {
+    return `Not settleable — unsupported source currency ${source.currency}; no settlement is derived.`;
+  }
+  if (!settlement) return `Unavailable — server settlement truth not loaded (source ${source.amount} ${source.currency}).`;
+  return `${settlement.amount} ${settlement.asset} (derived from source ${source.amount} ${source.currency} at fixed policy)`;
+}
+
+/** The aggregate-version fragment shown in the Authorization panel's intent
+ * sentence. Never the bare "v?" placeholder when nothing is selected. */
+export function aggregateVersionLabel(aggregateVersion: number | undefined, hasSelection: boolean): string {
+  if (!hasSelection) return "no obligation selected";
+  if (aggregateVersion === undefined) return "loading";
+  return String(aggregateVersion);
+}
+
+/** When the genuine list is unavailable or still loading, the HOLD/ESCALATE
+ * operational-report summary must say so instead of rendering an all-zero
+ * table that looks like a verified, reportable empty state. */
+export function reportSummaryUnavailableReason(presentation: ObligationListPresentation): string | null {
+  if (presentation === "error") return "Genuine obligations are unavailable — this operational report cannot be produced.";
+  if (presentation === "loading") return "Genuine obligations are loading — this operational report is not yet available.";
+  return null;
+}
+
+export function queueCompletionLabel(summary: HoldEscalateSummary): string {
+  if (summary.unassessed > 0) {
+    return `Incomplete assessment — ${summary.total - summary.unassessed} of ${summary.total} assessed. No candidate determination yet.`;
+  }
+  if (summary.pay > 0) {
+    return `Completed — ${summary.pay} PAY recommendation${summary.pay === 1 ? "" : "s"} (advisory; still requires human authorization).`;
+  }
+  return "Completed — no PAY candidate; all obligations assessed as HOLD or ESCALATE.";
+}
+
+/** Ordered first-unmet prerequisites for authorization. Only the first is the
+ * next action, but all unmet items are named so the operator sees the full gate. */
+export function authorizationBlockers(state: {
+  hasSelection: boolean;
+  allAssessed: boolean;
+  hasCurrentAssessment: boolean;
+  reviewed: boolean;
+  killSwitchEngaged: boolean;
+}): string[] {
+  const blockers: string[] = [];
+  if (!state.hasSelection) blockers.push("Select an obligation.");
+  if (!state.allAssessed) blockers.push("Assess all obligations (AUT-012 requires every obligation assessed).");
+  if (state.hasSelection && !state.hasCurrentAssessment) blockers.push("Run the current assessment for the selected obligation.");
+  if (state.hasCurrentAssessment && !state.reviewed) blockers.push("Review the current sealed assessment before authorization.");
+  if (state.killSwitchEngaged) blockers.push("Kill switch engaged — execution is disabled for this obligation.");
+  return blockers;
+}
+
+export function reconciliationLeadLine(state: DetailState, execution: unknown): string {
+  if (state !== "loaded") return "Submission state unknown — authoritative detail is not loaded.";
+  if (execution === null) return "No submission; nothing to reconcile.";
+  if (execution && typeof execution === "object" && typeof (execution as { status?: unknown }).status === "string") {
+    return `Submission status: ${(execution as { status: string }).status}.`;
+  }
+  return "Submission state unknown — authoritative execution field is absent.";
+}
+
+export function queueHeaderLabel(presentation: ObligationListPresentation, summary: HoldEscalateSummary): string {
+  if (presentation === "loading") return "Loading genuine queue — completion is not yet known.";
+  if (presentation === "error") return "Genuine queue unavailable — completion cannot be determined.";
+  if (presentation === "empty") return "No genuine obligations are in the queue.";
+  return queueCompletionLabel(summary);
+}
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "obligations", label: "Obligations" },
@@ -78,13 +257,17 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
 ];
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json();
-  return { ok: response.ok, status: response.status, data };
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const interpreted = interpretPostResponse(response.status, await response.text());
+    return { ok: interpreted.ok, status: interpreted.status, data: interpreted.data ?? { error: interpreted.message } };
+  } catch {
+    return { ok: false, status: 0, data: { error: "Network request failed; no response was received. Retry after reloading current state." } };
+  }
 }
 
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
@@ -151,7 +334,11 @@ export function workflowState(detail: ObligationDetail | null): { label: string;
     return { label: "PAE consumed", tone: "neutral", explanation: "This payment authority has already been consumed and cannot be reused." };
   }
   if (aggregate.state === "APPROVAL_PENDING") {
-    return { label: "Awaiting human authorization", tone: "neutral", explanation: "No Tameion execution authority has been granted." };
+    return {
+      label: pendingPrerequisiteLabel(Boolean(detail.current_assessment)),
+      tone: "neutral",
+      explanation: "No Tameion execution authority has been granted.",
+    };
   }
   return { label: aggregate.state, tone: "neutral", explanation: "" };
 }
@@ -272,6 +459,33 @@ function EvidenceAndRuntimeDetail({ assessment }: { assessment: AssessmentReview
   );
 }
 
+function AssessmentTraceView({ race }: { race: RaceAssessment }) {
+  const steps = buildAssessmentTrace(race);
+  return (
+    <details className="rounded border border-[var(--color-border)] px-3 py-2 text-xs" data-testid="assessment-trace">
+      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">
+        Evidence trace — sourceIDs, facts, proposal, findings, catalog
+      </summary>
+      <ol className="mt-2 space-y-2">
+        {steps.map((step) => (
+          <li key={step.step} className="border-l-2 border-[var(--color-border)] pl-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+              {step.label} · {step.authority.replaceAll("_", " ").toLowerCase()}
+            </p>
+            {step.items.length > 0 ? (
+              <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink)]">
+                {step.items.map((item, index) => <li key={index}>{item}</li>)}
+              </ul>
+            ) : (
+              <p className="text-[12px] text-[var(--color-ink-muted)]">{step.empty_reason}</p>
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 /** Unified advisory assessment display — the dominant status for the
  * Assessment panel. Renders the Finance Agent's PAY/HOLD/ESCALATE proposal
  * with rationale, deterministic findings, catalog-derived remediation,
@@ -380,6 +594,8 @@ function AdvisoryAssessmentCard({
       {/* Provider/runtime truth — advisory-only */}
       <ProviderTruthRow truth={assessment.provider_truth} />
 
+      {race && <AssessmentTraceView race={race} />}
+
       {/* Progressive disclosure for hash/evidence/runtime */}
       <EvidenceAndRuntimeDetail assessment={assessment} />
 
@@ -420,11 +636,14 @@ function PrimaryButton({
   );
 }
 
-type ActionResult = { label: string; data: unknown; ok: boolean; status: number };
+type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null };
 
 function actionErrorMessage(data: unknown): string {
   if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
     return (data as { error: string }).error;
+  }
+  if (data && typeof data === "object" && "code" in data && typeof (data as { code: unknown }).code === "string") {
+    return `The request did not succeed (${(data as { code: string }).code}).`;
   }
   return "The request did not succeed.";
 }
@@ -525,38 +744,151 @@ function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; c
   );
 }
 
+function SimulatedDemoStages({ value }: { value: Record<string, unknown> }) {
+  const happyPath = value.happy_path as {
+    label: string;
+    provider_label: string;
+    vendor_notice: string;
+    obligation_id: string;
+    obligation: { obligation_id: string; state: string };
+    assessment: { decision: string; provider_mode: string };
+    human_authorization: { state: string };
+    assurance: { pae_state: string; safety_kernel_overall: string };
+    execution: { status: string; provider_label: string };
+    reconciliation: { aggregate_state: string; execution_status: string };
+  };
+  return (
+    <div className="space-y-3 border-t border-[var(--color-border)] pt-3" data-testid="simulated-demo-result">
+      <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
+        {happyPath.label} / {happyPath.provider_label} / {happyPath.vendor_notice}
+      </p>
+      <p className="mono break-all text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation: {happyPath.obligation_id}</p>
+      <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        <DemoStage title="Obligation" value={`${happyPath.obligation.obligation_id} · ${happyPath.obligation.state}`} />
+        <DemoStage title="Assessment" value={`${happyPath.assessment.decision} · ${happyPath.assessment.provider_mode}`} />
+        <DemoStage title="Human Authorization" value={happyPath.human_authorization.state} />
+        <DemoStage title="Assurance & Execution" value={`Safety Kernel ${happyPath.assurance.safety_kernel_overall} · PAE ${happyPath.assurance.pae_state} · ${happyPath.execution.provider_label} ${happyPath.execution.status}`} />
+        <DemoStage title="Reconciliation / Evidence" value={`${happyPath.reconciliation.aggregate_state} · execution ${happyPath.reconciliation.execution_status}`} />
+      </ol>
+      <p className="text-[11px] text-[var(--color-ink-muted)]">Server-derived pipeline result only. It remains separate from genuine obligations, real payment authority, and vendor settlement.</p>
+    </div>
+  );
+}
+
+function DemoStage({ title, value }: { title: string; value: string }) {
+  return (
+    <li className="min-w-0 border-l-2 border-[var(--color-warning)] pl-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{title}</p>
+      <p className="mt-1 break-words text-[12px] font-medium text-[var(--color-ink)]">{value}</p>
+    </li>
+  );
+}
+
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
+  const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
+  const [obligationsError, setObligationsError] = useState<string | null>(null);
+  const [demoStatus, setDemoStatus] = useState<"idle" | "loading" | "error" | "result">("idle");
+  const [demoResult, setDemoResult] = useState<Record<string, unknown> | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
+  const detailGeneration = useRef(0);
+  const selectedRef = useRef("");
+  const selectionGeneration = useRef(0);
 
-  const refreshObligations = async () => {
-    const response = await fetch("/api/obligations");
-    const data = await response.json();
-    setObligations(data.obligations);
-    return data.obligations as ObligationSummary[];
+  const refreshObligations = async (showLoading = false) => {
+    if (showLoading) setObligationsStatus("loading");
+    setObligationsError(null);
+    try {
+      const response = await fetch("/api/obligations");
+      // Read as text first: an upstream failure (e.g. HTTP 500 with an
+      // empty body) must never reach response.json() directly, since a
+      // malformed or empty body makes JSON parsing throw a native,
+      // engine-specific exception instead of a usable error message.
+      const text = await response.text();
+      const data = tryParseJson(text);
+      if (!response.ok || !data || typeof data !== "object" || !Array.isArray((data as { obligations?: unknown }).obligations)) {
+        throw new Error(obligationsFetchErrorMessage(response.status, data));
+      }
+      const fetched = (data as { obligations: ObligationSummary[] }).obligations;
+      setObligations(fetched);
+      setObligationsStatus("ready");
+      if (fetched.length === 0) setSelectedId("");
+      return fetched;
+    } catch (error) {
+      setObligations([]);
+      setSelectedId("");
+      setObligationsStatus("error");
+      setObligationsError(error instanceof Error ? error.message : "Obligations could not be loaded.");
+      return [];
+    }
   };
 
   useEffect(() => {
-    void refreshObligations().then((fetched) => {
+    void refreshObligations(true).then((fetched) => {
       if (fetched[0]) setSelectedId(fetched[0].obligation_id);
     });
   }, []);
 
-  const refreshDetail = async (id: string) => {
-    const response = await fetch(`/api/obligations/${id}`);
-    const data = await response.json();
-    setDetail(data);
-    return data as ObligationDetail;
+  const runSimulatedDemo = async () => {
+    setDemoStatus("loading");
+    setDemoResult(null);
+    setDemoError(null);
+    try {
+      const result = await postJson("/api/internal/demo/simulated-happy-path", { confirm: "RUN_SIMULATED_HAPPY_PATH" });
+      if (!result.ok || !result.data || typeof result.data !== "object" || !("happy_path" in result.data)) {
+        throw new Error(actionErrorMessage(result.data));
+      }
+      setDemoResult(result.data as Record<string, unknown>);
+      setDemoStatus("result");
+    } catch (error) {
+      setDemoError(error instanceof Error ? error.message : "The simulated demo could not be run.");
+      setDemoStatus("error");
+    }
+  };
+
+  const refreshDetail = async (id: string): Promise<ObligationDetail | null> => {
+    const requestId = ++detailGeneration.current;
+    const isCurrent = () =>
+      isCurrentRequest({
+        requestId,
+        currentRequestId: detailGeneration.current,
+        requestedSelection: id,
+        currentSelection: selectedRef.current,
+      });
+    try {
+      const response = await fetch(`/api/obligations/${id}`);
+      const text = await response.text();
+      const data = parseJsonBody(text);
+      if (!isCurrent()) return null;
+      if (!response.ok || !data || typeof data !== "object") {
+        throw new Error(obligationsFetchErrorMessage(response.status, data));
+      }
+      setDetail(data as ObligationDetail);
+      setDetailError(null);
+      return data as ObligationDetail;
+    } catch (error) {
+      if (!isCurrent()) return null;
+      setDetail(null);
+      setDetailError(error instanceof Error ? error.message : "Obligation detail could not be loaded.");
+      return null;
+    }
   };
 
   useEffect(() => {
+    selectedRef.current = selectedId;
+    selectionGeneration.current += 1;
+    detailGeneration.current += 1;
     setDisplayedAssessment(null);
+    setDetail(null);
+    setDetailError(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -569,72 +901,60 @@ export function CommandCenter() {
   }, [displayedAssessment, detail, selectedId]);
 
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
+    const targetId = selectedRef.current;
+    const generation = selectionGeneration.current;
+    const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     setBusy(true);
     try {
       const result = await action();
-      setLastResult({ label, data: result.data, ok: result.ok, status: result.status });
+      if (!stillCurrent()) return;
+      setLastResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
-      await Promise.all([refreshDetail(selectedId), refreshObligations()]);
+    } catch {
+      if (!stillCurrent()) return;
+      setLastResult({
+        label,
+        data: { error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again." },
+        ok: false,
+        status: 0,
+        obligationId: targetId,
+      });
     } finally {
+      if (stillCurrent()) await refreshDetail(targetId);
+      await refreshObligations();
       setBusy(false);
     }
   };
 
-    const runAssessment = () => {
+  const runAssessment = () => {
     const obligationId = selectedId;
+    const generation = selectionGeneration.current;
+    const expectedVersion = detail?.aggregate?.aggregate_version !== undefined ? String(detail.aggregate.aggregate_version) : "";
     setDisplayedAssessment(null);
     return run("assess", async () => {
-    const storageKey = `tameion.assessment-request.${obligationId}`;
-    if (assessmentRequestKey.current?.obligationId !== obligationId) {
-      const persistedKey = localStorage.getItem(storageKey);
-      assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
-      if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
-    }
-    const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
-      "Idempotency-Key": assessmentRequestKey.current.key,
-    });
-    const code = result.data && typeof result.data === "object" && "code" in result.data
-      ? (result.data as { code?: unknown }).code
-      : undefined;
-    if (!shouldKeepAssessmentRecoveryKey(result.status, typeof code === "string" ? code : undefined)) {
-      localStorage.removeItem(storageKey);
-      assessmentRequestKey.current = null;
-    }
-    if (result.status === 200 && result.ok && result.data && typeof result.data === "object") {
-      const data = result.data as {
-        assessment_id?: unknown;
-        aggregate_version?: unknown;
-        decision?: { obligation_id?: unknown; decision?: unknown; reasons?: unknown };
-        assessment_hash?: unknown;
-        race?: unknown;
-        provider_used?: unknown;
-        provider_mode?: unknown;
-        model_id?: unknown;
-        model_config_version?: unknown;
-        runtime_config_sha256?: unknown;
-      };
-      const snapshot = assessmentReviewSnapshot({
-        obligation_id: data.decision?.obligation_id,
-        assessment_id: data.assessment_id,
-        assessment_hash: data.assessment_hash,
-        aggregate_version: data.aggregate_version,
-        decision: data.decision?.decision,
-        reasons: data.decision?.reasons,
-        race: data.race,
-        provider_used: data.provider_used,
-        provider_mode: data.provider_mode,
-        ...(data.model_id ? { model_id: data.model_id } : {}),
-        ...(data.model_config_version ? { model_config_version: data.model_config_version } : {}),
-        ...(data.runtime_config_sha256 ? { runtime_config_sha256: data.runtime_config_sha256 } : {}),
+      const storageKey = `tameion.assessment-request.${obligationId}`;
+      if (assessmentRequestKey.current?.obligationId !== obligationId) {
+        const persistedKey = localStorage.getItem(storageKey);
+        assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
+        if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
+      }
+      const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
+        "Idempotency-Key": assessmentRequestKey.current.key,
       });
-      if (snapshot) {
+      if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
+        localStorage.removeItem(storageKey);
+        assessmentRequestKey.current = null;
+      }
+      if (!isCurrentGeneration(generation, selectionGeneration.current) || !isSameIdentity(selectedRef.current, obligationId)) return result;
+      const snapshot = result.status === 200 && result.ok ? assessmentReceiptSnapshot(result.data) : null;
+      if (snapshot && snapshot.obligation_id === obligationId && snapshot.aggregate_version === expectedVersion) {
         setDisplayedAssessment(snapshot);
         setDetail((current) => {
           if (!current || current.aggregate.aggregate_version !== Number(snapshot.aggregate_version)) return current;
           const truth = snapshot.provider_truth;
           return {
             ...current,
-                        current_assessment: truth
+            current_assessment: truth
               ? {
                   obligation_id: snapshot.obligation_id,
                   assessment_id: snapshot.assessment_id,
@@ -658,8 +978,7 @@ export function CommandCenter() {
           };
         });
       }
-    }
-    return result;
+      return result;
     });
   };
 
@@ -667,6 +986,9 @@ export function CommandCenter() {
     const assessedCount = obligations.filter((o) => o.assessed).length;
   const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
   const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
+  const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
+  const detailState: DetailState = detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
+  const killSwitchView = killSwitchPresentation(detailState, detail?.execution_kill_switched);
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
@@ -711,33 +1033,64 @@ export function CommandCenter() {
     [obligations],
   );
 
+  const firstUnmetPrerequisite = authorizationBlockers({
+    hasSelection: Boolean(selectedId),
+    allAssessed,
+    hasCurrentAssessment: Boolean(currentAssessment),
+    reviewed: Boolean(authorizationAssessment),
+    killSwitchEngaged: killSwitchView === "engaged",
+  })[0] ?? null;
+
+  const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
+
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
-      <header className="flex items-baseline justify-between border-b border-[var(--color-border)] pb-4">
+      <header className="flex flex-col items-start justify-between gap-3 border-b border-[var(--color-border)] pb-4 sm:flex-row sm:items-baseline">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
-        <p className="max-w-sm text-right text-[12px] leading-5 text-[var(--color-ink-muted)]">
+        <p className="max-w-none text-left text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-right">
           Execution and demo destination/source-wallet trust are simulated fixtures. J0-D connectivity completed
           with disposable wallets; product destination/source-wallet trust remains separately gated unless
           supported by current, non-simulated evidence. J0-C source evidence retains its original pending status.
         </p>
       </header>
 
+      <section aria-label="Simulated demo" className="space-y-3 rounded border border-[var(--color-warning)] bg-[var(--color-surface)] p-3 sm:p-4">
+        <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
+            <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Runs the isolated in-memory demo pipeline with a fake adapter. This result is separate from genuine obligations and cannot represent a vendor payment.</p>
+          </div>
+          <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
+            {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
+          </PrimaryButton>
+        </div>
+        {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
+        {demoStatus === "error" && (
+          <div role="alert" className="flex flex-col items-start gap-2 border-l-[3px] border-l-[var(--color-danger)] pl-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
+            <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
+          </div>
+        )}
+        {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
+      </section>
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">
         <aside className="md:border-r md:pr-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Obligations
           </p>
+          <p className="mb-2 text-[12px] text-[var(--color-ink)]">{queueHeaderLabel(listPresentation, reportSummary)}</p>
           {/* Ledger header row — columnar alignment for operator scan */}
-          <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+          {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-[1fr_auto_auto] gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             <span>Id</span>
             <span className="tabular text-right">Amount</span>
             <span className="tabular text-right">Status</span>
-          </div>
+          </div>}
           <ul className="border-y border-[var(--color-border)]">
             {obligations.map((o) => {
               const statusColor = o.assessed
@@ -786,6 +1139,20 @@ export function CommandCenter() {
               );
             })}
           </ul>
+          {obligationListState(obligationsStatus, obligationsError, obligations.length) !== "ready" && (
+            <div className="space-y-2 border-b border-[var(--color-border)] px-3 py-4">
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading genuine obligations…</p>}
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "error" && <>
+                <p role="alert" className="text-[13px] text-[var(--color-danger)]">Genuine obligations are unavailable. No synthetic demo data has been added to this list. {obligationsError}</p>
+                <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry genuine obligations</button>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">Use the separate simulated demo above to view a clearly labeled synthetic workflow.</p>
+              </>}
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
+                <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">The genuine lane remains empty; a simulated demo is available above and is never treated as payable.</p>
+              </>}
+            </div>
+          )}
         </aside>
 
         <section className="flex flex-col gap-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 md:p-5">
@@ -796,6 +1163,29 @@ export function CommandCenter() {
                 <p className="text-[12px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
               </div>
               <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
+            </div>
+          )}
+
+          {!selected && (
+            <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
+              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Genuine obligations are not selected.</p>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
+                {obligationsStatus === "loading"
+                  ? "The genuine source list is loading."
+                  : obligationsStatus === "error"
+                    ? "The genuine source list is unavailable. Retry it or use the separately labeled simulated demo above."
+                    : "There are no genuine obligations to show. The simulated demo above is separate and is not payable."}
+              </p>
+            </div>
+          )}
+
+          {selected && !detail && detailError && (
+            <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-3">
+              <p className="text-[13px] font-semibold text-[var(--color-danger)]">Obligation detail is unavailable.</p>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">{detailError}</p>
+              <button type="button" onClick={() => void refreshDetail(selectedId)} className="mt-1 text-[12px] font-semibold underline">
+                Retry obligation detail
+              </button>
             </div>
           )}
 
@@ -827,12 +1217,12 @@ export function CommandCenter() {
             </section>
           )}
 
-          <nav className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
+          <nav aria-label="Command Center surfaces" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
             {PANELS.map((p) => (
               <button
                 key={p.key}
                 onClick={() => setPanel(p.key)}
-                className={`border-b-2 px-3 py-2 text-[13px] font-medium transition ${
+                className={`shrink-0 border-b-2 px-2 py-2 text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${
                   panel === p.key
                     ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                     : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
@@ -843,15 +1233,16 @@ export function CommandCenter() {
             ))}
           </nav>
 
-          <div className="min-h-[320px]">
+          <div className="min-h-[120px]">
             {panel === "obligations" && detail && (
               <dl className="max-w-md">
                 <Field label="Source obligation amount (source truth)" value={`${detail.record.amount} ${detail.record.currency}`} />
                 <Field
                   label="Settlement amount (execution rail)"
-                  value={detail.record.currency === "USD"
-                    ? `${detail.aggregate.amount} ${detail.aggregate.asset}`
-                    : `Not applicable — unsupported ${detail.record.currency}`}
+                  value={settlementDisplay(
+                    { currency: detail.record.currency, amount: detail.record.amount },
+                    detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
+                  )}
                 />
                 <Field label="Network" value={detail.aggregate.network} />
                 <Field label="Aggregate version" value={String(detail.aggregate.aggregate_version)} />
@@ -873,7 +1264,7 @@ export function CommandCenter() {
                 </p>
                 <div className="flex items-center justify-between gap-3 border-l-[3px] border-l-[var(--color-border)] px-3 py-2">
                   <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-                    {assessedCount}/{obligations.length} obligations assessed
+                    {assessmentCoverageLabel(listPresentation, assessedCount, obligations.length)}
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
@@ -881,9 +1272,9 @@ export function CommandCenter() {
                   Run assessment
                 </PrimaryButton>
 
-                {!allAssessed && (
+                {assessmentGateCopy(listPresentation, allAssessed, obligations.length) && (
                   <p className="text-[12px] text-[var(--color-warning)]">
-                    Authorization is refused for every obligation until all {obligations.length} have been assessed.
+                    {assessmentGateCopy(listPresentation, allAssessed, obligations.length)}
                   </p>
                 )}
 
@@ -904,7 +1295,7 @@ export function CommandCenter() {
                         : "Not all obligations have been assessed. Every obligation requires a sealed assessment before the Safety Kernel or PAE can run."}
                     </p>
                     <p className="mt-1 text-[var(--color-ink-muted)]">
-                      Result: J1_NO_CANDIDATE / STOP — no payment execution, no signed PAE, no provider submission.
+                      {lifecycleStopLabel({ presentation: listPresentation, total: obligations.length, assessed: assessedCount, pay: payCandidateCount })} No payment execution, no signed PAE, no provider submission.
                     </p>
                   </div>
                 ) : (
@@ -957,15 +1348,15 @@ export function CommandCenter() {
                     The displayed assessment is no longer current. Review the current sealed assessment before authorization.
                   </p>
                 )}
-                {lastResult?.label === "assess" && <ActionResultBanner result={lastResult} />}
-                {lastResult?.label === "assess" && <EvidencePanel value={lastResult.data} />}
+                {currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
+                {currentResult?.label === "assess" && <EvidencePanel value={currentResult.data} />}
               </div>
             )}
 
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  Authorizing this exact intent (aggregate v{aggregateVersion ?? "?"}) atomically advances
+                  Authorizing this exact intent (aggregate version: {aggregateVersionLabel(aggregateVersion, Boolean(selectedId))}) atomically advances
                   reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
                   control PASSes — seals a signed Payment Authorization Envelope.
                 </p>
@@ -979,6 +1370,20 @@ export function CommandCenter() {
                     <RacePanel race={authorizationAssessment.race} />
                   </dl>
                 )}
+                {(() => {
+                  const blockers = authorizationBlockers({
+                    hasSelection: Boolean(selectedId),
+                    allAssessed,
+                    hasCurrentAssessment: Boolean(currentAssessment),
+                    reviewed: Boolean(authorizationAssessment),
+                    killSwitchEngaged: killSwitchView === "engaged",
+                  });
+                  return blockers.length ? (
+                    <ul className="list-disc space-y-1 pl-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
+                      {blockers.map((b) => <li key={b}>{b}</li>)}
+                    </ul>
+                  ) : null;
+                })()}
                 <div className="flex gap-3">
                   <PrimaryButton
                     disabled={busy || !selectedId || !authorizationAssessment}
@@ -995,15 +1400,15 @@ export function CommandCenter() {
                     Authorize this exact intent
                   </PrimaryButton>
                 </div>
-                {lastResult?.label === "approve" && <ActionResultBanner result={lastResult} />}
-                {lastResult?.label === "approve" &&
+                {currentResult?.label === "approve" && <ActionResultBanner result={currentResult} />}
+                {currentResult?.label === "approve" &&
                   (() => {
-                    const data = lastResult.data as { safety_kernel?: { overall: string; control_results: ControlResultView[] } };
+                    const data = currentResult.data as { safety_kernel?: { overall: string; control_results: ControlResultView[] } };
                     return data.safety_kernel ? (
                       <SafetyKernelBreakdown overall={data.safety_kernel.overall} controlResults={data.safety_kernel.control_results} />
                     ) : null;
                   })()}
-                {lastResult?.label === "approve" && <EvidencePanel value={lastResult.data} />}
+                {currentResult?.label === "approve" && <EvidencePanel value={currentResult.data} />}
               </div>
             )}
 
@@ -1017,7 +1422,7 @@ export function CommandCenter() {
 
                 <div
                   className={`flex flex-wrap items-center justify-between gap-3 border-l-[3px] px-3 py-2 ${
-                    detail?.execution_kill_switched
+                    killSwitchView === "engaged"
                       ? "border-l-[var(--color-danger)] bg-[var(--color-surface)]"
                       : "border-l-[var(--color-border)]"
                   }`}
@@ -1025,10 +1430,12 @@ export function CommandCenter() {
                   <div>
                     <p
                       className={`text-[13px] font-semibold uppercase tracking-wide ${
-                        detail?.execution_kill_switched ? "text-[var(--color-danger)]" : "text-[var(--color-ink-muted)]"
+                        killSwitchView === "engaged"
+                          ? "text-[var(--color-danger)]"
+                          : "text-[var(--color-ink-muted)]"
                       }`}
                     >
-                      Kill switch: {detail?.execution_kill_switched ? "Execution disabled" : "Execution allowed"}
+                      Kill switch: {killSwitchLabel(killSwitchView)}
                     </p>
                     <p className="text-[12px] text-[var(--color-ink-muted)]">
                       Checked by both the Safety Kernel (pre-approval) and the Execution Worker (pre-submit).
@@ -1065,7 +1472,7 @@ export function CommandCenter() {
                     </button>
                   </div>
                 </div>
-                {lastResult?.label === "kill-switch" && <ActionResultBanner result={lastResult} />}
+                {currentResult?.label === "kill-switch" && <ActionResultBanner result={currentResult} />}
 
                 <div className="flex flex-wrap items-center gap-4">
                   <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
@@ -1085,18 +1492,18 @@ export function CommandCenter() {
                   </button>
                 </div>
                 {!detail?.pae_sealed && (
-                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                  <p className="text-[12px] text-[var(--color-warning)]">{firstUnmetPrerequisite ?? "Authorize the obligation first."}</p>
                 )}
-                {lastResult?.label === "execute" && <ActionResultBanner result={lastResult} />}
-                {lastResult?.label === "execute" && <EvidencePanel value={lastResult.data} />}
-                {lastResult?.label === "prime-packet" && <ActionResultBanner result={lastResult} />}
-                {lastResult?.label === "prime-packet" && lastResult.ok && (
+                {currentResult?.label === "execute" && <ActionResultBanner result={currentResult} />}
+                {currentResult?.label === "execute" && <EvidencePanel value={currentResult.data} />}
+                {currentResult?.label === "prime-packet" && <ActionResultBanner result={currentResult} />}
+                {currentResult?.label === "prime-packet" && currentResult.ok && (
                   <div className="max-w-xl border-l-[3px] border-l-[var(--color-warning)] pl-3">
                     <p className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
                       Retained Prime gate — not submitted
                     </p>
                     <pre className="tabular whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--color-ink)]">
-                      {(lastResult.data as { text?: string })?.text ?? JSON.stringify(lastResult.data, null, 2)}
+                      {(currentResult.data as { text?: string })?.text ?? JSON.stringify(currentResult.data, null, 2)}
                     </pre>
                   </div>
                 )}
@@ -1105,6 +1512,7 @@ export function CommandCenter() {
 
             {panel === "reconciliation" && (
               <div className="max-w-xl space-y-3">
+                <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detailState, detail?.execution)}</p>
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
                   Demonstration attack: mutate the destination after authorization, as if a compromised
                   session changed it. Expected result — blocked before submission, zero unauthorized
@@ -1118,10 +1526,10 @@ export function CommandCenter() {
                   Simulate changed-destination attack
                 </PrimaryButton>
                 {!detail?.pae_sealed && (
-                  <p className="text-[12px] text-[var(--color-warning)]">Authorize the obligation first.</p>
+                  <p className="text-[12px] text-[var(--color-warning)]">{firstUnmetPrerequisite ?? "Authorize the obligation first."}</p>
                 )}
-                {lastResult?.label === "attack" && <ActionResultBanner result={lastResult} />}
-                {lastResult?.label === "attack" && <EvidencePanel value={lastResult.data} />}
+                {currentResult?.label === "attack" && <ActionResultBanner result={currentResult} />}
+                {currentResult?.label === "attack" && <EvidencePanel value={currentResult.data} />}
                                 {detail && <EvidencePanel value={detail} />}
               </div>
             )}
@@ -1132,13 +1540,20 @@ export function CommandCenter() {
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                     Operational report — HOLD/ESCALATE obligations
                   </p>
-                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
-                    <Field label="Total obligations" value={String(reportSummary.total)} />
-                    <Field label="HOLD" value={String(reportSummary.hold)} />
-                    <Field label="ESCALATE" value={String(reportSummary.escalate)} />
-                    <Field label="Unassessed" value={String(reportSummary.unassessed)} />
-                    <Field label="PAY (out of scope)" value={String(reportSummary.pay)} />
-                  </dl>
+                  <p className="text-[12px] text-[var(--color-ink)]">{queueCompletionLabel(reportSummary)}</p>
+                  {reportSummaryUnavailableReason(listPresentation) ? (
+                    <p role="alert" className="text-[12px] text-[var(--color-danger)]">
+                      {reportSummaryUnavailableReason(listPresentation)}
+                    </p>
+                  ) : (
+                    <dl className="grid grid-cols-2 gap-x-4 gap-y-1">
+                      <Field label="Total obligations" value={String(reportSummary.total)} />
+                      <Field label="HOLD" value={String(reportSummary.hold)} />
+                      <Field label="ESCALATE" value={String(reportSummary.escalate)} />
+                      <Field label="Unassessed" value={String(reportSummary.unassessed)} />
+                      <Field label="PAY (out of scope)" value={String(reportSummary.pay)} />
+                    </dl>
+                  )}
                 </section>
 
                 {!report && (
@@ -1189,7 +1604,7 @@ export function CommandCenter() {
                     >
                       <div className="flex items-baseline justify-between gap-2">
                         <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
-                          Decision: {report.decision}
+                          {reportDecisionLabel(report)}
                         </p>
                         <span
                           className="text-[11px] font-semibold uppercase"
@@ -1198,7 +1613,7 @@ export function CommandCenter() {
                               ? "var(--status-blocked-text)"
                               : report.decision === "PAY" ? "var(--color-ink-muted)" : "var(--status-hold-text)",
                           }}
-                          aria-label={`Effective decision: ${report.decision}${report.fail_closed ? " (fail-closed HOLD)" : ""}`}
+                          aria-label={reportDecisionLabel(report)}
                         >
                           {report.status}
                           {report.fail_closed && " · fail-closed"}

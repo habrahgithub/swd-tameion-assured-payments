@@ -29,6 +29,18 @@ describe("#44 simulated happy path (isolated synthetic prototype slice)", () => 
     expect(result.safety_kernel_overall).toBe("PASS");
     expect(result.execution.status).toBe("SETTLED");
     expect(result.aggregate_state).toBe("RECONCILED");
+    expect(result.obligation.obligation_id).toBe(SIMULATED_HAPPY_PATH_OBLIGATION_ID);
+    expect(result.obligation.state).toBe("APPROVAL_PENDING");
+    expect(result.assessment.decision).toBe("PAY");
+    expect(result.assessment.provider_mode).toBe("NOT_LIVE_AI");
+    expect(result.human_authorization.state).toBe("AUTHORIZED");
+    expect(result.assurance.pae_state).toBe("CONSUMED");
+    expect(result.assurance.safety_kernel_overall).toBe("PASS");
+    expect(result.execution.provider_label).toBe(FAKE_PROVIDER_LABEL);
+    expect(result.reconciliation.aggregate_state).toBe("RECONCILED");
+    expect(result.obligation_id).not.toMatch(/^OBL-J0C-/);
+    expect(result.label).toBe("SIMULATED_HAPPY_PATH");
+    expect(result.vendor_notice).toBe("NOT_VENDOR_PAYMENT");
 
     // Exactly one fake-provider submission on the happy path.
     expect(result.provider_submission_count).toBe(1);

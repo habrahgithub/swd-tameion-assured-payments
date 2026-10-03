@@ -81,7 +81,7 @@ export const raceAssessmentSchema = z.object({
       business_purpose_confirmed: z.boolean(),
       source_evidence_present: z.boolean(),
       destination_status: z.string().min(1),
-      destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
+      destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
     }).strict(),
   }).strict(),
   remediation: z.array(remediationItemSchema),
@@ -180,7 +180,7 @@ export const financeAgentContextSchema = z
     evidence_present: z.boolean(),
     destination_ready: z.boolean(),
     destination_status: z.string(),
-    destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
+    destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
       due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
   })
   .strict();
