@@ -1,4 +1,5 @@
 import type { AiProvider } from "./ai-provider";
+import { assessObligation, wasProviderCallFailure } from "./finance-agent";
 import {
   financeAgentContextSchema,
   financeAgentModelRecommendationSchema,
@@ -98,4 +99,105 @@ export async function runJ1dCapabilitySmoke(
     },
     runtime_identity: provider.runtimeIdentity,
   };
+}
+
+export const SYNTHETIC_EVALUATION_CASE_IDS = [
+  "POSITIVE_COMPLETE",
+  "NEGATIVE_TRUST",
+  "NEGATIVE_DATE",
+  "NEGATIVE_EVIDENCE",
+] as const;
+
+export type SyntheticEvaluationCaseId = (typeof SYNTHETIC_EVALUATION_CASE_IDS)[number];
+
+const EXPECTED_DECISION: Record<SyntheticEvaluationCaseId, "PAY" | "NOT_PAY"> = {
+  POSITIVE_COMPLETE: "PAY",
+  NEGATIVE_TRUST: "NOT_PAY",
+  NEGATIVE_DATE: "NOT_PAY",
+  NEGATIVE_EVIDENCE: "NOT_PAY",
+};
+
+/** Fixed, non-economic synthetic cases. The positive case is complete; each
+ * negative removes exactly one of trust, due date, or source evidence. Trust is
+ * labelled SYNTHETIC_EVALUATION_FIXTURE and never promoted to genuine trust. */
+export function buildSyntheticEvaluationContext(id: SyntheticEvaluationCaseId): FinanceAgentContext {
+  const complete = {
+    obligation_id: `SYNTHETIC-EVAL-${id}`,
+    aggregate_version: "0",
+    as_of_date: "2026-01-01",
+    amount: "100.00",
+    currency: "USD",
+    service_category: "SYNTHETIC_EVALUATION",
+    recurrence: "ONE_TIME",
+    due_date: "2026-02-01",
+    due_date_status: "STATED_ON_SOURCE",
+    state_at_event_baseline: "OUTSTANDING",
+    business_purpose_confirmed: true,
+    commercial_terms: "Synthetic non-economic evaluation case; no real obligation or commercial terms.",
+    evidence_ids: ["SYN-EVD-001"],
+    evidence_present: true,
+    destination_ready: true,
+    destination_status: "SYNTHETIC_EVALUATION_POLICY",
+    destination_readiness_source: "SYNTHETIC_EVALUATION_FIXTURE",
+    due_date_position: "FUTURE",
+  } as const;
+
+  const variants: Record<SyntheticEvaluationCaseId, Record<string, unknown>> = {
+    POSITIVE_COMPLETE: {},
+    NEGATIVE_TRUST: { destination_ready: false, destination_status: "SYNTHETIC_NOT_READY", destination_readiness_source: "UNVERIFIED_CURRENT_TRUST" },
+    NEGATIVE_DATE: { due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", due_date_position: "NOT_STATED" },
+    NEGATIVE_EVIDENCE: { evidence_ids: [], evidence_present: false },
+  };
+
+  return financeAgentContextSchema.parse({ ...complete, ...variants[id] });
+}
+
+export type SyntheticEvaluationOutcome = {
+  case_id: SyntheticEvaluationCaseId;
+  expected: "PAY" | "NOT_PAY";
+  decision: "PAY" | "HOLD" | "ESCALATE";
+  codes: string[];
+  expectation_met: boolean;
+  authority: "NON_AUTHORITATIVE";
+};
+
+export type SyntheticEvaluationResult =
+  | { status: "EVALUATED"; outcomes: SyntheticEvaluationOutcome[]; failures: number }
+  | { status: "BLOCKED"; code: J1dCapabilitySmokeBlocker };
+
+/** Runs the four fixed cases through the real provider path and the real
+ * normalizer. Never preinserts PAY. A provider access, rate, or transport
+ * boundary stops the batch with a typed blocker and no retry. */
+export async function runSyntheticEvaluation(
+  provider: Pick<AiProvider, "assess" | "runtimeIdentity">,
+): Promise<SyntheticEvaluationResult> {
+  const outcomes: SyntheticEvaluationOutcome[] = [];
+  for (const id of SYNTHETIC_EVALUATION_CASE_IDS) {
+    let thrown: unknown = null;
+    const observed = {
+      ...provider,
+      assess: async (context: FinanceAgentContext) => {
+        try {
+          return await provider.assess(context);
+        } catch (error) {
+          thrown = error;
+          throw error;
+        }
+      },
+    } as AiProvider;
+    const decision = await assessObligation(buildSyntheticEvaluationContext(id), observed);
+    if (thrown) return { status: "BLOCKED", code: classifyProviderError(thrown) };
+    if (wasProviderCallFailure(decision)) return { status: "BLOCKED", code: "PROVIDER_UNAVAILABLE" };
+
+    const expected = EXPECTED_DECISION[id];
+    outcomes.push({
+      case_id: id,
+      expected,
+      decision: decision.decision,
+      codes: decision.race.result.validated_findings.map((finding) => finding.code),
+      expectation_met: expected === "PAY" ? decision.decision === "PAY" : decision.decision !== "PAY",
+      authority: "NON_AUTHORITATIVE",
+    });
+  }
+  return { status: "EVALUATED", outcomes, failures: outcomes.filter((o) => !o.expectation_met).length };
 }

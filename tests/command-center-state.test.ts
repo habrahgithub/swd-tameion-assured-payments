@@ -157,3 +157,47 @@ describe("Command Center server-derived authority headline", () => {
     expect(state.explanation).not.toContain("ready for execution");
   });
 });
+
+import { authorizationBlockers, queueCompletionLabel, reconciliationLeadLine } from "../app/command-center";
+
+describe("queue completion: incomplete assessment is never a completed no-candidate", () => {
+  it("reports an incomplete assessment set with its count", () => {
+    expect(queueCompletionLabel({ total: 5, unassessed: 5, hold: 0, escalate: 0, pay: 0 })).toContain("0 of 5 assessed");
+  });
+
+  it("reports a completed no-candidate result only when every obligation is assessed and none is PAY", () => {
+    const label = queueCompletionLabel({ total: 5, unassessed: 0, hold: 4, escalate: 1, pay: 0 });
+    expect(label).toContain("Completed");
+    expect(label).toContain("no PAY candidate");
+  });
+
+  it("reports PAY candidates as advisory, not authorized", () => {
+    expect(queueCompletionLabel({ total: 5, unassessed: 0, hold: 3, escalate: 0, pay: 2 })).toContain("2 PAY recommendation");
+  });
+});
+
+describe("authorization blockers name the first unmet prerequisite in order", () => {
+  it("starts with selection, then assessment, then review of the current assessment", () => {
+    expect(authorizationBlockers({ hasSelection: false, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Select an obligation");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: false, killSwitchEngaged: false })[0]).toContain("Review");
+  });
+
+  it("returns no blockers only when every prerequisite is met", () => {
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: true, killSwitchEngaged: false })).toEqual([]);
+  });
+
+  it("reports an engaged kill switch as a blocker", () => {
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: true, killSwitchEngaged: true }).join(" ")).toContain("Kill switch engaged");
+  });
+});
+
+describe("reconciliation leads with the absence of submission", () => {
+  it("says there is nothing to reconcile when no submission exists", () => {
+    expect(reconciliationLeadLine(null)).toBe("No submission; nothing to reconcile.");
+  });
+
+  it("does not claim nothing to reconcile once a submission exists", () => {
+    expect(reconciliationLeadLine("SUBMITTED")).not.toContain("nothing to reconcile");
+  });
+});

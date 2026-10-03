@@ -1,3 +1,12 @@
+import { describe as describeEval, expect as expectEval, it as itEval } from "vitest";
+
+import type { AiProvider } from "../src/agent/ai-provider";
+import {
+  SYNTHETIC_EVALUATION_CASE_IDS,
+  buildSyntheticEvaluationContext,
+  runSyntheticEvaluation,
+} from "../src/agent/j1d-capability-smoke";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { providerAssess } = vi.hoisted(() => ({ providerAssess: vi.fn() }));
@@ -233,5 +242,162 @@ describe("J1-D protected synthetic NVIDIA capability smoke", () => {
     expect(result).toEqual({ status: "BLOCKED", code: "MODEL_OUTPUT_INVALID" });
     expect(assess).toHaveBeenCalledTimes(1);
     expect(assess).toHaveBeenCalledWith(buildJ1dSyntheticContext());
+  });
+});
+
+function fakeProvider(decide: (ctx: { obligation_id: string; evidence_ids: string[] }) => unknown): AiProvider & { calls: number } {
+  const provider = {
+    calls: 0,
+    runtimeIdentity: { provider_used: "FAKE_SYNTHETIC", provider_mode: "NOT_LIVE_AI", model_id: "fake", model_config_version: "t", runtime_config_sha256: "0".repeat(64) },
+    async assess(ctx: { obligation_id: string; evidence_ids: string[] }) {
+      provider.calls += 1;
+      return decide(ctx);
+    },
+  };
+  return provider as unknown as AiProvider & { calls: number };
+}
+
+describeEval("synthetic evaluation cases are fixed, schema-valid and single-factor", () => {
+  itEval("defines exactly the four admitted cases", () => {
+    expectEval([...SYNTHETIC_EVALUATION_CASE_IDS]).toEqual(["POSITIVE_COMPLETE", "NEGATIVE_TRUST", "NEGATIVE_DATE", "NEGATIVE_EVIDENCE"]);
+  });
+
+  itEval("builds every case through the strict context schema with explicit synthetic provenance", () => {
+    for (const id of SYNTHETIC_EVALUATION_CASE_IDS) {
+      const ctx = buildSyntheticEvaluationContext(id);
+      expectEval(financeAgentContextSchema.safeParse(ctx).success).toBe(true);
+      expectEval(ctx.destination_readiness_source === "SYNTHETIC_EVALUATION_FIXTURE" || ctx.destination_readiness_source === "UNVERIFIED_CURRENT_TRUST").toBe(true);
+      expectEval(ctx.obligation_id.startsWith("SYNTHETIC-EVAL-")).toBe(true);
+    }
+  });
+
+  itEval("each negative differs from the positive on exactly one trust, date or evidence factor", () => {
+    const positive = buildSyntheticEvaluationContext("POSITIVE_COMPLETE");
+    expectEval(positive.destination_ready && positive.evidence_present && positive.due_date_position === "FUTURE").toBe(true);
+
+    const trust = buildSyntheticEvaluationContext("NEGATIVE_TRUST");
+    expectEval(trust.destination_ready).toBe(false);
+    expectEval(trust.evidence_present).toBe(positive.evidence_present);
+    expectEval(trust.due_date_position).toBe(positive.due_date_position);
+
+    const date = buildSyntheticEvaluationContext("NEGATIVE_DATE");
+    expectEval(date.due_date_position).toBe("NOT_STATED");
+    expectEval(date.destination_ready).toBe(positive.destination_ready);
+    expectEval(date.evidence_present).toBe(positive.evidence_present);
+
+    const evidence = buildSyntheticEvaluationContext("NEGATIVE_EVIDENCE");
+    expectEval(evidence.evidence_present).toBe(false);
+    expectEval(evidence.evidence_ids).toEqual([]);
+    expectEval(evidence.destination_ready).toBe(positive.destination_ready);
+    expectEval(evidence.due_date_position).toBe(positive.due_date_position);
+  });
+});
+
+describeEval("synthetic evaluation harness calls the real provider path and never forces PAY", () => {
+  itEval("retains the model-chosen outcome and passes when it matches the fixed expectation", async () => {
+    const provider = fakeProvider((ctx) => ({
+      obligation_id: ctx.obligation_id,
+      decision: ctx.obligation_id.includes("POSITIVE") ? "PAY" : "HOLD",
+      finding_codes: [],
+      evidence_ids: ctx.obligation_id.includes("POSITIVE") ? ["SYN-EVD-001"] : [],
+      uncertainty_signal: false,
+      explanation: "synthetic fake",
+    }));
+    const result = await runSyntheticEvaluation(provider);
+    expectEval(result.status).toBe("EVALUATED");
+    if (result.status !== "EVALUATED") return;
+    expectEval(provider.calls).toBe(4);
+    expectEval(result.outcomes.every((o) => o.expectation_met)).toBe(true);
+  });
+
+  itEval("records an unexpected outcome as a failure rather than passing it", async () => {
+    const provider = fakeProvider((ctx) => ({
+      obligation_id: ctx.obligation_id,
+      decision: "HOLD",
+      finding_codes: [],
+      evidence_ids: [],
+      uncertainty_signal: false,
+      explanation: "synthetic fake",
+    }));
+    const result = await runSyntheticEvaluation(provider);
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    const positive = result.outcomes.find((o) => o.case_id === "POSITIVE_COMPLETE");
+    expectEval(positive?.expectation_met).toBe(false);
+    expectEval(result.failures).toBeGreaterThan(0);
+  });
+
+  itEval("rejects an unsupported proposal through the normalizer, never as PAY", async () => {
+    const provider = fakeProvider((ctx: { obligation_id: string; evidence_ids: string[] }) => ({
+      obligation_id: ctx.obligation_id,
+      decision: "PAY",
+      finding_codes: ["DUPLICATE_SOURCE"],
+      evidence_ids: ctx.evidence_ids,
+      uncertainty_signal: false,
+      explanation: "unsupported duplicate claim",
+    }));
+    const result = await runSyntheticEvaluation(provider);
+    if (result.status !== "EVALUATED") throw new Error("expected evaluation");
+    for (const outcome of result.outcomes) {
+      expectEval(outcome.decision).not.toBe("PAY");
+    }
+    // A PAY with no supplied evidence is rejected earlier by SOURCE_EVIDENCE_MISSING;
+    // every case that reaches the unsupported-finding check must be MODEL_OUTPUT_INVALID.
+    const reachedUnsupportedCheck = result.outcomes.filter((o) => o.case_id !== "NEGATIVE_EVIDENCE");
+    for (const outcome of reachedUnsupportedCheck) {
+      expectEval(outcome.codes).toContain("MODEL_OUTPUT_INVALID");
+    }
+  });
+
+  itEval("stops the batch on an authentication boundary with a typed blocker and no retry", async () => {
+    const provider = fakeProvider(() => {
+      throw new Error("NVIDIA request failed with HTTP 401");
+    });
+    const result = await runSyntheticEvaluation(provider);
+    expectEval(result).toEqual({ status: "BLOCKED", code: "PROVIDER_AUTH" });
+    expectEval(provider.calls).toBe(1);
+  });
+});
+
+describe("capability-smoke route: batch confirmation is gated by the same Preview, enablement and auth boundaries", () => {
+  const ROUTE = "../app/api/internal/j1d/capability-smoke/route";
+  const ENV_KEYS = ["VERCEL_ENV", "J1D_SMOKE_ENABLED", "J1D_SMOKE_SECRET"] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    for (const k of ENV_KEYS) delete process.env[k];
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("refuses the batch outside Preview with a 404 and never reaches the provider", async () => {
+    const { POST } = await import(ROUTE);
+    const response = await POST(new Request("http://x/", { method: "POST", body: JSON.stringify({ confirm: "RUN_SYNTHETIC_NVIDIA_EVALUATION_BATCH" }) }));
+    expect(response.status).toBe(404);
+    expect(providerAssess).not.toHaveBeenCalled();
+  });
+
+  it("returns a typed configuration blocker for the batch when enablement or secret is missing in Preview", async () => {
+    process.env.VERCEL_ENV = "preview";
+    const { POST } = await import(ROUTE);
+    const response = await POST(new Request("http://x/", { method: "POST", headers: { authorization: "Bearer x" }, body: JSON.stringify({ confirm: "RUN_SYNTHETIC_NVIDIA_EVALUATION_BATCH" }) }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ status: "BLOCKED", code: "BLOCKED_CONFIG" });
+    expect(providerAssess).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown confirmation before any provider call", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.J1D_SMOKE_ENABLED = "true";
+    process.env.J1D_SMOKE_SECRET = "s".repeat(40);
+    const { POST } = await import(ROUTE);
+    const response = await POST(new Request("http://x/", { method: "POST", headers: { authorization: `Bearer ${"s".repeat(40)}` }, body: JSON.stringify({ confirm: "RUN_ANYTHING" }) }));
+    expect(response.status).toBe(400);
+    expect(providerAssess).not.toHaveBeenCalled();
   });
 });

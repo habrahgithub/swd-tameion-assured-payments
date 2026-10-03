@@ -17,6 +17,7 @@ import {
   type HoldEscalateReportInput,
   type HoldEscalateReportLine,
   type HoldEscalateSummary,
+  reportDecisionLabel,
 } from "../src/client/hold-escalate-report";
 
 interface ObligationSummary {
@@ -181,6 +182,38 @@ export function reportSummaryUnavailableReason(presentation: ObligationListPrese
   if (presentation === "error") return "Genuine obligations are unavailable — this operational report cannot be produced.";
   if (presentation === "loading") return "Genuine obligations are loading — this operational report is not yet available.";
   return null;
+}
+
+export function queueCompletionLabel(summary: HoldEscalateSummary): string {
+  if (summary.unassessed > 0) {
+    return `Incomplete assessment — ${summary.total - summary.unassessed} of ${summary.total} assessed. No candidate determination yet.`;
+  }
+  if (summary.pay > 0) {
+    return `Completed — ${summary.pay} PAY recommendation${summary.pay === 1 ? "" : "s"} (advisory; still requires human authorization).`;
+  }
+  return "Completed — no PAY candidate; all obligations assessed as HOLD or ESCALATE.";
+}
+
+/** Ordered first-unmet prerequisites for authorization. Only the first is the
+ * next action, but all unmet items are named so the operator sees the full gate. */
+export function authorizationBlockers(state: {
+  hasSelection: boolean;
+  allAssessed: boolean;
+  hasCurrentAssessment: boolean;
+  reviewed: boolean;
+  killSwitchEngaged: boolean;
+}): string[] {
+  const blockers: string[] = [];
+  if (!state.hasSelection) blockers.push("Select an obligation.");
+  if (!state.allAssessed) blockers.push("Assess all obligations (AUT-012 requires every obligation assessed).");
+  if (state.hasSelection && !state.hasCurrentAssessment) blockers.push("Run the current assessment for the selected obligation.");
+  if (state.hasCurrentAssessment && !state.reviewed) blockers.push("Review the current sealed assessment before authorization.");
+  if (state.killSwitchEngaged) blockers.push("Kill switch engaged — execution is disabled for this obligation.");
+  return blockers;
+}
+
+export function reconciliationLeadLine(submissionStatus: string | null): string {
+  return submissionStatus === null ? "No submission; nothing to reconcile." : `Submission status: ${submissionStatus}.`;
 }
 
 const PANELS: Array<{ key: PanelKey; label: string }> = [
@@ -1283,6 +1316,20 @@ export function CommandCenter() {
                     <RacePanel race={authorizationAssessment.race} />
                   </dl>
                 )}
+                {(() => {
+                  const blockers = authorizationBlockers({
+                    hasSelection: Boolean(selectedId),
+                    allAssessed,
+                    hasCurrentAssessment: Boolean(currentAssessment),
+                    reviewed: Boolean(authorizationAssessment),
+                    killSwitchEngaged: killSwitchView === "engaged",
+                  });
+                  return blockers.length ? (
+                    <ul className="list-disc space-y-1 pl-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
+                      {blockers.map((b) => <li key={b}>{b}</li>)}
+                    </ul>
+                  ) : null;
+                })()}
                 <div className="flex gap-3">
                   <PrimaryButton
                     disabled={busy || !selectedId || !authorizationAssessment}
@@ -1411,6 +1458,7 @@ export function CommandCenter() {
 
             {panel === "reconciliation" && (
               <div className="max-w-xl space-y-3">
+                <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detail?.execution?.status ?? null)}</p>
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
                   Demonstration attack: mutate the destination after authorization, as if a compromised
                   session changed it. Expected result — blocked before submission, zero unauthorized
@@ -1438,6 +1486,7 @@ export function CommandCenter() {
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                     Operational report — HOLD/ESCALATE obligations
                   </p>
+                  <p className="text-[12px] text-[var(--color-ink)]">{queueCompletionLabel(reportSummary)}</p>
                   {reportSummaryUnavailableReason(listPresentation) ? (
                     <p role="alert" className="text-[12px] text-[var(--color-danger)]">
                       {reportSummaryUnavailableReason(listPresentation)}
@@ -1501,7 +1550,7 @@ export function CommandCenter() {
                     >
                       <div className="flex items-baseline justify-between gap-2">
                         <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
-                          Decision: {report.decision}
+                          {reportDecisionLabel(report)}
                         </p>
                         <span
                           className="text-[11px] font-semibold uppercase"

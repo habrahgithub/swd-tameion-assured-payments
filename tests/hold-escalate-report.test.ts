@@ -316,3 +316,31 @@ describe("buildHoldEscalateSummary", () => {
     expect(summary).toEqual({ total: 0, hold: 0, escalate: 0, unassessed: 0, pay: 0 });
   });
 });
+
+import { reportDecisionLabel, type HoldEscalateReportLine } from "../src/client/hold-escalate-report";
+
+describe("report decision label distinguishes default blocking from a formal HOLD", () => {
+  const base = {
+    obligation_id: "OBL-X",
+    supplier_reference: { source_system_id: "S", record_id: "R", record_type: "T", approval_state: "A", execution_authority: "N" },
+    amount: "1", currency: "AED", assessment_id: null, assessment_hash: null, assessment_time: null,
+    provider_mode: null, provider_used: null, reasons: [], evidence_gap: [], remediation: [],
+  } satisfies Omit<HoldEscalateReportLine, "decision" | "status" | "in_scope" | "fail_closed" | "fail_closed_reason">;
+
+  it("labels an unassessed obligation as default blocking, never as a formal HOLD", () => {
+    const label = reportDecisionLabel({ ...base, decision: "HOLD", status: "UNASSESSED", in_scope: true, fail_closed: true, fail_closed_reason: "x" });
+    expect(label).toContain("Default blocking");
+    expect(label).toContain("unassessed");
+    expect(label).not.toBe("HOLD");
+  });
+
+  it("labels a stale assessment as default blocking, not a current HOLD", () => {
+    const label = reportDecisionLabel({ ...base, decision: "HOLD", status: "STALE", in_scope: true, fail_closed: true, fail_closed_reason: "x" });
+    expect(label).toContain("Default blocking");
+    expect(label).toContain("stale");
+  });
+
+  it("labels a current model HOLD as a formal HOLD", () => {
+    expect(reportDecisionLabel({ ...base, decision: "HOLD", status: "CURRENT", in_scope: true, fail_closed: false, fail_closed_reason: null })).toBe("Formal HOLD (current sealed assessment)");
+  });
+});
