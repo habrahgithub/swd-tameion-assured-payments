@@ -10,7 +10,7 @@ import {
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
 import { assessmentKeyDisposition, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
-import { buildAssessmentTrace } from "../src/client/command-center-state";
+import { assessmentNextAction, buildAssessmentTrace, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
   buildHoldEscalateSummary,
@@ -175,17 +175,6 @@ export function pendingPrerequisiteLabel(hasCurrentAssessment: boolean): string 
 /** Settlement display that keeps source truth and derived settlement separate.
  * AED sources are settled through the fixed policy conversion; they are never
  * reported as "Not applicable" when server settlement truth exists. */
-export function settlementDisplay(
-  source: { currency: string; amount: string },
-  settlement: { amount: string; asset: string } | undefined,
-): string {
-  if (source.currency !== "AED" && source.currency !== "USD") {
-    return `Not settleable — unsupported source currency ${source.currency}; no settlement is derived.`;
-  }
-  if (!settlement) return `Unavailable — server settlement truth not loaded (source ${source.amount} ${source.currency}).`;
-  return `${settlement.amount} ${settlement.asset} (derived from source ${source.amount} ${source.currency} at fixed policy)`;
-}
-
 /** The aggregate-version fragment shown in the Authorization panel's intent
  * sentence. Never the bare "v?" placeholder when nothing is selected. */
 export function aggregateVersionLabel(aggregateVersion: number | undefined, hasSelection: boolean): string {
@@ -273,8 +262,17 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
   { key: "authorization", label: "Authorization" },
   { key: "assurance", label: "Assurance & Execution" },
   { key: "reconciliation", label: "Reconciliation & Evidence" },
-  { key: "report", label: "Operational Report" },
+  { key: "report", label: "Operational Report (secondary)" },
 ];
+
+const PAYMENT_LIFECYCLE_STAGES = [
+  "Obligation",
+  "AI Assessment",
+  "Human Authorization",
+  "Deterministic Assurance",
+  "Execution",
+  "Evidence / Reconciliation",
+] as const;
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
   try {
@@ -515,11 +513,13 @@ function AdvisoryAssessmentCard({
   assessment,
   label,
   stale,
+  allAssessed,
   action,
 }: {
   assessment: AssessmentReviewSnapshot;
   label: string;
   stale?: boolean;
+  allAssessed?: boolean;
   action?: React.ReactNode;
 }) {
   const tone = stale ? "danger" : decisionTone(assessment.decision);
@@ -563,6 +563,9 @@ function AdvisoryAssessmentCard({
           <li key={index}>{reason}</li>
         ))}
       </ul>
+      <p className="border-l-2 border-[var(--color-accent)] pl-2 text-[12px] font-medium text-[var(--color-ink)]">
+        {assessmentNextAction(assessment.decision, allAssessed ?? false)}
+      </p>
 
       {/* Deterministic findings — the application-owned blockers */}
       {findings.length > 0 && (
@@ -1018,6 +1021,10 @@ export function CommandCenter() {
   const state = useMemo(() => workflowState(detail), [detail]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
+  const simulatedTrustFixture = detail ? hasSimulatedTrustFixture(detail.demo_arc_trust_simulated, detail.aggregate.source_wallet_ref) : false;
+  const hasCurrentAssessment = Boolean(
+    currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
+  );
     const authorizationAssessment = currentReviewedAssessment(
     displayedAssessment,
     currentAssessment,
@@ -1079,36 +1086,38 @@ export function CommandCenter() {
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
         <p className="max-w-none text-left text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-right">
-          Execution and demo destination/source-wallet trust are simulated fixtures. J0-D connectivity completed
-          with disposable wallets; product destination/source-wallet trust remains separately gated unless
-          supported by current, non-simulated evidence. J0-C source evidence retains its original pending status.
+          AI recommendations are advisory. Genuine payment execution requires retained human authorization and
+          deterministic assurance. Demo execution is isolated and simulated.
         </p>
       </header>
 
-      <section aria-label="Simulated demo" className="space-y-3 rounded border border-[var(--color-warning)] bg-[var(--color-surface)] p-3 sm:p-4">
-        <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-          <div>
-            <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
-            <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Runs the isolated in-memory demo pipeline with a fake adapter. This result is separate from genuine obligations and cannot represent a vendor payment.</p>
+      <details className="rounded border border-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-2">
+        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-warning)]">Demo Mode — simulated, non-economic workflow</summary>
+        <section aria-label="Simulated demo" className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
+          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Runs a synthetic, isolated in-memory workflow with a fake adapter. It is separate from genuine obligations and cannot represent a vendor payment.</p>
+            </div>
+            <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
+              {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
+            </PrimaryButton>
           </div>
-          <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
-            {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
-          </PrimaryButton>
-        </div>
-        {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
-        {demoStatus === "error" && (
-          <div role="alert" className="flex flex-col items-start gap-2 border-l-[3px] border-l-[var(--color-danger)] pl-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
-            <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
-          </div>
-        )}
-        {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
-      </section>
+          {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
+          {demoStatus === "error" && (
+            <div role="alert" className="flex flex-col items-start gap-2 border-l-[3px] border-l-[var(--color-danger)] pl-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
+              <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
+            </div>
+          )}
+          {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
+        </section>
+      </details>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">
         <aside className="md:border-r md:pr-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-            Obligations
+            Genuine obligations
           </p>
           <p className="mb-2 text-[12px] text-[var(--color-ink)]">{queueHeaderLabel(listPresentation, reportSummary)}</p>
           {/* Ledger header row — columnar alignment for operator scan */}
@@ -1155,7 +1164,7 @@ export function CommandCenter() {
                       {o.amount} {o.currency}
                     </span>
                     <span className="tabular text-right text-[12px] font-medium" style={{ color: statusColor }}>
-                      {o.assessed ? (o.decision ?? "—") : "UNASSESSED"}
+                      {o.assessed ? (o.decision ?? "—") : "Assessment required"}
                     </span>
                     <span className="col-span-3 truncate text-[11px] text-[var(--color-ink-muted)]">
                       {o.service_category.replaceAll("_", " ").toLowerCase()}
@@ -1171,11 +1180,11 @@ export function CommandCenter() {
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "error" && <>
                 <p role="alert" className="text-[13px] text-[var(--color-danger)]">Genuine obligations are unavailable. No synthetic demo data has been added to this list. {obligationsError}</p>
                 <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry genuine obligations</button>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">Use the separate simulated demo above to view a clearly labeled synthetic workflow.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">Open Demo Mode above to view a clearly labeled synthetic workflow.</p>
               </>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
                 <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">The genuine lane remains empty; a simulated demo is available above and is never treated as payable.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">The genuine lane remains empty; Demo Mode above is separate and never treated as payable.</p>
               </>}
             </div>
           )}
@@ -1199,8 +1208,8 @@ export function CommandCenter() {
                 {obligationsStatus === "loading"
                   ? "The genuine source list is loading."
                   : obligationsStatus === "error"
-                    ? "The genuine source list is unavailable. Retry it or use the separately labeled simulated demo above."
-                    : "There are no genuine obligations to show. The simulated demo above is separate and is not payable."}
+                    ? "The genuine source list is unavailable. Retry it or open Demo Mode above for a separate synthetic workflow."
+                    : "There are no genuine obligations to show. Open Demo Mode above for a separate workflow that is never payable."}
               </p>
             </div>
           )}
@@ -1216,7 +1225,9 @@ export function CommandCenter() {
           )}
 
           {detail && (
-            <section aria-label="Payment authority boundary" className="grid gap-3 border-b border-[var(--color-border)] pb-4 md:grid-cols-3">
+            <details className="border-b border-[var(--color-border)] pb-3">
+              <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and control evidence (technical details)</summary>
+              <section aria-label="Payment authority boundary" className="mt-3 grid gap-3 md:grid-cols-3">
               <article className="space-y-1 border-l-2 border-[var(--color-border)] pl-3" data-testid="source-truth">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide">Source-system truth</h3>
                 <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.source_truth.role}</p>
@@ -1226,22 +1237,43 @@ export function CommandCenter() {
                 <p className="text-[11px] text-[var(--color-ink-muted)]">Record {detail.truth.source_truth.source.record_id} · state {detail.truth.source_truth.obligation_state}</p>
                 <p className="text-[11px] text-[var(--color-ink-muted)]">Source approval {detail.truth.source_truth.source.approval_state} · execution authority {detail.truth.source_truth.source.execution_authority}</p>
               </article>
-              <article className="space-y-1 border-l-2 border-[var(--color-ink)] pl-3" data-testid="tameion-control-truth">
-                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Tameion control truth</h3>
-                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.tameion_control_truth.role}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
-              </article>
-              <article className="space-y-1 border-l-2 border-[var(--color-warning)] pl-3" data-testid="settlement-truth">
-                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Settlement truth</h3>
-                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
-                <p className="mono text-[11px] text-[var(--color-ink-muted)]">Provider reference {detail.truth.settlement_truth.provider_ref ?? "None"}</p>
-                <p className="text-[11px] font-semibold text-[var(--color-ink)]">NO ASSURANCE, NO EXECUTION</p>
-              </article>
-            </section>
+              {simulatedTrustFixture ? (
+                <p className="text-[11px] text-[var(--color-ink-muted)]">Simulated source-wallet and destination-trust fixtures are excluded from the genuine obligation view.</p>
+              ) : (
+                <>
+                  <article className="space-y-1 border-l-2 border-[var(--color-ink)] pl-3" data-testid="tameion-control-truth">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide">Tameion control truth</h3>
+                    <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.tameion_control_truth.role}</p>
+                    <p className="text-[11px] text-[var(--color-ink-muted)]">Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
+                    <p className="text-[11px] text-[var(--color-ink-muted)]">Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
+                    <p className="text-[11px] text-[var(--color-ink-muted)]">Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
+                  </article>
+                  <article className="space-y-1 border-l-2 border-[var(--color-warning)] pl-3" data-testid="settlement-truth">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wide">Settlement truth</h3>
+                    <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
+                    <p className="text-[11px] text-[var(--color-ink-muted)]">Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
+                    <p className="mono text-[11px] text-[var(--color-ink-muted)]">Provider reference {detail.truth.settlement_truth.provider_ref ?? "None"}</p>
+                  </article>
+                </>
+              )}
+              </section>
+            </details>
           )}
+
+          <section aria-label="Payment lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Genuine payment lifecycle</p>
+              <p className="text-[11px] font-bold tracking-wide text-[var(--color-ink)]">NO ASSURANCE, NO EXECUTION</p>
+            </div>
+            <ol aria-label="Payment lifecycle" className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-6">
+              {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
+                <li key={stage} className="flex min-w-0 items-baseline gap-1 border-l-2 border-[var(--color-border)] pl-2 text-[11px] text-[var(--color-ink-muted)]">
+                  <span className="mono text-[10px] font-semibold">{index + 1}.</span>
+                  <span>{stage}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
 
           <nav aria-label="Command Center surfaces" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
             {PANELS.map((p) => (
@@ -1261,23 +1293,42 @@ export function CommandCenter() {
 
           <div className="min-h-[120px]">
             {panel === "obligations" && detail && (
-              <dl className="max-w-md">
-                <Field label="Source obligation amount (source truth)" value={`${detail.record.amount} ${detail.record.currency}`} />
-                <Field
-                  label="Settlement amount (execution rail)"
-                  value={settlementDisplay(
-                    { currency: detail.record.currency, amount: detail.record.amount },
-                    detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
-                  )}
-                />
-                <Field label="Network" value={detail.aggregate.network} />
-                <Field label="Aggregate version" value={String(detail.aggregate.aggregate_version)} />
-                <Field label="Source wallet" value={detail.aggregate.source_wallet_ref} />
-                <Field
-                  label="Destination trust"
-                  value={`${detail.aggregate.destination_verification_status} / ${detail.aggregate.destination_operational_status}${detail.demo_arc_trust_simulated ? " (simulated demo fixture; not product-trust evidence)" : ""}`}
-                />
-              </dl>
+              <section aria-label="Genuine obligation workspace" className="max-w-xl space-y-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">REAL BUSINESS OBLIGATION</p>
+                  <p className="mt-1 text-[13px] text-[var(--color-ink)]">Source: genuine business record · {selected?.service_category.replaceAll("_", " ").toLowerCase()}</p>
+                </div>
+                <dl>
+                  <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
+                  <Field label="Source record" value={String(detail.truth.source_truth.source.record_id)} />
+                  <Field
+                    label={detail.pae_sealed ? "Settlement amount in authorized intent" : "Indicative settlement equivalent"}
+                    value={settlementDisplay(
+                      { currency: detail.record.currency, amount: detail.record.amount },
+                      detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
+                      detail.pae_sealed,
+                    )}
+                  />
+                  <Field label="AI assessment" value={hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} — sealed advisory result` : "Not run"} />
+                  <Field label="Payment intent" value={detail.pae_sealed ? "Sealed intent exists; human authorization retained" : "None"} />
+                  <Field
+                    label="Product destination trust"
+                    value={simulatedTrustFixture
+                      ? "Not established for this genuine obligation"
+                      : `${judgeReadableState(detail.aggregate.destination_verification_status)} · ${judgeReadableState(detail.aggregate.destination_operational_status)}`}
+                  />
+                  <Field label="Execution authority" value={judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority)} />
+                </dl>
+                <PrimaryButton
+                  disabled={busy || !selectedId || detail.record.obligation_id !== selectedId}
+                  onClick={() => {
+                    setPanel("assessment");
+                    void runAssessment();
+                  }}
+                >
+                  Run AI Assessment
+                </PrimaryButton>
+              </section>
                         )}
 
             {panel === "assessment" && (
@@ -1294,8 +1345,47 @@ export function CommandCenter() {
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
+                {displayedAssessment && authorizationAssessment && (
+                  <AdvisoryAssessmentCard
+                    assessment={displayedAssessment}
+                    label="Displayed assessment under review"
+                    allAssessed={allAssessed}
+                    action={
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold underline text-[var(--color-warning)]"
+                        disabled={!displayedAssessment.race}
+                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
+                      >
+                        Discard review selection
+                      </button>
+                    }
+                  />
+                )}
+                {!displayedAssessment && currentAssessment && (
+                  <AdvisoryAssessmentCard
+                    assessment={currentAssessment}
+                    label="Current sealed assessment"
+                    allAssessed={allAssessed}
+                    action={
+                      <button
+                        type="button"
+                        className="text-[12px] font-semibold underline"
+                        disabled={!currentAssessment.race}
+                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
+                      >
+                        Review this assessment for authorization
+                      </button>
+                    }
+                  />
+                )}
+                {displayedAssessment && !authorizationAssessment && displayedAssessment !== currentAssessment && (
+                  <p className="text-[12px] text-[var(--color-danger)]">
+                    The displayed assessment is no longer current. Review the current sealed assessment before authorization.
+                  </p>
+                )}
                 <PrimaryButton disabled={busy || !selectedId || !detail || detail.record.obligation_id !== selectedId} onClick={runAssessment}>
-                  Run assessment
+                  Run AI Assessment
                 </PrimaryButton>
 
                 {assessmentGateCopy(listPresentation, allAssessed, obligations.length) && (
@@ -1335,45 +1425,6 @@ export function CommandCenter() {
                   </div>
                 )}
 
-                {displayedAssessment && authorizationAssessment && (
-                  <AdvisoryAssessmentCard
-                    assessment={displayedAssessment}
-                    label="Displayed assessment under review"
-                    action={
-                      <button
-                        type="button"
-                        className="text-[12px] font-semibold underline text-[var(--color-warning)]"
-                        disabled={!displayedAssessment.race}
-                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
-                      >
-                        Discard review selection
-                      </button>
-                    }
-                  />
-                )}
-                {!displayedAssessment && currentAssessment && (
-                  <div className="space-y-2">
-                    <AdvisoryAssessmentCard
-                      assessment={currentAssessment}
-                      label="Current sealed assessment"
-                      action={
-                        <button
-                          type="button"
-                          className="text-[12px] font-semibold underline"
-                          disabled={!currentAssessment.race}
-                          onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
-                        >
-                          Review this assessment for authorization
-                        </button>
-                      }
-                    />
-                  </div>
-                )}
-                {displayedAssessment && !authorizationAssessment && displayedAssessment !== currentAssessment && (
-                  <p className="text-[12px] text-[var(--color-danger)]">
-                    The displayed assessment is no longer current. Review the current sealed assessment before authorization.
-                  </p>
-                )}
                 {currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
                 {currentResult?.label === "assess" && <EvidencePanel value={currentResult.data} />}
               </div>

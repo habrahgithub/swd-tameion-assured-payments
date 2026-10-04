@@ -1,5 +1,41 @@
 import type { RaceAssessment } from "../agent/schema";
 
+export function judgeReadableState(value: string): string {
+  return value
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((word) => `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(" ");
+}
+
+export function hasSimulatedTrustFixture(flag: boolean, sourceWalletRef: string): boolean {
+  return flag || /simulated/i.test(sourceWalletRef);
+}
+
+export function assessmentNextAction(decision: "PAY" | "HOLD" | "ESCALATE", allAssessed: boolean): string {
+  if (decision === "PAY") {
+    return allAssessed
+      ? "Next action: review this advisory recommendation for human authorization. A PAY decision does not authorize payment."
+      : "Next action: assess the remaining genuine obligations before human authorization review. A PAY decision does not authorize payment.";
+  }
+  if (decision === "HOLD") return "Next action: resolve the findings before reassessing. Authorization remains locked.";
+  return "Next action: escalate the findings for human review. Authorization remains locked.";
+}
+
+export function settlementDisplay(
+  source: { currency: string; amount: string },
+  settlement: { amount: string; asset: string } | undefined,
+  intentExists = false,
+): string {
+  if (source.currency !== "AED" && source.currency !== "USD") {
+    return `Not settleable — unsupported source currency ${source.currency}; no settlement is derived.`;
+  }
+  if (!settlement) return `Unavailable — server settlement truth not loaded (source ${source.amount} ${source.currency}).`;
+  if (intentExists) return `Intent-bound amount: ${settlement.amount} ${settlement.asset}.`;
+  const policyRate = source.currency === "AED" ? " · Rate: 1 USD = AED 3.6725" : "";
+  return `≈ ${settlement.amount} ${settlement.asset} (indicative only)${policyRate} · No payment intent exists.`;
+}
+
 export type AssessmentTraceStepId = "SOURCE_IDS" | "SUPPLIED_FACTS" | "PROPOSAL" | "VALIDATED_FINDINGS" | "CATALOG";
 
 export interface AssessmentTraceStep {

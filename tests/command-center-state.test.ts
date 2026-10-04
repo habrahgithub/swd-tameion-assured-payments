@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RaceAssessment } from "../src/agent/schema";
-import { buildAssessmentTrace, type AssessmentTraceStep } from "../src/client/command-center-state";
+import { assessmentNextAction, buildAssessmentTrace, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay, type AssessmentTraceStep } from "../src/client/command-center-state";
 
 import {
   aggregateVersionLabel,
@@ -15,7 +15,6 @@ import {
   reportSummaryUnavailableReason,
   operationalReportSummaryLabel,
   operationalReportDetailPrompt,
-  settlementDisplay,
   workflowState,
 } from "../app/command-center";
 
@@ -144,7 +143,7 @@ describe("Command Center settlement display (AED source keeps derived settlement
     const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
     expect(text).not.toContain("Not applicable");
     expect(text).toContain("1568.413887 USDC");
-    expect(text).toContain("5760.00 AED");
+    expect(text).toContain("1 USD = AED 3.6725");
   });
 
   it("reports unavailable settlement truth rather than a fabricated amount", () => {
@@ -367,21 +366,61 @@ describe("one lifecycle truth for the genuine path (STOP before all assessed)", 
 });
 
 describe("financial oracles cover USD, AED and unsupported currency explicitly", () => {
-  it("shows USD settlement with its source amount, not a not-applicable message", () => {
+  it("shows pre-intent USD settlement only as indicative with no payment intent", () => {
     const text = settlementDisplay({ currency: "USD", amount: "100.00" }, { amount: "100.000000", asset: "USDC" });
     expect(text).toContain("100.000000 USDC");
+    expect(text).toContain("indicative only");
+    expect(text).toContain("No payment intent exists");
     expect(text).not.toContain("Not applicable");
   });
 
-  it("shows AED settlement as derived at the fixed policy", () => {
+  it("shows pre-intent AED settlement only as indicative with the fixed policy rate", () => {
     const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
-    expect(text).toContain("derived from source 5760.00 AED");
+    expect(text).toContain("indicative only");
+    expect(text).toContain("1 USD = AED 3.6725");
+    expect(text).toContain("No payment intent exists");
+  });
+
+  it("labels an intent-bound settlement amount separately from an indicative equivalent", () => {
+    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" }, true);
+    expect(text).toContain("Intent-bound amount");
+    expect(text).not.toContain("indicative only");
   });
 
   it("does not present an unsupported currency as a derived settlement or a zero amount", () => {
     const text = settlementDisplay({ currency: "EUR", amount: "300.00" }, { amount: "0.000000", asset: "USDC" });
     expect(text).toContain("unsupported source currency EUR");
     expect(text).not.toContain("0.000000 USDC");
+  });
+});
+
+describe("Command Center advisory next action", () => {
+  it("keeps PAY advisory until all genuine obligations are assessed", () => {
+    expect(assessmentNextAction("PAY", false)).toContain("assess the remaining genuine obligations");
+    expect(assessmentNextAction("PAY", true)).toContain("human authorization");
+    expect(assessmentNextAction("PAY", true)).toContain("does not authorize payment");
+  });
+
+  it("provides a useful HOLD and ESCALATE next action without unlocking authority", () => {
+    expect(assessmentNextAction("HOLD", true)).toContain("resolve the findings before reassessing");
+    expect(assessmentNextAction("HOLD", true)).toContain("Authorization remains locked");
+    expect(assessmentNextAction("ESCALATE", true)).toContain("escalate the findings for human review");
+    expect(assessmentNextAction("ESCALATE", true)).toContain("Authorization remains locked");
+  });
+});
+
+describe("judge-readable technical state labels", () => {
+  it("expands internal enum separators without changing the underlying state", () => {
+    expect(judgeReadableState("PENDING_VERIFICATION")).toBe("Pending Verification");
+    expect(judgeReadableState("NOT_GRANTED")).toBe("Not Granted");
+  });
+});
+
+describe("genuine-lane trust fixture separation", () => {
+  it("recognizes simulated wallet provenance even when the trust status flag is false", () => {
+    expect(hasSimulatedTrustFixture(false, "WALLET-SOURCE-P0-1-SIMULATED")).toBe(true);
+    expect(hasSimulatedTrustFixture(true, "source-wallet-1")).toBe(true);
+    expect(hasSimulatedTrustFixture(false, "verified-business-wallet")).toBe(false);
   });
 });
 
