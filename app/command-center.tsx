@@ -70,6 +70,19 @@ interface ObligationDetail {
   execution_kill_switched: boolean;
 }
 
+function isRouteAssuranceReady(detail: ObligationDetail | null): boolean {
+  if (!detail) return false;
+  const simulatedTrustFixture = hasSimulatedTrustFixture(
+    detail.demo_arc_trust_simulated,
+    detail.aggregate.source_wallet_ref,
+  );
+  return !simulatedTrustFixture &&
+    detail.aggregate.product_trust_provenance === "CURRENT_PRODUCT_EVIDENCE" &&
+    detail.aggregate.destination_verification_status === "VERIFIED" &&
+    detail.aggregate.destination_operational_status === "ACTIVE" &&
+    detail.aggregate.source_wallet_status === "ACTIVE";
+}
+
 type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation" | "report";
 type ObligationListStatus = "loading" | "error" | "ready";
 type ObligationListPresentation = "loading" | "error" | "empty" | "ready";
@@ -236,6 +249,7 @@ export function authorizationBlockers(state: {
   hasSelection: boolean;
   allAssessed: boolean;
   hasCurrentPayAssessment: boolean;
+  routeAssuranceReady?: boolean;
   reviewed: boolean;
   killSwitchEngaged: boolean;
 }): string[] {
@@ -243,6 +257,9 @@ export function authorizationBlockers(state: {
   if (!state.hasSelection) blockers.push("Select an obligation.");
   if (!state.allAssessed) blockers.push("Assess all obligations (AUT-012 requires every obligation assessed).");
   if (state.hasSelection && !state.hasCurrentPayAssessment) blockers.push("A current PAY assessment is required before authorization review.");
+  if (state.hasCurrentPayAssessment && state.routeAssuranceReady === false) {
+    blockers.push("Payment-route assurance is not ready; satisfy the existing readiness gate before authorization review.");
+  }
   if (state.hasCurrentPayAssessment && !state.reviewed) blockers.push("Review the current PAY assessment before authorization.");
   if (state.killSwitchEngaged) blockers.push("Kill switch engaged — execution is disabled for this obligation.");
   return blockers;
@@ -309,7 +326,7 @@ const TONE_STYLE: Record<Tone, { border: string; text: string }> = {
 /** Explicit workflow state, never expressed by colour alone. Authority-bearing
  * labels consume the server-derived truth layer rather than recomputing release
  * authority in the browser. */
-export function workflowState(detail: ObligationDetail | null): { label: string; tone: Tone; explanation: string } {
+export function workflowState(detail: ObligationDetail | null, routeAssuranceReady?: boolean): { label: string; tone: Tone; explanation: string } {
   if (!detail) return { label: "Loading", tone: "neutral", explanation: "" };
   const { aggregate, execution, truth } = detail;
   const releaseAuthority = truth.tameion_control_truth.execution_release_authority;
@@ -366,15 +383,20 @@ export function workflowState(detail: ObligationDetail | null): { label: string;
       ? detail.current_assessment
       : null;
     const decision = assessment?.decision ?? null;
+    const payNeedsAssurance = decision === "PAY" && routeAssuranceReady === false;
     return {
-      label: pendingPrerequisiteLabel(decision),
-      tone: decision === "HOLD" || decision === "ESCALATE" ? "warning" : decision === "PAY" ? "info" : "neutral",
+      label: payNeedsAssurance
+        ? "PAY recommended — assurance not ready; authorization locked"
+        : pendingPrerequisiteLabel(decision),
+      tone: decision === "HOLD" || decision === "ESCALATE" || payNeedsAssurance ? "warning" : decision === "PAY" ? "info" : "neutral",
       explanation: decision === "HOLD"
         ? "Resolve the HOLD findings before reassessing. Human authorization is locked."
         : decision === "ESCALATE"
           ? "Escalate the findings for human review. Human authorization is locked."
           : decision === "PAY"
-            ? "The current PAY recommendation is advisory. Review it before authorization; no execution authority is granted."
+            ? payNeedsAssurance
+              ? "The current PAY recommendation is advisory. Payment-route assurance is not ready; human authorization remains locked. No execution authority is granted."
+              : "The current PAY recommendation is advisory. Review it before authorization; no execution authority is granted."
             : "No current assessment or Tameion execution authority has been granted.",
     };
   }
@@ -1051,17 +1073,13 @@ export function CommandCenter() {
   const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
   const detailState: DetailState = detail && detailIsStale ? "stale" : detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
   const killSwitchView = killSwitchPresentation(detailState, detail?.execution_kill_switched);
+  const routeAssuranceReady = isRouteAssuranceReady(detail);
   const state = useMemo(() => detailState === "stale"
     ? { label: "Last-known state — stale", tone: "warning" as const, explanation: "Control and execution truth is not freshly verified. Retry detail before relying on it." }
-    : workflowState(detailState === "loaded" ? detail : null), [detail, detailState]);
+    : workflowState(detailState === "loaded" ? detail : null, routeAssuranceReady), [detail, detailState, routeAssuranceReady]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
   const simulatedTrustFixture = detail ? hasSimulatedTrustFixture(detail.demo_arc_trust_simulated, detail.aggregate.source_wallet_ref) : false;
-  const routeAssuranceReady = Boolean(detail && !simulatedTrustFixture &&
-    detail.aggregate.product_trust_provenance === "CURRENT_PRODUCT_EVIDENCE" &&
-    detail.aggregate.destination_verification_status === "VERIFIED" &&
-    detail.aggregate.destination_operational_status === "ACTIVE" &&
-    detail.aggregate.source_wallet_status === "ACTIVE");
   const hasCurrentAssessment = Boolean(detailState === "loaded" &&
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
@@ -1139,6 +1157,7 @@ export function CommandCenter() {
     hasSelection: Boolean(selectedId),
     allAssessed,
     hasCurrentPayAssessment,
+    routeAssuranceReady,
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
@@ -1561,16 +1580,14 @@ export function CommandCenter() {
                     hasSelection: Boolean(selectedId),
                     allAssessed,
                     hasCurrentPayAssessment,
+                    routeAssuranceReady,
                     reviewed: Boolean(authorizationAssessment),
                     killSwitchEngaged: killSwitchView === "engaged",
                   });
                   return blockers.length ? (
                     <ul className="list-disc space-y-1 pl-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
                       {blockers.map((b) => <li key={b}>{b}</li>)}
-                      {hasCurrentPayAssessment && !routeAssuranceReady && <li>Payment-route assurance is not ready; human authorization remains blocked by the existing readiness gate.</li>}
                     </ul>
-                  ) : hasCurrentPayAssessment && !routeAssuranceReady ? (
-                    <p className="text-[12px] text-[var(--color-warning)]">Payment-route assurance is not ready; human authorization remains blocked by the existing readiness gate.</p>
                   ) : null;
                 })()}
                 <div className="flex gap-3">

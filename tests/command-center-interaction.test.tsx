@@ -402,12 +402,18 @@ describe("Command Center mounted Operational Report", () => {
     ]);
     expect(lifecycle.textContent).toContain("PAY recommended — assurance not ready");
     expect(lifecycle.textContent).toContain("authorization locked");
+    const selectedHeader = screen.getByRole("heading", { name: "OBL-ASSURANCE-NOT-READY" }).parentElement?.parentElement;
+    expect(within(selectedHeader as HTMLElement).getByText("PAY recommended — assurance not ready; authorization locked")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Review this assessment for authorization" }));
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect(await screen.findByText(/Payment-route assurance is not ready; human authorization remains blocked/)).toBeTruthy();
+    const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
+    expect(within(prerequisites).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Payment-route assurance is not ready; satisfy the existing readiness gate before authorization review.",
+      "Review the current PAY assessment before authorization.",
+    ]);
     expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
+    expect(screen.getByText("Payment-route assurance is not ready; satisfy the existing readiness gate before authorization review.")).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
