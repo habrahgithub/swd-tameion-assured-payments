@@ -387,6 +387,25 @@ describeEval("one orchestrator deadline for the full batch; each case gets only 
     expectEval(result.outcomes.map((o) => o.case_id)).toEqual(["POSITIVE_COMPLETE"]);
     expectEval(Date.now() - started).toBeLessThan(2000);
   });
+
+  itEval("aborts the in-flight provider call at the batch deadline and starts no later case", async () => {
+    let calls = 0;
+    let receivedSignal: AbortSignal | undefined;
+    const provider = {
+      ...fakeProvider(() => undefined),
+      async assess(_ctx: { obligation_id: string; evidence_ids: string[] }, options?: { signal?: AbortSignal }) {
+        calls += 1;
+        receivedSignal = options?.signal;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
+        });
+      },
+    } as unknown as AiProvider;
+    const result = await runSyntheticEvaluation(provider, { budgetMs: 20 });
+    expectEval(result.status).toBe("INCOMPLETE");
+    expectEval(calls).toBe(1);
+    expectEval(receivedSignal?.aborted).toBe(true);
+  });
 });
 
 describeEval("usefulness uses normalized application truth, rejecting unsupported schema-valid proposals", () => {

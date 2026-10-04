@@ -13,6 +13,8 @@ import {
   obligationsFetchErrorMessage,
   pendingPrerequisiteLabel,
   reportSummaryUnavailableReason,
+  operationalReportSummaryLabel,
+  operationalReportDetailPrompt,
   settlementDisplay,
   workflowState,
 } from "../app/command-center";
@@ -109,6 +111,20 @@ describe("Command Center operational report availability", () => {
   it("treats a verified-empty or populated list as a real, reportable summary", () => {
     expect(reportSummaryUnavailableReason("empty")).toBeNull();
     expect(reportSummaryUnavailableReason("ready")).toBeNull();
+  });
+
+  it("keeps the lifecycle summary aligned with list availability", () => {
+    const summary = { total: 0, hold: 0, escalate: 0, unassessed: 0, pay: 0 };
+    expect(operationalReportSummaryLabel("loading", summary)).toContain("loading");
+    expect(operationalReportSummaryLabel("error", summary)).toContain("unavailable");
+    expect(operationalReportSummaryLabel("empty", summary)).toContain("No genuine obligations");
+    expect(operationalReportSummaryLabel("ready", { ...summary, total: 2, unassessed: 2 })).toContain("Incomplete");
+  });
+
+  it("does not describe a selected but unresolved detail as no selection", () => {
+    expect(operationalReportDetailPrompt("none")).toContain("Select an obligation");
+    expect(operationalReportDetailPrompt("loading")).toContain("loading");
+    expect(operationalReportDetailPrompt("failed")).toContain("unavailable");
   });
 });
 

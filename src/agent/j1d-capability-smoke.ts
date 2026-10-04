@@ -183,13 +183,21 @@ export type SyntheticEvaluationResult =
 const DEFAULT_BUDGET_MS = 60_000;
 const DEADLINE = Symbol("deadline");
 
-async function withRemainingBudget<T>(promise: Promise<T>, remainingMs: number): Promise<T | typeof DEADLINE> {
+async function withRemainingBudget<T>(run: (signal: AbortSignal) => Promise<T>, remainingMs: number): Promise<T | typeof DEADLINE> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<typeof DEADLINE>((resolve) => {
-    timer = setTimeout(() => resolve(DEADLINE), remainingMs);
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(DEADLINE);
+    }, remainingMs);
+  });
+  const operation: Promise<T | typeof DEADLINE> = run(controller.signal).catch((error: unknown) => {
+    if (controller.signal.aborted) return DEADLINE;
+    throw error;
   });
   try {
-    return await Promise.race([promise, timeout]);
+    return await Promise.race([operation, timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -212,9 +220,9 @@ export async function runSyntheticEvaluation(
     let rawOutput: unknown = undefined;
     const observed = {
       ...provider,
-      assess: async (context: FinanceAgentContext) => {
+      assess: async (context: FinanceAgentContext, options?: { signal?: AbortSignal }) => {
         try {
-          rawOutput = await provider.assess(context);
+          rawOutput = await provider.assess(context, options);
           return rawOutput;
         } catch (error) {
           thrown = error;
@@ -223,7 +231,10 @@ export async function runSyntheticEvaluation(
       },
     } as AiProvider;
     const context = buildSyntheticEvaluationContext(id);
-    const decision = await withRemainingBudget(assessObligation(context, observed), remaining);
+    const decision = await withRemainingBudget(
+      (signal) => assessObligation(context, observed, { signal }),
+      remaining,
+    );
     if (decision === DEADLINE) return { status: "INCOMPLETE", reason: "DEADLINE", outcomes };
     if (thrown) return { status: "BLOCKED", code: classifyProviderError(thrown), outcomes };
     if (wasProviderCallFailure(decision)) return { status: "BLOCKED", code: "PROVIDER_UNAVAILABLE", outcomes };

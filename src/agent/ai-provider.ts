@@ -18,7 +18,7 @@ export interface AiProvider {
     runtime_config_sha256: string;
   };
   /** Returns raw, untrusted model output. The caller must independently validate/parse it. */
-  assess(context: FinanceAgentContext): Promise<unknown>;
+  assess(context: FinanceAgentContext, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
 export const CARE_PROMPT_VERSION = "tameion-finance-care-v1";
@@ -92,7 +92,7 @@ export class NvidiaProvider implements AiProvider {
   };
   static readonly REQUEST_TIMEOUT_MS = NVIDIA_RUNTIME_CONFIG.timeout_ms;
 
-  async assess(context: FinanceAgentContext): Promise<unknown> {
+  async assess(context: FinanceAgentContext, options: { signal?: AbortSignal } = {}): Promise<unknown> {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) {
       throw new AiProviderError("NVIDIA_API_KEY is not configured in this environment");
@@ -100,10 +100,13 @@ export class NvidiaProvider implements AiProvider {
 
     let response: Response | undefined;
     for (let attempt = 1; attempt <= NVIDIA_RUNTIME_CONFIG.max_transport_attempts; attempt += 1) {
+      const signal = options.signal
+        ? AbortSignal.any([AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS), options.signal])
+        : AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS);
       try {
         response = await fetch(`${NVIDIA_RUNTIME_CONFIG.endpoint}${NVIDIA_RUNTIME_CONFIG.request_path}`, {
           method: NVIDIA_RUNTIME_CONFIG.method,
-          signal: AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS),
+          signal,
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
@@ -122,6 +125,9 @@ export class NvidiaProvider implements AiProvider {
           }),
         });
       } catch (error) {
+        if (signal.aborted) {
+          throw new AiProviderError(options.signal?.aborted ? "NVIDIA request cancelled" : "NVIDIA request timed out");
+        }
         if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
           throw new AiProviderError(error instanceof Error ? `NVIDIA transport failed: ${error.message}` : "NVIDIA transport failed");
         }

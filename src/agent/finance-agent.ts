@@ -47,11 +47,13 @@ export function wasProviderCallFailure(decision: FinanceAgentDecision): boolean 
 export async function assessObligation(
   context: FinanceAgentContext,
   provider: AiProvider,
+  options: { signal?: AbortSignal } = {},
 ): Promise<FinanceAgentDecision> {
   let rawOutput: unknown;
   try {
-    rawOutput = await provider.assess(context);
+    rawOutput = await provider.assess(context, options);
   } catch {
+    if (options.signal?.aborted) throw new Error("Assessment cancelled");
     return normalizeFailure(context, "PROVIDER_UNAVAILABLE", provider);
   }
 

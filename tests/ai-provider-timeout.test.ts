@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CARE_PROMPT_SHA256, CARE_PROMPT_VERSION, CARE_SYSTEM_PROMPT, NvidiaProvider } from "../src/agent/ai-provider";
 import type { FinanceAgentContext } from "../src/agent/schema";
-import { maxDuration } from "../app/api/obligations/[id]/assess/route";
 
 const originalFetch = globalThis.fetch;
 const originalApiKey = process.env.NVIDIA_API_KEY;
@@ -36,6 +35,7 @@ describe("NVIDIA assessment timeout", () => {
   });
 
   it("aborts the provider request before the route execution limit", async () => {
+    const { maxDuration } = await import("../app/api/obligations/[id]/assess/route");
     process.env.NVIDIA_API_KEY = "test-only-key";
     let requestSignal: AbortSignal | null | undefined;
     globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -113,5 +113,25 @@ describe("NVIDIA assessment timeout", () => {
     await new NvidiaProvider().assess(context);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates batch cancellation to the transport and does not retry it", async () => {
+    process.env.NVIDIA_API_KEY = "test-only-key";
+    const controller = new AbortController();
+    let transportSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      transportSignal = init?.signal as AbortSignal | null | undefined;
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const pending = new NvidiaProvider().assess(context, { signal: controller.signal });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/cancel/i);
+    expect(transportSignal?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

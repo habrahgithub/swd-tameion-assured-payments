@@ -213,6 +213,26 @@ export function queueCompletionLabel(summary: HoldEscalateSummary): string {
   return "Completed — no PAY candidate; all obligations assessed as HOLD or ESCALATE.";
 }
 
+/** A queue snapshot is reportable only after the obligations request resolves.
+ * Empty and unavailable states must not inherit the empty array's all-zero
+ * summary as if it were a completed assessment batch. */
+export function operationalReportSummaryLabel(
+  presentation: ObligationListPresentation,
+  summary: HoldEscalateSummary,
+): string {
+  if (presentation === "loading") return "Genuine obligations are loading — operational report summary is not yet available.";
+  if (presentation === "error") return "Genuine obligations are unavailable — operational report summary cannot be determined.";
+  if (presentation === "empty") return "No genuine obligations — nothing to report.";
+  return queueCompletionLabel(summary);
+}
+
+/** Keep selection state separate from detail-fetch state in the report panel. */
+export function operationalReportDetailPrompt(state: DetailState): string {
+  if (state === "loading") return "Selected obligation detail is loading — its operational report is not yet available.";
+  if (state === "failed") return "Selected obligation detail is unavailable — its operational report cannot be produced.";
+  return "Select an obligation to view its HOLD/ESCALATE operational report.";
+}
+
 /** Ordered first-unmet prerequisites for authorization. Only the first is the
  * next action, but all unmet items are named so the operator sees the full gate. */
 export function authorizationBlockers(state: {
@@ -1540,7 +1560,7 @@ export function CommandCenter() {
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                     Operational report — HOLD/ESCALATE obligations
                   </p>
-                  <p className="text-[12px] text-[var(--color-ink)]">{queueCompletionLabel(reportSummary)}</p>
+                  <p className="text-[12px] text-[var(--color-ink)]">{operationalReportSummaryLabel(listPresentation, reportSummary)}</p>
                   {reportSummaryUnavailableReason(listPresentation) ? (
                     <p role="alert" className="text-[12px] text-[var(--color-danger)]">
                       {reportSummaryUnavailableReason(listPresentation)}
@@ -1558,7 +1578,7 @@ export function CommandCenter() {
 
                 {!report && (
                   <p className="text-[12px] text-[var(--color-ink-muted)]">
-                    Select an obligation to view its HOLD/ESCALATE operational report.
+                    {operationalReportDetailPrompt(detailState)}
                   </p>
                 )}
 
