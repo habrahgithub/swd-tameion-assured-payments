@@ -95,6 +95,68 @@ function detail(id: string) {
   };
 }
 
+function assessedDetail(id: string, decision: "PAY" | "HOLD" | "ESCALATE") {
+  const finding = decision === "PAY" ? null : {
+    code: decision === "HOLD" ? "SOURCE_EVIDENCE_MISSING" : "OTHER_REQUIRES_HUMAN_REVIEW",
+    severity: decision,
+    reason: decision === "HOLD" ? "Source evidence is incomplete." : "Controller review is required.",
+  };
+  return {
+    ...detail(id),
+    current_assessment: {
+      obligation_id: id,
+      assessment_id: `ASM-${id}`,
+      assessment_hash: "a".repeat(64),
+      aggregate_version: "1",
+      decision,
+      reasons: [finding?.reason ?? "All required checks passed."],
+      race: {
+        result: {
+          decision,
+          decision_summary: finding?.reason ?? "Checks passed; advisory recommendation only.",
+          validated_findings: finding ? [finding] : [],
+        },
+        action_taken: { summary: "Checks complete.", checks: ["Required checks evaluated."] },
+        caveats: {
+          missing_context: [],
+          uncertainty_signal: false,
+          model_proposed_findings: [],
+          model_proposed_findings_authority: "NON_AUTHORITATIVE",
+          model_explanation: "Test fixture explanation.",
+          model_explanation_authority: "NON_AUTHORITATIVE",
+        },
+        evidence: {
+          evidence_ids: ["TEST-EVIDENCE-1"],
+          authoritative_facts: {
+            obligation_id: id,
+            aggregate_version: "1",
+            amount: "125.00",
+            currency: "USD",
+            due_date: null,
+            due_date_status: "NOT_STATED_ON_SOURCE",
+            due_date_position: "NOT_STATED",
+            as_of_date: "2026-10-04",
+            state_at_event_baseline: "OUTSTANDING",
+            business_purpose_confirmed: true,
+            source_evidence_present: decision !== "HOLD",
+            destination_status: "READY",
+          },
+        },
+        remediation: finding ? [{
+          finding_code: finding.code,
+          reason: finding.reason,
+          required_action: "Review the finding.",
+          required_evidence: ["Supporting document"],
+          owner_role: "Accounts Payable",
+          reassess_after_resolution: decision === "HOLD",
+          ...(decision === "ESCALATE" ? { escalation_target: "Finance controller" } : {}),
+        }] : [],
+        prompt_identity: { version: "care-v1", sha256: "a".repeat(64) },
+      },
+    },
+  };
+}
+
 function response(body: unknown, status = 200): Response {
   return new Response(body === null ? "" : JSON.stringify(body), { status });
 }
@@ -273,6 +335,48 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText("Advisory — HOLD")).toBeTruthy();
     expect(screen.getByText("Destination trust evidence is not verified.")).toBeTruthy();
     expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
+  });
+
+  it.each([
+    ["HOLD", "Requires attention"],
+    ["ESCALATE", "Escalation required"],
+  ] as const)("keeps a current %s assessment locked even after all five obligations are assessed", async (decision, stateLabel) => {
+    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations }))
+      : Promise.resolve(response(assessedDetail("OBL-A", decision))));
+
+    render(<CommandCenter />);
+    expect(await screen.findByText(stateLabel)).toBeTruthy();
+    expect(screen.queryByText("Awaiting human authorization")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review assessment evidence" }));
+    expect(await screen.findByText(/Authorization remains locked/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+
+    const authorize = screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement;
+    expect(authorize.disabled).toBe(true);
+    expect(screen.getByText(/A current PAY assessment is required/)).toBeTruthy();
+    fireEvent.click(authorize);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
+  });
+
+  it("allows only a current reviewed PAY assessment to become authorization eligible", async () => {
+    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations }))
+      : Promise.resolve(response(assessedDetail("OBL-A", "PAY"))));
+
+    render(<CommandCenter />);
+    expect(await screen.findByText("Eligible for human authorization review")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(await screen.findByText("Advisory — PAY")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Review this assessment for authorization" }));
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+
+    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
   it("marks retained detail stale and offers retry when post-action refresh reads fail", async () => {

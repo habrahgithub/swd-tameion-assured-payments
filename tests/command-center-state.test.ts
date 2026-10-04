@@ -144,14 +144,16 @@ describe("Command Center operational report availability", () => {
   });
 });
 
-describe("Command Center unmet-prerequisite label (no 'awaiting authorization' before assessment)", () => {
+describe("Command Center decision-specific authorization state", () => {
   it("names assessment as the first unmet prerequisite when no current assessment exists", () => {
-    expect(pendingPrerequisiteLabel(false)).toContain("Assessment required");
-    expect(pendingPrerequisiteLabel(false)).not.toContain("Awaiting human authorization");
+    expect(pendingPrerequisiteLabel(null)).toContain("Assessment required");
+    expect(pendingPrerequisiteLabel(null)).not.toContain("human authorization");
   });
 
-  it("names human authorization only after a current assessment exists", () => {
-    expect(pendingPrerequisiteLabel(true)).toBe("Awaiting human authorization");
+  it("makes only PAY eligible for human authorization review", () => {
+    expect(pendingPrerequisiteLabel("PAY")).toBe("Eligible for human authorization review");
+    expect(pendingPrerequisiteLabel("HOLD")).toBe("Requires attention");
+    expect(pendingPrerequisiteLabel("ESCALATE")).toBe("Escalation required");
   });
 });
 
@@ -177,6 +179,24 @@ function detailWithReleaseAuthority(releaseAuthority: string) {
 }
 
 describe("Command Center server-derived authority headline", () => {
+  const pendingDecision = (decision: "PAY" | "HOLD" | "ESCALATE", aggregateVersion = "1") => ({
+    ...detailWithReleaseAuthority("NOT_GRANTED"),
+    aggregate: { state: "APPROVAL_PENDING", aggregate_version: 1 },
+    record: { obligation_id: "OBL-1" },
+    current_assessment: { obligation_id: "OBL-1", aggregate_version: aggregateVersion, decision },
+  } as Parameters<typeof workflowState>[0]);
+
+  it("keeps HOLD and ESCALATE visibly locked and allows review only for a current PAY", () => {
+    expect(workflowState(pendingDecision("HOLD")).label).toBe("Requires attention");
+    expect(workflowState(pendingDecision("HOLD")).explanation).toContain("Human authorization is locked");
+    expect(workflowState(pendingDecision("ESCALATE")).label).toBe("Escalation required");
+    expect(workflowState(pendingDecision("ESCALATE")).explanation).toContain("Human authorization is locked");
+    expect(workflowState(pendingDecision("PAY")).label).toBe("Eligible for human authorization review");
+    expect(workflowState(pendingDecision("PAY")).explanation).toContain("advisory");
+    expect(workflowState(pendingDecision("PAY")).explanation).toContain("no execution authority");
+    expect(workflowState(pendingDecision("PAY", "2")).label).toBe("Assessment required before authorization");
+  });
+
   it("shows execution suspended instead of ready when server truth reports a kill switch", () => {
     expect(workflowState(detailWithReleaseAuthority("SUSPENDED_KILL_SWITCH"))).toEqual({
       label: "Execution suspended",
@@ -213,17 +233,18 @@ describe("queue completion: incomplete assessment is never a completed no-candid
 
 describe("authorization blockers name the first unmet prerequisite in order", () => {
   it("starts with selection, then assessment, then review of the current assessment", () => {
-    expect(authorizationBlockers({ hasSelection: false, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Select an obligation");
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: false, killSwitchEngaged: false })[0]).toContain("Review");
+    expect(authorizationBlockers({ hasSelection: false, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Select an obligation");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("PAY assessment");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: false, killSwitchEngaged: false })[0]).toContain("Review");
   });
 
   it("returns no blockers only when every prerequisite is met", () => {
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: true, killSwitchEngaged: false })).toEqual([]);
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: true, killSwitchEngaged: false })).toEqual([]);
   });
 
   it("reports an engaged kill switch as a blocker", () => {
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentAssessment: true, reviewed: true, killSwitchEngaged: true }).join(" ")).toContain("Kill switch engaged");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: true, killSwitchEngaged: true }).join(" ")).toContain("Kill switch engaged");
   });
 });
 
@@ -471,6 +492,6 @@ describe("selected-but-loading or failed detail is named as such, never as no se
 
 describe("first unmet prerequisite is named for Execution and Reconciliation before assessment", () => {
   it("names assessment as the first unmet prerequisite before all are assessed", () => {
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
   });
 });

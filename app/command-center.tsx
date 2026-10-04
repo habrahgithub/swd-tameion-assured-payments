@@ -168,10 +168,13 @@ export function lifecycleStopLabel(args: { presentation: ObligationListPresentat
   return "Completed — all assessed; no PAY candidate.";
 }
 
-/** The first unmet prerequisite shown instead of a generic "awaiting authorization"
- * when no current sealed assessment exists. */
-export function pendingPrerequisiteLabel(hasCurrentAssessment: boolean): string {
-  return hasCurrentAssessment ? "Awaiting human authorization" : "Assessment required before authorization";
+/** Decision-aware lifecycle label for the selected obligation's current
+ * assessment. Only PAY may move to human authorization review. */
+export function pendingPrerequisiteLabel(decision: "PAY" | "HOLD" | "ESCALATE" | null): string {
+  if (decision === "HOLD") return "Requires attention";
+  if (decision === "ESCALATE") return "Escalation required";
+  if (decision === "PAY") return "Eligible for human authorization review";
+  return "Assessment required before authorization";
 }
 
 /** Settlement display that keeps source truth and derived settlement separate.
@@ -230,15 +233,15 @@ export function operationalReportDetailPrompt(state: DetailState): string {
 export function authorizationBlockers(state: {
   hasSelection: boolean;
   allAssessed: boolean;
-  hasCurrentAssessment: boolean;
+  hasCurrentPayAssessment: boolean;
   reviewed: boolean;
   killSwitchEngaged: boolean;
 }): string[] {
   const blockers: string[] = [];
   if (!state.hasSelection) blockers.push("Select an obligation.");
   if (!state.allAssessed) blockers.push("Assess all obligations (AUT-012 requires every obligation assessed).");
-  if (state.hasSelection && !state.hasCurrentAssessment) blockers.push("Run the current assessment for the selected obligation.");
-  if (state.hasCurrentAssessment && !state.reviewed) blockers.push("Review the current sealed assessment before authorization.");
+  if (state.hasSelection && !state.hasCurrentPayAssessment) blockers.push("A current PAY assessment is required before authorization review.");
+  if (state.hasCurrentPayAssessment && !state.reviewed) blockers.push("Review the current PAY assessment before authorization.");
   if (state.killSwitchEngaged) blockers.push("Kill switch engaged — execution is disabled for this obligation.");
   return blockers;
 }
@@ -356,10 +359,22 @@ export function workflowState(detail: ObligationDetail | null): { label: string;
     return { label: "PAE consumed", tone: "neutral", explanation: "This payment authority has already been consumed and cannot be reused." };
   }
   if (aggregate.state === "APPROVAL_PENDING") {
+    const assessment = detail.current_assessment &&
+      detail.current_assessment.obligation_id === detail.record.obligation_id &&
+      detail.current_assessment.aggregate_version === String(aggregate.aggregate_version)
+      ? detail.current_assessment
+      : null;
+    const decision = assessment?.decision ?? null;
     return {
-      label: pendingPrerequisiteLabel(Boolean(detail.current_assessment)),
-      tone: "neutral",
-      explanation: "No Tameion execution authority has been granted.",
+      label: pendingPrerequisiteLabel(decision),
+      tone: decision === "HOLD" || decision === "ESCALATE" ? "warning" : decision === "PAY" ? "info" : "neutral",
+      explanation: decision === "HOLD"
+        ? "Resolve the HOLD findings before reassessing. Human authorization is locked."
+        : decision === "ESCALATE"
+          ? "Escalate the findings for human review. Human authorization is locked."
+          : decision === "PAY"
+            ? "The current PAY recommendation is advisory. Review it before authorization; no execution authority is granted."
+            : "No current assessment or Tameion execution authority has been granted.",
     };
   }
   return { label: aggregate.state, tone: "neutral", explanation: "" };
@@ -1044,7 +1059,8 @@ export function CommandCenter() {
   const hasCurrentAssessment = Boolean(detailState === "loaded" &&
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
-  const authorizationAssessment = detailState === "loaded"
+  const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
+  const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
     ? currentReviewedAssessment(displayedAssessment, currentAssessment, selectedId, aggregateVersion)
     : null;
 
@@ -1085,7 +1101,7 @@ export function CommandCenter() {
   const firstUnmetPrerequisite = authorizationBlockers({
     hasSelection: Boolean(selectedId),
     allAssessed,
-    hasCurrentAssessment,
+    hasCurrentPayAssessment,
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
@@ -1373,7 +1389,7 @@ export function CommandCenter() {
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
-                {displayedAssessment && authorizationAssessment && (
+                {displayedAssessment && displayedAssessment.decision === "PAY" && authorizationAssessment && (
                   <AdvisoryAssessmentCard
                     assessment={displayedAssessment}
                     label="Displayed assessment under review"
@@ -1390,6 +1406,18 @@ export function CommandCenter() {
                     }
                   />
                 )}
+                {displayedAssessment && displayedAssessment.decision !== "PAY" && (
+                  <AdvisoryAssessmentCard
+                    assessment={displayedAssessment}
+                    label="Assessment evidence under review — authorization locked"
+                    allAssessed={allAssessed}
+                    action={
+                      <button type="button" className="text-[12px] font-semibold underline" onClick={() => setDisplayedAssessment(null)}>
+                        Close evidence review
+                      </button>
+                    }
+                  />
+                )}
                 {!displayedAssessment && currentAssessment && detailState === "loaded" && (
                   <AdvisoryAssessmentCard
                     assessment={currentAssessment}
@@ -1402,12 +1430,12 @@ export function CommandCenter() {
                         disabled={detailState !== "loaded" || !currentAssessment.race}
                         onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
                       >
-                        Review this assessment for authorization
+                        {currentAssessment.decision === "PAY" ? "Review this assessment for authorization" : "Review assessment evidence"}
                       </button>
                     }
                   />
                 )}
-                {displayedAssessment && !authorizationAssessment && displayedAssessment !== currentAssessment && (
+                {displayedAssessment && displayedAssessment.decision === "PAY" && !authorizationAssessment && displayedAssessment !== currentAssessment && (
                   <p className="text-[12px] text-[var(--color-danger)]">
                     The displayed assessment is no longer current. Review the current sealed assessment before authorization.
                   </p>
@@ -1479,7 +1507,7 @@ export function CommandCenter() {
                   const blockers = authorizationBlockers({
                     hasSelection: Boolean(selectedId),
                     allAssessed,
-                    hasCurrentAssessment,
+                    hasCurrentPayAssessment,
                     reviewed: Boolean(authorizationAssessment),
                     killSwitchEngaged: killSwitchView === "engaged",
                   });
@@ -1491,16 +1519,17 @@ export function CommandCenter() {
                 })()}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment}
-                    onClick={() =>
-                      run("approve", () =>
+                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment || authorizationAssessment.decision !== "PAY"}
+                    onClick={() => {
+                      if (authorizationAssessment?.decision !== "PAY") return;
+                      return run("approve", () =>
                         postJson(`/api/obligations/${selectedId}/approve`, {
                           expected_version: Number(authorizationAssessment!.aggregate_version),
                           reviewed_assessment_id: authorizationAssessment!.assessment_id,
                           reviewed_assessment_hash: authorizationAssessment!.assessment_hash,
                         }),
-                      )
-                    }
+                      );
+                    }}
                   >
                     Authorize this exact intent
                   </PrimaryButton>
