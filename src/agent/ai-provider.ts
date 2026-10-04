@@ -22,7 +22,7 @@ export interface AiProvider {
   assess(context: FinanceAgentContext, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
-export const CARE_PROMPT_VERSION = "tameion-finance-care-v3";
+export const CARE_PROMPT_VERSION = "tameion-finance-care-v4";
 export const CARE_SYSTEM_PROMPT = `C — CONTEXT
 You receive an application-built JSON context containing obligation identity and aggregate version,
 authoritative financial facts, supplied evidence IDs, original issue date, raw source due-date truth,
@@ -35,6 +35,15 @@ facts that are absent from the context.
 OVERDUE is a timing and urgency fact, not an assessment blocker. Do not require proof of payment
 solely because an invoice is overdue. Evaluate the current OUTSTANDING obligation using its supplied
 evidence and business facts.
+
+When effective_due_date is valid and due_date_position is OVERDUE, DUE_TODAY, or FUTURE, that
+effective date is the operative assessment date. If due_date_status is NOT_STATED_ON_SOURCE in this
+case, it records only that the source lacks a separately printed due-date field; with valid
+effective-date basis and provenance, it is provenance only and is not an assessment blocker. Do not
+propose HOLD, NORMALIZATION_REVIEW_REQUIRED, or additional evidence solely because the raw source
+due-date field is absent. If effective_due_date is missing or invalid, or due_date_position is
+INVALID or NOT_STATED, fail closed: do not recommend PAY and use only an application-supported
+normalization finding.
 
 A — ACTION
 Assess the obligation and propose exactly one decision: PAY, HOLD, or ESCALATE. Recommend only

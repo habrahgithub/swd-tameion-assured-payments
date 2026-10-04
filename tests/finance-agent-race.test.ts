@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { assessObligation } from "../src/agent/finance-agent";
 import { buildFinanceAgentContext, toFinanceAgentModelContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
 import type { AiProvider } from "../src/agent/ai-provider";
-import { CARE_SYSTEM_PROMPT } from "../src/agent/ai-provider";
+import { CARE_PROMPT_SHA256, CARE_PROMPT_VERSION, CARE_SYSTEM_PROMPT } from "../src/agent/ai-provider";
 import { raceAssessmentSchema } from "../src/agent/schema";
 
 function record(id: string, overrides: Partial<LiveUsageObligationRecord> = {}): LiveUsageObligationRecord {
@@ -92,6 +93,8 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("encodes the CARE boundary in the provider prompt and strictly validates actionable RACE", async () => {
+    expect(CARE_PROMPT_VERSION).toBe("tameion-finance-care-v4");
+    expect(CARE_PROMPT_SHA256).toBe(createHash("sha256").update(CARE_SYSTEM_PROMPT, "utf8").digest("hex"));
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
     expect(CARE_SYSTEM_PROMPT).toMatch(/OVERDUE is a timing and urgency fact, not an assessment blocker/i);
     expect(CARE_SYSTEM_PROMPT).toMatch(/do not require proof of payment\s+solely because an invoice is overdue/i);
@@ -188,6 +191,10 @@ describe("#17 CARE and RACE grounding", () => {
       effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "GITHUB_ISSUE_COMMENT_5981941458" },
       due_date_position: "OVERDUE",
     });
+    expect(CARE_SYSTEM_PROMPT).toMatch(/effective_due_date is valid[\s\S]*operative assessment date/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/NOT_STATED_ON_SOURCE[\s\S]*provenance only[\s\S]*not an assessment blocker/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/do not\s+propose HOLD, NORMALIZATION_REVIEW_REQUIRED, or additional evidence solely because the raw source/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/INVALID[\s\S]*fail.closed/i);
     expect(result.decision).toBe("PAY");
     expect(result.race.evidence.authoritative_facts).toMatchObject({
       issue_date: "2026-01-28",
@@ -199,6 +206,14 @@ describe("#17 CARE and RACE grounding", () => {
       due_date_position: "OVERDUE",
     });
     expect(result.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DUE_DATE_NOT_STATED");
+
+    const unsupportedHold = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
+      decision: "HOLD",
+      finding_codes: [],
+      evidence_ids: context.evidence_ids,
+      explanation: "The source does not state a separate due date.",
+    })));
+    expect(unsupportedHold.race.result.validated_findings.map((finding) => finding.code)).toEqual(["MODEL_OUTPUT_INVALID"]);
   });
 
   it("requires effective dates to be valid and consistent with the invoice date", async () => {
