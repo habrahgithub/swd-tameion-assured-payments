@@ -278,13 +278,13 @@ describe("Command Center mounted Operational Report", () => {
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(Array.from(lifecycle.querySelectorAll("li span:last-child")).map((step) => step.textContent?.trim())).toEqual([
+    expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
       "Obligation",
-      "AI Assessment",
-      "Human Authorization",
-      "Deterministic Assurance",
-      "Execution",
-      "Evidence / Reconciliation",
+      "Assessment",
+      "Human authorization",
+      "Assurance",
+      "Execution/submission",
+      "Settlement/reconciliation",
     ]);
     expect(screen.getByText("NO ASSURANCE, NO EXECUTION")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
@@ -337,6 +337,49 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
   });
 
+  it("shows the current OBL-J0C-003 HOLD remediation and truthful lifecycle in the primary obligation workspace", async () => {
+    const assessed = assessedDetail("OBL-J0C-003", "HOLD");
+    assessed.current_assessment!.reasons = ["Current destination and source-wallet readiness are not verified."];
+    assessed.current_assessment!.race!.result.decision_summary = "Payment cannot progress until current destination readiness is verified.";
+    assessed.current_assessment!.race!.result.validated_findings = [{
+      code: "DESTINATION_NOT_READY",
+      severity: "HOLD",
+      reason: "Current Arc product destination or source-wallet readiness is not verified and active.",
+    }];
+    assessed.current_assessment!.race!.remediation = [{
+      finding_code: "DESTINATION_NOT_READY",
+      reason: "Current Arc product destination or source-wallet readiness is not verified and active.",
+      required_action: "Resolve the current destination or source-wallet readiness blocker.",
+      required_evidence: ["Verified destination readiness and source-wallet trust-seed record"],
+      owner_role: "Treasury Operations",
+      reassess_after_resolution: true,
+    }];
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-J0C-003", true)] }))
+      : Promise.resolve(response(assessed)));
+
+    render(<CommandCenter />);
+    const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
+
+    expect(workspace.textContent).toContain("Advisory — HOLD");
+    expect(workspace.textContent).toContain("Current destination and source-wallet readiness are not verified.");
+    expect(workspace.textContent).toContain("DESTINATION_NOT_READY");
+    expect(workspace.textContent).toContain("Resolve the current destination or source-wallet readiness blocker.");
+    expect(workspace.textContent).toContain("Treasury Operations");
+    expect(workspace.textContent).toContain("Verified destination readiness and source-wallet trust-seed record");
+    expect(workspace.textContent).toContain("reassess permitted");
+    expect(workspace.textContent).toContain("Resolution action is not yet available in this build; provide/verify current payment-route evidence, then reassess.");
+    expect(within(workspace).queryByRole("button", { name: /resolve/i })).toBeNull();
+
+    const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
+    expect(lifecycle.textContent).toContain("AssessmentRequires attention");
+    expect(lifecycle.textContent).toContain("Human authorizationLocked");
+    expect(lifecycle.textContent).toContain("AssuranceNot started");
+    expect(lifecycle.textContent).toContain("Execution/submissionNot started — blocked");
+    expect(lifecycle.textContent).toContain("Settlement/reconciliationNot started");
+    expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
+  });
+
   it.each([
     ["HOLD", "Requires attention"],
     ["ESCALATE", "Escalation required"],
@@ -347,8 +390,15 @@ describe("Command Center mounted Operational Report", () => {
       : Promise.resolve(response(assessedDetail("OBL-A", decision))));
 
     render(<CommandCenter />);
-    expect(await screen.findByText(stateLabel)).toBeTruthy();
+    expect((await screen.findAllByText(stateLabel)).length).toBeGreaterThan(0);
     expect(screen.queryByText("Awaiting human authorization")).toBeNull();
+    const workspace = screen.getByRole("region", { name: "Genuine obligation workspace" });
+    expect(workspace.textContent).toContain(`Advisory — ${decision}`);
+    expect(workspace.textContent).toContain(decision === "HOLD" ? "Source evidence is incomplete." : "Controller review is required.");
+    expect(workspace.textContent).toContain("Review the finding.");
+    expect(workspace.textContent).toContain("Accounts Payable");
+    expect(workspace.textContent).toContain("Supporting document");
+    expect(within(workspace).queryByRole("button", { name: /resolve/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Review assessment evidence" }));

@@ -274,11 +274,11 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
 
 const PAYMENT_LIFECYCLE_STAGES = [
   "Obligation",
-  "AI Assessment",
-  "Human Authorization",
-  "Deterministic Assurance",
-  "Execution",
-  "Evidence / Reconciliation",
+  "Assessment",
+  "Human authorization",
+  "Assurance",
+  "Execution/submission",
+  "Settlement/reconciliation",
 ] as const;
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -1063,6 +1063,35 @@ export function CommandCenter() {
   const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
     ? currentReviewedAssessment(displayedAssessment, currentAssessment, selectedId, aggregateVersion)
     : null;
+  const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
+    if (!detail || detailState === "loading" || detailState === "none") return "Loading";
+    if (detailState === "failed") return "Unavailable";
+    if (detailState === "stale") return "Last-known — stale";
+
+    switch (stage) {
+      case "Obligation":
+        return judgeReadableState(detail.truth.source_truth.obligation_state);
+      case "Assessment":
+        if (!hasCurrentAssessment || !currentAssessment) return "Not current for this version";
+        if (currentAssessment.decision === "HOLD") return "Requires attention";
+        if (currentAssessment.decision === "ESCALATE") return "Escalation required";
+        return "PAY — advisory";
+      case "Human authorization":
+        if (detail.pae_sealed) return "Authorized — PAE sealed";
+        return authorizationAssessment ? "Eligible for human authorization review" : "Locked";
+      case "Assurance":
+        return detail.pae_sealed ? "Sealed" : "Not started";
+      case "Execution/submission":
+        if (detail.execution) return `Execution ${judgeReadableState(detail.execution.status)}`;
+        if (currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE") return "Not started — blocked";
+        return detail.pae_sealed ? "Not started" : "Not started — awaits authorization and assurance";
+      case "Settlement/reconciliation":
+        if (detail.aggregate.state === "RECONCILED") return "Reconciled";
+        if (detail.execution?.status === "SETTLED") return "Settlement recorded; reconciliation pending";
+        if (detail.execution) return `Not reconciled — execution ${judgeReadableState(detail.execution.status)}`;
+        return "Not started";
+    }
+  };
 
   // HOLD/ESCALATE operational report — read-only, derived from authoritative
   // current assessment and obligation state. Fails closed when truth is
@@ -1313,7 +1342,8 @@ export function CommandCenter() {
               {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
                 <li key={stage} className="flex min-w-0 items-baseline gap-1 border-l-2 border-[var(--color-border)] pl-2 text-[11px] text-[var(--color-ink-muted)]">
                   <span className="mono text-[10px] font-semibold">{index + 1}.</span>
-                  <span>{stage}</span>
+                  <span className="font-medium">{stage}</span>
+                  <span className="min-w-0">{lifecycleStatus(stage)}</span>
                 </li>
               ))}
             </ol>
@@ -1363,6 +1393,21 @@ export function CommandCenter() {
                   />
                   <Field label="Execution authority" value={judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority)} />
                 </dl>
+                {hasCurrentAssessment && currentAssessment && currentAssessment.decision !== "PAY" && (
+                  <section aria-label="Current assessment and resolution" className="space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                    <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
+                      {currentAssessment.decision === "HOLD" ? "Current assessment — Requires attention" : "Current assessment — Escalation required"}
+                    </h3>
+                    <AdvisoryAssessmentCard
+                      assessment={currentAssessment}
+                      label="Sealed assessment"
+                      allAssessed={allAssessed}
+                    />
+                    <p className="text-[12px] text-[var(--color-ink-muted)]">
+                      Resolution action is not yet available in this build; provide/verify current payment-route evidence, then reassess.
+                    </p>
+                  </section>
+                )}
                 <PrimaryButton
                   disabled={busy || detailState !== "loaded" || !selectedId || detail.record.obligation_id !== selectedId}
                   onClick={() => {
