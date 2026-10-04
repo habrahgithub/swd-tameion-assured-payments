@@ -11,6 +11,7 @@ export const J2A_DEMO_WALLET_SET_ID = "2b72f116-16da-591a-9212-5382388a35c4";
 export const J2A_DEMO_ORGANIZATION_ID = "ORG-TAMEION-TESTNET-DEMO";
 export const J2A_DEMO_ORGANIZATION_NAME = "Tameion Testnet Demonstration Organization";
 export const J2A_DEMO_OBLIGATION_ID = "DEMO-ARC-TESTNET-001";
+export const J2A_DEMO_INVOICE_DATE = "2026-10-04";
 export const J2A_DEMO_PAYMENT_BASIS = "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE";
 export const J2A_DEMO_SYNTHETIC_EVIDENCE_ID = "J2A-DEMO-OBLIGATION-SYNTHETIC-EVIDENCE-001";
 export const J2A_PAE_SIGNING_KEY_ID = "TAMEION-J2A-TESTNET-DEMO-PAE-KEY-1";
@@ -73,7 +74,8 @@ export interface BusinessPaymentInstruction {
 
 export function deriveJ2aCircleIdempotencyUuid(key: string): string {
   const bytes = createHash("sha256").update(`tameion-j2a-circle-idempotency:${key}`).digest().subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  // Deterministic per execution identity, with the UUID v4/version and RFC variant bits required by Circle.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -225,6 +227,10 @@ export function hashJ2aPreflightEvidence(evidence: Record<string, unknown>): str
   });
 }
 
+export function hashJ2aBusinessPaymentInstruction(instruction: BusinessPaymentInstruction): string {
+  return sha256(instruction);
+}
+
 export function hashJ2aExecutionPacket(packet: Record<string, unknown>): string {
   return sha256(packet);
 }
@@ -239,13 +245,13 @@ function blocked(blocker: string, now: () => Date): J2aPreflightResult {
 
 function matchingPriorOutbound(value: unknown, tokenId: string): boolean {
   const transaction = z.object({
-    txType: z.unknown().optional(), blockchain: z.unknown().optional(), walletId: z.unknown().optional(),
+    transactionType: z.unknown().optional(), blockchain: z.unknown().optional(), walletId: z.unknown().optional(),
     destinationAddress: z.unknown().optional(), amounts: z.array(z.unknown()).optional(),
     tokenId: z.unknown().optional(),
   }).passthrough().safeParse(value);
   if (!transaction.success) return false;
   const item = transaction.data;
-  return item.txType === "OUTBOUND" && item.blockchain === ARC_TESTNET_BLOCKCHAIN &&
+  return item.transactionType === "OUTBOUND" && item.blockchain === ARC_TESTNET_BLOCKCHAIN &&
     item.walletId === J2A_DEMO_SOURCE.id &&
     typeof item.destinationAddress === "string" && item.destinationAddress.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
     item.tokenId === tokenId && item.amounts?.length === 1 && item.amounts[0] === J2A_TRANSFER_AMOUNT;
@@ -303,7 +309,6 @@ export async function runJ2aReadOnlyPreflight(
     if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
 
     const capturedAt = now().toISOString();
-    const invoiceDate = capturedAt.slice(0, 10);
     const businessPaymentInstruction: BusinessPaymentInstruction = {
       payer: {
         organization_id: J2A_DEMO_ORGANIZATION_ID,
@@ -350,8 +355,8 @@ export async function runJ2aReadOnlyPreflight(
         obligation_id: J2A_DEMO_OBLIGATION_ID,
         classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
         invoice_reference: J2A_DEMO_OBLIGATION_ID,
-        invoice_date: invoiceDate,
-        effective_due_date: invoiceDate,
+        invoice_date: J2A_DEMO_INVOICE_DATE,
+        effective_due_date: J2A_DEMO_INVOICE_DATE,
         payment_basis: J2A_DEMO_PAYMENT_BASIS,
         particulars: "Non-economic Arc Testnet demonstration to the synthetic test counterparty.",
         source_amount: "5.00",

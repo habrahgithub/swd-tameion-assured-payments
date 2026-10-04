@@ -4,6 +4,7 @@ import { createCircleArcJ2aExecutionClient } from "../j0d-spike/circle-arc-clien
 import {
   deriveJ2aCircleIdempotencyUuid,
   deriveJ2aCircleRefId,
+  hashJ2aBusinessPaymentInstruction,
   J2A_DEMO_DESTINATION,
   J2A_DEMO_SOURCE,
   J2A_MAX_NETWORK_FEE,
@@ -203,6 +204,8 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         preflight.beneficiary_id !== authorized.beneficiary_id ||
         preflight.source_wallet.wallet_set_id !== authorized.source_wallet.wallet_set_id ||
         preflight.destination_wallet.wallet_set_id !== authorized.destination_wallet.wallet_set_id ||
+        hashJ2aBusinessPaymentInstruction(preflight.business_payment_instruction) !==
+          hashJ2aBusinessPaymentInstruction(authorized.business_payment_instruction) ||
         preflight.provider_token.id !== authorized.provider_token.id ||
         preflight.source_balance !== authorized.source_balance ||
         preflight.estimated_network_fee !== authorized.estimated_network_fee ||

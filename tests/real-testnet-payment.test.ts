@@ -27,7 +27,7 @@ function providerTransaction(overrides: Record<string, unknown> = {}) {
   return {
     id: "prior-transaction",
     state: "COMPLETE",
-    txType: "OUTBOUND",
+    transactionType: "OUTBOUND",
     blockchain: "ARC-TESTNET",
     walletId: J2A_DEMO_SOURCE.id,
     destinationAddress: "0x0000000000000000000000000000000000000001",
@@ -94,6 +94,33 @@ describe("J2A real Arc Testnet demo preflight", () => {
     }));
   });
 
+  it("keeps the demo business dates stable across preflight capture dates", async () => {
+    const first = await runJ2aReadOnlyPreflight(client(), () => new Date("2026-10-04T23:59:00.000Z"));
+    const nextDay = await runJ2aReadOnlyPreflight(client(), () => new Date("2026-10-05T00:01:00.000Z"));
+
+    expect(first.readiness).toBe("READY");
+    expect(nextDay.readiness).toBe("READY");
+    if (first.readiness !== "READY" || nextDay.readiness !== "READY") throw new Error("expected ready preflights");
+    expect(first.captured_at).not.toBe(nextDay.captured_at);
+    expect(first.business_payment_instruction).toEqual(nextDay.business_payment_instruction);
+    expect(first.business_payment_instruction.commercial).toMatchObject({
+      invoice_date: "2026-10-04",
+      effective_due_date: "2026-10-04",
+    });
+  });
+
+  it("recognizes an exact prior outbound using Circle SDK transactionType", async () => {
+    const result = await runJ2aReadOnlyPreflight(client({
+      listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction({
+        transactionType: "OUTBOUND",
+        destinationAddress: J2A_DEMO_DESTINATION.address,
+        amounts: [J2A_TRANSFER_AMOUNT],
+      })] } })),
+    }), () => new Date(capturedAt));
+
+    expect(result).toMatchObject({ readiness: "BLOCKED", blocker: "PRIOR_MATCHING_OUTBOUND" });
+  });
+
   it("fails closed when source wallet identity differs", async () => {
     const result = await runJ2aReadOnlyPreflight(client({
       getWallet: vi.fn(async () => ({ data: { wallet: wallet("wrong-wallet", J2A_DEMO_SOURCE.address) } })),
@@ -142,6 +169,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
   it("blocks an exact prior 5 USDC outbound to this demo counterparty", async () => {
     const result = await runJ2aReadOnlyPreflight(client({
       listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction({
+        transactionType: "OUTBOUND",
         destinationAddress: J2A_DEMO_DESTINATION.address,
         amounts: [J2A_TRANSFER_AMOUNT],
       })] } })),

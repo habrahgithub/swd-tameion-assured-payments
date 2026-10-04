@@ -5,6 +5,7 @@ import {
   J2A_DEMO_DESTINATION,
   J2A_DEMO_SOURCE,
   J2A_DEMO_WALLET_SET_ID,
+  deriveJ2aCircleIdempotencyUuid,
   deriveJ2aCircleRefId,
   runJ2aReadOnlyPreflight,
 } from "../src/demo/real-testnet-payment";
@@ -58,10 +59,27 @@ describe("Arc Circle provider adapter for J2A", () => {
       walletId: J2A_DEMO_SOURCE.id,
       fee: { type: "level", config: { feeLevel: "MEDIUM" } },
       refId: expect.stringMatching(/^j2a-[0-9a-f]{28}$/),
-      idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+      idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
     });
+    expect(deriveJ2aCircleIdempotencyUuid("stable-execution-identity")).toBe(deriveJ2aCircleIdempotencyUuid("stable-execution-identity"));
+    expect(deriveJ2aCircleIdempotencyUuid("stable-execution-identity")).not.toBe(deriveJ2aCircleIdempotencyUuid("different-execution-identity"));
     expect(circleRequest?.refId).not.toContain("ORG-TAMEION");
     expect(circleRequest?.refId).not.toContain("DEMO-ARC");
+  });
+
+  it("blocks before submission when the reviewed business instruction changes", async () => {
+    const api = createClient();
+    const authorized = await runJ2aReadOnlyPreflight(api);
+    expect(authorized.readiness).toBe("READY");
+    if (authorized.readiness !== "READY") throw new Error("expected ready preflight");
+    const changedAuthorized = structuredClone(authorized);
+    changedAuthorized.business_payment_instruction.commercial.invoice_reference = "DIFFERENT-INVOICE";
+
+    await expect(new ArcCircleProviderAdapter(api, () => changedAuthorized).submitTransfer({
+      idempotencyKey: "exact-demo-key", sourceWalletRef: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address, atomicAmount: "5000000", asset: "USDC", network: "ARC_TESTNET",
+    })).rejects.toThrow();
+    expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
   it("blocks before Circle submission when the fresh fee or token differs from the authorized preflight", async () => {
@@ -220,7 +238,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     for (const overrides of [
       { estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.002001" } } })) },
       { listTransactions: vi.fn(async () => ({ data: { transactions: [{
-        txType: "OUTBOUND", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+        transactionType: "OUTBOUND", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
         destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
       }] } })) },
     ]) {
