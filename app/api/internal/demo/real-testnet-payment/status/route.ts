@@ -1,0 +1,108 @@
+import { NextResponse } from "next/server";
+
+import { J2A_DEMO_OBLIGATION_ID, J2A_DEMO_ORGANIZATION_ID, buildJ2aExecutionPacket } from "../../../../../../src/demo/real-testnet-payment";
+import { getJ2aRealTestnetDemoState } from "../../../../../../src/server/demo-state";
+import { verifySealedPae } from "../../../../../../src/pae/sign-verify";
+
+export const dynamic = "force-dynamic";
+
+/** Read-only provider reconciliation plus a server-derived snapshot of the isolated J2A lane. */
+export async function GET() {
+  const state = await getJ2aRealTestnetDemoState();
+  const preflight = state.lastPreflight;
+  let aggregate = null;
+  let assessment: ReturnType<typeof state.store.getCurrentAssessment> | null = null;
+  let sealedPae = state.getSealedPae(J2A_DEMO_OBLIGATION_ID) ?? null;
+  let execution = null;
+  let authorization = state.getAuthorizationArtifacts(J2A_DEMO_OBLIGATION_ID) ?? null;
+
+  if (preflight?.readiness === "READY") {
+    aggregate = state.store.get(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID);
+    assessment = state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID) ?? null;
+    if (sealedPae) {
+      try {
+        verifySealedPae(sealedPae);
+        execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
+        if (execution?.status === "SUBMITTING") {
+          await state.worker.execute(sealedPae);
+          execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
+        }
+        if (execution?.status === "UNKNOWN") {
+          const before = execution.status;
+          execution = await state.worker.reconcilePendingByIdempotencyKey(sealedPae.payload.idempotency_key, J2A_DEMO_ORGANIZATION_ID);
+          if (execution.status !== before) await state.flush();
+        }
+      } catch {
+        execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
+      }
+    }
+  }
+
+  const packet = preflight?.readiness === "READY" && aggregate && assessment && sealedPae &&
+      assessment.record.decision === "PAY" && assessment.record.provider_mode === "LIVE_AI" &&
+      assessment.record.missing_evidence.length === 0 &&
+      (assessment.record.race?.result.validated_findings.length ?? 0) === 0 &&
+      assessment.record.aggregate_version === String(aggregate.aggregate_version) &&
+      sealedPae.payload.aggregate_version === String(aggregate.aggregate_version) &&
+      sealedPae.payload.evidence_hashes.length === 1 && sealedPae.payload.evidence_hashes[0] === preflight.evidence_sha256 &&
+      sealedPae.payload.expiry && Date.parse(sealedPae.payload.expiry) > Date.now() &&
+      authorization?.assurance_record.result === "PASS" &&
+      authorization.sealed_pae.instruction_hash === sealedPae.instruction_hash
+    ? buildJ2aExecutionPacket({
+        preflight,
+        aggregate,
+        assessment: assessment.record,
+        assessmentHash: assessment.hash,
+        sealedPae,
+      })
+    : null;
+  const executionGate = packet && process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === packet.packet_sha256
+    ? "PRIME_AUTHORIZED_EXACT_PACKET"
+    : "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION";
+  const authorizationCurrent = Boolean(authorization && aggregate && sealedPae &&
+    authorization.approval_record.authorized_aggregate_version === String(aggregate.aggregate_version) &&
+    authorization.sealed_pae.instruction_hash === sealedPae.instruction_hash);
+  const lifecycle = [
+    { stage: "Obligation", status: preflight?.readiness === "READY" ? "READY" : preflight?.readiness ?? "NOT_CREATED" },
+    { stage: "AI Assessment", status: assessment?.record.decision ? `${assessment.record.decision} · ${assessment.record.provider_mode}` : "NOT_ASSESSED" },
+    { stage: "Assurance & Authorization", status: authorizationCurrent ? authorization!.assurance_record.result : authorization ? "STALE" : "NOT_AUTHORIZED" },
+    { stage: "Execution", status: execution?.status ?? "NOT_SUBMITTED" },
+    { stage: "Reconciliation & Evidence", status: execution?.status === "SETTLED" ? "RECONCILED" : execution?.status ?? "NOT_SUBMITTED" },
+  ];
+
+  return NextResponse.json({
+    classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+    profile: "J2A_REAL_TESTNET_DEMO",
+    organization_id: J2A_DEMO_ORGANIZATION_ID,
+    obligation_id: J2A_DEMO_OBLIGATION_ID,
+    source_amount: "5.00",
+    settlement_amount: "5.000000",
+    asset: "USDC",
+    network: "ARC_TESTNET",
+    lifecycle,
+    preflight,
+    aggregate_version: aggregate?.aggregate_version ?? null,
+    current_assessment: assessment ? {
+      assessment_id: assessment.record.assessment_id,
+      assessment_hash: assessment.hash,
+      decision: assessment.record.decision,
+      reasons: assessment.record.reasons,
+      validated_findings: assessment.record.race?.result.validated_findings ?? [],
+      missing_evidence: assessment.record.missing_evidence,
+      provider_mode: assessment.record.provider_mode,
+      provider_name: assessment.record.provider_name,
+      model_id: assessment.record.model_id,
+    } : null,
+    authorization_current: authorizationCurrent,
+    authorization: authorization ? {
+      actor_role: authorization.approval_record.actor_role,
+      approval_id: authorization.approval_record.approval_id,
+      assurance_result: authorization.assurance_record.result,
+      pae_instruction_hash: authorization.sealed_pae.instruction_hash,
+      pae_expiry: authorization.sealed_pae.payload.expiry,
+    } : null,
+    execution,
+    execution_gate: executionGate,
+    execution_packet: packet,
+  });
+}

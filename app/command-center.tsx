@@ -433,6 +433,235 @@ function EvidencePanel({ value }: { value: unknown }) {
   );
 }
 
+interface J2aDemoStatus {
+  classification: string;
+  organization_id: string;
+  obligation_id: string;
+  source_amount: string;
+  settlement_amount: string;
+  asset: string;
+  network: string;
+  lifecycle: Array<{ stage: string; status: string }>;
+  preflight: {
+    readiness: string;
+    blocker?: string;
+    captured_at?: string;
+    source_wallet?: { id: string; address: string };
+    destination_wallet?: { id: string; address: string; name?: string };
+    provider_token?: { id: string; symbol: string; decimals: number; native: boolean };
+    source_balance?: string;
+    estimated_network_fee?: string;
+    max_network_fee?: string;
+    max_total_debit?: string;
+    evidence_sha256?: string;
+  } | null;
+  aggregate_version: number | null;
+  current_assessment: {
+    assessment_id: string;
+    assessment_hash: string;
+    decision: "PAY" | "HOLD" | "ESCALATE";
+    reasons: string[];
+    validated_findings: string[];
+    missing_evidence: string[];
+    provider_mode: string;
+    provider_name: string;
+    model_id: string;
+  } | null;
+  authorization: { approval_id: string; assurance_result: string; pae_instruction_hash: string; pae_expiry: string } | null;
+  authorization_current?: boolean;
+  execution: { status: string; provider_ref: string | null } | null;
+  execution_gate: string;
+  execution_packet: { packet_sha256: string; [key: string]: unknown } | null;
+}
+
+const J2A_CLASSIFICATION = "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT";
+
+async function j2aJsonRequest(url: string, body?: Record<string, unknown>) {
+  const response = await fetch(url, body ? {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  } : undefined);
+  const text = await response.text();
+  const data = tryParseJson(text);
+  if (!response.ok || !data || typeof data !== "object") {
+    throw new Error(actionErrorMessage(data));
+  }
+  return data as Record<string, unknown>;
+}
+
+/** A physically separate real-testnet demonstration lane. The server owns
+ * lifecycle and authority truth; mounting this surface performs status GET
+ * only and never initiates assessment, authorization, or execution. */
+export function RealTestnetDemoPanel() {
+  const [status, setStatus] = useState<J2aDemoStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [statusIsStale, setStatusIsStale] = useState(true);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [actorId, setActorId] = useState("");
+  const [authorizationReason, setAuthorizationReason] = useState("");
+  const [executionConfirmation, setExecutionConfirmation] = useState("");
+
+  const refresh = async () => {
+    setLoading(true);
+    setStatusIsStale(true);
+    setError(null);
+    try {
+      const data = await j2aJsonRequest("/api/internal/demo/real-testnet-payment/status");
+      setStatus(data as unknown as J2aDemoStatus);
+      setStatusIsStale(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Testnet demo status is unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void refresh(); }, []);
+
+  const act = async (name: string, url: string, body: Record<string, unknown>) => {
+    setBusyAction(name);
+    setStatusIsStale(true);
+    setError(null);
+    try {
+      await j2aJsonRequest(url, body);
+      await refresh();
+    } catch (cause) {
+      await refresh();
+      setError(cause instanceof Error ? cause.message : `${name} failed.`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const preflightReady = status?.preflight?.readiness === "READY" && status.aggregate_version !== null;
+  const assessment = status?.current_assessment;
+  const assessmentCanAuthorize = !statusIsStale && preflightReady && assessment?.decision === "PAY" && assessment.provider_mode === "LIVE_AI" &&
+    assessment.validated_findings.length === 0 && assessment.missing_evidence.length === 0;
+  const packetAuthorized = !statusIsStale && status?.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET" && Boolean(status.execution_packet);
+  const lifecycle = status?.lifecycle ?? [
+    { stage: "Obligation", status: "NOT_CREATED" },
+    { stage: "AI Assessment", status: "NOT_ASSESSED" },
+    { stage: "Assurance & Authorization", status: "NOT_AUTHORIZED" },
+    { stage: "Execution", status: "NOT_SUBMITTED" },
+    { stage: "Reconciliation & Evidence", status: "NOT_SUBMITTED" },
+  ];
+
+  return (
+    <section aria-label="Live Testnet Demo" className="space-y-3 rounded border border-[var(--color-accent)] bg-[var(--color-surface)] p-3 md:p-4">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+        <div>
+          <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">Live Testnet Demo — real Arc testnet, non-economic</p>
+          <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">{J2A_CLASSIFICATION}</p>
+          <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Separate controlled test-counterparty lane. This does not represent or alter a genuine vendor obligation.</p>
+        </div>
+        <button type="button" disabled={loading || busyAction !== null} onClick={() => void refresh()} className="text-[12px] font-semibold underline disabled:opacity-50">Refresh testnet status</button>
+      </div>
+
+      <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
+        <Field label="Organization" value={status?.organization_id ?? "ORG-TAMEION-TESTNET-DEMO"} />
+        <Field label="Demo obligation" value={status?.obligation_id ?? "DEMO-ARC-TESTNET-001"} />
+        <Field label="Source amount" value={`${status?.source_amount ?? "5.00"} USD`} />
+        <Field label="Settlement target" value={`${status?.settlement_amount ?? "5.000000"} ${status?.asset ?? "USDC"} · ${status?.network ?? "ARC_TESTNET"}`} />
+      </dl>
+
+      <ol aria-label="Five-stage testnet lifecycle" className="grid grid-cols-1 gap-2 sm:grid-cols-5">
+        {lifecycle.map(({ stage, status: stageStatus }) => (
+          <li key={stage} className="border-l-2 border-[var(--color-border)] pl-2 py-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{stage}</p>
+            <p className="mt-1 text-[12px] font-medium text-[var(--color-ink)]">{stageStatus}</p>
+          </li>
+        ))}
+      </ol>
+
+      {loading && <p aria-live="polite" className="text-[12px] text-[var(--color-ink-muted)]">Loading server-reported testnet status…</p>}
+      {error && <p role="alert" className="text-[12px] text-[var(--color-danger)]">Testnet demo action unavailable: {error}</p>}
+      {statusIsStale && status && <p className="text-[12px] font-semibold text-[var(--color-warning)]">Last-known lifecycle is stale. All testnet actions are locked until server status is refreshed.</p>}
+      {status?.preflight?.readiness === "BLOCKED" && <p className="text-[12px] text-[var(--color-danger)]">Fresh Circle preflight blocked: {status.preflight.blocker ?? "provider evidence unavailable"}</p>}
+
+      {status?.preflight?.readiness === "READY" && (
+        <section aria-label="Exact current testnet intent" className="space-y-1 rounded border border-[var(--color-border)] px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Current provider evidence for exact intent</p>
+          <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
+            <Field label="Aggregate version" value={String(status.aggregate_version ?? "Unavailable")} />
+            <Field label="Network / asset / amount" value="ARC_TESTNET · native USDC · 5.000000 USDC" />
+            <Field label="Source wallet" value={`${status.preflight.source_wallet?.id ?? "Unavailable"} · ${status.preflight.source_wallet?.address ?? "Unavailable"}`} />
+            <Field label="Test counterparty wallet" value={`${status.preflight.destination_wallet?.name ?? "Tameion Test Counterparty"} · ${status.preflight.destination_wallet?.id ?? "Unavailable"} · ${status.preflight.destination_wallet?.address ?? "Unavailable"}`} />
+            <Field label="Circle provider token" value={`${status.preflight.provider_token?.id ?? "Unavailable"} · ${status.preflight.provider_token?.symbol ?? "USDC"} (${status.preflight.provider_token?.decimals ?? 6} decimals${status.preflight.provider_token?.native ? ", native" : ""})`} />
+            <Field label="Source balance" value={`${status.preflight.source_balance ?? "Unavailable"} USDC`} />
+            <Field label="Estimated network fee / maximum" value={`${status.preflight.estimated_network_fee ?? "Unavailable"} / ${status.preflight.max_network_fee ?? "Unavailable"} USDC`} />
+            <Field label="Maximum total debit" value={`${status.preflight.max_total_debit ?? "Unavailable"} USDC`} />
+            <Field label="Preflight captured at" value={status.preflight.captured_at ?? "Unavailable"} />
+            <Field label="Preflight evidence SHA-256" value={status.preflight.evidence_sha256 ?? "Unavailable"} />
+          </dl>
+        </section>
+      )}
+
+      {assessment && (
+        <div className="space-y-1 border-l-2 border-[var(--color-border)] pl-3">
+          <p className="text-[12px] font-semibold">LIVE_AI {assessment.decision} recommendation — advisory only</p>
+          <p className="break-all text-[11px] text-[var(--color-ink-muted)]">{assessment.provider_name} · {assessment.model_id} · aggregate version {status?.aggregate_version ?? "Unavailable"} · assessment {assessment.assessment_id} · hash {assessment.assessment_hash}</p>
+          <p className="text-[11px] text-[var(--color-ink-muted)]">Validated findings: {assessment.validated_findings.length} · missing evidence: {assessment.missing_evidence.length}</p>
+          {assessment.reasons.map((reason, index) => <p key={index} className="text-[12px] text-[var(--color-ink-muted)]">{reason}</p>)}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <PrimaryButton disabled={loading || busyAction !== null} onClick={() => void act("Preflight", "/api/internal/demo/real-testnet-payment/preflight", {})}>
+          {busyAction === "Preflight" ? "Reading Circle testnet truth…" : "Run fresh read-only preflight"}
+        </PrimaryButton>
+        <PrimaryButton disabled={!preflightReady || loading || statusIsStale || busyAction !== null} onClick={() => void act("Assessment", "/api/internal/demo/real-testnet-payment/assess", { expected_version: status?.aggregate_version })}>
+          {busyAction === "Assessment" ? "Running LIVE_AI assessment…" : "Run LIVE_AI assessment"}
+        </PrimaryButton>
+      </div>
+
+      {assessmentCanAuthorize && !status?.authorization_current && (
+        <div className="grid gap-2 rounded border border-[var(--color-border)] p-3 sm:grid-cols-2">
+          <p className="sm:col-span-2 text-[12px] font-semibold">PAY is advisory. Prime must review the exact current intent before assurance and authorization.</p>
+          <label className="grid gap-1 text-[11px] text-[var(--color-ink-muted)]">Prime actor ID<input className="rounded border border-[var(--color-border)] bg-transparent px-2 py-1 text-[12px] text-[var(--color-ink)]" value={actorId} onChange={(event) => setActorId(event.target.value)} placeholder="USR-…" /></label>
+          <label className="grid gap-1 text-[11px] text-[var(--color-ink-muted)]">Review reason<input className="rounded border border-[var(--color-border)] bg-transparent px-2 py-1 text-[12px] text-[var(--color-ink)]" value={authorizationReason} onChange={(event) => setAuthorizationReason(event.target.value)} /></label>
+          <PrimaryButton disabled={loading || statusIsStale || busyAction !== null || !actorId || authorizationReason.trim().length < 12 || status?.aggregate_version === null || !assessment} onClick={() => void act("Authorization", "/api/internal/demo/real-testnet-payment/authorize", {
+            expected_version: status?.aggregate_version,
+            reviewed_assessment_id: assessment?.assessment_id,
+            reviewed_assessment_hash: assessment?.assessment_hash,
+            confirmation: "AUTHORIZE EXACT CURRENT TESTNET DEMO INTENT",
+            actor_id: actorId,
+            reason_text: authorizationReason,
+          })}>
+            {busyAction === "Authorization" ? "Running assurance and sealing authorization…" : "Review exact intent and authorize"}
+          </PrimaryButton>
+        </div>
+      )}
+
+      {status?.authorization && (
+        <div className="space-y-1 text-[12px]">
+          <p className="font-semibold">{status.authorization_current ? "Current assurance" : "Historical authorization is stale"}: {status.authorization.assurance_result} · PAE {status.authorization.pae_instruction_hash}</p>
+          {status.execution_packet && <p className="break-all text-[11px] text-[var(--color-ink-muted)]">Exact execution packet SHA-256: {status.execution_packet.packet_sha256}</p>}
+          <p className="text-[11px] text-[var(--color-ink-muted)]">Execution requires separate Prime authorization of this exact packet after independent review.</p>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-2">
+        {status?.execution_packet && <label className="grid gap-1 text-[11px] text-[var(--color-ink-muted)]">Exact execution confirmation
+          <input className="rounded border border-[var(--color-border)] bg-transparent px-2 py-1 text-[12px] text-[var(--color-ink)]" value={executionConfirmation} onChange={(event) => setExecutionConfirmation(event.target.value)} placeholder="SUBMIT EXACT TESTNET DEMO TRANSFER" />
+        </label>}
+        <PrimaryButton danger disabled={!packetAuthorized || executionConfirmation !== "SUBMIT EXACT TESTNET DEMO TRANSFER" || loading || statusIsStale || busyAction !== null} onClick={() => void act("Execution", "/api/internal/demo/real-testnet-payment/execute", {
+          expected_version: status?.aggregate_version,
+          packet_sha256: status?.execution_packet?.packet_sha256,
+          pae_instruction_hash: status?.authorization?.pae_instruction_hash,
+          confirmation: executionConfirmation,
+        })}>
+          {busyAction === "Execution" ? "Submitting exact authorized testnet intent…" : "Submit exact 5.000000 USDC testnet demo"}
+        </PrimaryButton>
+        {!packetAuthorized && <p className="basis-full text-[11px] text-[var(--color-warning)]">Locked — {status?.execution_gate ?? "Prime exact-packet authorization is required"}.</p>}
+      </div>
+
+      {!status?.execution_packet && <p className="text-[11px] text-[var(--color-warning)]">Execution remains locked until current PAY assessment, PASS assurance, PAE, independent review, and separate Prime exact-packet authorization exist.</p>}
+    </section>
+  );
+}
+
 function RacePanel({ race }: { race?: RaceAssessment }) {
   if (!race) return <p className="text-[12px] text-[var(--color-warning)]">Legacy assessment has no validated RACE data; reassess before authorization.</p>;
   return (
@@ -864,6 +1093,7 @@ export function CommandCenter() {
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testnetDemoExpanded, setTestnetDemoExpanded] = useState(false);
   const activeRunCount = useRef(0);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
   const detailGeneration = useRef(0);
@@ -1174,8 +1404,8 @@ export function CommandCenter() {
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
         <p className="max-w-none text-left text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-right">
-          AI recommendations are advisory. Genuine payment execution requires retained human authorization and
-          deterministic assurance. Demo execution is isolated and simulated.
+          AI recommendations are advisory. The simulated demo, real Arc Testnet demo, and genuine obligations are
+          separate lanes; testnet execution remains locked behind independent review and Prime packet authorization.
         </p>
       </header>
 
@@ -1200,6 +1430,14 @@ export function CommandCenter() {
           )}
           {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
         </section>
+      </details>
+
+      <details
+        className="rounded border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-2"
+        onToggle={(event) => setTestnetDemoExpanded(event.currentTarget.open)}
+      >
+        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Live Testnet Demo — real Arc testnet, non-economic</summary>
+        {testnetDemoExpanded && <div className="mt-3 border-t border-[var(--color-border)] pt-3"><RealTestnetDemoPanel /></div>}
       </details>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">

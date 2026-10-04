@@ -5,7 +5,13 @@ import path from "node:path";
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
 import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
+import { ArcCircleProviderAdapter } from "../execution/provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
+import {
+  buildJ2aDemoAggregate,
+  j2aPreflightResultSchema,
+  type J2aPreflightResult,
+} from "../demo/real-testnet-payment";
 import { adaptDirectEvidenceObligation, type CanonicalPaymentObligation } from "../domain/payment-control-boundary";
 import { convertSourceToSettlement, isSettleableCurrency } from "../domain/currency-conversion";
 import {
@@ -521,6 +527,143 @@ export class DemoState {
   }
 }
 
+/** Separate persistence namespace and authority root for the real Arc
+ * Testnet demonstration. It intentionally has no genuine-obligation list
+ * and never shares the simulated provider adapter. */
+export class J2aRealTestnetDemoState {
+  readonly store: AuthorityStore;
+  readonly worker: ExecutionWorker;
+  private readonly sealedPaeByObligation: Map<string, SealedPae>;
+  private readonly authorizationHistory: DemoAuthorizationArtifacts[];
+  private repository?: SupabaseDemoStateRepository;
+  private revision?: number;
+  private namespace?: string;
+  lastPreflight: J2aPreflightResult | null;
+
+  constructor(snapshot?: DemoStateSnapshot & { j2a_preflight?: J2aPreflightResult | null }, repository?: SupabaseDemoStateRepository, revision?: number) {
+    this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
+    this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
+    this.lastPreflight = snapshot?.j2a_preflight ?? null;
+    this.repository = repository;
+    this.revision = revision;
+    this.worker = new ExecutionWorker(
+      this.store,
+      new ArcCircleProviderAdapter(undefined, () => this.lastPreflight),
+      () => this.flush(),
+    );
+    if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
+  }
+
+  getSealedPae(obligationId: string): SealedPae | undefined {
+    return this.sealedPaeByObligation.get(obligationId);
+  }
+
+  getAuthorizationArtifacts(obligationId: string): DemoAuthorizationArtifacts | undefined {
+    return [...this.authorizationHistory].reverse().find((entry) =>
+      entry.sealed_pae.payload.organization_id === "ORG-TAMEION-TESTNET-DEMO" &&
+      entry.sealed_pae.payload.obligation_ids[0] === obligationId,
+    );
+  }
+
+  setSealedPae(obligationId: string, sealed: SealedPae): void {
+    this.sealedPaeByObligation.set(obligationId, sealed);
+  }
+
+  recordAuthorization(artifacts: DemoAuthorizationArtifacts): void {
+    const validated = authorizationArtifactsParser(artifacts);
+    this.authorizationHistory.push(validated);
+    this.setSealedPae(validated.sealed_pae.payload.obligation_ids[0], validated.sealed_pae);
+  }
+
+  recordPreflight(result: J2aPreflightResult): void {
+    this.lastPreflight = result;
+    if (result.readiness !== "READY") return;
+    const organizationId = result.organization_id;
+    const obligationId = result.obligation_id;
+    try {
+      const current = this.store.get(organizationId, obligationId);
+      if (current.evidence_hashes[0] === result.evidence_sha256) return;
+      const advanced = this.store.applyMaterialChange(organizationId, obligationId, current.aggregate_version, {
+        destination_version: current.destination_version + 1,
+      });
+      this.store.seed({ ...advanced, evidence_hashes: [result.evidence_sha256] });
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error && (error as { code?: unknown }).code === "OBL-003")) throw error;
+      this.store.seed(buildJ2aDemoAggregate(result));
+    }
+  }
+
+  exportSnapshot(): DemoStateSnapshot & { j2a_preflight: J2aPreflightResult | null } {
+    return {
+      schema_version: 1,
+      authority: this.store.exportSnapshot(),
+      assessment_operations: [],
+      sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
+      authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      execution_ledger: this.worker.exportSnapshot(),
+      provider_adapter: new FakeProviderAdapter().exportSnapshot(),
+      j2a_preflight: this.lastPreflight,
+    };
+  }
+
+  async flush(): Promise<void> {
+    if (!this.repository || this.revision === undefined || this.namespace === undefined) return;
+    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, this.exportSnapshot() as unknown as Record<string, unknown>);
+  }
+
+  attachRepository(repository: SupabaseDemoStateRepository, namespace: string, revision: number): void {
+    this.repository = repository;
+    this.namespace = namespace;
+    this.revision = revision;
+  }
+}
+
+function emptyJ2aSnapshot(): DemoStateSnapshot & { j2a_preflight: null } {
+  return {
+    schema_version: 1,
+    authority: new AuthorityStore().exportSnapshot(),
+    assessment_operations: [],
+    sealed_paes: [],
+    authorization_history: [],
+    execution_ledger: [],
+    provider_adapter: new FakeProviderAdapter().exportSnapshot(),
+    j2a_preflight: null,
+  };
+}
+
+function parseJ2aSnapshot(value: unknown): DemoStateSnapshot & { j2a_preflight: J2aPreflightResult | null } {
+  const parsed = parseSnapshot(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed J2A demo-state snapshot.");
+  const rawPreflight = (value as Record<string, unknown>).j2a_preflight;
+  return {
+    ...parsed,
+    j2a_preflight: rawPreflight === null || rawPreflight === undefined ? null : j2aPreflightResultSchema.parse(rawPreflight),
+  };
+}
+
+async function createPersistentJ2aState(url: string, serviceRoleKey: string): Promise<J2aRealTestnetDemoState> {
+  const namespace = `${stateNamespace()}-j2a-real-testnet-demo`;
+  const repository = new SupabaseDemoStateRepository(url, serviceRoleKey);
+  const stored = await repository.loadOrSeed(namespace, emptyJ2aSnapshot() as unknown as Record<string, unknown>);
+  const state = new J2aRealTestnetDemoState(parseJ2aSnapshot(stored.snapshot), repository, stored.revision);
+  state.attachRepository(repository, namespace, stored.revision);
+  return state;
+}
+
+export async function getJ2aRealTestnetDemoState(): Promise<J2aRealTestnetDemoState> {
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const mustBeDurable = process.env.VERCEL_ENV === "preview" || process.env.VERCEL_ENV === "production";
+  if (Boolean(url) !== Boolean(serviceRoleKey)) {
+    throw new Error("Both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for durable J2A demo state.");
+  }
+  if (url && serviceRoleKey) return createPersistentJ2aState(url, serviceRoleKey);
+  if (mustBeDurable) throw new Error("Vercel Preview/Production requires durable J2A demo state; in-memory state is disabled.");
+  if (!globalThis.__tameionJ2aDemoState) globalThis.__tameionJ2aDemoState = new J2aRealTestnetDemoState(emptyJ2aSnapshot());
+  return globalThis.__tameionJ2aDemoState;
+}
+
 function syntheticEvidenceHash(evidenceId: string): string {
   // Deterministic 64-hex placeholder derived from the evidence id, distinct
   // per obligation. Not a real content hash — the real ones live only in
@@ -537,6 +680,8 @@ function simulatedDestinationAddress(obligationId: string): string {
 declare global {
   // eslint-disable-next-line no-var
   var __tameionDemoState: DemoState | undefined;
+  // eslint-disable-next-line no-var
+  var __tameionJ2aDemoState: J2aRealTestnetDemoState | undefined;
 }
 
 function stateNamespace(): string {

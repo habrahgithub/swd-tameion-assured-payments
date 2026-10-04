@@ -2,7 +2,7 @@ import type { AuthorityStore } from "../authority/aggregate";
 import { AuthorityError } from "../authority/aggregate";
 import type { SealedPae } from "../domain/schemas";
 import { verifySealedPae } from "../pae/sign-verify";
-import type { ProviderAdapter, StatusResult } from "./provider-adapter";
+import { ProviderPreSubmitBlockedError, type ProviderAdapter, type StatusResult } from "./provider-adapter";
 
 export class ExecutionBlockedError extends Error {
   constructor(
@@ -194,7 +194,21 @@ export class ExecutionWorker {
         asset: payload.asset,
         network: payload.network,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderPreSubmitBlockedError) {
+        this.store.markBlocked(payload.organization_id, obligationId, error.message);
+        const record: ExecutionRecord = {
+          obligation_id: obligationId,
+          idempotency_key: payload.idempotency_key,
+          provider_ref: null,
+          status: "BLOCKED",
+          atomic_amount: payload.atomic_amount,
+          destination_address: payload.destination_address,
+        };
+        this.executionLedger.set(payload.idempotency_key, record);
+        await this.onDurableStateChange?.();
+        return record;
+      }
       // A rejected transport promise does not prove that the provider did
       // not receive the request. Persist an in-process UNKNOWN record and
       // never let replay submit this PAE again. The provider reference is
@@ -277,6 +291,10 @@ export class ExecutionWorker {
     status: StatusResult,
     organizationId: string,
   ): ExecutionRecord {
+    if (status.status === "PENDING" || status.status === "UNKNOWN") {
+      this.store.markUnknown(organizationId, record.obligation_id);
+      return { ...record, status: "UNKNOWN" };
+    }
     if (status.status === "CONFIRMED") {
       // (11) One-to-one reconciliation: settlement amount/destination must
       // exactly match the authorized obligation before marking RECONCILED.

@@ -4,6 +4,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker, ExecutionBlockedError } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
+import { ProviderPreSubmitBlockedError } from "../src/execution/provider-adapter";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
@@ -193,6 +194,55 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     const resolved = await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
     expect(resolved.status).toBe("SETTLED");
     expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("keeps a provider PENDING response UNKNOWN with its reference for read-only reconciliation", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let status: "PENDING" | "CONFIRMED" = "PENDING";
+    let submissions = 0;
+    const adapter = {
+      name: "pending-provider-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        return { providerRef: "circle-transaction-1", status: "SUBMITTED" as const };
+      },
+      async getStatus() {
+        return status === "PENDING"
+          ? { status: "PENDING" as const }
+          : { status: "CONFIRMED" as const, destinationAddress: baseAggregate().destination_address, atomicAmount: "21000000" };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const first = await worker.execute(sealed);
+    expect(first).toMatchObject({ status: "UNKNOWN", provider_ref: "circle-transaction-1" });
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+    expect(submissions).toBe(1);
+
+    status = "CONFIRMED";
+    const reconciled = await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+    expect(reconciled.status).toBe("SETTLED");
+    expect(submissions).toBe(1);
+  });
+
+  it("marks a typed pre-submit provider refusal BLOCKED without classifying it as UNKNOWN", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissions = 0;
+    const adapter = {
+      name: "pre-submit-block-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        throw new ProviderPreSubmitBlockedError("fresh route evidence changed");
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const result = await worker.execute(sealed);
+
+    expect(result.status).toBe("BLOCKED");
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("BLOCKED");
+    expect(submissions).toBe(1);
   });
 
   it("records a thrown provider submission as UNKNOWN and never resubmits it", async () => {
