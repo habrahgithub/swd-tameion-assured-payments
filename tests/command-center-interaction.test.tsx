@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { CommandCenter } from "../app/command-center";
 
@@ -86,7 +86,7 @@ function detail(id: string) {
       execution_state: "NONE",
       pae_state: "UNUSED",
     },
-    record: { amount: "125.00", currency: "USD" },
+    record: { obligation_id: id, amount: "125.00", currency: "USD" },
     current_assessment: null,
     demo_arc_trust_simulated: false,
     pae_sealed: false,
@@ -107,6 +107,15 @@ function deferred<T>() {
 
 function selectReport() {
   fireEvent.click(screen.getByRole("button", { name: "Operational Report" }));
+}
+
+function invokeClickHandler(button: HTMLButtonElement): Promise<unknown> {
+  const reactPropsKey = Object.keys(button).find((key) => key.startsWith("__reactProps$"));
+  if (!reactPropsKey) throw new Error("React click callback is unavailable");
+  const reactProps = (button as unknown as Record<string, { onClick?: () => unknown }>)[reactPropsKey];
+  let operation: unknown;
+  act(() => { operation = reactProps.onClick?.(); });
+  return operation as Promise<unknown>;
 }
 
 describe("Command Center mounted Operational Report", () => {
@@ -167,7 +176,8 @@ describe("Command Center mounted Operational Report", () => {
 
     render(<CommandCenter />);
     selectReport();
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    const summary = screen.getByRole("region", { name: "HOLD/ESCALATE aggregate summary" });
+    expect(await within(summary).findByRole("alert")).toBeTruthy();
     expect(screen.getByText(/summary cannot be determined/)).toBeTruthy();
     expect(screen.queryByText("Total obligations")).toBeNull();
 
@@ -188,7 +198,115 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(/Selected obligation detail is loading/)).toBeTruthy();
     selectedDetail.resolve(response(null, 502));
     expect(await screen.findByText(/Selected obligation detail is unavailable/)).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Operational report for OBL-A" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
+  });
+
+  it("keeps the last known selection and detail when post-action refresh reads fail", async () => {
+    let listReads = 0;
+    let detailReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations" && init?.method !== "POST") {
+        listReads += 1;
+        return Promise.resolve(listReads === 1 ? response({ obligations: [obligation("OBL-A")] }) : response(null, 503));
+      }
+      if (url.endsWith("/OBL-A/assess") && init?.method === "POST") return Promise.resolve(response({ error: "Action unavailable" }, 503));
+      if (url === "/api/obligations/OBL-A") {
+        detailReads += 1;
+        return Promise.resolve(detailReads === 1 ? response(detail("OBL-A")) : response(null, 502));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: /OBL-A/ });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const assess = await screen.findByRole("button", { name: "Run assessment" }) as HTMLButtonElement;
+    await waitFor(() => expect(assess.disabled).toBe(false));
+    fireEvent.click(assess);
+
+    expect(await screen.findByText(/Genuine obligations are unavailable\. No synthetic demo data has been added to this list/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Operational Report" }));
+    const report = await screen.findByRole("region", { name: "Operational report for OBL-A" });
+    expect(report.textContent).toContain("RECORD-OBL-A");
+    expect(screen.getByRole("button", { name: /OBL-A/ })).toBeTruthy();
+  });
+
+  it("keeps non-idempotent controls busy while a newer selected action is still in flight", async () => {
+    const actionA = deferred<Response>();
+    const actionB = deferred<Response>();
+    const staleActionListRefresh = deferred<Response>();
+    let listReads = 0;
+    let detailBReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations" && init?.method !== "POST") {
+        listReads += 1;
+        if (listReads === 1) return Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
+        if (listReads === 2) return staleActionListRefresh.promise;
+        return Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
+      }
+      if (url.endsWith("/OBL-A/assess")) return actionA.promise;
+      if (url.endsWith("/OBL-B/assess")) return actionB.promise;
+      if (url === "/api/obligations/OBL-A") return Promise.resolve(response(detail("OBL-A")));
+      if (url === "/api/obligations/OBL-B") {
+        detailBReads += 1;
+        return Promise.resolve(response(detail("OBL-B")));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: /OBL-B/ });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const assessA = await screen.findByRole("button", { name: "Run assessment" }) as HTMLButtonElement;
+    await waitFor(() => expect(assessA.disabled).toBe(false));
+    const actionACompletion = invokeClickHandler(assessA);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /OBL-B/ }));
+    await waitFor(() => expect(detailBReads).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: "Operational Report" }));
+    const reportB = await screen.findByRole("region", { name: "Operational report for OBL-B" });
+    expect(reportB.textContent).toContain("RECORD-OBL-B");
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const assessB = screen.getByRole("button", { name: "Run assessment" }) as HTMLButtonElement;
+    expect(assessB.disabled).toBe(true);
+    // Exercise a previously dispatched B callback while A is still unwinding.
+    const actionBCompletion = invokeClickHandler(assessB);
+    expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual(expect.arrayContaining([["/api/obligations/OBL-B/assess", "POST"]]));
+
+    actionA.resolve(response({ error: "Assessment unavailable" }, 503));
+    await waitFor(() => expect(listReads).toBe(2));
+    await act(async () => {
+      staleActionListRefresh.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
+      await actionACompletion;
+    });
+    expect((screen.getByRole("button", { name: "Run assessment" }) as HTMLButtonElement).disabled).toBe(true);
+
+    actionB.resolve(response({ error: "Assessment unavailable" }, 503));
+    await act(async () => { await actionBCompletion; });
+    expect((screen.getByRole("button", { name: "Run assessment" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("disables and rejects assessment while the selected detail is still loading", async () => {
+    const selectedDetail = deferred<Response>();
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
+      : selectedDetail.promise);
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: /OBL-A/ });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const assess = await screen.findByRole("button", { name: "Run assessment" }) as HTMLButtonElement;
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
+    expect(assess.disabled).toBe(true);
+    assess.disabled = false;
+    fireEvent.click(assess);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/assess") && init?.method === "POST")).toBe(false);
+
+    selectedDetail.resolve(response(detail("OBL-A")));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Run assessment" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it("keeps the report bound to the current selection when an older detail request finishes late", async () => {

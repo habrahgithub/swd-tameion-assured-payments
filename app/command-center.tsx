@@ -818,12 +818,13 @@ export function CommandCenter() {
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const activeRunCount = useRef(0);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
   const selectionGeneration = useRef(0);
 
-  const refreshObligations = async (showLoading = false) => {
+  const refreshObligations = async (showLoading = false, preserveLastKnown = false) => {
     if (showLoading) setObligationsStatus("loading");
     setObligationsError(null);
     try {
@@ -843,8 +844,10 @@ export function CommandCenter() {
       if (fetched.length === 0) setSelectedId("");
       return fetched;
     } catch (error) {
-      setObligations([]);
-      setSelectedId("");
+      if (!preserveLastKnown) {
+        setObligations([]);
+        setSelectedId("");
+      }
       setObligationsStatus("error");
       setObligationsError(error instanceof Error ? error.message : "Obligations could not be loaded.");
       return [];
@@ -874,7 +877,7 @@ export function CommandCenter() {
     }
   };
 
-  const refreshDetail = async (id: string): Promise<ObligationDetail | null> => {
+  const refreshDetail = async (id: string, preserveLastKnown = false): Promise<ObligationDetail | null> => {
     const requestId = ++detailGeneration.current;
     const isCurrent = () =>
       isCurrentRequest({
@@ -896,7 +899,7 @@ export function CommandCenter() {
       return data as ObligationDetail;
     } catch (error) {
       if (!isCurrent()) return null;
-      setDetail(null);
+      if (!preserveLastKnown) setDetail(null);
       setDetailError(error instanceof Error ? error.message : "Obligation detail could not be loaded.");
       return null;
     }
@@ -924,6 +927,7 @@ export function CommandCenter() {
     const targetId = selectedRef.current;
     const generation = selectionGeneration.current;
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
+    activeRunCount.current += 1;
     setBusy(true);
     try {
       const result = await action();
@@ -940,16 +944,18 @@ export function CommandCenter() {
         obligationId: targetId,
       });
     } finally {
-      if (stillCurrent()) await refreshDetail(targetId);
-      await refreshObligations();
-      setBusy(false);
+      if (stillCurrent()) await refreshDetail(targetId, true);
+      await refreshObligations(false, true);
+      activeRunCount.current = Math.max(0, activeRunCount.current - 1);
+      setBusy(activeRunCount.current > 0);
     }
   };
 
   const runAssessment = () => {
     const obligationId = selectedId;
+    if (!obligationId || !detail || detail.record.obligation_id !== obligationId) return;
     const generation = selectionGeneration.current;
-    const expectedVersion = detail?.aggregate?.aggregate_version !== undefined ? String(detail.aggregate.aggregate_version) : "";
+    const expectedVersion = String(detail.aggregate.aggregate_version);
     setDisplayedAssessment(null);
     return run("assess", async () => {
       const storageKey = `tameion.assessment-request.${obligationId}`;
@@ -1288,7 +1294,7 @@ export function CommandCenter() {
                   </p>
                   <RuntimeBadge mode={selected?.provider_mode ?? null} />
                 </div>
-                <PrimaryButton disabled={busy || !selectedId} onClick={runAssessment}>
+                <PrimaryButton disabled={busy || !selectedId || !detail || detail.record.obligation_id !== selectedId} onClick={runAssessment}>
                   Run assessment
                 </PrimaryButton>
 
