@@ -13,6 +13,12 @@
       "issue_date": "2026-01-28",
       "due_date": null,
       "due_date_status": "NOT_STATED_ON_SOURCE",
+      "effective_due_date": "2026-01-28",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "authority_reference": "GITHUB_ISSUE_COMMENT_5981941458"
+      },
       "amount": "5760.00",
       "currency": "AED",
       "state_at_event_baseline": "OUTSTANDING",
@@ -60,6 +66,12 @@
       "issue_date": "2026-08-14",
       "due_date": "2026-08-14",
       "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2026-08-14",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-J0C-002-A"
+      },
       "amount": "21.00",
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
@@ -107,6 +119,12 @@
       "issue_date": "2026-09-12",
       "due_date": "2026-09-12",
       "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2026-09-12",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-J0C-003-A"
+      },
       "amount": "5.00",
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
@@ -154,6 +172,12 @@
       "issue_date": "2026-09-25",
       "due_date": "2026-09-25",
       "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2026-09-25",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-J0C-004-A"
+      },
       "amount": "21.00",
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",
@@ -201,6 +225,12 @@
       "issue_date": "2026-03-30",
       "due_date": "2026-03-30",
       "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2026-03-30",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-J0C-005-A"
+      },
       "amount": "75.60",
       "currency": "USD",
       "state_at_event_baseline": "OUTSTANDING",

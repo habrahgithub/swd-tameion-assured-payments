@@ -157,7 +157,7 @@ function normalize(
       summary: "The application checked supplied evidence references and deterministic obligation readiness facts.",
       checks: [
         "Supplied evidence identifiers were checked against the obligation context.",
-        "Due-date source status and currentness were derived from the application context.",
+        "Raw source due-date truth and effective due date with provenance were checked from the application context.",
         "Business-purpose confirmation was checked as an application-owned obligation fact.",
       ],
     },
@@ -176,8 +176,12 @@ function normalize(
         aggregate_version: context.aggregate_version,
         amount: context.amount,
         currency: context.currency,
+        issue_date: context.issue_date,
         due_date: context.due_date,
         due_date_status: context.due_date_status,
+        effective_due_date: context.effective_due_date,
+        effective_due_date_basis: context.effective_due_date_basis,
+        effective_due_date_provenance: context.effective_due_date_provenance,
         due_date_position: context.due_date_position,
         as_of_date: context.as_of_date,
         state_at_event_baseline: context.state_at_event_baseline,
@@ -227,6 +231,6 @@ export function selectSoleCandidate(
     selected_obligation_id: winner.obligation_id,
     rationale: payCandidates.length === 1
       ? `Sole PAY decision among ${decisions.length} assessed obligations.`
-      : `${payCandidates.length} obligations received PAY; selected ${winner.obligation_id} by earliest stated due date, then lowest obligation_id as tie-break.`,
+      : `${payCandidates.length} obligations received PAY; selected ${winner.obligation_id} by earliest effective due date, then lowest obligation_id as tie-break.`,
   };
 }

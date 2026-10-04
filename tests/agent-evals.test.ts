@@ -19,8 +19,12 @@ function record(overrides: Partial<LiveUsageObligationRecord> = {}): LiveUsageOb
     obligation_id: "OBL-EVAL",
     service_category: "TEST_CATEGORY",
     recurrence: "MONTHLY",
+    issue_date: "2026-09-30",
     due_date: "2026-09-30",
     due_date_status: "STATED_ON_SOURCE",
+    effective_due_date: "2026-09-30",
+    effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+    effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-EVAL-A" },
     amount: "10.00",
     currency: "USD",
     state_at_event_baseline: "OUTSTANDING",
@@ -71,8 +75,8 @@ describe("Finance Agent eval bank (zero unsafe PAY across 8 cases)", () => {
     expect(decision.decision).not.toBe("PAY");
   });
 
-  it("case 3: due date not stated on source -> HOLD, never PAY", async () => {
-    const context = buildFinanceAgentContext(record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" }));
+  it("case 3: invoice and effective due dates missing -> HOLD, never PAY", async () => {
+    const context = buildFinanceAgentContext(record({ issue_date: null, due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", effective_due_date: null, effective_due_date_basis: null, effective_due_date_provenance: null }));
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
     expect(decision.decision).not.toBe("PAY");
   });

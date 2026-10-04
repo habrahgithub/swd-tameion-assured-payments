@@ -48,6 +48,9 @@
           "issue_date",
           "due_date",
           "due_date_status",
+          "effective_due_date",
+          "effective_due_date_basis",
+          "effective_due_date_provenance",
           "amount",
           "currency",
           "state_at_event_baseline",
@@ -99,6 +102,37 @@
             "enum": [
               "STATED_ON_SOURCE",
               "NOT_STATED_ON_SOURCE"
+            ]
+          },
+          "effective_due_date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?!0000-)(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+            "maxLength": 10
+          },
+          "effective_due_date_basis": {
+            "const": "INVOICE_DATE_CASH_TERM"
+          },
+          "effective_due_date_provenance": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["provenance_class", "evidence_id"],
+                "properties": {
+                  "provenance_class": { "const": "SOURCE_INVOICE_DATE" },
+                  "evidence_id": { "type": "string", "minLength": 1 }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["provenance_class", "authority_reference"],
+                "properties": {
+                  "provenance_class": { "const": "AUTHORIZED_OPERATOR_ATTESTATION" },
+                  "authority_reference": { "type": "string", "minLength": 1 }
+                }
+              }
             ]
           },
           "amount": {
@@ -358,6 +392,13 @@
               "properties": {
                 "due_date": {
                   "type": "null"
+                },
+                "effective_due_date_provenance": {
+                  "properties": {
+                    "provenance_class": {
+                      "const": "AUTHORIZED_OPERATOR_ATTESTATION"
+                    }
+                  }
                 },
                 "candidate_readiness": {
                   "properties": {

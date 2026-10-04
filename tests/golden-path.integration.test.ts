@@ -41,19 +41,19 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     );
 
     // Obligation assessment cannot default to PAY without complete evidence
-    // and a known due date. Payment-route assurance is evaluated separately.
+    // and a valid effective due date. Payment-route assurance is evaluated separately.
     for (const decision of decisions) {
       if (decision.decision === "PAY") {
         expect(decision.missing_evidence).toHaveLength(0);
       }
     }
 
-    const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.due_date]));
+    const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.effective_due_date ?? null]));
     const selection = selectSoleCandidate(decisions, dueDates);
 
     // The immutable J0-C source snapshot has pending historical destination
     // readiness, which does not suppress an otherwise eligible assessment.
-    expect(selection.selected_obligation_id).toBe("OBL-J0C-005");
+    expect(selection.selected_obligation_id).toBe("OBL-J0C-001");
 
     // Prove the rest of the pipeline (approval -> Safety Kernel -> PAE ->
     // execution -> reconciliation) against a clearly test-only fixture with
@@ -61,6 +61,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === selection.selected_obligation_id)!;
     const [wholePart, fractionalPart] = candidateRecord.amount.split(".");
     const sixDpAmount = `${wholePart}.${fractionalPart.padEnd(6, "0")}`;
+    const settlementAmount = candidateRecord.currency === "AED" ? "1568.413887" : sixDpAmount;
 
     const store = new AuthorityStore();
     const aggregate: AuthorityAggregate = {
@@ -68,13 +69,13 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       obligation_id: candidateRecord.obligation_id,
       aggregate_version: 1,
       state: "APPROVAL_PENDING",
-      amount: sixDpAmount,
+      amount: settlementAmount,
       asset: "USDC",
       network: "ARC_TESTNET",
-      counterparty_id: "CP-J0C-003",
+      counterparty_id: `CP-${candidateRecord.obligation_id.slice(-3)}`,
       counterparty_version: 1,
       counterparty_status: "VERIFIED",
-      destination_ref: "DEST-J0C-003-SEEDED",
+      destination_ref: `DEST-${candidateRecord.obligation_id.slice(-3)}-SEEDED`,
       destination_version: 1,
       product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
       // Test-only destination value; the test exercises the trusted path and

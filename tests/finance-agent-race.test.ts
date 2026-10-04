@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 import { assessObligation } from "../src/agent/finance-agent";
-import { buildFinanceAgentContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
+import { buildFinanceAgentContext, toFinanceAgentModelContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
 import type { AiProvider } from "../src/agent/ai-provider";
 import { CARE_SYSTEM_PROMPT } from "../src/agent/ai-provider";
 import { raceAssessmentSchema } from "../src/agent/schema";
@@ -12,8 +12,12 @@ function record(id: string, overrides: Partial<LiveUsageObligationRecord> = {}):
     obligation_id: id,
     service_category: "AI_SOFTWARE_SUBSCRIPTION",
     recurrence: "MONTHLY",
+    issue_date: "2026-09-01",
     due_date: "2026-09-01",
     due_date_status: "STATED_ON_SOURCE",
+    effective_due_date: "2026-09-01",
+    effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+    effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: `EVID-${id}` },
     amount: "25.00",
     currency: "USD",
     state_at_event_baseline: "OUTSTANDING",
@@ -89,10 +93,22 @@ describe("#17 CARE and RACE grounding", () => {
 
   it("encodes the CARE boundary in the provider prompt and strictly validates actionable RACE", async () => {
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/OVERDUE is a timing and urgency fact, not an assessment blocker/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/do not require proof of payment\s+solely because an invoice is overdue/i);
     const context = trustedTestContext(record("OBL-CARE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
     expect(result.race.action_taken.checks.join(" ")).not.toMatch(/destination readiness/i);
     expect(raceAssessmentSchema.safeParse(result.race).success).toBe(true);
+    expect(raceAssessmentSchema.safeParse({
+      ...result.race,
+      evidence: {
+        ...result.race.evidence,
+        authoritative_facts: {
+          ...result.race.evidence.authoritative_facts,
+          effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-NOT-SUPPLIED" },
+        },
+      },
+    }).success).toBe(false);
     expect(raceAssessmentSchema.safeParse({
       ...result.race,
       result: { decision: "ESCALATE", decision_summary: "Human review.", validated_findings: [{ code: "OTHER_REQUIRES_HUMAN_REVIEW", severity: "ESCALATE", reason: "Human review." }] },
@@ -130,7 +146,87 @@ describe("#17 CARE and RACE grounding", () => {
     expect(result.race.evidence.authoritative_facts.due_date_position).toBe("OVERDUE");
     expect(result.race.evidence.authoritative_facts.as_of_date).toBe("2026-09-29");
     expect(result.race.evidence.authoritative_facts.due_date).toBe("2026-09-12");
+    expect(result.decision).toBe("PAY");
+    expect(result.race.evidence.authoritative_facts).toMatchObject({
+      issue_date: "2026-09-12",
+      due_date: "2026-09-12",
+      due_date_status: "STATED_ON_SOURCE",
+      effective_due_date: "2026-09-12",
+      effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+      effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-J0C-003-A" },
+    });
     expect(result.race.caveats.model_explanation).not.toEqual(result.race.evidence.authoritative_facts.due_date_position);
+  });
+
+  it("rejects a model HOLD that cites no blocker for an overdue obligation", async () => {
+    const context = buildFinanceAgentContext(liveRecord("OBL-J0C-003"), "7", "2026-09-29");
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, {
+      decision: "HOLD",
+      finding_codes: [],
+      evidence_ids: context.evidence_ids,
+    })));
+
+    expect(result.race.evidence.authoritative_facts.due_date_position).toBe("OVERDUE");
+    expect(result.race.result.validated_findings.map((finding) => finding.code)).toEqual(["MODEL_OUTPUT_INVALID"]);
+    expect(result.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DUE_DATE_NOT_STATED");
+  });
+
+  it("uses OBL-J0C-001 invoice-date policy without relabelling its raw due-date source truth", async () => {
+    const source = liveRecord("OBL-J0C-001");
+    const context = buildFinanceAgentContext(source, "8", "2026-09-29");
+    const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
+
+    expect(context.due_date).toBeNull();
+    expect(context.due_date_status).toBe("NOT_STATED_ON_SOURCE");
+    expect(context.due_date_position).toBe("OVERDUE");
+    expect(toFinanceAgentModelContext(context)).toMatchObject({
+      issue_date: "2026-01-28",
+      due_date: null,
+      due_date_status: "NOT_STATED_ON_SOURCE",
+      effective_due_date: "2026-01-28",
+      effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "GITHUB_ISSUE_COMMENT_5981941458" },
+      due_date_position: "OVERDUE",
+    });
+    expect(result.decision).toBe("PAY");
+    expect(result.race.evidence.authoritative_facts).toMatchObject({
+      issue_date: "2026-01-28",
+      due_date: null,
+      due_date_status: "NOT_STATED_ON_SOURCE",
+      effective_due_date: "2026-01-28",
+      effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "GITHUB_ISSUE_COMMENT_5981941458" },
+      due_date_position: "OVERDUE",
+    });
+    expect(result.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DUE_DATE_NOT_STATED");
+  });
+
+  it("requires effective dates to be valid and consistent with the invoice date", async () => {
+    const source = liveRecord("OBL-J0C-002");
+    const cases = [
+      { ...source, issue_date: null, effective_due_date: null, effective_due_date_basis: null, effective_due_date_provenance: null },
+      { ...source, effective_due_date: "2026-02-30" },
+    ];
+
+    for (const input of cases) {
+      const context = buildFinanceAgentContext(input as unknown as LiveUsageObligationRecord, 1, "2026-09-29");
+      const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
+      expect(context.due_date_position).toBe("INVALID");
+      expect(result.decision).toBe("HOLD");
+      expect(result.race.result.validated_findings.map((finding) => finding.code)).toContain("NORMALIZATION_REVIEW_REQUIRED");
+    }
+  });
+
+  it("keeps all five normalized genuine effective dates equal to their invoice dates", () => {
+    expect(liveRecords).toHaveLength(5);
+    for (const source of liveRecords) {
+      const invoiceDate = (source as unknown as { issue_date: string }).issue_date;
+      expect(source).toMatchObject({
+        effective_due_date: invoiceDate,
+        effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+      });
+      expect((source as unknown as { effective_due_date_provenance?: unknown }).effective_due_date_provenance).toBeDefined();
+    }
   });
 
   it("treats an impossible source calendar date as normalization HOLD, never as a due-date fact", async () => {
