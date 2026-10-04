@@ -13,6 +13,8 @@ function statusResponse(overrides: Record<string, unknown> = {}) {
     settlement_amount: "5.000000",
     asset: "USDC",
     network: "ARC_TESTNET",
+    demo_obligation: null,
+    intent_identity: null,
     lifecycle: [
       { stage: "Obligation", status: "NOT_CREATED" },
       { stage: "AI Assessment", status: "NOT_ASSESSED" },
@@ -77,6 +79,36 @@ describe("J2A real-testnet Command Center surface", () => {
   it("shows the full current intent evidence before exposing PAY authorization inputs", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(statusResponse({
       aggregate_version: 9,
+      demo_obligation: {
+        invoice_date: "2026-10-04",
+        effective_due_date: "2026-10-04",
+        payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE",
+      },
+      intent_identity: {
+        payer: {
+          organization_id: "ORG-TAMEION-TESTNET-DEMO",
+          organization_name: "Tameion Testnet Demonstration Organization",
+          wallet_id: "source-wallet-id",
+          wallet_address: "0xsource",
+          provider_wallet_status: "LIVE",
+          assurance_wallet_status: "ACTIVE",
+          wallet_version: 1,
+          wallet_set_id: "wallet-set-id",
+          provider: "Circle Developer-Controlled Wallets",
+        },
+        beneficiary: {
+          beneficiary_id: "CP-destination-wallet-id",
+          name: "Tameion Test Counterparty",
+          wallet_id: "destination-wallet-id",
+          destination_ref: "CIRCLE-DCW-destination-wallet-id",
+          wallet_address: "0xdestination",
+          provider_wallet_status: "LIVE",
+          verification_status: "VERIFIED",
+          verification_version: 1,
+          operational_status: "ACTIVE",
+          operational_version: 1,
+        },
+      },
       preflight: {
         readiness: "READY",
         captured_at: "2026-10-04T12:00:00.000Z",
@@ -88,6 +120,17 @@ describe("J2A real-testnet Command Center surface", () => {
         max_network_fee: "0.002000",
         max_total_debit: "5.012000",
         evidence_sha256: "a".repeat(64),
+        business_payment_instruction: {
+          payer: {
+            business_postal_address: { status: "NOT_PROVIDED_IN_SOURCE", statement: "No verified payer address is present in source." },
+            jurisdiction: { status: "NOT_PROVIDED_IN_SOURCE", statement: "No verified payer jurisdiction is present in source." },
+          },
+          beneficiary: {
+            business_postal_address: { status: "NOT_APPLICABLE_TEST_COUNTERPARTY", statement: "No real postal address applies to the synthetic non-economic test counterparty." },
+            jurisdiction: { status: "NOT_APPLICABLE_TEST_COUNTERPARTY", statement: "No real jurisdiction applies to the synthetic non-economic test counterparty." },
+          },
+          commercial: { invoice_reference: "DEMO-ARC-TESTNET-001", particulars: "Non-economic testnet demonstration." },
+        },
       },
       current_assessment: {
         assessment_id: "ASM-LIVE-1",
@@ -99,6 +142,27 @@ describe("J2A real-testnet Command Center surface", () => {
         provider_mode: "LIVE_AI",
         provider_name: "NVIDIA Build",
         model_id: "nvidia/nemotron-3-super-120b-a12b",
+      },
+      execution: {
+        status: "UNKNOWN",
+        provider_ref: "circle-tx-1",
+        provider_evidence: {
+          transaction_id: "circle-tx-1",
+          transaction_state: "PENDING",
+          tx_hash: "0xabc",
+          wallet_id: "source-wallet-id",
+          source_address: "0xsource",
+          destination_address: "0xdestination",
+          token_id: "native-usdc-token",
+          network: "ARC-TESTNET",
+          amounts: ["5.000000"],
+          operation: "TRANSFER",
+          ref_id: "j2a-privacy-safe-reference",
+          network_fee: "0.001000",
+          provider_created_at: "2026-10-04T12:00:00.000Z",
+          provider_updated_at: "2026-10-04T12:01:00.000Z",
+          reconciled_at: "2026-10-04T12:02:00.000Z",
+        },
       },
     })));
     vi.stubGlobal("fetch", fetchMock);
@@ -113,8 +177,19 @@ describe("J2A real-testnet Command Center surface", () => {
     expect(section.textContent).toContain("native-usdc-token");
     expect(section.textContent).toContain("0.001000 / 0.002000 USDC");
     expect(section.textContent).toContain("5.012000 USDC");
+    expect(section.textContent).toContain("ARC-TESTNET · chain ID 5042002 · USDC gas");
     expect(section.textContent).toContain("NVIDIA Build");
     expect(section.textContent).toContain("b".repeat(64));
+    expect(section.textContent).toContain("2026-10-04");
+    expect(section.textContent).toContain("PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE");
+    expect(section.textContent).toContain("No real postal address applies to the synthetic non-economic test counterparty.");
+    expect(section.textContent).toContain("They are not sent to Circle");
+    expect(within(section).getByRole("region", { name: "Circle reconciliation evidence" })).toBeTruthy();
+    expect(section.textContent).toContain("j2a-privacy-safe-reference");
+    expect(section.textContent).toContain("2026-10-04T12:01:00.000Z");
+    expect(within(section).getByRole("region", { name: "Payer and beneficiary identity binding" })).toBeTruthy();
+    expect(section.textContent).toContain("source-wallet-id · 0xsource");
+    expect(section.textContent).toContain("CP-destination-wallet-id");
     expect(within(section).getByRole("button", { name: "Review exact intent and authorize" })).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

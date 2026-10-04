@@ -225,6 +225,68 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(submissions).toBe(1);
   });
 
+  it("retains provider reconciliation evidence in the durable execution record", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = {
+      name: "circle-evidence-test-adapter",
+      async submitTransfer() { return { providerRef: "circle-tx-evidence", status: "SUBMITTED" as const }; },
+      async getStatus(_providerRef: string, idempotencyKey?: string) {
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+          transaction_id: "circle-tx-evidence",
+          transaction_state: "COMPLETE",
+          tx_hash: "0xabc123",
+          wallet_id: baseAggregate().source_wallet_ref,
+          token_id: "native-arc-usdc",
+          network: "ARC-TESTNET",
+          amounts: ["21.000000"],
+          operation: "TRANSFER",
+          ref_id: idempotencyKey,
+          network_fee: "0.001000",
+          provider_created_at: "2026-10-04T10:00:00.000Z",
+          provider_updated_at: "2026-10-04T10:01:00.000Z",
+          reconciled_at: "2026-10-04T10:02:00.000Z",
+        };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+    const record = await worker.execute(sealed);
+
+    expect(record.status).toBe("SETTLED");
+    expect(record.provider_evidence).toMatchObject({
+      transaction_id: "circle-tx-evidence",
+      transaction_state: "COMPLETE",
+      tx_hash: "0xabc123",
+      network_fee: "0.001000",
+      provider_created_at: "2026-10-04T10:00:00.000Z",
+      provider_updated_at: "2026-10-04T10:01:00.000Z",
+      reconciled_at: "2026-10-04T10:02:00.000Z",
+    });
+    expect(worker.exportSnapshot()[0]?.provider_evidence).toEqual(record.provider_evidence);
+  });
+
+  it("recovers persisted SUBMITTING as UNKNOWN through a read-only path without provider submission", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+    worker.restoreSnapshot([{
+      obligation_id: sealed.payload.obligation_ids[0],
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING",
+      atomic_amount: sealed.payload.atomic_amount,
+      destination_address: sealed.payload.destination_address,
+    }]);
+
+    const recovered = await worker.recoverSubmittingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+
+    expect(recovered?.status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("UNKNOWN");
+  });
+
   it("marks a typed pre-submit provider refusal BLOCKED without classifying it as UNKNOWN", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     let submissions = 0;

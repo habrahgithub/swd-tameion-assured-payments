@@ -5,6 +5,7 @@ import {
   J2A_DEMO_DESTINATION,
   J2A_DEMO_SOURCE,
   J2A_DEMO_WALLET_SET_ID,
+  deriveJ2aCircleRefId,
   runJ2aReadOnlyPreflight,
 } from "../src/demo/real-testnet-payment";
 
@@ -26,6 +27,7 @@ function createClient(overrides: Partial<J2aCircleClient> = {}): J2aCircleClient
     getTransaction: vi.fn(async () => ({ data: { transaction: {
       id: "circle-tx-1", state: "INITIATED", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
       destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"),
     } } })),
     createTransaction: vi.fn(async () => ({ data: { id: "circle-tx-1", state: "INITIATED" } })),
     ...overrides,
@@ -48,15 +50,18 @@ describe("Arc Circle provider adapter for J2A", () => {
     });
 
     expect(result).toEqual({ providerRef: "circle-tx-1", status: "SUBMITTED" });
-    expect(api.createTransaction).toHaveBeenCalledWith(expect.objectContaining({
+    const circleRequest = vi.mocked(api.createTransaction).mock.calls[0]?.[0];
+    expect(circleRequest).toEqual({
       amount: ["5.000000"],
       destinationAddress: J2A_DEMO_DESTINATION.address,
       tokenId: "native-arc-usdc",
       walletId: J2A_DEMO_SOURCE.id,
       fee: { type: "level", config: { feeLevel: "MEDIUM" } },
-      refId: "idem-ORG-TAMEION-TESTNET-DEMO-DEMO-ARC-TESTNET-001-2",
+      refId: expect.stringMatching(/^j2a-[0-9a-f]{28}$/),
       idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
-    }));
+    });
+    expect(circleRequest?.refId).not.toContain("ORG-TAMEION");
+    expect(circleRequest?.refId).not.toContain("DEMO-ARC");
   });
 
   it("blocks before Circle submission when the fresh fee or token differs from the authorized preflight", async () => {
@@ -130,7 +135,7 @@ describe("Arc Circle provider adapter for J2A", () => {
   it("keeps in-flight Circle state pending and reconciles with one read-only transaction lookup", async () => {
     const api = createClient();
     const adapter = new ArcCircleProviderAdapter(api);
-    expect(await adapter.getStatus("circle-tx-1")).toEqual({ status: "PENDING" });
+    expect(await adapter.getStatus("circle-tx-1")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
     expect(api.getTransaction).toHaveBeenCalledWith({ id: "circle-tx-1" });
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -139,16 +144,71 @@ describe("Arc Circle provider adapter for J2A", () => {
     const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
       id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
       destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      sourceAddress: J2A_DEMO_SOURCE.address, operation: "TRANSFER", refId: deriveJ2aCircleRefId("exact-demo-key"),
+      txHash: "0xabc123", networkFee: "0.001000", createDate: "2026-10-04T10:00:00.000Z",
+      updateDate: "2026-10-04T10:01:00.000Z",
     } } })) });
-    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1");
-    expect(result).toEqual({ status: "CONFIRMED", destinationAddress: J2A_DEMO_DESTINATION.address, atomicAmount: "5000000" });
+    const adapter = new ArcCircleProviderAdapter(api);
+    const result = await adapter.getStatus("circle-tx-1", "exact-demo-key");
+    expect(result).toMatchObject({
+      status: "CONFIRMED", transaction_id: "circle-tx-1", transaction_state: "COMPLETE",
+      destination_address: J2A_DEMO_DESTINATION.address, atomic_amount: "5000000",
+      wallet_id: J2A_DEMO_SOURCE.id, source_address: J2A_DEMO_SOURCE.address,
+      token_id: "native-arc-usdc", network: "ARC-TESTNET", operation: "TRANSFER",
+      ref_id: expect.stringMatching(/^j2a-[0-9a-f]{28}$/), tx_hash: "0xabc123",
+      explorer_reference: null,
+      network_fee: "0.001000", provider_created_at: "2026-10-04T10:00:00.000Z",
+      provider_updated_at: "2026-10-04T10:01:00.000Z", reconciled_at: expect.any(String),
+      amounts: ["5.000000"],
+    });
+    expect(result.ref_id).not.toBe("exact-demo-key");
+  });
+
+  it.each([
+    { walletId: "wrong-wallet" },
+    { destinationAddress: "0x0000000000000000000000000000000000000001" },
+    { tokenId: "wrong-token" },
+    { blockchain: "ETH-SEPOLIA" },
+    { refId: "wrong-ref" },
+    { id: "different-transaction" },
+    { amounts: ["4.000000"] },
+    { networkFee: "0.002001" },
+    { walletId: undefined },
+    { destinationAddress: undefined },
+    { tokenId: undefined },
+    { blockchain: undefined },
+    { refId: undefined },
+    { amounts: undefined },
+    { networkFee: undefined },
+  ])("fails closed for mismatched Circle completion identity %#", async (override) => {
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      sourceAddress: J2A_DEMO_SOURCE.address, destinationAddress: J2A_DEMO_DESTINATION.address,
+      amounts: ["5.000000"], tokenId: "native-arc-usdc", operation: "TRANSFER", refId: deriveJ2aCircleRefId("exact-demo-key"), networkFee: "0.001000",
+      ...override,
+    } } })) });
+    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+    expect(result.status).toBe("UNKNOWN");
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("derives an Arc Testnet explorer reference only from a complete observed transaction hash", async () => {
+    const txHash = `0x${"ab".repeat(32)}`;
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      sourceAddress: J2A_DEMO_SOURCE.address, destinationAddress: J2A_DEMO_DESTINATION.address,
+      amounts: ["5.000000"], tokenId: "native-arc-usdc", refId: deriveJ2aCircleRefId("exact-demo-key"),
+      txHash, networkFee: "0.001000",
+    } } })) });
+    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+    expect(result.explorer_reference).toBe(`https://explorer.testnet.arc.io/tx/${txHash}`);
   });
 
   it("does not submit during status-by-idempotency-key reconciliation", async () => {
     const api = createClient({
-      listTransactions: vi.fn(async () => ({ data: { transactions: [{ id: "circle-tx-1", refId: "exact-demo-key" }] } })),
+      listTransactions: vi.fn(async () => ({ data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }] } })),
     });
-    expect(await new ArcCircleProviderAdapter(api).getStatusByIdempotencyKey("exact-demo-key")).toEqual({ status: "PENDING" });
+    expect(await new ArcCircleProviderAdapter(api).getStatusByIdempotencyKey("exact-demo-key")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
     expect(api.createTransaction).not.toHaveBeenCalled();
     expect(api.listTransactions).toHaveBeenCalledTimes(1);
     expect(api.getTransaction).toHaveBeenCalledTimes(1);

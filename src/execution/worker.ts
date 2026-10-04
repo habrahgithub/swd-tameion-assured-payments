@@ -21,6 +21,7 @@ export interface ExecutionRecord {
   status: "SUBMITTING" | "SETTLED" | "FAILED" | "UNKNOWN" | "BLOCKED";
   atomic_amount: string;
   destination_address: string;
+  provider_evidence?: StatusResult | null;
 }
 
 /**
@@ -244,7 +245,7 @@ export class ExecutionWorker {
       return record;
     }
 
-    const status = await this.adapter.getStatus(submission.providerRef);
+    const status = await this.adapter.getStatus(submission.providerRef, payload.idempotency_key);
     const finalRecord = this.finalizeFromStatus(
       {
         obligation_id: obligationId,
@@ -253,6 +254,7 @@ export class ExecutionWorker {
         status: "UNKNOWN",
         atomic_amount: payload.atomic_amount,
         destination_address: payload.destination_address,
+        provider_evidence: null,
       },
       status,
       payload.organization_id,
@@ -273,17 +275,32 @@ export class ExecutionWorker {
       throw new ExecutionBlockedError("No pending UNKNOWN execution for this idempotency key", "OPS-008");
     }
     const status = record.provider_ref
-      ? await this.adapter.getStatus(record.provider_ref)
+      ? await this.adapter.getStatus(record.provider_ref, idempotencyKey)
       : this.adapter.getStatusByIdempotencyKey
         ? await this.adapter.getStatusByIdempotencyKey(idempotencyKey)
         : { status: "UNKNOWN" as const };
     if (status.status === "UNKNOWN") {
-      return record; // still unknown; caller may poll again later, never resubmit.
+      const unresolved = { ...record, provider_evidence: status };
+      this.executionLedger.set(idempotencyKey, unresolved);
+      await this.onDurableStateChange?.();
+      return unresolved; // still unknown; caller may poll again later, never resubmit.
     }
     const finalRecord = this.finalizeFromStatus(record, status, organizationId);
     this.executionLedger.set(idempotencyKey, finalRecord);
     await this.onDurableStateChange?.();
     return finalRecord;
+  }
+
+  /** Recover an interrupted durable SUBMITTING marker without crossing the
+   * provider boundary. A read-only status request must never re-enter execute. */
+  async recoverSubmittingByIdempotencyKey(idempotencyKey: string, organizationId: string): Promise<ExecutionRecord | undefined> {
+    const record = this.executionLedger.get(idempotencyKey);
+    if (!record || record.status !== "SUBMITTING") return record;
+    this.store.markUnknown(organizationId, record.obligation_id);
+    const recovered: ExecutionRecord = { ...record, status: "UNKNOWN", provider_evidence: null };
+    this.executionLedger.set(idempotencyKey, recovered);
+    await this.onDurableStateChange?.();
+    return recovered;
   }
 
   private finalizeFromStatus(
@@ -293,22 +310,22 @@ export class ExecutionWorker {
   ): ExecutionRecord {
     if (status.status === "PENDING" || status.status === "UNKNOWN") {
       this.store.markUnknown(organizationId, record.obligation_id);
-      return { ...record, status: "UNKNOWN" };
+      return { ...record, status: "UNKNOWN", provider_evidence: status };
     }
     if (status.status === "CONFIRMED") {
       // (11) One-to-one reconciliation: settlement amount/destination must
       // exactly match the authorized obligation before marking RECONCILED.
-      const amountMatches = status.atomicAmount === record.atomic_amount;
-      const destinationMatches = status.destinationAddress === record.destination_address;
+      const amountMatches = (status.atomic_amount ?? status.atomicAmount) === record.atomic_amount;
+      const destinationMatches = (status.destination_address ?? status.destinationAddress) === record.destination_address;
       if (!amountMatches || !destinationMatches) {
         this.store.markBlocked(organizationId, record.obligation_id, "settlement does not reconcile to authorized obligation");
-        return { ...record, status: "BLOCKED" };
+        return { ...record, status: "BLOCKED", provider_evidence: status };
       }
       this.store.markSettled(organizationId, record.obligation_id);
       this.store.markReconciled(organizationId, record.obligation_id);
-      return { ...record, status: "SETTLED" };
+      return { ...record, status: "SETTLED", provider_evidence: status };
     }
 
-    return { ...record, status: "FAILED" };
+    return { ...record, status: "FAILED", provider_evidence: status };
   }
 }

@@ -1,11 +1,14 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { createCircleArcJ2aExecutionClient } from "../j0d-spike/circle-arc-client";
 import {
+  deriveJ2aCircleIdempotencyUuid,
+  deriveJ2aCircleRefId,
   J2A_DEMO_DESTINATION,
   J2A_DEMO_SOURCE,
+  J2A_MAX_NETWORK_FEE,
   J2A_TRANSFER_AMOUNT,
+  j2aArcTestnetExplorerReference,
   runJ2aReadOnlyPreflight,
   type J2aPreflightResult,
 } from "../demo/real-testnet-payment";
@@ -41,14 +44,32 @@ export interface SubmitTransferResult {
 
 export interface StatusResult {
   status: ProviderStatusResult;
+  /** Existing generic adapters use camelCase; retained for compatibility. */
   destinationAddress?: string;
   atomicAmount?: string;
+  transaction_id?: string;
+  transaction_state?: string;
+  tx_hash?: string | null;
+  explorer_reference?: string | null;
+  wallet_id?: string;
+  source_address?: string;
+  destination_address?: string;
+  token_id?: string;
+  network?: string;
+  amounts?: string[];
+  atomic_amount?: string;
+  operation?: string;
+  ref_id?: string;
+  network_fee?: string | null;
+  provider_created_at?: string | null;
+  provider_updated_at?: string | null;
+  reconciled_at?: string;
 }
 
 export interface ProviderAdapter {
   readonly name: string;
   submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult>;
-  getStatus(providerRef: string): Promise<StatusResult>;
+  getStatus(providerRef: string, idempotencyKey?: string): Promise<StatusResult>;
   getStatusByIdempotencyKey?(idempotencyKey: string): Promise<StatusResult>;
 }
 
@@ -76,19 +97,13 @@ export interface J2aCircleClient {
   createTransaction(input: { amount: string[]; destinationAddress: string; tokenId: string; walletId: string; fee: { type: "level"; config: { feeLevel: "MEDIUM" } }; idempotencyKey: string; refId: string }): Promise<unknown>;
 }
 
-function circleIdempotencyUuid(key: string): string {
-  const bytes = createHash("sha256").update(`tameion-j2a-circle-idempotency:${key}`).digest().subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 const circleTransactionSchema = z.object({
   data: z.object({ transaction: z.object({
-    id: z.string().optional(), state: z.string().optional(), destinationAddress: z.string().optional(),
+    id: z.string().optional(), state: z.string().optional(), sourceAddress: z.string().optional(), destinationAddress: z.string().optional(),
     amounts: z.array(z.string()).optional(), tokenId: z.string().optional(), walletId: z.string().optional(),
     blockchain: z.string().optional(), refId: z.string().optional(), txHash: z.string().optional(),
+    operation: z.string().optional(), networkFee: z.union([z.string(), z.number()]).optional(),
+    createDate: z.string().optional(), updateDate: z.string().optional(),
   }).passthrough().optional() }).passthrough(),
 }).passthrough();
 const createdTransactionSchema = z.object({ data: z.object({ id: z.string() }).passthrough() }).passthrough();
@@ -97,25 +112,60 @@ const tokenBalancesSchema = z.object({ data: z.object({ tokenBalances: z.array(z
   token: z.object({ id: z.unknown(), symbol: z.unknown(), blockchain: z.unknown(), decimals: z.unknown(), isNative: z.unknown(), tokenAddress: z.unknown() }).passthrough(),
 }).passthrough()) }).passthrough() }).passthrough();
 
-function statusForCircleTransaction(value: unknown, tokenId: string): StatusResult {
+function statusForCircleTransaction(
+  value: unknown,
+  tokenId: string,
+  providerRef: string,
+  expectedIdempotencyKey?: string,
+): StatusResult {
   const parsed = circleTransactionSchema.safeParse(value);
   if (!parsed.success || !parsed.data.data.transaction) return { status: "UNKNOWN" };
   const tx = parsed.data.data.transaction;
-  if (["FAILED", "DENIED", "CANCELLED", "STUCK"].includes(tx.state ?? "")) return { status: "FAILED" };
-  if (tx.state !== "COMPLETE") return { status: "PENDING" };
-  if (tx.blockchain !== "ARC-TESTNET" || tx.walletId !== J2A_DEMO_SOURCE.id ||
-      tx.tokenId !== tokenId || tx.destinationAddress === undefined || !tx.amounts || tx.amounts.length !== 1) {
-    return { status: "UNKNOWN" };
-  }
+  const expectedRefId = expectedIdempotencyKey ? deriveJ2aCircleRefId(expectedIdempotencyKey) : undefined;
+  const fee = tx.networkFee === undefined ? undefined : String(tx.networkFee);
+  const reconciledAt = new Date().toISOString();
+  const evidence: Omit<StatusResult, "status"> = {
+    ...(tx.id === undefined ? {} : { transaction_id: tx.id }),
+    ...(tx.state === undefined ? {} : { transaction_state: tx.state }),
+    tx_hash: tx.txHash ?? null,
+    explorer_reference: j2aArcTestnetExplorerReference(tx.txHash),
+    ...(tx.walletId === undefined ? {} : { wallet_id: tx.walletId }),
+    ...(tx.sourceAddress === undefined ? {} : { source_address: tx.sourceAddress }),
+    ...(tx.destinationAddress === undefined ? {} : { destination_address: tx.destinationAddress }),
+    ...(tx.tokenId === undefined ? {} : { token_id: tx.tokenId }),
+    ...(tx.blockchain === undefined ? {} : { network: tx.blockchain }),
+    ...(tx.amounts === undefined ? {} : { amounts: tx.amounts }),
+    ...(tx.operation === undefined ? {} : { operation: tx.operation }),
+    ...(tx.refId === undefined ? {} : { ref_id: tx.refId }),
+    network_fee: fee ?? null,
+    provider_created_at: tx.createDate ?? null,
+    provider_updated_at: tx.updateDate ?? null,
+    reconciled_at: reconciledAt,
+  };
+  let atomicAmount: string | undefined;
   try {
-    return {
-      status: "CONFIRMED",
-      destinationAddress: tx.destinationAddress,
-      atomicAmount: decimalToAtomic(tx.amounts[0], USDC_DECIMALS),
-    };
+    if (tx.amounts?.length === 1) atomicAmount = decimalToAtomic(tx.amounts[0], USDC_DECIMALS);
   } catch {
-    return { status: "UNKNOWN" };
+    atomicAmount = undefined;
   }
+  if (atomicAmount !== undefined) evidence.atomic_amount = atomicAmount;
+
+  const exactIdentity = tx.id === providerRef && tx.blockchain === "ARC-TESTNET" &&
+    tx.walletId === J2A_DEMO_SOURCE.id && tx.destinationAddress?.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
+    tx.tokenId === tokenId && tx.amounts?.length === 1 && tx.amounts[0] === J2A_TRANSFER_AMOUNT &&
+    tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
+  if (!exactIdentity) return { status: "UNKNOWN", ...evidence };
+  if (["FAILED", "DENIED", "CANCELLED", "STUCK"].includes(tx.state ?? "")) return { status: "FAILED", ...evidence };
+  if (tx.state !== "COMPLETE") return { status: "PENDING", ...evidence };
+
+  try {
+    if (!fee) return { status: "UNKNOWN", ...evidence };
+    const feeAtomic = BigInt(decimalToAtomic(fee, USDC_DECIMALS));
+    if (feeAtomic > BigInt(decimalToAtomic(J2A_MAX_NETWORK_FEE, USDC_DECIMALS))) return { status: "UNKNOWN", ...evidence };
+  } catch {
+    return { status: "UNKNOWN", ...evidence };
+  }
+  return { status: "CONFIRMED", ...evidence };
 }
 
 export class ArcCircleProviderAdapter implements ProviderAdapter {
@@ -149,6 +199,10 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     }
     const authorized = this.authorizedPreflight?.();
     if (!authorized || authorized.readiness !== "READY" ||
+        preflight.wallet_set_id !== authorized.wallet_set_id ||
+        preflight.beneficiary_id !== authorized.beneficiary_id ||
+        preflight.source_wallet.wallet_set_id !== authorized.source_wallet.wallet_set_id ||
+        preflight.destination_wallet.wallet_set_id !== authorized.destination_wallet.wallet_set_id ||
         preflight.provider_token.id !== authorized.provider_token.id ||
         preflight.source_balance !== authorized.source_balance ||
         preflight.estimated_network_fee !== authorized.estimated_network_fee ||
@@ -161,15 +215,15 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
       tokenId: preflight.provider_token.id,
       walletId: J2A_DEMO_SOURCE.id,
       fee: { type: "level", config: { feeLevel: "MEDIUM" } },
-      idempotencyKey: circleIdempotencyUuid(params.idempotencyKey),
-      refId: params.idempotencyKey,
+      idempotencyKey: deriveJ2aCircleIdempotencyUuid(params.idempotencyKey),
+      refId: deriveJ2aCircleRefId(params.idempotencyKey),
     });
     const created = createdTransactionSchema.safeParse(response);
     if (!created.success) throw new Error("Circle createTransaction returned an invalid response.");
     return { providerRef: created.data.data.id, status: "SUBMITTED" };
   }
 
-  async getStatus(providerRef: string): Promise<StatusResult> {
+  async getStatus(providerRef: string, idempotencyKey?: string): Promise<StatusResult> {
     const client = this.client();
     const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: J2A_DEMO_SOURCE.id, includeAll: true }));
     if (!balances.success) return { status: "UNKNOWN" };
@@ -177,7 +231,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
       token.blockchain === "ARC-TESTNET" && token.decimals === 6 && token.isNative === true && token.tokenAddress === null &&
       typeof token.id === "string" && token.id.length > 0);
     if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string") return { status: "UNKNOWN" };
-    return statusForCircleTransaction(await client.getTransaction({ id: providerRef }), nativeUsdc[0].token.id);
+    return statusForCircleTransaction(await client.getTransaction({ id: providerRef }), nativeUsdc[0].token.id, providerRef, idempotencyKey);
   }
 
   async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
@@ -185,13 +239,13 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
       blockchain: "ARC-TESTNET", txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
     }));
     if (!response.success) return { status: "UNKNOWN" };
-    const found = response.data.data.transactions.find((value) => {
+    const found = response.data.data.transactions.filter((value) => {
       const item = z.object({ refId: z.unknown().optional() }).passthrough().safeParse(value);
-      return item.success && item.data.refId === idempotencyKey;
+      return item.success && item.data.refId === deriveJ2aCircleRefId(idempotencyKey);
     });
-    if (!found) return { status: "UNKNOWN" };
-    const transaction = z.object({ id: z.unknown().optional() }).passthrough().safeParse(found);
+    if (found.length !== 1) return { status: "UNKNOWN" };
+    const transaction = z.object({ id: z.unknown().optional() }).passthrough().safeParse(found[0]);
     if (!transaction.success || typeof transaction.data.id !== "string") return { status: "UNKNOWN" };
-    return this.getStatus(transaction.data.id);
+    return this.getStatus(transaction.data.id, idempotencyKey);
   }
 }

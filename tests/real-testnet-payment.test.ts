@@ -7,7 +7,12 @@ import {
   J2A_MAX_NETWORK_FEE,
   J2A_MAX_TOTAL_DEBIT,
   J2A_TRANSFER_AMOUNT,
+  buildJ2aExecutionPacket,
+  buildJ2aDemoObligation,
   buildJ2aDemoAggregate,
+  buildJ2aIntentIdentity,
+  hashJ2aPreflightEvidence,
+  hashJ2aExecutionPacket,
   runJ2aReadOnlyPreflight,
   type J2aPreflightClient,
 } from "../src/demo/real-testnet-payment";
@@ -66,6 +71,8 @@ describe("J2A real Arc Testnet demo preflight", () => {
       max_total_debit: J2A_MAX_TOTAL_DEBIT,
       source_wallet: { ...J2A_DEMO_SOURCE, state: "LIVE" },
       destination_wallet: { ...J2A_DEMO_DESTINATION, state: "LIVE" },
+      wallet_set_id: J2A_DEMO_WALLET_SET_ID,
+      beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
       provider_token: { id: "native-arc-usdc", symbol: "USDC", decimals: 6 },
       estimated_network_fee: "0.001000",
       captured_at: capturedAt,
@@ -161,5 +168,200 @@ describe("J2A real Arc Testnet demo preflight", () => {
       source_wallet_ref: J2A_DEMO_SOURCE.id,
       evidence_hashes: [ready.evidence_sha256],
     });
+    expect(ready.evidence_sha256).toBeTruthy();
+    expect(buildJ2aIntentIdentity(ready, aggregate)).toEqual({
+      payer: {
+        organization_id: "ORG-TAMEION-TESTNET-DEMO",
+        organization_name: "Tameion Testnet Demonstration Organization",
+        wallet_id: J2A_DEMO_SOURCE.id,
+        wallet_address: J2A_DEMO_SOURCE.address,
+        provider_wallet_status: "LIVE",
+        assurance_wallet_status: "ACTIVE",
+        wallet_version: 1,
+        wallet_set_id: J2A_DEMO_WALLET_SET_ID,
+        provider: "Circle Developer-Controlled Wallets",
+      },
+      beneficiary: {
+        beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
+        name: J2A_DEMO_DESTINATION.name,
+        wallet_id: J2A_DEMO_DESTINATION.id,
+        destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+        wallet_address: J2A_DEMO_DESTINATION.address,
+        provider_wallet_status: "LIVE",
+        verification_status: "VERIFIED",
+        verification_version: 1,
+        operational_status: "ACTIVE",
+        operational_version: 1,
+      },
+    });
+  });
+
+  it("uses an explicit synthetic invoice date equal to effective due date under the prototype cash-payment basis", async () => {
+    const ready = await runJ2aReadOnlyPreflight(client(), () => new Date(capturedAt));
+    expect(ready.readiness).toBe("READY");
+    if (ready.readiness !== "READY") throw new Error("expected ready preflight");
+
+    expect(buildJ2aDemoObligation(ready)).toMatchObject({
+      organization_id: "ORG-TAMEION-TESTNET-DEMO",
+      organization_name: "Tameion Testnet Demonstration Organization",
+      obligation_id: "DEMO-ARC-TESTNET-001",
+      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      invoice_date: "2026-10-04",
+      effective_due_date: "2026-10-04",
+      payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE",
+      source_evidence_id: "J2A-DEMO-OBLIGATION-SYNTHETIC-EVIDENCE-001",
+    });
+  });
+
+  it("binds payer and beneficiary identities into the exact Prime execution packet", async () => {
+    const preflight = await runJ2aReadOnlyPreflight(client(), () => new Date(capturedAt));
+    expect(preflight.readiness).toBe("READY");
+    if (preflight.readiness !== "READY") throw new Error("expected ready preflight");
+    const aggregate = buildJ2aDemoAggregate(preflight);
+    const packet = buildJ2aExecutionPacket({
+      preflight,
+      aggregate,
+      assessment: {
+        assessment_id: "ASM-J2A-1",
+        aggregate_version: String(aggregate.aggregate_version),
+        decision: "PAY",
+        provider_mode: "LIVE_AI",
+        provider_name: "NVIDIA Build",
+        model_id: "nvidia/nemotron-3-super-120b-a12b",
+        model_config_version: "test-config",
+      } as never,
+      assessmentHash: "a".repeat(64),
+      sealedPae: {
+        instruction_hash: "b".repeat(64),
+        payload: {
+          instruction_id: "PAE-J2A-1",
+          signing_key_id: "J2A-KEY-1",
+          aggregate_version: String(aggregate.aggregate_version),
+          expiry: "2026-10-04T13:00:00.000Z",
+          idempotency_key: "idem-j2a-1",
+        },
+      } as never,
+    });
+
+    expect(packet.packet).toMatchObject({
+      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      business_payment_instruction: {
+        payer: {
+          organization_id: "ORG-TAMEION-TESTNET-DEMO",
+          display_name: "Tameion Testnet Demonstration Organization",
+          business_postal_address: { status: "NOT_PROVIDED_IN_SOURCE" },
+          jurisdiction: { status: "NOT_PROVIDED_IN_SOURCE" },
+        },
+        beneficiary: {
+          beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
+          display_name: "Tameion Test Counterparty",
+          business_postal_address: {
+            status: "NOT_APPLICABLE_TEST_COUNTERPARTY",
+            statement: "No real postal address applies to the synthetic non-economic test counterparty.",
+            classification: "SYNTHETIC_DEMO_METADATA",
+          },
+        },
+        commercial: {
+          invoice_reference: "DEMO-ARC-TESTNET-001",
+          invoice_date: "2026-10-04",
+          effective_due_date: "2026-10-04",
+          payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE",
+          particulars: "Non-economic Arc Testnet demonstration to the synthetic test counterparty.",
+        },
+      },
+      circle_arc_execution_instruction: {
+        network: "ARC-TESTNET",
+        chain_id: 5042002,
+        gas_currency: "USDC",
+        amount: "5.000000",
+        decimals: 6,
+        max_network_fee: "0.002000",
+        max_total_debit: "5.012000",
+        circle_request: {
+          walletId: J2A_DEMO_SOURCE.id,
+          destinationAddress: J2A_DEMO_DESTINATION.address,
+          amount: ["5.000000"],
+          tokenId: "native-arc-usdc",
+          fee: { type: "level", config: { feeLevel: "MEDIUM" } },
+          idempotencyKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          refId: expect.stringMatching(/^j2a-[0-9a-f]{28}$/),
+        },
+      },
+      demo_obligation: {
+        invoice_date: "2026-10-04",
+        effective_due_date: "2026-10-04",
+        payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE",
+      },
+      payer: {
+        organization_id: "ORG-TAMEION-TESTNET-DEMO",
+        wallet_id: J2A_DEMO_SOURCE.id,
+        wallet_address: J2A_DEMO_SOURCE.address,
+        wallet_version: 1,
+        wallet_set_id: J2A_DEMO_WALLET_SET_ID,
+      },
+      beneficiary: {
+        beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
+        wallet_id: J2A_DEMO_DESTINATION.id,
+        destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+        wallet_address: J2A_DEMO_DESTINATION.address,
+        verification_status: "VERIFIED",
+        operational_status: "ACTIVE",
+      },
+      settlement_amount: J2A_TRANSFER_AMOUNT,
+      asset: "USDC",
+      network: "ARC_TESTNET",
+    });
+    expect(packet.packet_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashJ2aPreflightEvidence(preflight as unknown as Record<string, unknown>)).toBe(preflight.evidence_sha256);
+
+    const changedBusinessIdentity = {
+      ...preflight,
+      business_payment_instruction: {
+        ...preflight.business_payment_instruction,
+        beneficiary: {
+          ...preflight.business_payment_instruction.beneficiary,
+          display_name: "Changed test identity",
+        },
+      },
+    };
+    const changedPreflight = {
+      ...changedBusinessIdentity,
+      evidence_sha256: hashJ2aPreflightEvidence(changedBusinessIdentity as unknown as Record<string, unknown>),
+    };
+    const changedPacket = buildJ2aExecutionPacket({
+      preflight: changedPreflight,
+      aggregate,
+      assessment: {
+        assessment_id: "ASM-J2A-1",
+        aggregate_version: String(aggregate.aggregate_version),
+        decision: "PAY",
+        provider_mode: "LIVE_AI",
+        provider_name: "NVIDIA Build",
+        model_id: "nvidia/nemotron-3-super-120b-a12b",
+        model_config_version: "test-config",
+      } as never,
+      assessmentHash: "a".repeat(64),
+      sealedPae: {
+        instruction_hash: "b".repeat(64),
+        payload: {
+          instruction_id: "PAE-J2A-1", signing_key_id: "J2A-KEY-1",
+          aggregate_version: String(aggregate.aggregate_version), expiry: "2026-10-04T13:00:00.000Z",
+          idempotency_key: "idem-j2a-1",
+        },
+      } as never,
+    });
+    expect(changedPacket.packet_sha256).not.toBe(packet.packet_sha256);
+    expect(changedPreflight.evidence_sha256).not.toBe(preflight.evidence_sha256);
+
+    const changedPayerInstruction = {
+      ...preflight.business_payment_instruction,
+      payer: { ...preflight.business_payment_instruction.payer, display_name: "Changed payer identity" },
+    };
+    expect(hashJ2aPreflightEvidence({ ...preflight, business_payment_instruction: changedPayerInstruction } as unknown as Record<string, unknown>))
+      .not.toBe(preflight.evidence_sha256);
+    expect(hashJ2aExecutionPacket({
+      ...packet.packet,
+      business_payment_instruction: { ...packet.packet.business_payment_instruction, payer: changedPayerInstruction.payer },
+    })).not.toBe(packet.packet_sha256);
   });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { J2A_DEMO_OBLIGATION_ID, J2A_DEMO_ORGANIZATION_ID, buildJ2aExecutionPacket } from "../../../../../../src/demo/real-testnet-payment";
+import { J2A_DEMO_OBLIGATION_ID, J2A_DEMO_ORGANIZATION_ID, buildJ2aDemoObligation, buildJ2aExecutionPacket, buildJ2aIntentIdentity } from "../../../../../../src/demo/real-testnet-payment";
 import { getJ2aRealTestnetDemoState } from "../../../../../../src/server/demo-state";
 import { verifySealedPae } from "../../../../../../src/pae/sign-verify";
 
@@ -24,8 +24,10 @@ export async function GET() {
         verifySealedPae(sealedPae);
         execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
         if (execution?.status === "SUBMITTING") {
-          await state.worker.execute(sealedPae);
-          execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
+          execution = await state.worker.recoverSubmittingByIdempotencyKey(
+            sealedPae.payload.idempotency_key,
+            J2A_DEMO_ORGANIZATION_ID,
+          ) ?? null;
         }
         if (execution?.status === "UNKNOWN") {
           const before = execution.status;
@@ -79,6 +81,8 @@ export async function GET() {
     settlement_amount: "5.000000",
     asset: "USDC",
     network: "ARC_TESTNET",
+    demo_obligation: preflight?.readiness === "READY" ? buildJ2aDemoObligation(preflight) : null,
+    intent_identity: preflight?.readiness === "READY" && aggregate ? buildJ2aIntentIdentity(preflight, aggregate) : null,
     lifecycle,
     preflight,
     aggregate_version: aggregate?.aggregate_version ?? null,

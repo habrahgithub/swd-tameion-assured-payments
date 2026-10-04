@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
 import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import type { StatusResult } from "../execution/provider-adapter";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import { ArcCircleProviderAdapter } from "../execution/provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
@@ -289,6 +290,25 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
 function parseExecutionRecord(value: unknown): ExecutionRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted execution record.");
   const record = value as Record<string, unknown>;
+  const providerEvidence = record.provider_evidence;
+  if (providerEvidence !== undefined && providerEvidence !== null) {
+    if (!providerEvidence || typeof providerEvidence !== "object" || Array.isArray(providerEvidence)) {
+      throw new Error("Malformed persisted provider reconciliation evidence.");
+    }
+    const evidence = providerEvidence as Record<string, unknown>;
+    if (!(["PENDING", "CONFIRMED", "FAILED", "UNKNOWN"] as unknown[]).includes(evidence.status)) {
+      throw new Error("Malformed persisted provider reconciliation status.");
+    }
+    for (const key of ["transaction_id", "transaction_state", "wallet_id", "source_address", "destination_address", "token_id", "network", "atomic_amount", "operation", "ref_id", "reconciled_at"]) {
+      if (evidence[key] !== undefined && typeof evidence[key] !== "string") throw new Error("Malformed persisted provider reconciliation field.");
+    }
+    for (const key of ["tx_hash", "explorer_reference", "network_fee", "provider_created_at", "provider_updated_at"]) {
+      if (evidence[key] !== undefined && evidence[key] !== null && typeof evidence[key] !== "string") throw new Error("Malformed persisted provider reconciliation field.");
+    }
+    if (evidence.amounts !== undefined && (!Array.isArray(evidence.amounts) || evidence.amounts.some((amount) => typeof amount !== "string"))) {
+      throw new Error("Malformed persisted provider reconciliation amounts.");
+    }
+  }
   if (
     typeof record.obligation_id !== "string" || typeof record.idempotency_key !== "string" ||
     record.idempotency_key.length === 0 ||
@@ -296,7 +316,7 @@ function parseExecutionRecord(value: unknown): ExecutionRecord {
     !["SUBMITTING", "SETTLED", "FAILED", "UNKNOWN", "BLOCKED"].includes(String(record.status)) ||
     typeof record.atomic_amount !== "string" || typeof record.destination_address !== "string"
   ) throw new Error("Malformed persisted execution record.");
-  return record as unknown as ExecutionRecord;
+  return record as unknown as ExecutionRecord & { provider_evidence?: StatusResult | null };
 }
 
 function loadLiveUsageSet(): LiveUsageObligationRecord[] {

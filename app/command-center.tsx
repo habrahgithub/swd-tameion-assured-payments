@@ -441,6 +441,32 @@ interface J2aDemoStatus {
   settlement_amount: string;
   asset: string;
   network: string;
+  demo_obligation: { invoice_date: string; effective_due_date: string; payment_basis: string } | null;
+  intent_identity: {
+    payer: {
+      organization_id: string;
+      organization_name: string;
+      wallet_id: string;
+      wallet_address: string;
+      provider_wallet_status: string;
+      assurance_wallet_status: string;
+      wallet_version: number;
+      wallet_set_id: string;
+      provider: string;
+    };
+    beneficiary: {
+      beneficiary_id: string;
+      name: string;
+      wallet_id: string;
+      destination_ref: string;
+      wallet_address: string;
+      provider_wallet_status: string;
+      verification_status: string;
+      verification_version: number;
+      operational_status: string;
+      operational_version: number;
+    };
+  } | null;
   lifecycle: Array<{ stage: string; status: string }>;
   preflight: {
     readiness: string;
@@ -454,6 +480,11 @@ interface J2aDemoStatus {
     max_network_fee?: string;
     max_total_debit?: string;
     evidence_sha256?: string;
+    business_payment_instruction?: {
+      payer: { business_postal_address: { status: string; statement: string }; jurisdiction: { status: string; statement: string } };
+      beneficiary: { business_postal_address: { status: string; statement: string }; jurisdiction: { status: string; statement: string } };
+      commercial: { particulars: string; invoice_reference: string };
+    };
   } | null;
   aggregate_version: number | null;
   current_assessment: {
@@ -469,9 +500,30 @@ interface J2aDemoStatus {
   } | null;
   authorization: { approval_id: string; assurance_result: string; pae_instruction_hash: string; pae_expiry: string } | null;
   authorization_current?: boolean;
-  execution: { status: string; provider_ref: string | null } | null;
+  execution: {
+    status: string;
+    provider_ref: string | null;
+    provider_evidence?: {
+      transaction_id?: string;
+      transaction_state?: string;
+      tx_hash?: string | null;
+      explorer_reference?: string | null;
+      wallet_id?: string;
+      source_address?: string;
+      destination_address?: string;
+      token_id?: string;
+      network?: string;
+      amounts?: string[];
+      operation?: string;
+      ref_id?: string;
+      network_fee?: string | null;
+      provider_created_at?: string | null;
+      provider_updated_at?: string | null;
+      reconciled_at?: string;
+    } | null;
+  } | null;
   execution_gate: string;
-  execution_packet: { packet_sha256: string; [key: string]: unknown } | null;
+  execution_packet: { packet_sha256: string; packet?: { circle_arc_execution_instruction?: Record<string, unknown> }; [key: string]: unknown } | null;
 }
 
 const J2A_CLASSIFICATION = "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT";
@@ -564,6 +616,9 @@ export function RealTestnetDemoPanel() {
         <Field label="Demo obligation" value={status?.obligation_id ?? "DEMO-ARC-TESTNET-001"} />
         <Field label="Source amount" value={`${status?.source_amount ?? "5.00"} USD`} />
         <Field label="Settlement target" value={`${status?.settlement_amount ?? "5.000000"} ${status?.asset ?? "USDC"} · ${status?.network ?? "ARC_TESTNET"}`} />
+        <Field label="Invoice date" value={status?.demo_obligation?.invoice_date ?? "Pending demo preflight"} />
+        <Field label="Effective due date" value={status?.demo_obligation?.effective_due_date ?? "Pending demo preflight"} />
+        <Field label="Payment basis" value={status?.demo_obligation?.payment_basis ?? "Prototype cash-payment / due-on-invoice-date rule"} />
       </dl>
 
       <ol aria-label="Five-stage testnet lifecycle" className="grid grid-cols-1 gap-2 sm:grid-cols-5">
@@ -586,6 +641,7 @@ export function RealTestnetDemoPanel() {
           <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
             <Field label="Aggregate version" value={String(status.aggregate_version ?? "Unavailable")} />
             <Field label="Network / asset / amount" value="ARC_TESTNET · native USDC · 5.000000 USDC" />
+            <Field label="Circle / Arc network, chain, gas" value="ARC-TESTNET · chain ID 5042002 · USDC gas" />
             <Field label="Source wallet" value={`${status.preflight.source_wallet?.id ?? "Unavailable"} · ${status.preflight.source_wallet?.address ?? "Unavailable"}`} />
             <Field label="Test counterparty wallet" value={`${status.preflight.destination_wallet?.name ?? "Tameion Test Counterparty"} · ${status.preflight.destination_wallet?.id ?? "Unavailable"} · ${status.preflight.destination_wallet?.address ?? "Unavailable"}`} />
             <Field label="Circle provider token" value={`${status.preflight.provider_token?.id ?? "Unavailable"} · ${status.preflight.provider_token?.symbol ?? "USDC"} (${status.preflight.provider_token?.decimals ?? 6} decimals${status.preflight.provider_token?.native ? ", native" : ""})`} />
@@ -595,6 +651,46 @@ export function RealTestnetDemoPanel() {
             <Field label="Preflight captured at" value={status.preflight.captured_at ?? "Unavailable"} />
             <Field label="Preflight evidence SHA-256" value={status.preflight.evidence_sha256 ?? "Unavailable"} />
           </dl>
+        </section>
+      )}
+
+      {status?.intent_identity && (
+        <section aria-label="Payer and beneficiary identity binding" className="grid grid-cols-1 gap-3 rounded border border-[var(--color-border)] p-3 sm:grid-cols-2">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payer</p>
+            <dl>
+              <Field label="Organization" value={`${status.intent_identity.payer.organization_name} · ${status.intent_identity.payer.organization_id}`} />
+              <Field label="Wallet ID / address" value={`${status.intent_identity.payer.wallet_id} · ${status.intent_identity.payer.wallet_address}`} />
+              <Field label="Provider / wallet set" value={`${status.intent_identity.payer.provider} · ${status.intent_identity.payer.wallet_set_id}`} />
+              <Field label="Provider status / assurance status / version" value={`${status.intent_identity.payer.provider_wallet_status} / ${status.intent_identity.payer.assurance_wallet_status} / ${status.intent_identity.payer.wallet_version}`} />
+              <Field label="Payer business/postal address" value={status.preflight?.business_payment_instruction?.payer.business_postal_address.statement ?? "Unavailable in source evidence"} />
+              <Field label="Payer jurisdiction" value={status.preflight?.business_payment_instruction?.payer.jurisdiction.statement ?? "Unavailable in source evidence"} />
+            </dl>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Beneficiary — controlled test counterparty</p>
+            <dl>
+              <Field label="Beneficiary ID / name" value={`${status.intent_identity.beneficiary.beneficiary_id} · ${status.intent_identity.beneficiary.name}`} />
+              <Field label="Wallet ID / destination ref" value={`${status.intent_identity.beneficiary.wallet_id} · ${status.intent_identity.beneficiary.destination_ref}`} />
+              <Field label="Wallet address / provider status" value={`${status.intent_identity.beneficiary.wallet_address} · ${status.intent_identity.beneficiary.provider_wallet_status}`} />
+              <Field label="Verification status / version" value={`${status.intent_identity.beneficiary.verification_status} / ${status.intent_identity.beneficiary.verification_version}`} />
+              <Field label="Operational status / version" value={`${status.intent_identity.beneficiary.operational_status} / ${status.intent_identity.beneficiary.operational_version}`} />
+              <Field label="Beneficiary business/postal address" value={status.preflight?.business_payment_instruction?.beneficiary.business_postal_address.statement ?? "Unavailable"} />
+              <Field label="Beneficiary jurisdiction" value={status.preflight?.business_payment_instruction?.beneficiary.jurisdiction.statement ?? "Unavailable"} />
+            </dl>
+          </div>
+        </section>
+      )}
+
+      {status?.preflight?.readiness === "READY" && status.preflight.business_payment_instruction && (
+        <section aria-label="Business payment instruction" className="space-y-1 rounded border border-[var(--color-border)] px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Off-chain business payment instruction</p>
+          <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
+            <Field label="Invoice/reference" value={status.preflight.business_payment_instruction.commercial.invoice_reference} />
+            <Field label="Particulars" value={status.preflight.business_payment_instruction.commercial.particulars} />
+            <Field label="Beneficiary address classification" value="Synthetic test counterparty — no real postal address applies" />
+          </dl>
+          <p className="text-[11px] text-[var(--color-ink-muted)]">Beneficiary legal identity and postal-address classification are retained in Tameion’s business instruction. They are not sent to Circle; Circle receives only its supported wallet/token transfer fields.</p>
         </section>
       )}
 
@@ -638,8 +734,26 @@ export function RealTestnetDemoPanel() {
         <div className="space-y-1 text-[12px]">
           <p className="font-semibold">{status.authorization_current ? "Current assurance" : "Historical authorization is stale"}: {status.authorization.assurance_result} · PAE {status.authorization.pae_instruction_hash}</p>
           {status.execution_packet && <p className="break-all text-[11px] text-[var(--color-ink-muted)]">Exact execution packet SHA-256: {status.execution_packet.packet_sha256}</p>}
+          {status.execution_packet?.packet?.circle_arc_execution_instruction && <EvidencePanel value={status.execution_packet.packet.circle_arc_execution_instruction} />}
           <p className="text-[11px] text-[var(--color-ink-muted)]">Execution requires separate Prime authorization of this exact packet after independent review.</p>
         </div>
+      )}
+
+      {status?.execution?.provider_evidence && (
+        <section aria-label="Circle reconciliation evidence" className="rounded border border-[var(--color-border)] px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Observed Circle reconciliation evidence</p>
+          <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
+            <Field label="Circle transaction / state" value={`${status.execution.provider_evidence.transaction_id ?? status.execution.provider_ref ?? "Unavailable"} / ${status.execution.provider_evidence.transaction_state ?? status.execution.status}`} />
+            <Field label="Wallet / token / network / operation" value={`${status.execution.provider_evidence.wallet_id ?? "Unavailable"} / ${status.execution.provider_evidence.token_id ?? "Unavailable"} / ${status.execution.provider_evidence.network ?? "Unavailable"} / ${status.execution.provider_evidence.operation ?? "Not returned"}`} />
+            <Field label="Observed source / destination" value={`${status.execution.provider_evidence.source_address ?? "Not returned"} / ${status.execution.provider_evidence.destination_address ?? "Not returned"}`} />
+            <Field label="Observed amount(s) / privacy-safe refId" value={`${status.execution.provider_evidence.amounts?.join(", ") ?? "Not returned"} / ${status.execution.provider_evidence.ref_id ?? "Not returned"}`} />
+            <Field label="Observed transaction hash" value={status.execution.provider_evidence.tx_hash ?? "Not returned by Circle"} />
+            {status.execution.provider_evidence.explorer_reference && <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5"><dt className="text-[13px] text-[var(--color-ink-muted)]">Arc Testnet explorer</dt><dd className="text-[13px] font-medium"><a href={status.execution.provider_evidence.explorer_reference} target="_blank" rel="noreferrer">Open observed transaction</a></dd></div>}
+            <Field label="Observed network fee" value={status.execution.provider_evidence.network_fee ?? "Not returned by Circle"} />
+            <Field label="Provider create / update timestamps" value={`${status.execution.provider_evidence.provider_created_at ?? "Not returned"} / ${status.execution.provider_evidence.provider_updated_at ?? "Not returned"}`} />
+            <Field label="Tameion reconciliation observed at" value={status.execution.provider_evidence.reconciled_at ?? "Unavailable"} />
+          </dl>
+        </section>
       )}
 
       <div className="flex flex-wrap items-end gap-2">
