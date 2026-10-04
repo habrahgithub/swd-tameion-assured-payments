@@ -204,12 +204,16 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("button", { name: /OBL-B/ });
     selectReport();
     expect(await screen.findByText(/Selected obligation detail is loading/)).toBeTruthy();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
     fireEvent.click(screen.getByRole("button", { name: /OBL-B/ }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-B"));
     secondDetail.resolve(response(detail("OBL-B")));
-    expect(await screen.findByRole("region", { name: "Operational report for OBL-B" })).toBeTruthy();
+    const reportForB = await screen.findByRole("region", { name: "Operational report for OBL-B" });
+    expect(reportForB.textContent).toContain("RECORD-OBL-B");
+    expect(reportForB.textContent).not.toContain("RECORD-OBL-A");
     firstDetail.resolve(response(detail("OBL-A")));
-    await waitFor(() => expect(screen.getByRole("region", { name: "Operational report for OBL-B" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("region", { name: "Operational report for OBL-B" }).textContent).toContain("RECORD-OBL-B"));
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Operational report for OBL-B" }).textContent).not.toContain("RECORD-OBL-A");
   });
 });

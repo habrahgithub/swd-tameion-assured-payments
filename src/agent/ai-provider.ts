@@ -100,9 +100,9 @@ export class NvidiaProvider implements AiProvider {
 
     let response: Response | undefined;
     for (let attempt = 1; attempt <= NVIDIA_RUNTIME_CONFIG.max_transport_attempts; attempt += 1) {
-      const signal = options.signal
-        ? AbortSignal.any([AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS), options.signal])
-        : AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS);
+      if (options.signal?.aborted) throw new AiProviderError("NVIDIA request cancelled");
+      const timeoutSignal = AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS);
+      const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
       try {
         response = await fetch(`${NVIDIA_RUNTIME_CONFIG.endpoint}${NVIDIA_RUNTIME_CONFIG.request_path}`, {
           method: NVIDIA_RUNTIME_CONFIG.method,
@@ -124,9 +124,16 @@ export class NvidiaProvider implements AiProvider {
             ],
           }),
         });
+        if (options.signal?.aborted) throw new AiProviderError("NVIDIA request cancelled");
       } catch (error) {
-        if (signal.aborted) {
-          throw new AiProviderError(options.signal?.aborted ? "NVIDIA request cancelled" : "NVIDIA request timed out");
+        if (options.signal?.aborted) {
+          throw new AiProviderError("NVIDIA request cancelled");
+        }
+        if (timeoutSignal.aborted) {
+          if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
+            throw new AiProviderError("NVIDIA request timed out");
+          }
+          continue;
         }
         if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
           throw new AiProviderError(error instanceof Error ? `NVIDIA transport failed: ${error.message}` : "NVIDIA transport failed");

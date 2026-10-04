@@ -372,6 +372,29 @@ describeEval("synthetic evaluation grades model usefulness and deterministic saf
 });
 
 describeEval("one orchestrator deadline for the full batch; each case gets only the remaining budget", () => {
+  itEval("starts no later case when the first case completes exactly at the batch deadline", async () => {
+    const now = vi.fn()
+      .mockReturnValueOnce(0)   // batch start
+      .mockReturnValueOnce(0)   // first case receives the full budget
+      .mockReturnValueOnce(25); // exact deadline before the next case
+    const provider = fakeProvider((ctx) => ({
+      obligation_id: ctx.obligation_id,
+      decision: "PAY",
+      finding_codes: [],
+      evidence_ids: ctx.evidence_ids,
+      uncertainty_signal: false,
+      explanation: "synthetic boundary fixture",
+    }));
+
+    const result = await runSyntheticEvaluation(provider, { now, budgetMs: 25 });
+
+    expectEval(result).toMatchObject({ status: "INCOMPLETE", reason: "DEADLINE" });
+    if (result.status !== "INCOMPLETE") return;
+    expectEval(result.outcomes.map((outcome) => outcome.case_id)).toEqual(["POSITIVE_COMPLETE"]);
+    expectEval(provider.calls).toBe(1);
+    expectEval(now).toHaveBeenCalledTimes(3);
+  });
+
   itEval("returns a typed INCOMPLETE result with partial evidence when a case outlives the remaining budget", async () => {
     let calls = 0;
     const provider = fakeProvider((ctx) => {

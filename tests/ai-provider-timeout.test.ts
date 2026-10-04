@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CARE_PROMPT_SHA256, CARE_PROMPT_VERSION, CARE_SYSTEM_PROMPT, NvidiaProvider } from "../src/agent/ai-provider";
+import { runSyntheticEvaluation } from "../src/agent/j1d-capability-smoke";
 import type { FinanceAgentContext } from "../src/agent/schema";
 
 const originalFetch = globalThis.fetch;
@@ -30,6 +31,8 @@ const context: FinanceAgentContext = {
 describe("NVIDIA assessment timeout", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     if (originalApiKey === undefined) delete process.env.NVIDIA_API_KEY;
     else process.env.NVIDIA_API_KEY = originalApiKey;
   });
@@ -115,6 +118,36 @@ describe("NVIDIA assessment timeout", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a per-attempt transport timeout within the existing attempt limit", async () => {
+    process.env.NVIDIA_API_KEY = "test-only-key";
+    vi.useFakeTimers();
+    const timeoutSignals: AbortSignal[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((delay) => {
+      const controller = new AbortController();
+      timeoutSignals.push(controller.signal);
+      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), delay);
+      return controller.signal;
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length > 1) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+      }
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Timed out", "TimeoutError")), { once: true });
+      });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const pending = new NvidiaProvider().assess(context);
+    await vi.advanceTimersByTimeAsync(NvidiaProvider.REQUEST_TIMEOUT_MS);
+    await expect(pending).resolves.toEqual({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(timeoutSignals).toHaveLength(2);
+    expect(timeoutSignals[0].aborted).toBe(true);
+    expect(timeoutSignals[1].aborted).toBe(false);
+  });
+
   it("propagates batch cancellation to the transport and does not retry it", async () => {
     process.env.NVIDIA_API_KEY = "test-only-key";
     const controller = new AbortController();
@@ -132,6 +165,23 @@ describe("NVIDIA assessment timeout", () => {
 
     await expect(pending).rejects.toThrow(/cancel/i);
     expect(transportSignal?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates the batch deadline through NVIDIA transport without retrying or starting another case", async () => {
+    process.env.NVIDIA_API_KEY = "test-only-key";
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => new AbortController().signal);
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const pending = runSyntheticEvaluation(new NvidiaProvider(), { budgetMs: 20 });
+    await vi.advanceTimersByTimeAsync(20);
+    const result = await pending;
+
+    expect(result).toMatchObject({ status: "INCOMPLETE", reason: "DEADLINE", outcomes: [] });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
