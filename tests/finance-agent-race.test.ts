@@ -91,6 +91,7 @@ describe("#17 CARE and RACE grounding", () => {
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
     const context = trustedTestContext(record("OBL-CARE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
+    expect(result.race.action_taken.checks.join(" ")).not.toMatch(/destination readiness/i);
     expect(raceAssessmentSchema.safeParse(result.race).success).toBe(true);
     expect(raceAssessmentSchema.safeParse({
       ...result.race,

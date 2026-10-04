@@ -158,7 +158,7 @@ function normalize(
       checks: [
         "Supplied evidence identifiers were checked against the obligation context.",
         "Due-date source status and currentness were derived from the application context.",
-        "Business-purpose confirmation and destination readiness were checked as application-owned facts.",
+        "Business-purpose confirmation was checked as an application-owned obligation fact.",
       ],
     },
     caveats: {

@@ -1,4 +1,4 @@
-import type { FinanceAgentContext } from "./schema";
+import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 
 /** Shape of one record in data/live-usage/LIVE_USAGE_SET.json (J0-C). */
 export interface LiveUsageObligationRecord {
@@ -71,6 +71,17 @@ export function buildFinanceAgentContext(
     destination_readiness_source: currentReadiness?.source ?? "IMMUTABLE_SOURCE_EVIDENCE",
     due_date_position: dueDatePosition,
   };
+}
+
+/** Projects obligation-assessment facts for model input without exposing payment-route state. */
+export function toFinanceAgentModelContext(context: FinanceAgentContext): FinanceAgentModelContext {
+  const {
+    destination_ready: _destinationReady,
+    destination_status: _destinationStatus,
+    destination_readiness_source: _destinationReadinessSource,
+    ...modelContext
+  } = context;
+  return modelContext;
 }
 
 function isCalendarDate(value: string): boolean {

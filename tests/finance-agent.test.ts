@@ -189,6 +189,19 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     expect(decision.race.remediation.map((item) => item.finding_code)).not.toContain("DESTINATION_NOT_READY");
   });
 
+  it("does not let the deterministic fallback HOLD solely because payment-route readiness is absent", async () => {
+    const context = buildFinanceAgentContext(record({
+      candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" },
+    }));
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.destination_ready).toBe(false);
+    expect(context.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.evidence.authoritative_facts.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.race.evidence.authoritative_facts.destination_readiness_source).toBe("IMMUTABLE_SOURCE_EVIDENCE");
+  });
+
   it("blocks unsupported settlement currencies (e.g. EUR) via the currency blocker outside model prose", async () => {
     for (const currency of ["EUR", "GBP"]) {
       const context = trustedTestContext(record({ currency }));

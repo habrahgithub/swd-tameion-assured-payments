@@ -63,6 +63,20 @@ describe("NVIDIA assessment timeout", () => {
       reasoning_effort: "high",
       stream: false,
     });
+    const userMessage = (request.messages as Array<{ role: string; content: string }>).find((message) => message.role === "user");
+    expect(userMessage).toBeDefined();
+    const modelContext = JSON.parse(userMessage!.content) as Record<string, unknown>;
+    expect(modelContext).toMatchObject({
+      obligation_id: context.obligation_id,
+      amount: context.amount,
+      currency: context.currency,
+      due_date: context.due_date,
+      commercial_terms: context.commercial_terms,
+      evidence_ids: context.evidence_ids,
+    });
+    expect(modelContext).not.toHaveProperty("destination_ready");
+    expect(modelContext).not.toHaveProperty("destination_status");
+    expect(modelContext).not.toHaveProperty("destination_readiness_source");
     expect(request).not.toHaveProperty("max_output_tokens");
     expect(request).not.toHaveProperty("max_completion_tokens");
     expect(provider.promptIdentity).toEqual({ version: CARE_PROMPT_VERSION, sha256: CARE_PROMPT_SHA256 });
@@ -73,6 +87,12 @@ describe("NVIDIA assessment timeout", () => {
     });
     expect(provider.runtimeIdentity?.runtime_config_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(provider.runtimeIdentity).toEqual(new NvidiaProvider().runtimeIdentity);
+  });
+
+  it("keeps payment-route readiness out of the CARE assessment instructions", () => {
+    expect(CARE_SYSTEM_PROMPT).toMatch(/payment-route\s+readiness is outside obligation assessment/i);
+    expect(CARE_SYSTEM_PROMPT).toContain("Assurance & Authorization");
+    expect(CARE_SYSTEM_PROMPT).not.toMatch(/readiness facts|policy\/readiness facts/i);
   });
 
   it("retries one 5xx response and records a deterministic runtime config identity", async () => {

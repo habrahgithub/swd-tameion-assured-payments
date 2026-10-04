@@ -186,3 +186,9 @@ export const financeAgentContextSchema = z
   .strict();
 
 export type FinanceAgentContext = z.infer<typeof financeAgentContextSchema>;
+
+/** Finance Agent model input excludes payment-route facts, which belong to Assurance & Authorization. */
+export type FinanceAgentModelContext = Omit<
+  FinanceAgentContext,
+  "destination_ready" | "destination_status" | "destination_readiness_source"
+>;

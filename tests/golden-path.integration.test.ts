@@ -40,8 +40,8 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       liveUsageSet.records.map((record) => assessObligation(buildFinanceAgentContext(record), provider)),
     );
 
-    // (14) none of the 5 genuine obligations may be defaulted to PAY without
-    // complete evidence + a known due date + a ready destination.
+    // Obligation assessment cannot default to PAY without complete evidence
+    // and a known due date. Payment-route assurance is evaluated separately.
     for (const decision of decisions) {
       if (decision.decision === "PAY") {
         expect(decision.missing_evidence).toHaveLength(0);
@@ -51,15 +51,14 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.due_date]));
     const selection = selectSoleCandidate(decisions, dueDates);
 
-    // This unit-level path intentionally uses only the immutable J0-C source
-    // snapshot, whose historical destination field remains pending. The live
-    // assessment route separately supplies the current aggregate overlay.
-    expect(selection.selected_obligation_id).toBeNull();
+    // The immutable J0-C source snapshot has pending historical destination
+    // readiness, which does not suppress an otherwise eligible assessment.
+    expect(selection.selected_obligation_id).toBe("OBL-J0C-005");
 
     // Prove the rest of the pipeline (approval -> Safety Kernel -> PAE ->
     // execution -> reconciliation) against a clearly test-only fixture with
     // current product-trust provenance set explicitly for this valid path.
-    const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === "OBL-J0C-003")!;
+    const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === selection.selected_obligation_id)!;
     const [wholePart, fractionalPart] = candidateRecord.amount.split(".");
     const sixDpAmount = `${wholePart}.${fractionalPart.padEnd(6, "0")}`;
 
