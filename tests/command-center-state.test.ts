@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RaceAssessment } from "../src/agent/schema";
-import { assessmentNextAction, buildAssessmentTrace, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay, type AssessmentTraceStep } from "../src/client/command-center-state";
+import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay, type AssessmentTraceStep } from "../src/client/command-center-state";
 
 import {
   aggregateVersionLabel,
@@ -34,6 +34,15 @@ describe("Command Center fetch error presentation", () => {
 
   it("surfaces a server-supplied error string when the body is valid JSON", () => {
     expect(obligationsFetchErrorMessage(400, { error: "Malformed request." })).toBe("Malformed request.");
+  });
+});
+
+describe("Command Center selected-detail identity contract", () => {
+  it("accepts only a detail record whose explicit obligation identity matches the selection", () => {
+    expect(hasExpectedObligationIdentity({ record: { obligation_id: "OBL-A" } }, "OBL-A")).toBe(true);
+    expect(hasExpectedObligationIdentity({ record: { obligation_id: "OBL-B" } }, "OBL-A")).toBe(false);
+    expect(hasExpectedObligationIdentity({ record: {} }, "OBL-A")).toBe(false);
+    expect(hasExpectedObligationIdentity({ record: null }, "OBL-A")).toBe(false);
   });
 });
 
@@ -85,6 +94,12 @@ describe("Command Center kill-switch presentation", () => {
     expect(killSwitchPresentation("loaded", true)).toBe("engaged");
     expect(killSwitchLabel("engaged")).toBe("Execution disabled");
   });
+
+  it("does not present the retained kill-switch value as current when selected detail is stale", () => {
+    expect(killSwitchPresentation("stale", false)).toBe("stale");
+    expect(killSwitchLabel("stale")).toContain("stale");
+    expect(killSwitchLabel("stale")).toContain("retry");
+  });
 });
 
 describe("Command Center aggregate version label", () => {
@@ -124,6 +139,8 @@ describe("Command Center operational report availability", () => {
     expect(operationalReportDetailPrompt("none")).toContain("Select an obligation");
     expect(operationalReportDetailPrompt("loading")).toContain("loading");
     expect(operationalReportDetailPrompt("failed")).toContain("unavailable");
+    expect(operationalReportDetailPrompt("stale")).toContain("stale");
+    expect(reconciliationLeadLine("stale", { status: "SUBMITTED" })).toContain("Last-known");
   });
 });
 

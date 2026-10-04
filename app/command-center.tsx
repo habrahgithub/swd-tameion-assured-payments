@@ -10,7 +10,7 @@ import {
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
 import { assessmentKeyDisposition, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
-import { assessmentNextAction, buildAssessmentTrace, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
+import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
   buildHoldEscalateSummary,
@@ -50,7 +50,7 @@ interface AggregateView {
 interface ObligationDetail {
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
-  record: Record<string, unknown> & { amount: string; currency: string };
+  record: Record<string, unknown> & { obligation_id: string; amount: string; currency: string };
     current_assessment: {
     obligation_id: string;
     assessment_id: string;
@@ -136,14 +136,15 @@ export type KillSwitchPresentation = "no-selection" | "inactive" | "engaged";
 /** An inactive kill switch is one control fact only. It never grants release:
  * payment authority remains separately NOT_GRANTED until human authorization,
  * assessment and the Safety Kernel complete. */
-export type DetailState = "none" | "loading" | "failed" | "loaded";
+export type DetailState = "none" | "loading" | "failed" | "loaded" | "stale";
 
-export type KillSwitchView = KillSwitchPresentation | "unknown" | "loading" | "failed";
+export type KillSwitchView = KillSwitchPresentation | "unknown" | "loading" | "failed" | "stale";
 
 export function killSwitchPresentation(state: DetailState, value: unknown): KillSwitchView {
   if (state === "none") return "no-selection";
   if (state === "loading") return "loading";
   if (state === "failed") return "failed";
+  if (state === "stale") return "stale";
   if (typeof value !== "boolean") return "unknown";
   return value ? "engaged" : "inactive";
 }
@@ -152,6 +153,7 @@ export function killSwitchLabel(presentation: KillSwitchView): string {
   if (presentation === "no-selection") return "No obligation selected";
   if (presentation === "loading") return "Kill switch: selected obligation detail loading — not verified";
   if (presentation === "failed") return "Kill switch: selected obligation detail unavailable — not verified";
+  if (presentation === "stale") return "Kill switch: selected obligation detail is stale — retry before relying on it";
   if (presentation === "unknown") return "Kill switch state unknown — not verified";
   if (presentation === "engaged") return "Execution disabled";
   return "Kill switch inactive — does not grant release";
@@ -219,6 +221,7 @@ export function operationalReportSummaryLabel(
 export function operationalReportDetailPrompt(state: DetailState): string {
   if (state === "loading") return "Selected obligation detail is loading — its operational report is not yet available.";
   if (state === "failed") return "Selected obligation detail is unavailable — its operational report cannot be produced.";
+  if (state === "stale") return "Selected obligation detail is stale — retry to produce a current operational report.";
   return "Select an obligation to view its HOLD/ESCALATE operational report.";
 }
 
@@ -241,6 +244,7 @@ export function authorizationBlockers(state: {
 }
 
 export function reconciliationLeadLine(state: DetailState, execution: unknown): string {
+  if (state === "stale") return "Last-known submission state is stale — refresh before relying on it.";
   if (state !== "loaded") return "Submission state unknown — authoritative detail is not loaded.";
   if (execution === null) return "No submission; nothing to reconcile.";
   if (execution && typeof execution === "object" && typeof (execution as { status?: unknown }).status === "string") {
@@ -817,6 +821,7 @@ export function CommandCenter() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
+  const [detailIsStale, setDetailIsStale] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
@@ -889,6 +894,7 @@ export function CommandCenter() {
         requestedSelection: id,
         currentSelection: selectedRef.current,
       });
+    if (preserveLastKnown && detail?.record.obligation_id === id) setDetailIsStale(true);
     try {
       const response = await fetch(`/api/obligations/${id}`);
       const text = await response.text();
@@ -897,12 +903,21 @@ export function CommandCenter() {
       if (!response.ok || !data || typeof data !== "object") {
         throw new Error(obligationsFetchErrorMessage(response.status, data));
       }
+      if (!hasExpectedObligationIdentity(data, id)) {
+        throw new Error("Selected obligation detail identity could not be confirmed.");
+      }
       setDetail(data as ObligationDetail);
+      setDetailIsStale(false);
       setDetailError(null);
       return data as ObligationDetail;
     } catch (error) {
       if (!isCurrent()) return null;
-      if (!preserveLastKnown) setDetail(null);
+      if (!preserveLastKnown) {
+        setDetail(null);
+        setDetailIsStale(false);
+      } else if (detail?.record.obligation_id !== id) {
+        setDetailIsStale(false);
+      }
       setDetailError(error instanceof Error ? error.message : "Obligation detail could not be loaded.");
       return null;
     }
@@ -914,6 +929,7 @@ export function CommandCenter() {
     detailGeneration.current += 1;
     setDisplayedAssessment(null);
     setDetail(null);
+    setDetailIsStale(false);
     setDetailError(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
@@ -928,6 +944,7 @@ export function CommandCenter() {
 
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
     const targetId = selectedRef.current;
+    if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
     const generation = selectionGeneration.current;
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     activeRunCount.current += 1;
@@ -956,7 +973,7 @@ export function CommandCenter() {
 
   const runAssessment = () => {
     const obligationId = selectedId;
-    if (!obligationId || !detail || detail.record.obligation_id !== obligationId) return;
+    if (!obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
     const generation = selectionGeneration.current;
     const expectedVersion = String(detail.aggregate.aggregate_version);
     setDisplayedAssessment(null);
@@ -1016,27 +1033,26 @@ export function CommandCenter() {
   const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
   const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
   const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
-  const detailState: DetailState = detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
+  const detailState: DetailState = detail && detailIsStale ? "stale" : detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
   const killSwitchView = killSwitchPresentation(detailState, detail?.execution_kill_switched);
-  const state = useMemo(() => workflowState(detail), [detail]);
+  const state = useMemo(() => detailState === "stale"
+    ? { label: "Last-known state — stale", tone: "warning" as const, explanation: "Control and execution truth is not freshly verified. Retry detail before relying on it." }
+    : workflowState(detailState === "loaded" ? detail : null), [detail, detailState]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
   const simulatedTrustFixture = detail ? hasSimulatedTrustFixture(detail.demo_arc_trust_simulated, detail.aggregate.source_wallet_ref) : false;
-  const hasCurrentAssessment = Boolean(
+  const hasCurrentAssessment = Boolean(detailState === "loaded" &&
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
-    const authorizationAssessment = currentReviewedAssessment(
-    displayedAssessment,
-    currentAssessment,
-    selectedId,
-    aggregateVersion,
-  );
+  const authorizationAssessment = detailState === "loaded"
+    ? currentReviewedAssessment(displayedAssessment, currentAssessment, selectedId, aggregateVersion)
+    : null;
 
   // HOLD/ESCALATE operational report — read-only, derived from authoritative
   // current assessment and obligation state. Fails closed when truth is
   // missing or stale. See src/client/hold-escalate-report.ts.
   const reportInput: HoldEscalateReportInput | null = useMemo(() => {
-    if (!detail || !selectedId) return null;
+    if (!detail || !selectedId || detailState !== "loaded") return null;
     return {
       obligation_id: selectedId,
       amount: detail.record.amount,
@@ -1051,7 +1067,7 @@ export function CommandCenter() {
       },
       assessment: detail.current_assessment,
     };
-  }, [detail, selectedId]);
+  }, [detail, selectedId, detailState]);
   const report = useMemo(() => (reportInput ? buildHoldEscalateReport(reportInput) : null), [reportInput]);
   const reportSummary = useMemo(
     () =>
@@ -1069,7 +1085,7 @@ export function CommandCenter() {
   const firstUnmetPrerequisite = authorizationBlockers({
     hasSelection: Boolean(selectedId),
     allAssessed,
-    hasCurrentAssessment: Boolean(currentAssessment),
+    hasCurrentAssessment,
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
@@ -1224,9 +1240,21 @@ export function CommandCenter() {
             </div>
           )}
 
+          {selected && detail && detailState === "stale" && (
+            <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded border-l-[3px] border-l-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
+              <div>
+                <p className="text-[13px] font-semibold text-[var(--color-warning)]">Last-known obligation details are stale.</p>
+                <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Retained control, kill-switch, assessment, and execution fields are not freshly verified. Actions are unavailable until detail refresh succeeds.</p>
+              </div>
+              <button type="button" onClick={() => void refreshDetail(selectedId, true)} className="text-[12px] font-semibold underline">
+                Retry obligation detail
+              </button>
+            </div>
+          )}
+
           {detail && (
             <details className="border-b border-[var(--color-border)] pb-3">
-              <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and control evidence (technical details)</summary>
+              <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and control evidence{detailState === "stale" ? " — last-known / stale" : ""} (technical details)</summary>
               <section aria-label="Payment authority boundary" className="mt-3 grid gap-3 md:grid-cols-3">
               <article className="space-y-1 border-l-2 border-[var(--color-border)] pl-3" data-testid="source-truth">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide">Source-system truth</h3>
@@ -1320,7 +1348,7 @@ export function CommandCenter() {
                   <Field label="Execution authority" value={judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority)} />
                 </dl>
                 <PrimaryButton
-                  disabled={busy || !selectedId || detail.record.obligation_id !== selectedId}
+                  disabled={busy || detailState !== "loaded" || !selectedId || detail.record.obligation_id !== selectedId}
                   onClick={() => {
                     setPanel("assessment");
                     void runAssessment();
@@ -1354,7 +1382,7 @@ export function CommandCenter() {
                       <button
                         type="button"
                         className="text-[12px] font-semibold underline text-[var(--color-warning)]"
-                        disabled={!displayedAssessment.race}
+                        disabled={detailState !== "loaded" || !displayedAssessment.race}
                         onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
                       >
                         Discard review selection
@@ -1362,7 +1390,7 @@ export function CommandCenter() {
                     }
                   />
                 )}
-                {!displayedAssessment && currentAssessment && (
+                {!displayedAssessment && currentAssessment && detailState === "loaded" && (
                   <AdvisoryAssessmentCard
                     assessment={currentAssessment}
                     label="Current sealed assessment"
@@ -1371,7 +1399,7 @@ export function CommandCenter() {
                       <button
                         type="button"
                         className="text-[12px] font-semibold underline"
-                        disabled={!currentAssessment.race}
+                        disabled={detailState !== "loaded" || !currentAssessment.race}
                         onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
                       >
                         Review this assessment for authorization
@@ -1384,7 +1412,7 @@ export function CommandCenter() {
                     The displayed assessment is no longer current. Review the current sealed assessment before authorization.
                   </p>
                 )}
-                <PrimaryButton disabled={busy || !selectedId || !detail || detail.record.obligation_id !== selectedId} onClick={runAssessment}>
+                <PrimaryButton disabled={busy || detailState !== "loaded" || !selectedId || !detail || detail.record.obligation_id !== selectedId} onClick={runAssessment}>
                   Run AI Assessment
                 </PrimaryButton>
 
@@ -1451,7 +1479,7 @@ export function CommandCenter() {
                   const blockers = authorizationBlockers({
                     hasSelection: Boolean(selectedId),
                     allAssessed,
-                    hasCurrentAssessment: Boolean(currentAssessment),
+                    hasCurrentAssessment,
                     reviewed: Boolean(authorizationAssessment),
                     killSwitchEngaged: killSwitchView === "engaged",
                   });
@@ -1463,7 +1491,7 @@ export function CommandCenter() {
                 })()}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || !selectedId || !authorizationAssessment}
+                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment}
                     onClick={() =>
                       run("approve", () =>
                         postJson(`/api/obligations/${selectedId}/approve`, {
@@ -1520,7 +1548,7 @@ export function CommandCenter() {
                   </div>
                   <div className="flex gap-2">
                     <button
-                      disabled={busy || !selectedId}
+                      disabled={busy || detailState !== "loaded" || !selectedId}
                       onClick={() =>
                         run("kill-switch", () =>
                           postJson(`/api/obligations/${selectedId}/kill-switch`, {
@@ -1534,7 +1562,7 @@ export function CommandCenter() {
                       Disable this obligation
                     </button>
                     <button
-                      disabled={busy || !selectedId}
+                      disabled={busy || detailState !== "loaded" || !selectedId}
                       onClick={() =>
                         run("kill-switch", () =>
                           postJson(`/api/obligations/${selectedId}/kill-switch`, {
@@ -1552,11 +1580,11 @@ export function CommandCenter() {
                 {currentResult?.label === "kill-switch" && <ActionResultBanner result={currentResult} />}
 
                 <div className="flex flex-wrap items-center gap-4">
-                  <PrimaryButton disabled={busy || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
+                  <PrimaryButton disabled={busy || detailState !== "loaded" || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
                     Submit for execution (simulated)
                   </PrimaryButton>
                   <button
-                    disabled={busy || !selectedId || !detail?.pae_sealed}
+                    disabled={busy || detailState !== "loaded" || !selectedId || !detail?.pae_sealed}
                     onClick={() =>
                       run("prime-packet", async () => {
                         const response = await fetch(`/api/obligations/${selectedId}/prime-approval-packet`);
@@ -1597,7 +1625,7 @@ export function CommandCenter() {
                 </p>
                 <PrimaryButton
                   danger
-                  disabled={busy || !selectedId || !detail?.pae_sealed}
+                  disabled={busy || detailState !== "loaded" || !selectedId || !detail?.pae_sealed}
                   onClick={() => run("attack", () => postJson(`/api/obligations/${selectedId}/simulate-attack`))}
                 >
                   Simulate changed-destination attack
@@ -1607,7 +1635,7 @@ export function CommandCenter() {
                 )}
                 {currentResult?.label === "attack" && <ActionResultBanner result={currentResult} />}
                 {currentResult?.label === "attack" && <EvidencePanel value={currentResult.data} />}
-                                {detail && <EvidencePanel value={detail} />}
+                {detail && detailState === "loaded" && <EvidencePanel value={detail} />}
               </div>
             )}
 

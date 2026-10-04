@@ -275,7 +275,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
   });
 
-  it("keeps the last known selection and detail when post-action refresh reads fail", async () => {
+  it("marks retained detail stale and offers retry when post-action refresh reads fail", async () => {
     let listReads = 0;
     let detailReads = 0;
     fetchMock.mockImplementation((input, init) => {
@@ -287,7 +287,7 @@ describe("Command Center mounted Operational Report", () => {
       if (url.endsWith("/OBL-A/assess") && init?.method === "POST") return Promise.resolve(response({ error: "Action unavailable" }, 503));
       if (url === "/api/obligations/OBL-A") {
         detailReads += 1;
-        return Promise.resolve(detailReads === 1 ? response(detail("OBL-A")) : response(null, 502));
+        return Promise.resolve(detailReads === 1 || detailReads === 3 ? response(detail("OBL-A")) : response(null, 502));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -300,13 +300,26 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(assess);
 
     expect(await screen.findByText(/Genuine obligations are unavailable\. No synthetic demo data has been added to this list/)).toBeTruthy();
+    expect(await screen.findByText(/Last-known obligation details are stale/)).toBeTruthy();
+    expect(screen.getByText("Last-known state — stale")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry obligation detail" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Operational Report.*secondary/i }));
-    const report = await screen.findByRole("region", { name: "Operational report for OBL-A" });
-    expect(report.textContent).toContain("RECORD-OBL-A");
+    expect(await screen.findByText(/Selected obligation detail is stale/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
     expect(screen.getByRole("button", { name: /OBL-A/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
+    expect(screen.getByText(/Kill switch: selected obligation detail is stale/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Disable this obligation" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Submit for execution (simulated)" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Retry obligation detail" }));
+    await waitFor(() => expect(screen.queryByText(/Last-known obligation details are stale/)).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /Operational Report.*secondary/i }));
+    expect(await screen.findByRole("region", { name: "Operational report for OBL-A" })).toBeTruthy();
   });
 
-  it("keeps non-idempotent controls busy while a newer selected action is still in flight", async () => {
+  it("keeps the internal active-run counter positive until all dispatched callbacks settle", async () => {
     const actionA = deferred<Response>();
     const actionB = deferred<Response>();
     const staleActionListRefresh = deferred<Response>();
@@ -346,7 +359,8 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     const assessB = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assessB.disabled).toBe(true);
-    // Exercise a previously dispatched B callback while A is still unwinding.
+    // Invoke the internal callback directly to isolate the defensive counter invariant.
+    // This does not claim the disabled button is reachable through browser interaction.
     const actionBCompletion = invokeClickHandler(assessB);
     expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual(expect.arrayContaining([["/api/obligations/OBL-B/assess", "POST"]]));
 
@@ -363,7 +377,7 @@ describe("Command Center mounted Operational Report", () => {
     expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("disables and rejects assessment while the selected detail is still loading", async () => {
+  it("keeps assessment disabled during loading and a browser click sends no request", async () => {
     const selectedDetail = deferred<Response>();
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
@@ -375,12 +389,30 @@ describe("Command Center mounted Operational Report", () => {
     const assess = await screen.findByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
     expect(assess.disabled).toBe(true);
-    assess.disabled = false;
     fireEvent.click(assess);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/assess") && init?.method === "POST")).toBe(false);
 
     selectedDetail.resolve(response(detail("OBL-A")));
     await waitFor(() => expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it.each([
+    ["mismatched", { ...detail("OBL-A"), record: { ...detail("OBL-A").record, obligation_id: "OBL-B" } }],
+    ["missing", { ...detail("OBL-A"), record: { amount: "125.00", currency: "USD" } }],
+  ])("fails closed when selected detail identity is %s", async (_case, payload) => {
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
+      : Promise.resolve(response(payload)));
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: /OBL-A/ });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(await screen.findByText(/Obligation detail is unavailable/)).toBeTruthy();
+    const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
+    expect(assess.disabled).toBe(true);
+    fireEvent.click(assess);
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/assess") && init?.method === "POST")).toBe(false);
+    expect(screen.queryByRole("region", { name: /Operational report for/ })).toBeNull();
   });
 
   it("keeps the report bound to the current selection when an older detail request finishes late", async () => {

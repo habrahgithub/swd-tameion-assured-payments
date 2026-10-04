@@ -1,5 +1,21 @@
 import type { RaceAssessment } from "../agent/schema";
 
+/** Validate selected-detail identity at the JSON boundary before the response
+ * is used to build a report or bind an action to an obligation. */
+export function hasExpectedObligationIdentity(value: unknown, expectedId: string): boolean {
+  if (!expectedId) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = (value as { record?: unknown }).record;
+  return Boolean(
+    record &&
+      typeof record === "object" &&
+      !Array.isArray(record) &&
+      "obligation_id" in record &&
+      typeof (record as { obligation_id?: unknown }).obligation_id === "string" &&
+      (record as { obligation_id: string }).obligation_id === expectedId,
+  );
+}
+
 export function judgeReadableState(value: string): string {
   return value
     .split(/[_\s]+/)
