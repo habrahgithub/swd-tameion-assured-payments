@@ -176,7 +176,7 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(completedData.runtime_config_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(repeatedData.assessment_hash).toBe(completedData.assessment_hash);
     expect(repeatedData.runtime_config_sha256).toBe(completedData.runtime_config_sha256);
-    expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).not.toContain("DESTINATION_NOT_READY");
     expect(completedData.race.evidence.authoritative_facts.destination_status).toBe("NOT_READY_SIMULATED_FIXTURE");
     expect(completedData.race.evidence.authoritative_facts.destination_readiness_source).toBe("SIMULATED_DEMO_FIXTURE");
     expect(repeatedData.race).toEqual(completedData.race);
@@ -248,7 +248,7 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(durable.snapshot?.authority.assessments).toHaveLength(1);
     expect(durable.snapshot?.assessment_operations[0].status).toBe("COMPLETED");
     const recovered = await replay.json();
-    expect(recovered.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(recovered.race.result.validated_findings.map((finding: { code: string }) => finding.code)).not.toContain("DESTINATION_NOT_READY");
   });
 
   it("blocks a different key while an assessment operation is unresolved", async () => {

@@ -109,18 +109,14 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it.each(["OBL-J0C-002", "OBL-J0C-004", "OBL-J0C-005"])(
-    "%s always gets application-owned destination remediation despite inconsistent model output",
+    "%s can receive PAY from valid obligation evidence while destination readiness remains absent",
     async (id) => {
       const context = buildFinanceAgentContext(liveRecord(id), "1", "2026-09-29");
       const result = await assessObligation(context, new RecommendationProvider(recommendation(id, { evidence_ids: context.evidence_ids })));
-      expect(result.decision).toBe("HOLD");
-      expect(result.race.result.validated_findings.map((finding) => finding.code)).toContain("DESTINATION_NOT_READY");
-      expect(result.race.remediation.find((item) => item.finding_code === "DESTINATION_NOT_READY")).toMatchObject({
-        required_action: expect.any(String),
-        required_evidence: [expect.any(String)],
-        owner_role: expect.any(String),
-        reassess_after_resolution: true,
-      });
+      expect(context.destination_ready).toBe(false);
+      expect(result.decision).toBe("PAY");
+      expect(result.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DESTINATION_NOT_READY");
+      expect(result.race.remediation.map((item) => item.finding_code)).not.toContain("DESTINATION_NOT_READY");
     },
   );
 
@@ -239,7 +235,7 @@ describe("#17 CARE and RACE grounding", () => {
     const codes = result.race.result.validated_findings.map((finding) => finding.code);
     expect(result.decision).toBe("HOLD");
     expect(codes).toContain("MODEL_OUTPUT_INVALID");
-    expect(codes).toContain("DESTINATION_NOT_READY");
+    expect(codes).not.toContain("DESTINATION_NOT_READY");
   });
 
   it("does not derive required evidence from model prose", async () => {

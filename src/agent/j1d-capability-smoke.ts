@@ -112,14 +112,14 @@ export type SyntheticEvaluationCaseId = (typeof SYNTHETIC_EVALUATION_CASE_IDS)[n
 
 const EXPECTED_DECISION: Record<SyntheticEvaluationCaseId, "PAY" | "NOT_PAY"> = {
   POSITIVE_COMPLETE: "PAY",
-  NEGATIVE_TRUST: "NOT_PAY",
+  NEGATIVE_TRUST: "PAY",
   NEGATIVE_DATE: "NOT_PAY",
   NEGATIVE_EVIDENCE: "NOT_PAY",
 };
 
-/** Fixed, non-economic synthetic cases. The positive case is complete; each
- * negative removes exactly one of trust, due date, or source evidence. Trust is
- * labelled SYNTHETIC_EVALUATION_FIXTURE and never promoted to genuine trust. */
+/** Fixed, non-economic synthetic cases. Missing route trust remains assessment-
+ * eligible; only the due-date and source-evidence cases are assessment-negative.
+ * Trust is labelled as synthetic/unverified and never promoted to genuine trust. */
 export function buildSyntheticEvaluationContext(id: SyntheticEvaluationCaseId): FinanceAgentContext {
   const complete = {
     obligation_id: `SYNTHETIC-EVAL-${id}`,

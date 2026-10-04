@@ -95,7 +95,6 @@ function deterministicFindings(context: FinanceAgentContext): Set<FindingCode> {
   if (!context.evidence_present || context.evidence_ids.length === 0) findings.add("SOURCE_EVIDENCE_MISSING");
   if (context.due_date_position === "INVALID") findings.add("NORMALIZATION_REVIEW_REQUIRED");
   else if (context.due_date_position === "NOT_STATED") findings.add("DUE_DATE_NOT_STATED");
-  if (!context.destination_ready) findings.add("DESTINATION_NOT_READY");
   if (!isSettleableCurrency(context.currency)) findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
   if (!context.business_purpose_confirmed) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
   return findings;

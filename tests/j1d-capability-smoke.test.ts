@@ -271,7 +271,7 @@ describeEval("synthetic evaluation cases are fixed, schema-valid and single-fact
     }
   });
 
-  itEval("each negative differs from the positive on exactly one trust, date or evidence factor", () => {
+  itEval("each variant differs from the positive on exactly one trust, date or evidence factor", () => {
     const positive = buildSyntheticEvaluationContext("POSITIVE_COMPLETE");
     expectEval(positive.destination_ready && positive.evidence_present && positive.due_date_position === "FUTURE").toBe(true);
 
@@ -304,7 +304,7 @@ describeEval("synthetic evaluation grades model usefulness and deterministic saf
   });
 
   itEval("passes when the model is useful and the deterministic layer is safe", async () => {
-    const provider = fakeProvider((ctx) => rawFor(ctx, ctx.obligation_id.includes("POSITIVE") ? "PAY" : "HOLD"));
+    const provider = fakeProvider((ctx) => rawFor(ctx, /POSITIVE_COMPLETE|NEGATIVE_TRUST/.test(ctx.obligation_id) ? "PAY" : "HOLD"));
     const result = await runSyntheticEvaluation(provider, { now: () => 0 });
     if (result.status !== "EVALUATED") throw new Error("expected evaluation");
     expectEval(result.model_failures).toBe(0);
@@ -312,13 +312,18 @@ describeEval("synthetic evaluation grades model usefulness and deterministic saf
     expectEval(provider.calls).toBe(4);
   });
 
-  itEval("fails the model on alwaysPAY negatives even though deterministic safety holds", async () => {
+  itEval("fails the model on date and evidence negatives while route-not-ready remains assessment-eligible", async () => {
     const provider = fakeProvider((ctx) => rawFor(ctx, "PAY"));
     const result = await runSyntheticEvaluation(provider, { now: () => 0 });
     if (result.status !== "EVALUATED") throw new Error("expected evaluation");
-    expectEval(result.model_failures).toBe(3);
+    expectEval(result.model_failures).toBe(2);
     expectEval(result.safety_failures).toBe(0);
-    for (const outcome of result.outcomes.filter((o) => o.case_id !== "POSITIVE_COMPLETE")) {
+    const routeNotReady = result.outcomes.find((o) => o.case_id === "NEGATIVE_TRUST");
+    expectEval(routeNotReady?.expected).toBe("PAY");
+    expectEval(routeNotReady?.normalized.decision).toBe("PAY");
+    expectEval(routeNotReady?.model_usefulness_met).toBe(true);
+    expectEval(routeNotReady?.deterministic_safety_met).toBe(true);
+    for (const outcome of result.outcomes.filter((o) => o.case_id === "NEGATIVE_DATE" || o.case_id === "NEGATIVE_EVIDENCE")) {
       expectEval(outcome.raw.decision).toBe("PAY");
       expectEval(outcome.normalized.decision).not.toBe("PAY");
       expectEval(outcome.model_usefulness_met).toBe(false);

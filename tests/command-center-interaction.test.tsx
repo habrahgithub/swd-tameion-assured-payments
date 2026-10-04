@@ -83,6 +83,8 @@ function detail(id: string) {
       destination_verification_status: "UNVERIFIED",
       destination_operational_status: "UNVERIFIED",
       source_wallet_ref: "TEST-WALLET",
+      source_wallet_status: "INACTIVE",
+      product_trust_provenance: "UNVERIFIED",
       execution_state: "NONE",
       pae_state: "UNUSED",
     },
@@ -280,11 +282,10 @@ describe("Command Center mounted Operational Report", () => {
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
       "Obligation",
-      "Assessment",
-      "Human authorization",
-      "Assurance",
-      "Execution/submission",
-      "Settlement/reconciliation",
+      "AI Assessment",
+      "Assurance & Authorization",
+      "Execution",
+      "Reconciliation & Evidence",
     ]);
     expect(screen.getByText("NO ASSURANCE, NO EXECUTION")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
@@ -372,12 +373,42 @@ describe("Command Center mounted Operational Report", () => {
     expect(within(workspace).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(lifecycle.textContent).toContain("AssessmentRequires attention");
-    expect(lifecycle.textContent).toContain("Human authorizationLocked");
-    expect(lifecycle.textContent).toContain("AssuranceNot started");
-    expect(lifecycle.textContent).toContain("Execution/submissionNot started — blocked");
-    expect(lifecycle.textContent).toContain("Settlement/reconciliationNot started");
+    expect(lifecycle.textContent).toContain("AI AssessmentRequires attention");
+    expect(lifecycle.textContent).toContain("Assurance & AuthorizationRequires attention — authorization locked");
+    expect(lifecycle.textContent).toContain("ExecutionNot started — blocked");
+    expect(lifecycle.textContent).toContain("Reconciliation & EvidenceNot started");
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
+  });
+
+  it("presents PAY separately from route assurance and keeps authorization locked when assurance is not ready", async () => {
+    const pay = assessedDetail("OBL-ASSURANCE-NOT-READY", "PAY");
+    pay.aggregate.destination_verification_status = "PENDING_VERIFICATION";
+    pay.aggregate.destination_operational_status = "ON_HOLD";
+    pay.aggregate.source_wallet_status = "INACTIVE";
+    pay.aggregate.product_trust_provenance = "UNVERIFIED_CURRENT_TRUST";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-ASSURANCE-NOT-READY", true)] }))
+      : Promise.resolve(response(pay)));
+
+    render(<CommandCenter />);
+    const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
+      "Obligation",
+      "AI Assessment",
+      "Assurance & Authorization",
+      "Execution",
+      "Reconciliation & Evidence",
+    ]);
+    expect(lifecycle.textContent).toContain("PAY recommended — assurance not ready");
+    expect(lifecycle.textContent).toContain("authorization locked");
+
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review this assessment for authorization" }));
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(await screen.findByText(/Payment-route assurance is not ready; human authorization remains blocked/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
   it.each([
@@ -414,9 +445,14 @@ describe("Command Center mounted Operational Report", () => {
 
   it("allows only a current reviewed PAY assessment to become authorization eligible", async () => {
     const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
+    const pay = assessedDetail("OBL-A", "PAY");
+    pay.aggregate.destination_verification_status = "VERIFIED";
+    pay.aggregate.destination_operational_status = "ACTIVE";
+    pay.aggregate.source_wallet_status = "ACTIVE";
+    pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations }))
-      : Promise.resolve(response(assessedDetail("OBL-A", "PAY"))));
+      : Promise.resolve(response(pay)));
 
     render(<CommandCenter />);
     expect(await screen.findByText("Eligible for human authorization review")).toBeTruthy();

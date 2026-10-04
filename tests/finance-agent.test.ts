@@ -165,17 +165,28 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     }
   });
 
-  it("rejects PAY when deterministic readiness facts are unmet", async () => {
+  it("rejects PAY when obligation due-date or business-purpose facts are unmet", async () => {
     const records = [
       record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" }),
       record({ business_purpose_confirmed: false }),
-      record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } }),
     ];
     for (const input of records) {
       const context = buildFinanceAgentContext(input);
       const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
       expect(decision.decision).toBe("HOLD");
     }
+  });
+
+  it("keeps payment-route readiness out of the Finance Agent decision while retaining it as context", async () => {
+    const input = record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } });
+    const context = buildFinanceAgentContext(input);
+    const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
+
+    expect(context.destination_ready).toBe(false);
+    expect(context.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DESTINATION_NOT_READY");
+    expect(decision.race.remediation.map((item) => item.finding_code)).not.toContain("DESTINATION_NOT_READY");
   });
 
   it("blocks unsupported settlement currencies (e.g. EUR) via the currency blocker outside model prose", async () => {

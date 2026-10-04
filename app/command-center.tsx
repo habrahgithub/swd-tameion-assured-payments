@@ -43,6 +43,8 @@ interface AggregateView {
   destination_verification_status: string;
   destination_operational_status: string;
   source_wallet_ref: string;
+  source_wallet_status: string;
+  product_trust_provenance?: string;
   execution_state: string;
   pae_state: string;
 }
@@ -274,11 +276,10 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
 
 const PAYMENT_LIFECYCLE_STAGES = [
   "Obligation",
-  "Assessment",
-  "Human authorization",
-  "Assurance",
-  "Execution/submission",
-  "Settlement/reconciliation",
+  "AI Assessment",
+  "Assurance & Authorization",
+  "Execution",
+  "Reconciliation & Evidence",
 ] as const;
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -1056,6 +1057,11 @@ export function CommandCenter() {
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
   const simulatedTrustFixture = detail ? hasSimulatedTrustFixture(detail.demo_arc_trust_simulated, detail.aggregate.source_wallet_ref) : false;
+  const routeAssuranceReady = Boolean(detail && !simulatedTrustFixture &&
+    detail.aggregate.product_trust_provenance === "CURRENT_PRODUCT_EVIDENCE" &&
+    detail.aggregate.destination_verification_status === "VERIFIED" &&
+    detail.aggregate.destination_operational_status === "ACTIVE" &&
+    detail.aggregate.source_wallet_status === "ACTIVE");
   const hasCurrentAssessment = Boolean(detailState === "loaded" &&
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
@@ -1071,21 +1077,23 @@ export function CommandCenter() {
     switch (stage) {
       case "Obligation":
         return judgeReadableState(detail.truth.source_truth.obligation_state);
-      case "Assessment":
+      case "AI Assessment":
         if (!hasCurrentAssessment || !currentAssessment) return "Not current for this version";
         if (currentAssessment.decision === "HOLD") return "Requires attention";
         if (currentAssessment.decision === "ESCALATE") return "Escalation required";
         return "PAY — advisory";
-      case "Human authorization":
-        if (detail.pae_sealed) return "Authorized — PAE sealed";
-        return authorizationAssessment ? "Eligible for human authorization review" : "Locked";
-      case "Assurance":
-        return detail.pae_sealed ? "Sealed" : "Not started";
-      case "Execution/submission":
+      case "Assurance & Authorization":
+        if (detail.pae_sealed) return "Safety Kernel PASS — PAE sealed";
+        if (hasCurrentAssessment && currentAssessment?.decision === "HOLD") return "Requires attention — authorization locked";
+        if (hasCurrentAssessment && currentAssessment?.decision === "ESCALATE") return "Escalation required — authorization locked";
+        if (!hasCurrentPayAssessment) return "Locked — current PAY assessment required";
+        if (!routeAssuranceReady) return "PAY recommended — assurance not ready; authorization locked";
+        return authorizationAssessment ? "Ready for human authorization" : "PAY recommended — human review required";
+      case "Execution":
         if (detail.execution) return `Execution ${judgeReadableState(detail.execution.status)}`;
         if (currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE") return "Not started — blocked";
         return detail.pae_sealed ? "Not started" : "Not started — awaits authorization and assurance";
-      case "Settlement/reconciliation":
+      case "Reconciliation & Evidence":
         if (detail.aggregate.state === "RECONCILED") return "Reconciled";
         if (detail.execution?.status === "SETTLED") return "Settlement recorded; reconciliation pending";
         if (detail.execution) return `Not reconciled — execution ${judgeReadableState(detail.execution.status)}`;
@@ -1338,7 +1346,7 @@ export function CommandCenter() {
               <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Genuine payment lifecycle</p>
               <p className="text-[11px] font-bold tracking-wide text-[var(--color-ink)]">NO ASSURANCE, NO EXECUTION</p>
             </div>
-            <ol aria-label="Payment lifecycle" className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-6">
+            <ol aria-label="Payment lifecycle" className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-5">
               {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
                 <li key={stage} className="flex min-w-0 items-baseline gap-1 border-l-2 border-[var(--color-border)] pl-2 text-[11px] text-[var(--color-ink-muted)]">
                   <span className="mono text-[10px] font-semibold">{index + 1}.</span>
@@ -1559,12 +1567,15 @@ export function CommandCenter() {
                   return blockers.length ? (
                     <ul className="list-disc space-y-1 pl-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
                       {blockers.map((b) => <li key={b}>{b}</li>)}
+                      {hasCurrentPayAssessment && !routeAssuranceReady && <li>Payment-route assurance is not ready; human authorization remains blocked by the existing readiness gate.</li>}
                     </ul>
+                  ) : hasCurrentPayAssessment && !routeAssuranceReady ? (
+                    <p className="text-[12px] text-[var(--color-warning)]">Payment-route assurance is not ready; human authorization remains blocked by the existing readiness gate.</p>
                   ) : null;
                 })()}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment || authorizationAssessment.decision !== "PAY"}
+                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment || authorizationAssessment.decision !== "PAY" || !routeAssuranceReady}
                     onClick={() => {
                       if (authorizationAssessment?.decision !== "PAY") return;
                       return run("approve", () =>
