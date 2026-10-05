@@ -71,7 +71,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     const api = createClient({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
     });
@@ -99,7 +99,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     const authorizedApi = createClient({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
     });
@@ -122,7 +122,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     const authorizedApi = createClient({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
     });
@@ -255,7 +255,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     const api = createClient({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       getTransaction: vi.fn(async () => ({ data: { transaction: {
         id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,

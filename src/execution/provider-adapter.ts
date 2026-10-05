@@ -114,7 +114,10 @@ const circleTransactionSchema = z.object({
 const createdTransactionSchema = z.object({ data: z.object({ id: z.string() }).passthrough() }).passthrough();
 const listedTransactionsSchema = z.object({ data: z.object({ transactions: z.array(z.unknown()) }).passthrough() }).passthrough();
 const tokenBalancesSchema = z.object({ data: z.object({ tokenBalances: z.array(z.object({
-  token: z.object({ id: z.unknown(), symbol: z.unknown(), blockchain: z.unknown(), decimals: z.unknown(), isNative: z.unknown(), tokenAddress: z.unknown() }).passthrough(),
+  token: z.object({
+    id: z.unknown().optional(), symbol: z.unknown().optional(), blockchain: z.unknown().optional(), decimals: z.unknown().optional(),
+    isNative: z.unknown().optional(), tokenAddress: z.unknown().optional(),
+  }).passthrough().optional(),
 }).passthrough()) }).passthrough() }).passthrough();
 
 function statusForCircleTransaction(
@@ -239,20 +242,26 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     const client = this.client();
     const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: J2A_DEMO_SOURCE.id, includeAll: true }));
     if (!balances.success) return { status: "UNKNOWN" };
-    const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) => token.symbol === "USDC" &&
-      token.blockchain === "ARC-TESTNET" && typeof token.decimals === "number" && Number.isSafeInteger(token.decimals) &&
-      token.decimals >= USDC_DECIMALS && token.decimals <= 36 && token.isNative === true && token.tokenAddress === null &&
-      typeof token.id === "string" && token.id.length > 0);
-    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string" || typeof nativeUsdc[0].token.decimals !== "number") return { status: "UNKNOWN" };
+    const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) =>
+      typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&
+      token.blockchain === "ARC-TESTNET" && token.isNative === true);
+    if (nativeUsdc.length !== 1) return { status: "UNKNOWN" };
+    const nativeUsdcToken = nativeUsdc[0].token;
+    if (!nativeUsdcToken || typeof nativeUsdcToken.id !== "string" || !nativeUsdcToken.id ||
+        typeof nativeUsdcToken.decimals !== "number" || !Number.isSafeInteger(nativeUsdcToken.decimals) ||
+        nativeUsdcToken.decimals < USDC_DECIMALS || nativeUsdcToken.decimals > 36 ||
+        (nativeUsdcToken.tokenAddress !== undefined && nativeUsdcToken.tokenAddress !== null && typeof nativeUsdcToken.tokenAddress !== "string")) {
+      return { status: "UNKNOWN" };
+    }
     const reviewedPreflight = this.authorizedPreflight?.();
     if (reviewedPreflight?.readiness === "READY" &&
-        (nativeUsdc[0].token.id !== reviewedPreflight.provider_token.id || nativeUsdc[0].token.decimals !== reviewedPreflight.provider_token.decimals)) {
+        (nativeUsdcToken.id !== reviewedPreflight.provider_token.id || nativeUsdcToken.decimals !== reviewedPreflight.provider_token.decimals)) {
       return { status: "UNKNOWN" };
     }
     return statusForCircleTransaction(
       await client.getTransaction({ id: providerRef }),
-      nativeUsdc[0].token.id,
-      nativeUsdc[0].token.decimals,
+      nativeUsdcToken.id,
+      nativeUsdcToken.decimals,
       providerRef,
       idempotencyKey,
     );

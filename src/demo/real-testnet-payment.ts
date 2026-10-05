@@ -100,11 +100,11 @@ const walletTruthSchema = z.object({
 }).passthrough();
 const walletResponseSchema = z.object({ data: z.object({ wallet: walletTruthSchema }).passthrough() }).passthrough();
 const balanceResponseSchema = z.object({ data: z.object({ tokenBalances: z.array(z.object({
-  amount: z.unknown(),
+  amount: z.unknown().optional(),
   token: z.object({
-    id: z.unknown(), symbol: z.unknown(), blockchain: z.unknown(), decimals: z.unknown(),
-    isNative: z.unknown(), tokenAddress: z.unknown(),
-  }).passthrough(),
+    id: z.unknown().optional(), symbol: z.unknown().optional(), blockchain: z.unknown().optional(), decimals: z.unknown().optional(),
+    isNative: z.unknown().optional(), tokenAddress: z.unknown().optional(),
+  }).passthrough().optional(),
 }).passthrough()) }).passthrough() }).passthrough();
 const feeResponseSchema = z.object({ data: z.object({ medium: z.object({ networkFee: z.unknown() }).passthrough() }).passthrough() }).passthrough();
 const transactionsResponseSchema = z.object({ data: z.object({ transactions: z.array(z.unknown()) }).passthrough() }).passthrough();
@@ -299,13 +299,20 @@ export async function runJ2aReadOnlyPreflight(
     const balancesParsed = balanceResponseSchema.safeParse(balanceResponse);
     if (!balancesParsed.success) return blocked("INVALID_PROVIDER_BALANCE", now);
     const nativeUsdc = balancesParsed.data.data.tokenBalances.filter(({ token }) =>
-      token.symbol === "USDC" && token.blockchain === ARC_TESTNET_BLOCKCHAIN &&
-      typeof token.decimals === "number" && Number.isSafeInteger(token.decimals) && token.decimals >= USDC_DECIMALS && token.decimals <= 36 &&
-      token.isNative === true && token.tokenAddress === null && typeof token.id === "string" && token.id.length > 0);
-    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string" || typeof nativeUsdc[0].token.decimals !== "number") return blocked("INVALID_PROVIDER_TOKEN", now);
-    const tokenId = nativeUsdc[0].token.id;
-    const tokenDecimals = nativeUsdc[0].token.decimals;
-    const sourceBalanceResult = providerDecimalSchema.safeParse(nativeUsdc[0].amount);
+      typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&
+      token.blockchain === ARC_TESTNET_BLOCKCHAIN && token.isNative === true);
+    if (nativeUsdc.length !== 1) return blocked("INVALID_PROVIDER_TOKEN", now);
+    const nativeUsdcBalance = nativeUsdc[0];
+    const nativeUsdcToken = nativeUsdcBalance.token;
+    if (!nativeUsdcToken || typeof nativeUsdcToken.id !== "string" || !nativeUsdcToken.id ||
+        typeof nativeUsdcToken.decimals !== "number" || !Number.isSafeInteger(nativeUsdcToken.decimals) ||
+        nativeUsdcToken.decimals < USDC_DECIMALS || nativeUsdcToken.decimals > 36 ||
+        (nativeUsdcToken.tokenAddress !== undefined && nativeUsdcToken.tokenAddress !== null && typeof nativeUsdcToken.tokenAddress !== "string")) {
+      return blocked("INVALID_PROVIDER_TOKEN", now);
+    }
+    const tokenId = nativeUsdcToken.id;
+    const tokenDecimals = nativeUsdcToken.decimals;
+    const sourceBalanceResult = providerDecimalSchema.safeParse(nativeUsdcBalance.amount);
     if (!sourceBalanceResult.success || decimalToAtomicAtScale(sourceBalanceResult.data, tokenDecimals) === null) return blocked("INVALID_PROVIDER_BALANCE", now);
     const sourceBalance = sourceBalanceResult.data;
 

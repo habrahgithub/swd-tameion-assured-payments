@@ -99,7 +99,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
     const api = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
     });
@@ -133,7 +133,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
     const belowRequiredBalance = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "5.001167967499999999",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
     });
@@ -142,7 +142,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
     const overFeeCap = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.002000000000000001" } } })),
     });
@@ -151,7 +151,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
     const highPrecisionPriorOutbound = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true },
       }] } })),
       estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
       listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction({
