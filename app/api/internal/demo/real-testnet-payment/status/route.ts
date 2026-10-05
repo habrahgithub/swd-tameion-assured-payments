@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { J2A_DEMO_OBLIGATION_ID, J2A_DEMO_ORGANIZATION_ID, buildJ2aDemoObligation, buildJ2aExecutionPacket, buildJ2aIntentIdentity } from "../../../../../../src/demo/real-testnet-payment";
 import { getJ2aRealTestnetDemoState } from "../../../../../../src/server/demo-state";
 import { verifySealedPae } from "../../../../../../src/pae/sign-verify";
+import { getAuthorizedReviewedAssessment } from "../../../../../../src/demo/authorized-assessment-lineage";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,9 @@ export async function GET() {
 
   if (preflight?.readiness === "READY") {
     aggregate = state.store.get(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID);
-    assessment = state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID) ?? null;
+    assessment = authorization
+      ? getAuthorizedReviewedAssessment(state.store, J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID, aggregate.aggregate_version, authorization, sealedPae) ?? null
+      : state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID) ?? null;
     if (sealedPae) {
       try {
         verifySealedPae(sealedPae);
@@ -44,7 +47,7 @@ export async function GET() {
       assessment.record.decision === "PAY" && assessment.record.provider_mode === "LIVE_AI" &&
       assessment.record.missing_evidence.length === 0 &&
       (assessment.record.race?.result.validated_findings.length ?? 0) === 0 &&
-      assessment.record.aggregate_version === String(aggregate.aggregate_version) &&
+      assessment.record.aggregate_version === sealedPae.payload.approval_evidence[0]?.reviewed_aggregate_version &&
       sealedPae.payload.aggregate_version === String(aggregate.aggregate_version) &&
       sealedPae.payload.evidence_hashes.length === 1 && sealedPae.payload.evidence_hashes[0] === preflight.evidence_sha256 &&
       sealedPae.payload.expiry && Date.parse(sealedPae.payload.expiry) > Date.now() &&
@@ -61,7 +64,7 @@ export async function GET() {
   const executionGate = packet && process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === packet.packet_sha256
     ? "PRIME_AUTHORIZED_EXACT_PACKET"
     : "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION";
-  const authorizationCurrent = Boolean(authorization && aggregate && sealedPae &&
+  const authorizationCurrent = Boolean(authorization && aggregate && sealedPae && assessment &&
     authorization.approval_record.authorized_aggregate_version === String(aggregate.aggregate_version) &&
     authorization.sealed_pae.instruction_hash === sealedPae.instruction_hash);
   const lifecycle = [

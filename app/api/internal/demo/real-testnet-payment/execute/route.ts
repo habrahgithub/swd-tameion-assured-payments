@@ -5,6 +5,7 @@ import { ExecutionBlockedError } from "../../../../../../src/execution/worker";
 import { getJ2aRealTestnetDemoState } from "../../../../../../src/server/demo-state";
 import { DemoStateConflictError } from "../../../../../../src/server/supabase-demo-state-repository";
 import { verifySealedPae } from "../../../../../../src/pae/sign-verify";
+import { getAuthorizedReviewedAssessment } from "../../../../../../src/demo/authorized-assessment-lineage";
 
 const EXECUTION_CONFIRMATION = "SUBMIT EXACT TESTNET DEMO TRANSFER";
 
@@ -33,14 +34,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A current READY read-only Circle preflight is required before execution." }, { status: 409 });
   }
   const aggregate = state.store.get(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID);
-  const assessment = state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID);
   const sealedPae = state.getSealedPae(J2A_DEMO_OBLIGATION_ID);
   const authorization = state.getAuthorizationArtifacts(J2A_DEMO_OBLIGATION_ID);
-  if (!sealedPae || !assessment || !authorization) {
+  if (!sealedPae || !authorization) {
+    return NextResponse.json({ error: "A current LIVE_AI PAY assessment, PASS assurance, and sealed PAE are required." }, { status: 409 });
+  }
+  const assessment = getAuthorizedReviewedAssessment(
+    state.store, J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID, aggregate.aggregate_version, authorization, sealedPae,
+  );
+  if (!assessment) {
     return NextResponse.json({ error: "A current LIVE_AI PAY assessment, PASS assurance, and sealed PAE are required." }, { status: 409 });
   }
   if (body.expected_version !== aggregate.aggregate_version || preflight.evidence_sha256 !== aggregate.evidence_hashes[0] ||
-      assessment.record.aggregate_version !== String(aggregate.aggregate_version) || assessment.record.provider_mode !== "LIVE_AI" ||
+      assessment.record.aggregate_version !== sealedPae.payload.approval_evidence[0]?.reviewed_aggregate_version || assessment.record.provider_mode !== "LIVE_AI" ||
       assessment.record.decision !== "PAY" || assessment.record.missing_evidence.length !== 0 ||
       (assessment.record.race?.result.validated_findings.length ?? 0) !== 0 ||
       authorization.assurance_record.result !== "PASS" ||

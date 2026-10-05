@@ -19,6 +19,114 @@ import { POST as executeDemo } from "../app/api/internal/demo/real-testnet-payme
 import { POST as authorizeDemo } from "../app/api/internal/demo/real-testnet-payment/authorize/route";
 import { buildJ2aExecutionPacket } from "../src/demo/real-testnet-payment";
 
+function authorizedLineageFixture(overrides: {
+  assessmentId?: string;
+  historyAssessmentId?: string;
+  historyHash?: string;
+  historyAggregateVersion?: string;
+} = {}) {
+  const evidenceHash = "a".repeat(64);
+  const assessmentHash = "c".repeat(64);
+  const paeHash = "b".repeat(64);
+  const approvalRecordHash = "d".repeat(64);
+  const expires = new Date(Date.now() + 60 * 60_000).toISOString();
+  const assessmentId = overrides.assessmentId ?? "ASM-J2A-REVIEWED-V3";
+  const assessment = {
+    assessment_id: overrides.historyAssessmentId ?? assessmentId,
+    organization_id: "ORG-TAMEION-TESTNET-DEMO",
+    obligation_id: "DEMO-ARC-TESTNET-001",
+    aggregate_version: overrides.historyAggregateVersion ?? "3",
+    decision: "PAY",
+    provider_mode: "LIVE_AI",
+    provider_name: "NVIDIA Build",
+    model_id: "nvidia/nemotron-3-super-120b-a12b",
+    model_config_version: "test-config",
+    missing_evidence: [],
+    reasons: [],
+    race: { result: { validated_findings: [] } },
+  };
+  const evidence = {
+    approval_id: "APR-J2A-1",
+    organization_id: "ORG-TAMEION-TESTNET-DEMO",
+    obligation_id: "DEMO-ARC-TESTNET-001",
+    actor_id: "USR-PRIME-01",
+    actor_role: "PRIME",
+    authority_version: "1",
+    reviewed_aggregate_version: "3",
+    authorized_aggregate_version: "4",
+    approved_at: "2026-10-05T05:00:00.000Z",
+    policy_version: "J2A-1",
+    approval_record_hash: approvalRecordHash,
+    assessment_id: assessmentId,
+    assessment_hash: assessmentHash,
+  };
+  const sealed = {
+    instruction_hash: paeHash,
+    signature: "e".repeat(128),
+    payload: {
+      instruction_id: "PAE-J2A-1", signing_key_id: "J2A-KEY-1", signing_algorithm: "Ed25519", pae_schema_version: "PAE-P0-1",
+      organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_ids: ["DEMO-ARC-TESTNET-001"],
+      evidence_hashes: [evidenceHash], counterparty_id: "CP-J2A-1", counterparty_version: "1",
+      source_wallet_ref: "9fe9c001-a044-5f9a-8997-165474887952", source_wallet_version: "1",
+      destination_ref: "CIRCLE-DCW-01769e53-cfbe-57aa-ba88-c787b8cba2d3", destination_version: "1",
+      destination_address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9",
+      amount: "5.000000", atomic_amount: "5000000", asset: "USDC", network: "ARC_TESTNET",
+      policy_version: "J2A-1", approval_evidence: [evidence], assurance_hash: "f".repeat(64),
+      aggregate_version: "4", expiry: expires, nonce: "nonce-J2A-1", idempotency_key: "j2a-exact-key",
+    },
+  };
+  const preflight = {
+    readiness: "READY",
+    evidence_sha256: evidenceHash,
+    captured_at: "2026-10-04T10:00:00.000Z",
+    organization_id: "ORG-TAMEION-TESTNET-DEMO",
+    obligation_id: "DEMO-ARC-TESTNET-001",
+    amount: "5.000000",
+    asset: "USDC",
+    network: "ARC_TESTNET",
+    source_wallet: { id: "9fe9c001-a044-5f9a-8997-165474887952", address: "0x8a5ec63c8bc7a4d4b4f0134e034bda4c24043e95", network: "ARC_TESTNET", state: "LIVE", wallet_set_id: "2b72f116-16da-591a-9212-5382388a35c4" },
+    destination_wallet: { id: "01769e53-cfbe-57aa-ba88-c787b8cba2d3", address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9", name: "Tameion Test Counterparty", network: "ARC_TESTNET", state: "LIVE", wallet_set_id: "2b72f116-16da-591a-9212-5382388a35c4" },
+    provider_token: { id: "native-arc-usdc", symbol: "USDC", decimals: 6, native: true },
+    source_balance: "10.000000", estimated_network_fee: "0.001000", max_network_fee: "0.002000", max_total_debit: "5.012000",
+    business_payment_instruction: {
+      payer: { organization_id: "ORG-TAMEION-TESTNET-DEMO", display_name: "Tameion Testnet Demonstration Organization" },
+      beneficiary: { beneficiary_id: "CP-J2A-1", display_name: "Tameion Test Counterparty" },
+      commercial: { obligation_id: "DEMO-ARC-TESTNET-001", classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT", invoice_reference: "DEMO-ARC-TESTNET-001", invoice_date: "2026-10-04", effective_due_date: "2026-10-04", payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE", source_evidence_id: "J2A-DEMO-OBLIGATION-SYNTHETIC-EVIDENCE-001" },
+    },
+  };
+  const aggregate = {
+    organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001", aggregate_version: 4,
+    evidence_hashes: [evidenceHash], source_wallet_status: "ACTIVE", source_wallet_version: 1,
+    destination_ref: "CIRCLE-DCW-01769e53-cfbe-57aa-ba88-c787b8cba2d3", destination_version: 1,
+    destination_verification_status: "VERIFIED", destination_operational_status: "ACTIVE",
+    counterparty_id: "CP-J2A-1", counterparty_version: 1,
+  };
+  const authorization = {
+    approval_record: {
+      approval_id: evidence.approval_id, organization_id: evidence.organization_id, obligation_id: evidence.obligation_id,
+      actor_id: evidence.actor_id, actor_role: evidence.actor_role, action: "APPROVE", authority_version: evidence.authority_version,
+      reviewed_aggregate_version: "3", authorized_aggregate_version: "4", policy_version: evidence.policy_version,
+      previous_state: "REVIEWED", new_state: "AUTHORIZED", approved_at: evidence.approved_at,
+      reason_hash: "1".repeat(64), assessment_id: assessmentId, assessment_hash: assessmentHash,
+    },
+    approval_record_hash: approvalRecordHash,
+    assurance_record: { organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001", result: "PASS", aggregate_version: "4" },
+    assurance_hash: sealed.payload.assurance_hash,
+    sealed_pae: sealed,
+  };
+  return {
+    evidenceHash,
+    assessmentHash,
+    paeHash,
+    assessment,
+    history: [{ record: assessment, hash: overrides.historyHash ?? assessmentHash }],
+    preflight,
+    aggregate,
+    sealed,
+    authorization,
+  };
+}
+
 afterEach(() => vi.unstubAllEnvs());
 
 function stateWithoutPreflight() {
@@ -115,6 +223,141 @@ describe("J2A real-testnet API gates", () => {
     expect(data.execution.status).toBe("UNKNOWN");
   });
 
+  it("retains the exact reviewed PAY assessment and builds a packet after approval advances aggregate v3 to v4", async () => {
+    const fixture = authorizedLineageFixture();
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { getExecutionRecord: vi.fn(() => null), recoverSubmittingByIdempotencyKey: vi.fn(), reconcilePendingByIdempotencyKey: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.current_assessment).toMatchObject({ assessment_id: "ASM-J2A-REVIEWED-V3", assessment_hash: fixture.assessmentHash, decision: "PAY", provider_mode: "LIVE_AI" });
+    expect(data.execution_packet).not.toBeNull();
+    expect(data.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
+    expect(data.authorization_current).toBe(true);
+  });
+
+  it("fails closed when the authorization evidence does not match the assessment history identity", async () => {
+    const fixture = authorizedLineageFixture({ historyAssessmentId: "ASM-OTHER", historyHash: "9".repeat(64) });
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { getExecutionRecord: vi.fn(() => null), recoverSubmittingByIdempotencyKey: vi.fn(), reconcilePendingByIdempotencyKey: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.current_assessment).toBeNull();
+    expect(data.execution_packet).toBeNull();
+    expect(data.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
+    expect(data.authorization_current).toBe(false);
+  });
+
+  it("fails closed when the reviewed assessment aggregate version differs from approval evidence", async () => {
+    const fixture = authorizedLineageFixture({ historyAggregateVersion: "2" });
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { getExecutionRecord: vi.fn(() => null), recoverSubmittingByIdempotencyKey: vi.fn(), reconcilePendingByIdempotencyKey: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.current_assessment).toBeNull();
+    expect(data.execution_packet).toBeNull();
+    expect(data.authorization_current).toBe(false);
+  });
+
+  it("keeps pre-authorization status on the current assessment path", async () => {
+    const fixture = authorizedLineageFixture();
+    const current = { record: fixture.assessment, hash: fixture.assessmentHash };
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => ({ ...fixture.aggregate, aggregate_version: 3 })),
+        getCurrentAssessment: vi.fn(() => current),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => undefined),
+      getAuthorizationArtifacts: vi.fn(() => undefined),
+      worker: { getExecutionRecord: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.current_assessment).toMatchObject({ assessment_id: current.record.assessment_id, decision: "PAY" });
+    expect(data.execution_packet).toBeNull();
+    expect(data.authorization_current).toBe(false);
+  });
+
+  it("uses reviewed assessment lineage after authorization but stays locked without exact packet authorization", async () => {
+    const fixture = authorizedLineageFixture();
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+    const execute = vi.fn();
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", "0".repeat(64));
+
+    const response = await executeDemo(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expected_version: 4,
+        packet_sha256: packet.packet_sha256,
+        pae_instruction_hash: fixture.paeHash,
+        confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER",
+      }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toMatch(/separately authorizes this exact packet/);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("refuses execution before a current authorized intent exists", async () => {
     const response = await executeDemo(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
       method: "POST",
@@ -205,67 +448,21 @@ describe("J2A real-testnet API gates", () => {
   });
 
   it.each(["wrong request packet hash", "wrong Prime packet authorization hash"])("keeps provider submission locked for %s", async (failure) => {
-    const evidenceHash = "a".repeat(64);
-    const assessmentHash = "c".repeat(64);
-    const paeHash = "b".repeat(64);
-    const expires = new Date(Date.now() + 60 * 60_000).toISOString();
-    const preflight = {
-      readiness: "READY",
-      evidence_sha256: evidenceHash,
-      captured_at: "2026-10-04T10:00:00.000Z",
-      organization_id: "ORG-TAMEION-TESTNET-DEMO",
-      obligation_id: "DEMO-ARC-TESTNET-001",
-      amount: "5.000000",
-      asset: "USDC",
-      network: "ARC_TESTNET",
-      source_wallet: { id: "9fe9c001-a044-5f9a-8997-165474887952", address: "0x8a5ec63c8bc7a4d4b4f0134e034bda4c24043e95", network: "ARC_TESTNET", state: "LIVE", wallet_set_id: "2b72f116-16da-591a-9212-5382388a35c4" },
-      destination_wallet: { id: "01769e53-cfbe-57aa-ba88-c787b8cba2d3", address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9", name: "Tameion Test Counterparty", network: "ARC_TESTNET", state: "LIVE", wallet_set_id: "2b72f116-16da-591a-9212-5382388a35c4" },
-      provider_token: { id: "native-arc-usdc", symbol: "USDC", decimals: 6, native: true },
-      source_balance: "10.000000", estimated_network_fee: "0.001000", max_network_fee: "0.002000", max_total_debit: "5.012000",
-      business_payment_instruction: {
-        payer: { organization_id: "ORG-TAMEION-TESTNET-DEMO", display_name: "Tameion Testnet Demonstration Organization" },
-        beneficiary: { beneficiary_id: "CP-01769e53-cfbe-57aa-ba88-c787b8cba2d3", display_name: "Tameion Test Counterparty" },
-        commercial: { obligation_id: "DEMO-ARC-TESTNET-001", classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT", invoice_reference: "DEMO-ARC-TESTNET-001", invoice_date: "2026-10-04", effective_due_date: "2026-10-04", payment_basis: "PROTOTYPE_CASH_PAYMENT_DUE_ON_INVOICE_DATE", source_evidence_id: "J2A-DEMO-OBLIGATION-SYNTHETIC-EVIDENCE-001" },
-      },
-    };
-    const aggregate = {
-      organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001", aggregate_version: 7,
-      evidence_hashes: [evidenceHash], source_wallet_status: "ACTIVE", source_wallet_version: 1,
-      destination_ref: "CIRCLE-DCW-01769e53-cfbe-57aa-ba88-c787b8cba2d3", destination_version: 1,
-      destination_verification_status: "VERIFIED", destination_operational_status: "ACTIVE",
-      counterparty_id: "CP-01769e53-cfbe-57aa-ba88-c787b8cba2d3", counterparty_version: 1,
-    };
-    const assessment = {
-      assessment_id: "ASM-J2A-1", aggregate_version: "7", decision: "PAY", provider_mode: "LIVE_AI",
-      provider_name: "NVIDIA Build", model_id: "nvidia/nemotron-3-super-120b-a12b", model_config_version: "test-config",
-      missing_evidence: [], race: { result: { validated_findings: [] } }, reasons: [],
-    };
-    const sealed = {
-      instruction_hash: paeHash,
-      payload: {
-        instruction_id: "PAE-J2A-1", signing_key_id: "J2A-KEY-1", organization_id: "ORG-TAMEION-TESTNET-DEMO",
-        obligation_ids: ["DEMO-ARC-TESTNET-001"], aggregate_version: "7", evidence_hashes: [evidenceHash],
-        source_wallet_ref: "9fe9c001-a044-5f9a-8997-165474887952", destination_address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9",
-        amount: "5.000000", atomic_amount: "5000000", asset: "USDC", network: "ARC_TESTNET", expiry: expires,
-        idempotency_key: "j2a-exact-key", approval_evidence: [{ assessment_id: "ASM-J2A-1", assessment_hash: assessmentHash }],
-      },
-    };
+    const fixture = authorizedLineageFixture();
     const packet = buildJ2aExecutionPacket({
-      preflight: preflight as never, aggregate: aggregate as never, assessment: assessment as never,
-      assessmentHash, sealedPae: sealed as never,
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
     });
     const execute = vi.fn();
     stateRef.current = {
-      lastPreflight: preflight,
+      lastPreflight: fixture.preflight,
       store: {
-        get: vi.fn(() => aggregate),
-        getCurrentAssessment: vi.fn(() => ({ record: assessment, hash: assessmentHash })),
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
       },
-      getSealedPae: vi.fn(() => sealed),
-      getAuthorizationArtifacts: vi.fn(() => ({
-        assurance_record: { result: "PASS" },
-        sealed_pae: sealed,
-      })),
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
       worker: { execute },
       flush: vi.fn(),
     } as unknown as Record<string, unknown>;
@@ -277,9 +474,9 @@ describe("J2A real-testnet API gates", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        expected_version: 7,
+        expected_version: 4,
         packet_sha256: requestPacketHash,
-        pae_instruction_hash: paeHash,
+        pae_instruction_hash: fixture.paeHash,
         confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER",
       }),
     }));
