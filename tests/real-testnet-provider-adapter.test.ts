@@ -325,6 +325,9 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(await new ArcCircleProviderAdapter(api).getStatusByIdempotencyKey("exact-demo-key")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
     expect(api.createTransaction).not.toHaveBeenCalled();
     expect(api.listTransactions).toHaveBeenCalledTimes(1);
+    expect(api.listTransactions).toHaveBeenCalledWith({
+      txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
+    });
     expect(api.getTransaction).toHaveBeenCalledTimes(1);
   });
 

@@ -113,7 +113,7 @@ export interface J2aPreflightClient {
   getWallet(input: { id: string }): Promise<unknown>;
   getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
-  listTransactions(input: { blockchain: string; txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
+  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
 }
 
 type J2aWallet = { id: string; address: string; network: "ARC_TESTNET"; state: "LIVE"; wallet_set_id: string; name?: string };
@@ -318,7 +318,7 @@ export async function runJ2aReadOnlyPreflight(
 
     const [feeResponse, transactionsResponse] = await Promise.all([
       providerClient.estimateTransferFee({ walletId: J2A_DEMO_SOURCE.id, tokenId, amount: [J2A_TRANSFER_AMOUNT], destinationAddress: J2A_DEMO_DESTINATION.address }),
-      providerClient.listTransactions({ blockchain: ARC_TESTNET_BLOCKCHAIN, txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" }),
+      providerClient.listTransactions({ txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" }),
     ]);
     const feeParsed = feeResponseSchema.safeParse(feeResponse);
     const transactionsParsed = transactionsResponseSchema.safeParse(transactionsResponse);

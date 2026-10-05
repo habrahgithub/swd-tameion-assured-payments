@@ -97,7 +97,7 @@ export interface J2aCircleClient {
   getWallet(input: { id: string }): Promise<unknown>;
   getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
-  listTransactions(input: { blockchain: string; txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
+  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
   getTransaction(input: { id: string }): Promise<unknown>;
   createTransaction(input: { amount: string[]; destinationAddress: string; tokenId: string; walletId: string; fee: { type: "level"; config: { feeLevel: "MEDIUM" } }; idempotencyKey: string; refId: string }): Promise<unknown>;
 }
@@ -269,7 +269,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
 
   async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
     const response = listedTransactionsSchema.safeParse(await this.client().listTransactions({
-      blockchain: "ARC-TESTNET", txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
+      txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
     }));
     if (!response.success) return { status: "UNKNOWN" };
     const found = response.data.data.transactions.filter((value) => {

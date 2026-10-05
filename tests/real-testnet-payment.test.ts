@@ -88,11 +88,12 @@ describe("J2A real Arc Testnet demo preflight", () => {
       amount: [J2A_TRANSFER_AMOUNT],
       destinationAddress: J2A_DEMO_DESTINATION.address,
     }));
-    expect(api.listTransactions).toHaveBeenCalledWith(expect.objectContaining({
-      blockchain: "ARC-TESTNET",
+    expect(api.listTransactions).toHaveBeenCalledWith({
       txType: "OUTBOUND",
       walletIds: [J2A_DEMO_SOURCE.id],
-    }));
+      pageSize: 50,
+      order: "DESC",
+    });
   });
 
   it("uses Circle's provider-reported native Arc USDC precision while retaining the fixed six-place demo amount", async () => {
