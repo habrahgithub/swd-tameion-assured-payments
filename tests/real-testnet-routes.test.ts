@@ -248,13 +248,17 @@ describe("J2A real-testnet API gates", () => {
     expect(data.authorization_current).toBe(true);
   });
 
-  it("fails closed when the authorization evidence does not match the assessment history identity", async () => {
+  it("keeps current-version authorization fail-closed when its reviewed lineage is malformed", async () => {
     const fixture = authorizedLineageFixture({ historyAssessmentId: "ASM-OTHER", historyHash: "9".repeat(64) });
+    const unboundCurrentAssessment = {
+      record: { ...fixture.assessment, assessment_id: "ASM-CURRENT-V4", aggregate_version: "4" },
+      hash: "8".repeat(64),
+    };
     stateRef.current = {
       lastPreflight: fixture.preflight,
       store: {
         get: vi.fn(() => fixture.aggregate),
-        getCurrentAssessment: vi.fn(() => null),
+        getCurrentAssessment: vi.fn(() => unboundCurrentAssessment),
         getAssessmentHistory: vi.fn(() => fixture.history),
       },
       getSealedPae: vi.fn(() => fixture.sealed),
@@ -271,6 +275,36 @@ describe("J2A real-testnet API gates", () => {
     expect(data.execution_packet).toBeNull();
     expect(data.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
     expect(data.authorization_current).toBe(false);
+  });
+
+  it("shows a fresh current assessment when the latest authorization is stale", async () => {
+    const fixture = authorizedLineageFixture();
+    fixture.aggregate.aggregate_version = 5;
+    const currentAssessment = {
+      record: { ...fixture.assessment, assessment_id: "ASM-J2A-FRESH-V5", aggregate_version: "5" },
+      hash: "7".repeat(64),
+    };
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => currentAssessment),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { getExecutionRecord: vi.fn(() => null), recoverSubmittingByIdempotencyKey: vi.fn(), reconcilePendingByIdempotencyKey: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.current_assessment).toMatchObject({ assessment_id: "ASM-J2A-FRESH-V5", assessment_hash: currentAssessment.hash, decision: "PAY" });
+    expect(data.execution_packet).toBeNull();
+    expect(data.authorization_current).toBe(false);
+    expect(data.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
   });
 
   it("fails closed when the reviewed assessment aggregate version differs from approval evidence", async () => {

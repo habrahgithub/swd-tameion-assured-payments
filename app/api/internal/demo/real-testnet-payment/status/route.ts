@@ -19,7 +19,8 @@ export async function GET() {
 
   if (preflight?.readiness === "READY") {
     aggregate = state.store.get(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID);
-    assessment = authorization
+    const authorizationClaimsCurrentVersion = authorization?.approval_record.authorized_aggregate_version === String(aggregate.aggregate_version);
+    assessment = authorizationClaimsCurrentVersion
       ? getAuthorizedReviewedAssessment(state.store, J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID, aggregate.aggregate_version, authorization, sealedPae) ?? null
       : state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID) ?? null;
     if (sealedPae) {
