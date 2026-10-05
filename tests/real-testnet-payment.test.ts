@@ -10,6 +10,7 @@ import {
   buildJ2aExecutionPacket,
   buildJ2aDemoObligation,
   buildJ2aDemoAggregate,
+  buildJ2aCircleArcExecutionInstruction,
   buildJ2aIntentIdentity,
   hashJ2aPreflightEvidence,
   hashJ2aExecutionPacket,
@@ -92,6 +93,74 @@ describe("J2A real Arc Testnet demo preflight", () => {
       txType: "OUTBOUND",
       walletIds: [J2A_DEMO_SOURCE.id],
     }));
+  });
+
+  it("uses Circle's provider-reported native Arc USDC precision while retaining the fixed six-place demo amount", async () => {
+    const api = client({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+    });
+
+    const result = await runJ2aReadOnlyPreflight(api, () => new Date(capturedAt));
+
+    expect(result).toMatchObject({
+      readiness: "READY",
+      amount: "5.000000",
+      provider_token: { id: "native-arc-usdc", symbol: "USDC", decimals: 18, native: true },
+      source_balance: "19.989211477825042",
+      estimated_network_fee: "0.0011679675",
+      max_network_fee: J2A_MAX_NETWORK_FEE,
+      max_total_debit: J2A_MAX_TOTAL_DEBIT,
+    });
+    if (result.readiness !== "READY") throw new Error("expected ready preflight");
+    expect(buildJ2aCircleArcExecutionInstruction(result, "fixed-demo-execution")).toMatchObject({
+      decimals: 18,
+      amount: "5.000000",
+      max_network_fee: "0.002000",
+      circle_request: { amount: ["5.000000"], tokenId: "native-arc-usdc" },
+    });
+    expect(hashJ2aPreflightEvidence({
+      ...result,
+      provider_token: { ...result.provider_token, decimals: 6 },
+    } as unknown as Record<string, unknown>)).not.toBe(result.evidence_sha256);
+    expect(api.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({ amount: ["5.000000"] }));
+  });
+
+  it("compares provider balance and fee ceilings at all reported decimals without truncation", async () => {
+    const belowRequiredBalance = client({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "5.001167967499999999",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+    });
+    expect(await runJ2aReadOnlyPreflight(belowRequiredBalance)).toMatchObject({ readiness: "BLOCKED", blocker: "INSUFFICIENT_BALANCE" });
+
+    const overFeeCap = client({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.002000000000000001" } } })),
+    });
+    expect(await runJ2aReadOnlyPreflight(overFeeCap)).toMatchObject({ readiness: "BLOCKED", blocker: "FEE_CAP_EXCEEDED" });
+
+    const highPrecisionPriorOutbound = client({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+      listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction({
+        transactionType: "OUTBOUND",
+        destinationAddress: J2A_DEMO_DESTINATION.address,
+        amounts: ["5.000000000000000000"],
+      })] } })),
+    });
+    expect(await runJ2aReadOnlyPreflight(highPrecisionPriorOutbound)).toMatchObject({ readiness: "BLOCKED", blocker: "PRIOR_MATCHING_OUTBOUND" });
   });
 
   it("keeps the demo business dates stable across preflight capture dates", async () => {

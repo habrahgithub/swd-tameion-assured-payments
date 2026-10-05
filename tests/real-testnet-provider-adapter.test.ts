@@ -67,6 +67,75 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(circleRequest?.refId).not.toContain("DEMO-ARC");
   });
 
+  it("submits the fixed six-place amount against the reviewed provider-reported 18-decimal token", async () => {
+    const api = createClient({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+    });
+    const authorized = await runJ2aReadOnlyPreflight(api);
+    expect(authorized).toMatchObject({ readiness: "READY", provider_token: { decimals: 18 } });
+    const adapter = new ArcCircleProviderAdapter(api, () => authorized);
+
+    await adapter.submitTransfer({
+      idempotencyKey: "idem-ORG-TAMEION-TESTNET-DEMO-DEMO-ARC-TESTNET-001-2",
+      sourceWalletRef: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address,
+      atomicAmount: "5000000",
+      asset: "USDC",
+      network: "ARC_TESTNET",
+    });
+
+    expect(vi.mocked(api.createTransaction).mock.calls[0]?.[0]).toMatchObject({
+      amount: ["5.000000"],
+      tokenId: "native-arc-usdc",
+      fee: { type: "level", config: { feeLevel: "MEDIUM" } },
+    });
+  });
+
+  it("blocks pre-submit when provider-reported precision changes after the reviewed preflight", async () => {
+    const authorizedApi = createClient({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+    });
+    const authorized = await runJ2aReadOnlyPreflight(authorizedApi);
+    expect(authorized.readiness).toBe("READY");
+    const changedPrecisionApi = createClient();
+
+    await expect(new ArcCircleProviderAdapter(changedPrecisionApi, () => authorized).submitTransfer({
+      idempotencyKey: "exact-demo-key",
+      sourceWalletRef: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address,
+      atomicAmount: "5000000",
+      asset: "USDC",
+      network: "ARC_TESTNET",
+    })).rejects.toThrow();
+    expect(changedPrecisionApi.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps reconciliation UNKNOWN when current provider precision differs from the reviewed preflight", async () => {
+    const authorizedApi = createClient({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.0011679675" } } })),
+    });
+    const authorized = await runJ2aReadOnlyPreflight(authorizedApi);
+    expect(authorized.readiness).toBe("READY");
+    const changedPrecisionApi = createClient();
+    const adapter = new ArcCircleProviderAdapter(changedPrecisionApi, () => authorized);
+
+    expect(await adapter.getStatus("circle-tx-1", "exact-demo-key")).toEqual({ status: "UNKNOWN" });
+    expect(changedPrecisionApi.getTransaction).not.toHaveBeenCalled();
+    expect(changedPrecisionApi.createTransaction).not.toHaveBeenCalled();
+  });
+
   it("blocks before submission when the reviewed business instruction changes", async () => {
     const api = createClient();
     const authorized = await runJ2aReadOnlyPreflight(api);
@@ -180,6 +249,33 @@ describe("Arc Circle provider adapter for J2A", () => {
       amounts: ["5.000000"],
     });
     expect(result.ref_id).not.toBe("exact-demo-key");
+  });
+
+  it("reconciles provider-normalized 18-decimal amount and fee to the six-decimal Tameion intent", async () => {
+    const api = createClient({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "19.989211477825042",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 18, isNative: true, tokenAddress: null },
+      }] } })),
+      getTransaction: vi.fn(async () => ({ data: { transaction: {
+        id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+        destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000000000000000"], tokenId: "native-arc-usdc",
+        sourceAddress: J2A_DEMO_SOURCE.address, operation: "TRANSFER", refId: deriveJ2aCircleRefId("exact-demo-key"),
+        txHash: "0xabc123", networkFee: "0.0011679675", createDate: "2026-10-04T10:00:00.000Z",
+        updateDate: "2026-10-04T10:01:00.000Z",
+      } } })),
+    });
+
+    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+
+    expect(result).toMatchObject({
+      status: "CONFIRMED",
+      atomic_amount: "5000000",
+      provider_atomic_amount: "5000000000000000000",
+      provider_token_decimals: 18,
+      amounts: ["5.000000000000000000"],
+      network_fee: "0.0011679675",
+    });
   });
 
   it.each([

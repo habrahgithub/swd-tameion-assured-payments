@@ -14,6 +14,7 @@ import {
   type J2aPreflightResult,
 } from "../demo/real-testnet-payment";
 import { USDC_DECIMALS, atomicToDecimal, decimalToAtomic } from "../domain/numeric";
+import { decimalToAtomicAtScale } from "../j0d-spike/intent";
 
 /**
  * Provider adapter boundary: the only place allowed to talk to a real
@@ -59,6 +60,9 @@ export interface StatusResult {
   network?: string;
   amounts?: string[];
   atomic_amount?: string;
+  /** Circle-native atomic quantity and scale, distinct from Tameion's 6-place settlement units. */
+  provider_atomic_amount?: string;
+  provider_token_decimals?: number;
   operation?: string;
   ref_id?: string;
   network_fee?: string | null;
@@ -116,6 +120,7 @@ const tokenBalancesSchema = z.object({ data: z.object({ tokenBalances: z.array(z
 function statusForCircleTransaction(
   value: unknown,
   tokenId: string,
+  tokenDecimals: number,
   providerRef: string,
   expectedIdempotencyKey?: string,
 ): StatusResult {
@@ -138,22 +143,24 @@ function statusForCircleTransaction(
     ...(tx.amounts === undefined ? {} : { amounts: tx.amounts }),
     ...(tx.operation === undefined ? {} : { operation: tx.operation }),
     ...(tx.refId === undefined ? {} : { ref_id: tx.refId }),
+    provider_token_decimals: tokenDecimals,
     network_fee: fee ?? null,
     provider_created_at: tx.createDate ?? null,
     provider_updated_at: tx.updateDate ?? null,
     reconciled_at: reconciledAt,
   };
-  let atomicAmount: string | undefined;
-  try {
-    if (tx.amounts?.length === 1) atomicAmount = decimalToAtomic(tx.amounts[0], USDC_DECIMALS);
-  } catch {
-    atomicAmount = undefined;
+  const providerAmount = tx.amounts?.length === 1 ? decimalToAtomicAtScale(tx.amounts[0], tokenDecimals) : null;
+  if (providerAmount !== null) {
+    evidence.provider_atomic_amount = providerAmount.toString(10);
+    const settlementScale = 10n ** BigInt(tokenDecimals - USDC_DECIMALS);
+    if (providerAmount % settlementScale === 0n) evidence.atomic_amount = (providerAmount / settlementScale).toString(10);
   }
-  if (atomicAmount !== undefined) evidence.atomic_amount = atomicAmount;
+  const expectedProviderAmount = decimalToAtomicAtScale(J2A_TRANSFER_AMOUNT, tokenDecimals);
+  const amountMatchesIntent = providerAmount !== null && expectedProviderAmount !== null && providerAmount === expectedProviderAmount;
 
   const exactIdentity = tx.id === providerRef && tx.blockchain === "ARC-TESTNET" &&
     tx.walletId === J2A_DEMO_SOURCE.id && tx.destinationAddress?.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
-    tx.tokenId === tokenId && tx.amounts?.length === 1 && tx.amounts[0] === J2A_TRANSFER_AMOUNT &&
+    tx.tokenId === tokenId && amountMatchesIntent &&
     tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
   if (!exactIdentity) return { status: "UNKNOWN", ...evidence };
   if (["FAILED", "DENIED", "CANCELLED", "STUCK"].includes(tx.state ?? "")) return { status: "FAILED", ...evidence };
@@ -161,8 +168,9 @@ function statusForCircleTransaction(
 
   try {
     if (!fee) return { status: "UNKNOWN", ...evidence };
-    const feeAtomic = BigInt(decimalToAtomic(fee, USDC_DECIMALS));
-    if (feeAtomic > BigInt(decimalToAtomic(J2A_MAX_NETWORK_FEE, USDC_DECIMALS))) return { status: "UNKNOWN", ...evidence };
+    const feeAtomic = decimalToAtomicAtScale(fee, tokenDecimals);
+    const maxFeeAtomic = decimalToAtomicAtScale(J2A_MAX_NETWORK_FEE, tokenDecimals);
+    if (feeAtomic === null || maxFeeAtomic === null || feeAtomic > maxFeeAtomic) return { status: "UNKNOWN", ...evidence };
   } catch {
     return { status: "UNKNOWN", ...evidence };
   }
@@ -204,6 +212,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         preflight.beneficiary_id !== authorized.beneficiary_id ||
         preflight.source_wallet.wallet_set_id !== authorized.source_wallet.wallet_set_id ||
         preflight.destination_wallet.wallet_set_id !== authorized.destination_wallet.wallet_set_id ||
+        preflight.provider_token.decimals !== authorized.provider_token.decimals ||
         hashJ2aBusinessPaymentInstruction(preflight.business_payment_instruction) !==
           hashJ2aBusinessPaymentInstruction(authorized.business_payment_instruction) ||
         preflight.provider_token.id !== authorized.provider_token.id ||
@@ -231,10 +240,22 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: J2A_DEMO_SOURCE.id, includeAll: true }));
     if (!balances.success) return { status: "UNKNOWN" };
     const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) => token.symbol === "USDC" &&
-      token.blockchain === "ARC-TESTNET" && token.decimals === 6 && token.isNative === true && token.tokenAddress === null &&
+      token.blockchain === "ARC-TESTNET" && typeof token.decimals === "number" && Number.isSafeInteger(token.decimals) &&
+      token.decimals >= USDC_DECIMALS && token.decimals <= 36 && token.isNative === true && token.tokenAddress === null &&
       typeof token.id === "string" && token.id.length > 0);
-    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string") return { status: "UNKNOWN" };
-    return statusForCircleTransaction(await client.getTransaction({ id: providerRef }), nativeUsdc[0].token.id, providerRef, idempotencyKey);
+    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string" || typeof nativeUsdc[0].token.decimals !== "number") return { status: "UNKNOWN" };
+    const reviewedPreflight = this.authorizedPreflight?.();
+    if (reviewedPreflight?.readiness === "READY" &&
+        (nativeUsdc[0].token.id !== reviewedPreflight.provider_token.id || nativeUsdc[0].token.decimals !== reviewedPreflight.provider_token.decimals)) {
+      return { status: "UNKNOWN" };
+    }
+    return statusForCircleTransaction(
+      await client.getTransaction({ id: providerRef }),
+      nativeUsdc[0].token.id,
+      nativeUsdc[0].token.decimals,
+      providerRef,
+      idempotencyKey,
+    );
   }
 
   async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {

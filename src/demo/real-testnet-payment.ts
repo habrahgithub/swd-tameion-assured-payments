@@ -4,7 +4,8 @@ import { z } from "zod";
 
 import type { AuthorityAggregate } from "../authority/aggregate";
 import type { DurableAssessmentRecord, SealedPae } from "../domain/schemas";
-import { USDC_DECIMALS, decimalToAtomic } from "../domain/numeric";
+import { USDC_DECIMALS } from "../domain/numeric";
+import { decimalToAtomicAtScale, MAX_PROVIDER_NUMERIC_LENGTH } from "../j0d-spike/intent";
 import { ARC_TESTNET_BLOCKCHAIN, createCircleArcJ2aReadOnlyClient } from "../j0d-spike/circle-arc-client";
 
 export const J2A_DEMO_WALLET_SET_ID = "2b72f116-16da-591a-9212-5382388a35c4";
@@ -116,7 +117,7 @@ export interface J2aPreflightClient {
 }
 
 type J2aWallet = { id: string; address: string; network: "ARC_TESTNET"; state: "LIVE"; wallet_set_id: string; name?: string };
-type J2aProviderToken = { id: string; symbol: "USDC"; decimals: 6; native: true };
+type J2aProviderToken = { id: string; symbol: "USDC"; decimals: number; native: true };
 
 const businessPaymentInstructionSchema = z.object({
   payer: z.object({
@@ -181,7 +182,7 @@ export type J2aPreflightResult =
     }
   | { readiness: "BLOCKED"; blocker: string; captured_at: string };
 
-const canonicalDecimalSchema = z.string().regex(/^(0|[1-9][0-9]*)\.[0-9]{6}$/);
+const providerDecimalSchema = z.string().min(1).max(MAX_PROVIDER_NUMERIC_LENGTH).regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/);
 const evidenceSha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export const j2aPreflightResultSchema = z.discriminatedUnion("readiness", [
   z.object({
@@ -194,12 +195,24 @@ export const j2aPreflightResultSchema = z.discriminatedUnion("readiness", [
     business_payment_instruction: businessPaymentInstructionSchema,
     source_wallet: z.object({ id: z.literal(J2A_DEMO_SOURCE.id), address: z.literal(J2A_DEMO_SOURCE.address), network: z.literal("ARC_TESTNET"), state: z.literal("LIVE"), wallet_set_id: z.literal(J2A_DEMO_WALLET_SET_ID) }).strict(),
     destination_wallet: z.object({ id: z.literal(J2A_DEMO_DESTINATION.id), address: z.literal(J2A_DEMO_DESTINATION.address), network: z.literal("ARC_TESTNET"), state: z.literal("LIVE"), wallet_set_id: z.literal(J2A_DEMO_WALLET_SET_ID), name: z.literal(J2A_DEMO_DESTINATION.name) }).strict(),
-    provider_token: z.object({ id: z.string().min(1), symbol: z.literal("USDC"), decimals: z.literal(6), native: z.literal(true) }).strict(),
-    source_balance: canonicalDecimalSchema, estimated_network_fee: canonicalDecimalSchema,
+    provider_token: z.object({ id: z.string().min(1), symbol: z.literal("USDC"), decimals: z.number().int().min(USDC_DECIMALS).max(36), native: z.literal(true) }).strict(),
+    source_balance: providerDecimalSchema, estimated_network_fee: providerDecimalSchema,
     captured_at: z.string().datetime({ offset: true }), prior_matching_outbound: z.literal(false), evidence_sha256: evidenceSha256Schema,
   }).strict(),
   z.object({ readiness: z.literal("BLOCKED"), blocker: z.string().min(1).max(100), captured_at: z.string().datetime({ offset: true }) }).strict(),
-]);
+]).superRefine((result, ctx) => {
+  if (result.readiness !== "READY") return;
+  const decimals = result.provider_token.decimals;
+  const values: Array<[string, string]> = [
+    ["source_balance", result.source_balance],
+    ["estimated_network_fee", result.estimated_network_fee],
+  ];
+  for (const [path, value] of values) {
+    if (decimalToAtomicAtScale(value, decimals) === null) {
+      ctx.addIssue({ code: "custom", path: [path], message: "provider amount must be exactly representable at provider-reported token decimals" });
+    }
+  }
+});
 
 function sha256(value: unknown): string {
   return createHash("sha256").update(canonicalize(value) ?? "").digest("hex");
@@ -235,15 +248,15 @@ export function hashJ2aExecutionPacket(packet: Record<string, unknown>): string 
   return sha256(packet);
 }
 
-function atomic(value: string): bigint {
-  return BigInt(decimalToAtomic(value, USDC_DECIMALS));
+function atomic(value: string, decimals: number): bigint | null {
+  return decimalToAtomicAtScale(value, decimals);
 }
 
 function blocked(blocker: string, now: () => Date): J2aPreflightResult {
   return { readiness: "BLOCKED", blocker, captured_at: now().toISOString() };
 }
 
-function matchingPriorOutbound(value: unknown, tokenId: string): boolean {
+function matchingPriorOutbound(value: unknown, tokenId: string, decimals: number): boolean {
   const transaction = z.object({
     transactionType: z.unknown().optional(), blockchain: z.unknown().optional(), walletId: z.unknown().optional(),
     destinationAddress: z.unknown().optional(), amounts: z.array(z.unknown()).optional(),
@@ -251,10 +264,12 @@ function matchingPriorOutbound(value: unknown, tokenId: string): boolean {
   }).passthrough().safeParse(value);
   if (!transaction.success) return false;
   const item = transaction.data;
-  return item.transactionType === "OUTBOUND" && item.blockchain === ARC_TESTNET_BLOCKCHAIN &&
+  const priorAmount = typeof item.amounts?.[0] === "string" ? decimalToAtomicAtScale(item.amounts[0], decimals) : null;
+  const expectedAmount = decimalToAtomicAtScale(J2A_TRANSFER_AMOUNT, decimals);
+  return expectedAmount !== null && priorAmount === expectedAmount && item.transactionType === "OUTBOUND" && item.blockchain === ARC_TESTNET_BLOCKCHAIN &&
     item.walletId === J2A_DEMO_SOURCE.id &&
     typeof item.destinationAddress === "string" && item.destinationAddress.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
-    item.tokenId === tokenId && item.amounts?.length === 1 && item.amounts[0] === J2A_TRANSFER_AMOUNT;
+    item.tokenId === tokenId && item.amounts?.length === 1;
 }
 
 export async function runJ2aReadOnlyPreflight(
@@ -284,12 +299,14 @@ export async function runJ2aReadOnlyPreflight(
     const balancesParsed = balanceResponseSchema.safeParse(balanceResponse);
     if (!balancesParsed.success) return blocked("INVALID_PROVIDER_BALANCE", now);
     const nativeUsdc = balancesParsed.data.data.tokenBalances.filter(({ token }) =>
-      token.symbol === "USDC" && token.blockchain === ARC_TESTNET_BLOCKCHAIN && token.decimals === 6 &&
+      token.symbol === "USDC" && token.blockchain === ARC_TESTNET_BLOCKCHAIN &&
+      typeof token.decimals === "number" && Number.isSafeInteger(token.decimals) && token.decimals >= USDC_DECIMALS && token.decimals <= 36 &&
       token.isNative === true && token.tokenAddress === null && typeof token.id === "string" && token.id.length > 0);
-    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string") return blocked("INVALID_PROVIDER_TOKEN", now);
+    if (nativeUsdc.length !== 1 || typeof nativeUsdc[0].token.id !== "string" || typeof nativeUsdc[0].token.decimals !== "number") return blocked("INVALID_PROVIDER_TOKEN", now);
     const tokenId = nativeUsdc[0].token.id;
-    const sourceBalanceResult = canonicalDecimalSchema.safeParse(nativeUsdc[0].amount);
-    if (!sourceBalanceResult.success) return blocked("INVALID_PROVIDER_BALANCE", now);
+    const tokenDecimals = nativeUsdc[0].token.decimals;
+    const sourceBalanceResult = providerDecimalSchema.safeParse(nativeUsdc[0].amount);
+    if (!sourceBalanceResult.success || decimalToAtomicAtScale(sourceBalanceResult.data, tokenDecimals) === null) return blocked("INVALID_PROVIDER_BALANCE", now);
     const sourceBalance = sourceBalanceResult.data;
 
     const [feeResponse, transactionsResponse] = await Promise.all([
@@ -300,13 +317,20 @@ export async function runJ2aReadOnlyPreflight(
     const transactionsParsed = transactionsResponseSchema.safeParse(transactionsResponse);
     if (!feeParsed.success || !transactionsParsed.success) return blocked("PROVIDER_QUERY_FAILED", now);
     const fee = feeParsed.data.data.medium.networkFee;
-    const feeResult = canonicalDecimalSchema.safeParse(fee);
-    if (!feeResult.success) return blocked("INVALID_FEE_ESTIMATE", now);
+    const feeResult = providerDecimalSchema.safeParse(fee);
+    if (!feeResult.success || decimalToAtomicAtScale(feeResult.data, tokenDecimals) === null) return blocked("INVALID_FEE_ESTIMATE", now);
     const estimatedNetworkFee = feeResult.data;
-    if (atomic(estimatedNetworkFee) > atomic(J2A_MAX_NETWORK_FEE)) return blocked("FEE_CAP_EXCEEDED", now);
-    if (atomic(J2A_TRANSFER_AMOUNT) + atomic(estimatedNetworkFee) > atomic(J2A_MAX_TOTAL_DEBIT)) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
-    if (atomic(sourceBalance) < atomic(J2A_TRANSFER_AMOUNT) + atomic(estimatedNetworkFee)) return blocked("INSUFFICIENT_BALANCE", now);
-    if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
+    const sourceBalanceAtomic = atomic(sourceBalance, tokenDecimals);
+    const transferAtomic = atomic(J2A_TRANSFER_AMOUNT, tokenDecimals);
+    const feeAtomic = atomic(estimatedNetworkFee, tokenDecimals);
+    const maxFeeAtomic = atomic(J2A_MAX_NETWORK_FEE, tokenDecimals);
+    const maxTotalDebitAtomic = atomic(J2A_MAX_TOTAL_DEBIT, tokenDecimals);
+    if (sourceBalanceAtomic === null) return blocked("INVALID_PROVIDER_BALANCE", now);
+    if (transferAtomic === null || feeAtomic === null || maxFeeAtomic === null || maxTotalDebitAtomic === null) return blocked("INVALID_FEE_ESTIMATE", now);
+    if (feeAtomic > maxFeeAtomic) return blocked("FEE_CAP_EXCEEDED", now);
+    if (transferAtomic + feeAtomic > maxTotalDebitAtomic) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
+    if (sourceBalanceAtomic < transferAtomic + feeAtomic) return blocked("INSUFFICIENT_BALANCE", now);
+    if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
 
     const capturedAt = now().toISOString();
     const businessPaymentInstruction: BusinessPaymentInstruction = {
@@ -374,7 +398,7 @@ export async function runJ2aReadOnlyPreflight(
       business_payment_instruction: businessPaymentInstruction,
       source_wallet: { id: sourceTruth.id, address: sourceTruth.address, state: sourceTruth.state, network: "ARC_TESTNET", wallet_set_id: sourceTruth.walletSetId },
       destination_wallet: { id: destinationTruth.id, address: destinationTruth.address, state: destinationTruth.state, network: "ARC_TESTNET", wallet_set_id: destinationTruth.walletSetId, name: J2A_DEMO_DESTINATION.name },
-      provider_token: { id: tokenId, symbol: "USDC", decimals: 6, native: true },
+      provider_token: { id: tokenId, symbol: "USDC", decimals: tokenDecimals, native: true },
       amount: J2A_TRANSFER_AMOUNT,
       source_balance: sourceBalance,
       estimated_network_fee: estimatedNetworkFee,
@@ -394,7 +418,7 @@ export async function runJ2aReadOnlyPreflight(
       beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
       source_wallet: { id: J2A_DEMO_SOURCE.id, address: J2A_DEMO_SOURCE.address, network: "ARC_TESTNET", state: "LIVE", wallet_set_id: J2A_DEMO_WALLET_SET_ID },
       destination_wallet: { id: J2A_DEMO_DESTINATION.id, address: J2A_DEMO_DESTINATION.address, network: "ARC_TESTNET", state: "LIVE", wallet_set_id: J2A_DEMO_WALLET_SET_ID, name: J2A_DEMO_DESTINATION.name },
-      provider_token: { id: tokenId, symbol: "USDC", decimals: 6, native: true },
+      provider_token: { id: tokenId, symbol: "USDC", decimals: tokenDecimals, native: true },
     } as const;
     const result = { ...resultWithoutHash, evidence_sha256: hashJ2aPreflightEvidence(resultWithoutHash) } as const;
     evidenceSha256Schema.parse(result.evidence_sha256);
