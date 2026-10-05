@@ -1,18 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { hashApprovalReason, sealDurableApprovalRecord, sealDurableAssuranceRecord } from "../src/pae/durable-records";
-import { generateEd25519KeyPair, exportPublicKeySpkiBase64Url, registerTrustedKey } from "../src/pae/keys";
+import { generateEd25519KeyPair, exportPublicKeySpkiBase64Url, exportPrivateKeyPem, registerTrustedKey, signingKeyEnvironmentVariableName } from "../src/pae/keys";
 import { sealPae, verifySealedPae, PaeVerificationError } from "../src/pae/sign-verify";
 import type { PaeUnsignedPayload, ControlResult } from "../src/domain/schemas";
 import { REQUIRED_CONTROL_IDS_P0 } from "../src/domain/schemas";
+
+afterEach(() => vi.unstubAllEnvs());
 
 function passControls(): ControlResult[] {
   return REQUIRED_CONTROL_IDS_P0.map((id) => ({ control_id: id, result: "PASS" as const, finding_code: "NONE" }));
 }
 
-function buildFixture() {
+function buildFixture(signingKeyId = "TEST-KEY-1") {
   const { privateKey, publicKey } = generateEd25519KeyPair();
-  const signingKeyId = "TEST-KEY-1";
   registerTrustedKey({
     signing_key_id: signingKeyId,
     signing_algorithm: "Ed25519",
@@ -103,6 +104,72 @@ function buildFixture() {
 }
 
 describe("PAE golden vector", () => {
+  it("restores trusted verification in a cold module registry from the configured server key", async () => {
+    const keyId = "TAMEION-J2A-TESTNET-DEMO-PAE-KEY-1";
+    const { privateKey, unsignedPayload } = buildFixture(keyId);
+    const sealed = sealPae(unsignedPayload, privateKey);
+    vi.stubEnv(signingKeyEnvironmentVariableName(keyId), exportPrivateKeyPem(privateKey));
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.resetModules();
+
+    const coldVerifier = await import("../src/demo/verify-j2a-pae");
+
+    expect(() => coldVerifier.verifyJ2aSealedPae(sealed)).not.toThrow();
+  });
+
+  it("rejects an envelope that names a key outside the fixed J2A trust boundary", async () => {
+    const { privateKey, unsignedPayload } = buildFixture("UNEXPECTED-ENVELOPE-KEY");
+    const sealed = sealPae(unsignedPayload, privateKey);
+    vi.resetModules();
+    const coldVerifier = await import("../src/demo/verify-j2a-pae");
+
+    expect(() => coldVerifier.verifyJ2aSealedPae(sealed)).toThrow(expect.objectContaining({ code: "PAE-015" }));
+  });
+
+  it("does not initialize verification trust without the configured server key", async () => {
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.stubEnv(signingKeyEnvironmentVariableName("J2A-COLD-START-MISSING-KEY"), "");
+    vi.resetModules();
+    const coldKeys = await import("../src/pae/keys");
+
+    expect(() => coldKeys.initializeServerTrustedKey("J2A-COLD-START-MISSING-KEY")).toThrow(expect.objectContaining({ code: "PAE-015" }));
+  });
+
+  it("does not reactivate a revoked trusted key during cold-start initialization", async () => {
+    const pair = generateEd25519KeyPair();
+    const keyId = "J2A-COLD-START-REVOKED-KEY";
+    vi.stubEnv(signingKeyEnvironmentVariableName(keyId), exportPrivateKeyPem(pair.privateKey));
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.resetModules();
+    const coldKeys = await import("../src/pae/keys");
+    coldKeys.registerTrustedKey({
+      signing_key_id: keyId,
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: exportPublicKeySpkiBase64Url(pair.publicKey),
+      status: "REVOKED",
+    });
+
+    expect(() => coldKeys.initializeServerTrustedKey(keyId)).toThrow(expect.objectContaining({ code: "PAE-015" }));
+  });
+
+  it("rejects a configured key that does not match an already trusted key", async () => {
+    const trusted = generateEd25519KeyPair();
+    const configured = generateEd25519KeyPair();
+    const keyId = "J2A-COLD-START-MISMATCHED-KEY";
+    vi.stubEnv(signingKeyEnvironmentVariableName(keyId), exportPrivateKeyPem(configured.privateKey));
+    vi.stubEnv("VERCEL_ENV", "preview");
+    vi.resetModules();
+    const coldKeys = await import("../src/pae/keys");
+    coldKeys.registerTrustedKey({
+      signing_key_id: keyId,
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: exportPublicKeySpkiBase64Url(trusted.publicKey),
+      status: "ACTIVE",
+    });
+
+    expect(() => coldKeys.initializeServerTrustedKey(keyId)).toThrow(expect.objectContaining({ code: "PAE-015" }));
+  });
+
   it("seals and independently verifies a valid PAE", () => {
     const { privateKey, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);

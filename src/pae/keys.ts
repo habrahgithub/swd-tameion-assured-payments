@@ -79,6 +79,45 @@ export function resolveTrustedPublicKey(signingKeyId: string, signingAlgorithm: 
   return importPublicKeySpkiBase64Url(entry.public_key_spki_base64url);
 }
 
+/**
+ * Initialize verification trust from the server-managed signing key without
+ * replacing an existing trust decision. Unlike the signing loader, this has
+ * no development-key fallback and never reactivates a revoked key.
+ */
+export function initializeServerTrustedKey(signingKeyId: string): void {
+  const envVar = signingKeyEnvironmentVariableName(signingKeyId);
+  const pem = process.env[envVar];
+  if (!pem) {
+    throw new PaeKeyError(`No server signing key configured for "${signingKeyId}"`, "PAE-015");
+  }
+
+  let publicKeySpki: string;
+  try {
+    const privateKey = importPrivateKeyPem(pem);
+    publicKeySpki = exportPublicKeySpkiBase64Url(createPublicKey(privateKey));
+  } catch {
+    throw new PaeKeyError("Configured server signing key is invalid", "PAE-015");
+  }
+
+  const existing = registry.get(signingKeyId);
+  if (existing) {
+    if (
+      existing.status !== "ACTIVE" || existing.signing_algorithm !== "Ed25519" ||
+      existing.public_key_spki_base64url !== publicKeySpki
+    ) {
+      throw new PaeKeyError(`Configured server key does not match active trust for "${signingKeyId}"`, "PAE-015");
+    }
+    return;
+  }
+
+  registerTrustedKey({
+    signing_key_id: signingKeyId,
+    signing_algorithm: "Ed25519",
+    public_key_spki_base64url: publicKeySpki,
+    status: "ACTIVE",
+  });
+}
+
 export function revokeTrustedKey(signingKeyId: string): void {
   const entry = registry.get(signingKeyId);
   if (entry) {

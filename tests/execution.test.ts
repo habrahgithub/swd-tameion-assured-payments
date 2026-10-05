@@ -46,9 +46,9 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
   };
 }
 
-function setupAuthorizedFixture() {
+function setupAuthorizedFixture(paeState: AuthorityAggregate["pae_state"] = "UNUSED") {
   const store = new AuthorityStore();
-  store.seed(baseAggregate());
+  store.seed(baseAggregate({ pae_state: paeState }));
   sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
   const { aggregate, sealed } = approveAndSealPae(store, SIGNING_KEY_ID, {
     organizationId: "ORG-DEMO-001",
@@ -65,10 +65,13 @@ function setupAuthorizedFixture() {
 
 describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
   it("binds reviewed N and atomically creates authorized N+1", () => {
-    const { store, aggregate } = setupAuthorizedFixture();
+    const { store, aggregate } = setupAuthorizedFixture("REVOKED");
     expect(aggregate.aggregate_version).toBe(4);
     expect(aggregate.state).toBe("AUTHORIZED");
-    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").aggregate_version).toBe(4);
+    const persisted = store.get("ORG-DEMO-001", "OBL-J0C-002");
+    expect(persisted.aggregate_version).toBe(4);
+    expect(aggregate.pae_state).toBe(persisted.pae_state);
+    expect(aggregate.pae_state).toBe("UNUSED");
   });
 
   it("refuses to seal a PAE when the Safety Kernel does not PASS", () => {

@@ -4,8 +4,9 @@ import { J2A_DEMO_DESTINATION, J2A_DEMO_OBLIGATION_ID, J2A_DEMO_ORGANIZATION_ID,
 import { ExecutionBlockedError } from "../../../../../../src/execution/worker";
 import { getJ2aRealTestnetDemoState } from "../../../../../../src/server/demo-state";
 import { DemoStateConflictError } from "../../../../../../src/server/supabase-demo-state-repository";
-import { verifySealedPae } from "../../../../../../src/pae/sign-verify";
+import { PaeVerificationError } from "../../../../../../src/pae/sign-verify";
 import { getAuthorizedReviewedAssessment } from "../../../../../../src/demo/authorized-assessment-lineage";
+import { verifyJ2aSealedPae } from "../../../../../../src/demo/verify-j2a-pae";
 
 const EXECUTION_CONFIRMATION = "SUBMIT EXACT TESTNET DEMO TRANSFER";
 
@@ -67,7 +68,14 @@ export async function POST(request: Request) {
 
   let packet: ReturnType<typeof buildJ2aExecutionPacket>;
   try {
-    verifySealedPae(sealedPae);
+    verifyJ2aSealedPae(sealedPae);
+  } catch (error) {
+    return NextResponse.json({
+      error: "The sealed PAE could not be verified against configured server trust.",
+      code: error instanceof PaeVerificationError ? error.code : "PAE-016",
+    }, { status: 409 });
+  }
+  try {
     packet = buildJ2aExecutionPacket({
       preflight,
       aggregate,
@@ -76,7 +84,7 @@ export async function POST(request: Request) {
       sealedPae,
     });
   } catch {
-    return NextResponse.json({ error: "The sealed PAE or exact provider packet could not be verified." }, { status: 409 });
+    return NextResponse.json({ error: "The exact provider packet could not be built.", code: "J2A-PACKET-001" }, { status: 409 });
   }
   if (body.packet_sha256 !== packet.packet_sha256 ||
       process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 !== packet.packet_sha256) {

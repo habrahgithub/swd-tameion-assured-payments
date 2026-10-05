@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const stateRef = vi.hoisted(() => ({
   current: null as Record<string, unknown> | null,
   approveAndSealPae: vi.fn(),
+  verifyJ2aSealedPae: vi.fn(),
 }));
 
 vi.mock("../src/server/demo-state", () => ({
@@ -12,12 +13,17 @@ vi.mock("../src/pipeline/authorize-and-seal", () => ({
   approveAndSealPae: stateRef.approveAndSealPae,
   AssuranceFailedError: class AssuranceFailedError extends Error {},
 }));
-vi.mock("../src/pae/sign-verify", () => ({ verifySealedPae: vi.fn() }));
+vi.mock("../src/pae/sign-verify", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/pae/sign-verify")>(),
+  verifySealedPae: vi.fn(),
+}));
+vi.mock("../src/demo/verify-j2a-pae", () => ({ verifyJ2aSealedPae: stateRef.verifyJ2aSealedPae }));
 
 import { GET as getDemoStatus } from "../app/api/internal/demo/real-testnet-payment/status/route";
 import { POST as executeDemo } from "../app/api/internal/demo/real-testnet-payment/execute/route";
 import { POST as authorizeDemo } from "../app/api/internal/demo/real-testnet-payment/authorize/route";
 import { buildJ2aExecutionPacket } from "../src/demo/real-testnet-payment";
+import { PaeVerificationError } from "../src/pae/sign-verify";
 
 function authorizedLineageFixture(overrides: {
   assessmentId?: string;
@@ -151,6 +157,7 @@ describe("J2A real-testnet API gates", () => {
   beforeEach(() => {
     stateRef.current = stateWithoutPreflight();
     stateRef.approveAndSealPae.mockReset();
+    stateRef.verifyJ2aSealedPae.mockReset();
   });
 
   it("reports the isolated lifecycle while keeping execution locked and performing no provider write", async () => {
@@ -389,6 +396,136 @@ describe("J2A real-testnet API gates", () => {
 
     expect(response.status).toBe(403);
     expect((await response.json()).error).toMatch(/separately authorizes this exact packet/);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("submits to the mocked worker once only when the exact packet hash is authorized", async () => {
+    const fixture = authorizedLineageFixture();
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+    const execute = vi.fn(async () => ({ status: "SETTLED", idempotency_key: "j2a-exact-key" }));
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", packet.packet_sha256);
+
+    const response = await executeDemo(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expected_version: 4,
+        packet_sha256: packet.packet_sha256,
+        pae_instruction_hash: fixture.paeHash,
+        confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(stateRef.verifyJ2aSealedPae).toHaveBeenCalledWith(fixture.sealed);
+  });
+
+  it("returns a safe verification code and makes no worker call when PAE trust initialization fails", async () => {
+    const fixture = authorizedLineageFixture();
+    const execute = vi.fn();
+    stateRef.verifyJ2aSealedPae.mockImplementationOnce(() => { throw new PaeVerificationError("hidden detail", "PAE-015"); });
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", packet.packet_sha256);
+
+    const response = await executeDemo(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_version: 4, packet_sha256: packet.packet_sha256, pae_instruction_hash: fixture.paeHash, confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER" }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.code).toBe("PAE-015");
+    expect(JSON.stringify(data)).not.toContain("hidden detail");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("reports invalid PAE lifecycle and withholds packet after status verification fails", async () => {
+    const fixture = authorizedLineageFixture();
+    stateRef.verifyJ2aSealedPae.mockImplementationOnce(() => { throw new PaeVerificationError("sensitive detail", "PAE-015"); });
+    const getExecutionRecord = vi.fn(() => null);
+    const recoverSubmittingByIdempotencyKey = vi.fn();
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { getExecutionRecord, recoverSubmittingByIdempotencyKey, reconcilePendingByIdempotencyKey: vi.fn() },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+
+    const response = await getDemoStatus();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.pae_verification).toEqual({ status: "FAILED", error_code: "PAE-015" });
+    expect(data.authorization_current).toBe(false);
+    expect(data.execution_packet).toBeNull();
+    expect(data.lifecycle[2].status).toBe("PAE_INVALID");
+    expect(recoverSubmittingByIdempotencyKey).not.toHaveBeenCalled();
+    expect(JSON.stringify(data)).not.toContain("sensitive detail");
+  });
+
+  it("rejects an expired PAE before the mocked worker can execute", async () => {
+    const fixture = authorizedLineageFixture();
+    fixture.sealed.payload.expiry = "2020-01-01T00:00:00.000Z";
+    const execute = vi.fn();
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => fixture.sealed),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+
+    const response = await executeDemo(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_version: 4, packet_sha256: packet.packet_sha256, pae_instruction_hash: fixture.paeHash, confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER" }),
+    }));
+
+    expect(response.status).toBe(409);
     expect(execute).not.toHaveBeenCalled();
   });
 

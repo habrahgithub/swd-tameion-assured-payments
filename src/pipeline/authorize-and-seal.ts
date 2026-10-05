@@ -117,7 +117,7 @@ export function approveAndSealPae(
     control_results: safetyResult.controlResults,
   });
 
-  store.markPaeSealed(input.organizationId, input.obligationId, aggregate.aggregate_version);
+  const postSealAggregate = store.markPaeSealed(input.organizationId, input.obligationId, aggregate.aggregate_version);
 
   const { privateKey } = loadServerSigningKey(signingKeyId);
   const expiry = new Date(now().getTime() + 30 * 60 * 1000).toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
@@ -172,7 +172,7 @@ export function approveAndSealPae(
 
   const sealed = sealPae(unsignedPayload, privateKey);
   return {
-    aggregate,
+    aggregate: postSealAggregate,
     sealed,
     safetyKernel: safetyResult,
     approvalRecord: { record: approvalRecord, approval_record_hash },
