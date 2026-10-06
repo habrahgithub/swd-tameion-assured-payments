@@ -159,6 +159,16 @@ function assessedDetail(id: string, decision: "PAY" | "HOLD" | "ESCALATE") {
   };
 }
 
+function sealedDetail(id: string) {
+  const sealed = assessedDetail(id, "PAY");
+  sealed.pae_sealed = true;
+  sealed.truth.tameion_control_truth.pae_sealed = true;
+  sealed.truth.tameion_control_truth.pae_state = "SEALED";
+  sealed.truth.tameion_control_truth.execution_release_authority = "TAMEION_PAE_REVERIFY_REQUIRED";
+  sealed.aggregate.pae_state = "SEALED";
+  return sealed;
+}
+
 function response(body: unknown, status = 200): Response {
   return new Response(body === null ? "" : JSON.stringify(body), { status });
 }
@@ -422,6 +432,94 @@ describe("Command Center mounted Operational Report", () => {
     expect(primaryActions.find((button) => !button.disabled)?.textContent).toContain("Run AI Assessment");
   });
 
+  it("keeps authorization intent copy current through sealed reloads and obligation switches", async () => {
+    const sealed = sealedDetail("OBL-SEALED");
+    const unsealed = detail("OBL-UNSEALED");
+    let sealedReads = 0;
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/obligations") {
+        return Promise.resolve(response({ obligations: [
+          { ...obligation("OBL-SEALED", true), decision: "PAY" },
+          obligation("OBL-UNSEALED"),
+        ] }));
+      }
+      if (url === "/api/obligations/OBL-SEALED") {
+        sealedReads += 1;
+        return Promise.resolve(response(sealed));
+      }
+      if (url === "/api/obligations/OBL-UNSEALED") return Promise.resolve(response(unsealed));
+      return Promise.resolve(response({ error: "Unexpected request." }, 404));
+    });
+
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(await screen.findByText(/An authorization envelope is already sealed for this obligation/)).toBeTruthy();
+    expect(screen.queryByText(/No payment intent exists at this step/)).toBeNull();
+    const sealedAction = screen.getByRole("button", { name: "Authorization already sealed" }) as HTMLButtonElement;
+    expect(sealedAction.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+    expect(screen.getByText(/A payment authorization envelope is already sealed/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /OBL-UNSEALED/ }));
+    await screen.findByRole("heading", { name: "OBL-UNSEALED" });
+    expect(await screen.findByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /OBL-SEALED/ }));
+    await screen.findByRole("heading", { name: "OBL-SEALED" });
+    expect(await screen.findByText(/An authorization envelope is already sealed for this obligation/)).toBeTruthy();
+    expect(sealedReads).toBe(2);
+    expect((screen.getByRole("button", { name: "Authorization already sealed" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("does not infer no intent while authorization detail is loading or unavailable", async () => {
+    const selectedDetail = deferred<Response>();
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
+      : selectedDetail.promise);
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: /OBL-A/ });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(await screen.findByText("Loading current obligation detail; authorization status is not yet available.")).toBeTruthy();
+    expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
+    expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
+
+    selectedDetail.resolve(response(null, 503));
+    expect(await screen.findByText("Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.")).toBeTruthy();
+    expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
+    expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+  });
+
+  it("makes review the primary PAY action, then removes primary action while route assurance blocks", async () => {
+    const pay = assessedDetail("OBL-PAY-BLOCKED", "PAY");
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-PAY-BLOCKED", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }] }))
+      : Promise.resolve(response(pay)));
+
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    const primary = () => Array.from(screen.getByRole("main").querySelectorAll<HTMLButtonElement>('button[data-primary-action="true"]'))
+      .filter((button) => !button.disabled);
+    expect(primary()).toHaveLength(1);
+    expect(primary()[0].textContent).toContain("Review current PAY assessment");
+    expect(primary()[0].textContent).not.toContain("Run AI Assessment");
+
+    fireEvent.click(primary()[0]);
+    await screen.findByText(/Blocker: payment-route assurance is not ready/);
+    expect(primary()).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Authorize selected obligation" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Reassess current PAY recommendation (optional)" })).toBeTruthy();
+  });
+
   it("shows final assurance only as unavailable detail after a sealed PAE and keeps Arc payment blocked", async () => {
     const authorized = assessedDetail("OBL-SEALED-PAE", "PAY");
     authorized.pae_sealed = true;
@@ -552,7 +650,7 @@ describe("Command Center mounted Operational Report", () => {
     ]);
     expect(prerequisites.textContent).toMatch(/product-trust provenance is/i);
     expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/No payment intent exists at this step/)).toBeTruthy();
+    expect(screen.getByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Payment-route assurance is not ready: Destination verification is pending verification/)).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
@@ -668,7 +766,11 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
     expect(screen.getByRole("button", { name: /OBL-A/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(screen.getByText(/Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Kill switch: selected obligation detail is stale/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Disable this obligation" }) as HTMLButtonElement).disabled).toBe(true);
@@ -747,10 +849,9 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("button", { name: /OBL-A/ });
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    const assess = await screen.findByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
-    expect(assess.disabled).toBe(true);
-    fireEvent.click(assess);
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/assess") && init?.method === "POST")).toBe(false);
 
     selectedDetail.resolve(response(detail("OBL-A")));
@@ -769,9 +870,8 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("button", { name: /OBL-A/ });
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(await screen.findByText(/Obligation detail is unavailable/)).toBeTruthy();
-    const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
-    expect(assess.disabled).toBe(true);
-    fireEvent.click(assess);
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/assess") && init?.method === "POST")).toBe(false);
     expect(screen.queryByRole("region", { name: /Operational report for/ })).toBeNull();
   });

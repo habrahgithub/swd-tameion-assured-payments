@@ -173,6 +173,37 @@ export type KillSwitchPresentation = "no-selection" | "inactive" | "engaged";
  * assessment and the Safety Kernel complete. */
 export type DetailState = "none" | "loading" | "failed" | "loaded" | "stale";
 
+export type AssessmentPrimaryAction = "none" | "assess" | "review" | "continue";
+
+export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false): string {
+  if (!hasSelection || state === "none") return "Select an obligation to review its authorization and payment-intent status.";
+  if (state === "loading") return "Loading current obligation detail; authorization status is not yet available.";
+  if (state === "failed") return "Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.";
+  if (state === "stale") return "Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status.";
+  if (paeSealed) return "An authorization envelope is already sealed for this obligation. No further authorization action is available here; provider submission remains separate.";
+  return "Current detail confirms no payment intent exists. If every deterministic Safety Kernel control passes, the system can seal a signed Payment Authorization Envelope; no provider submission occurs here.";
+}
+
+export function assessmentPrimaryAction(state: {
+  detailState: DetailState;
+  hasSelection: boolean;
+  paeSealed: boolean;
+  hasCurrentAssessment: boolean;
+  decision: string | undefined;
+  assessmentReviewAvailable: boolean;
+  reviewed: boolean;
+  allAssessed: boolean;
+  routeAssuranceReady: boolean;
+}): AssessmentPrimaryAction {
+  if (state.detailState !== "loaded" || !state.hasSelection || state.paeSealed) return "none";
+  if (!state.hasCurrentAssessment) return "assess";
+  if (state.decision !== "PAY") return "none";
+  if (!state.assessmentReviewAvailable) return "none";
+  if (!state.reviewed) return "review";
+  if (!state.allAssessed || !state.routeAssuranceReady) return "none";
+  return "continue";
+}
+
 export type KillSwitchView = KillSwitchPresentation | "unknown" | "loading" | "failed" | "stale";
 
 export function killSwitchPresentation(state: DetailState, value: unknown): KillSwitchView {
@@ -1457,6 +1488,17 @@ export function CommandCenter() {
   const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
     ? currentReviewedAssessment(displayedAssessment, currentAssessment, selectedId, aggregateVersion)
     : null;
+  const assessmentAction = assessmentPrimaryAction({
+    detailState,
+    hasSelection: Boolean(selectedId),
+    paeSealed: Boolean(detail?.pae_sealed),
+    hasCurrentAssessment,
+    decision: currentAssessment?.decision,
+    assessmentReviewAvailable: Boolean(currentAssessment?.race),
+    reviewed: Boolean(authorizationAssessment),
+    allAssessed,
+    routeAssuranceReady,
+  });
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
     if (detailState === "none") return stage === "Obligation" ? "No obligation selected" : "Waiting for selection";
     if (detailState === "loading") return "Loading current detail";
@@ -1522,11 +1564,37 @@ export function CommandCenter() {
                 ? "Next step: assess this obligation; a PAY recommendation is advisory."
                 : currentAssessment.decision !== "PAY"
                   ? `Blocked: current assessment is ${currentAssessment.decision}; resolve its findings before reassessment.`
-                  : !routeAssuranceReady
-                    ? "Blocker: payment-route assurance is not ready; authorization remains locked."
-                    : !authorizationAssessment
+                  : !authorizationAssessment
+                    ? routeAssuranceReady
                       ? "Next step: review the current PAY assessment before authorization."
+                      : "Next step: review the current PAY assessment; payment-route assurance is not ready and authorization remains locked."
+                    : !routeAssuranceReady
+                      ? "Blocker: payment-route assurance is not ready; authorization remains locked."
                       : "Next step: an authorized human may approve this exact reviewed obligation.";
+
+  const assessmentActionStatus = !selectedId || detailState === "none"
+    ? "Choose an obligation before taking an assessment action."
+    : detailState === "loading"
+      ? "Loading current obligation detail; assessment actions are unavailable."
+      : detailState === "failed"
+        ? "Current obligation detail is unavailable; retry before taking an assessment action."
+        : detailState === "stale"
+          ? "Current obligation detail is stale; refresh before taking an assessment action."
+          : detail?.pae_sealed
+            ? "A payment authorization envelope is already sealed. Reassessment is unavailable here; payment remains blocked without an Arc binding."
+            : currentAssessment?.decision === "PAY" && !currentAssessment.race
+              ? "The current PAY recommendation has no review evidence in this detail; authorization remains locked."
+              : currentAssessment?.decision === "PAY" && authorizationAssessment && !routeAssuranceReady
+                ? "The PAY recommendation has been reviewed, but payment-route assurance is not ready. Authorization remains locked."
+                : currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE"
+                  ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
+                  : "No assessment action is available for the current obligation state.";
+  const optionalReassessmentAvailable = detailState === "loaded" && !detail?.pae_sealed &&
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
+  const reviewCurrentAssessment = () => {
+    if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
+    setDisplayedAssessment(currentAssessment);
+  };
 
   // HOLD/ESCALATE operational report — read-only, derived from authoritative
   // current assessment and obligation state. Fails closed when truth is
@@ -1865,15 +1933,27 @@ export function CommandCenter() {
                     </p>
                   </section>
                 )}
-                <PrimaryButton
-                  disabled={busy || detailState !== "loaded" || !selectedId || detail.record.obligation_id !== selectedId}
-                  onClick={() => {
-                    setPanel("assessment");
-                    void runAssessment();
-                  }}
-                >
-                  Run AI Assessment
-                </PrimaryButton>
+                {assessmentAction === "assess" && (
+                  <PrimaryButton disabled={busy} onClick={() => { setPanel("assessment"); void runAssessment(); }}>
+                    Run AI Assessment
+                  </PrimaryButton>
+                )}
+                {assessmentAction === "review" && (
+                  <PrimaryButton disabled={busy} onClick={() => { reviewCurrentAssessment(); setPanel("assessment"); }}>
+                    Review current PAY assessment
+                  </PrimaryButton>
+                )}
+                {assessmentAction === "continue" && (
+                  <PrimaryButton disabled={busy} onClick={() => setPanel("authorization")}>
+                    Continue to authorization review
+                  </PrimaryButton>
+                )}
+                {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
+                {optionalReassessmentAvailable && (
+                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="text-[12px] font-medium underline disabled:opacity-50">
+                    Reassess current PAY recommendation (optional)
+                  </button>
+                )}
               </section>
                         )}
 
@@ -1942,9 +2022,23 @@ export function CommandCenter() {
                     The displayed assessment is no longer current. Review the current sealed assessment before authorization.
                   </p>
                 )}
-                <PrimaryButton disabled={busy || detailState !== "loaded" || !selectedId || !detail || detail.record.obligation_id !== selectedId} onClick={runAssessment}>
-                  Run AI Assessment
-                </PrimaryButton>
+                {assessmentAction === "assess" && <PrimaryButton disabled={busy} onClick={runAssessment}>Run AI Assessment</PrimaryButton>}
+                {assessmentAction === "review" && (
+                  <PrimaryButton disabled={busy} onClick={reviewCurrentAssessment}>
+                    Review current PAY assessment
+                  </PrimaryButton>
+                )}
+                {assessmentAction === "continue" && (
+                  <PrimaryButton disabled={busy} onClick={() => setPanel("authorization")}>
+                    Continue to authorization review
+                  </PrimaryButton>
+                )}
+                {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
+                {optionalReassessmentAvailable && (
+                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="text-[12px] font-medium underline disabled:opacity-50">
+                    Reassess current PAY recommendation (optional)
+                  </button>
+                )}
 
                 {assessmentGateCopy(listPresentation, allAssessed, obligations.length) && (
                   <p className="text-[12px] text-[var(--color-warning)]">
@@ -1991,7 +2085,8 @@ export function CommandCenter() {
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  Authorization review applies to the selected obligation and its current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, Boolean(selectedId))}). No payment intent exists at this step. If every deterministic Safety Kernel control passes, the system seals a signed Payment Authorization Envelope; no provider submission occurs here.
+                  {authorizationPanelCopy(detailState, Boolean(selectedId), Boolean(detailState === "loaded" && detail?.pae_sealed))}
+                  {detailState === "loaded" && !detail?.pae_sealed && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
                 </p>
                 {authorizationAssessment && (
                   <dl className="space-y-1 border-s-2 border-[var(--color-border)] ps-3 text-[12px] text-[var(--color-ink-muted)]">
@@ -2024,9 +2119,9 @@ export function CommandCenter() {
                 })()}
                 <div className="flex gap-3">
                   <PrimaryButton
-                    disabled={busy || detailState !== "loaded" || !selectedId || !authorizationAssessment || authorizationAssessment.decision !== "PAY" || !routeAssuranceReady}
+                    disabled={busy || detailState !== "loaded" || !selectedId || !detail || detail.record.obligation_id !== selectedId || detail.pae_sealed || !authorizationAssessment || authorizationAssessment.decision !== "PAY" || !routeAssuranceReady}
                     onClick={() => {
-                      if (authorizationAssessment?.decision !== "PAY") return;
+                      if (detailState !== "loaded" || detail?.pae_sealed || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady) return;
                       return run("approve", () =>
                         postJson(`/api/obligations/${selectedId}/approve`, {
                           expected_version: Number(authorizationAssessment!.aggregate_version),
@@ -2036,7 +2131,11 @@ export function CommandCenter() {
                       );
                     }}
                   >
-                    Authorize selected obligation
+                    {detailState === "loaded" && detail?.pae_sealed
+                      ? "Authorization already sealed"
+                      : detailState === "loaded" && selectedId
+                        ? "Authorize selected obligation"
+                        : "Authorization status unavailable"}
                   </PrimaryButton>
                 </div>
                 {currentResult?.label === "approve" && <ActionResultBanner result={currentResult} />}

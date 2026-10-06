@@ -96,9 +96,10 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   ]);
   await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
   await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Authorization");
-  await expect(page.getByText(/Current step: Authorization\. Blocker: payment-route assurance is not ready/)).toBeVisible();
+  await expect(page.getByText(/Current step: Authorization\. Next step: review the current PAY assessment; payment-route assurance is not ready and authorization remains locked/)).toBeVisible();
   await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();
-  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeEnabled();
+  await expect(page.getByText("The current PAY recommendation has no review evidence in this detail; authorization remains locked.")).toBeVisible();
+  await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await page.getByText("Demonstrations", { exact: true }).click();
   await page.getByText("Read-only sample", { exact: true }).click();
   const beforePlayback = unexpectedWrites.length;
