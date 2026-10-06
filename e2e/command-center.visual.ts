@@ -35,6 +35,23 @@ const detail = {
   execution_kill_switched: false,
 };
 
+function detailFor(obligationId: string, sourceAmount: string, dueDate: string, sourceRecordId: string) {
+  const [whole, fraction = ""] = sourceAmount.split(".");
+  const atomicAmount = (BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"))).toString();
+  const settlementAmount = `${whole}.${fraction.padEnd(6, "0")}`;
+  return {
+    ...detail,
+    truth: {
+      ...detail.truth,
+      source_truth: { ...detail.truth.source_truth, source: { ...detail.truth.source_truth.source, record_id: sourceRecordId } },
+      settlement_truth: { ...detail.truth.settlement_truth, settlement_amount: settlementAmount, settlement_atomic_amount: atomicAmount, source_amount: sourceAmount },
+    },
+    aggregate: { ...detail.aggregate, amount: settlementAmount },
+    record: { ...detail.record, obligation_id: obligationId, amount: sourceAmount, due_date: dueDate },
+    current_assessment: { ...detail.current_assessment, obligation_id: obligationId, assessment_id: `ASM-${obligationId}`, assessment_hash: "b".repeat(64) },
+  };
+}
+
 async function openFixture(page: Page) {
   const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
@@ -42,7 +59,7 @@ async function openFixture(page: Page) {
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
     if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation, secondObligation], assessed_count: 2, total_count: 2 } });
     if (url.pathname === "/api/obligations/OBL-UAT-01") return route.fulfill({ json: detail });
-    if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: { ...detail, record: { ...detail.record, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" } } });
+    if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02") });
     if (url.pathname === "/api/internal/demo/real-testnet-payment/status") return route.fulfill({ json: {
       classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
       organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001",
@@ -73,16 +90,36 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toContainText("PAY recommendation (advisory)");
   await expect(page.getByRole("button", { name: "Obligations" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+  await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
+    "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
+  ]);
+  await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
+  await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Authorization");
+  await expect(page.getByText(/Current step: Authorization\. Blocker: payment-route assurance is not ready/)).toBeVisible();
+  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeEnabled();
   await page.getByText("Demonstrations", { exact: true }).click();
-  await page.getByText("Simulated", { exact: true }).click();
+  await page.getByText("Read-only sample", { exact: true }).click();
+  const beforePlayback = unexpectedWrites.length;
+  await page.getByRole("button", { name: "Show sample playback" }).click();
+  const playback = page.getByRole("region", { name: "Read-only sample playback" });
+  await expect(playback).toContainText("No approval, assurance, provider call, or settlement is performed");
+  await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
+  expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
+  await page.getByRole("button", { name: "Hide sample playback" }).click();
   await page.getByText("Arc Testnet", { exact: true }).click();
   await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
   await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
+  await expect(page.getByRole("heading", { name: "OBL-UAT-02" })).toBeVisible();
+  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Obligations" }).click();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toContainText("UAT-INV-02");
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toContainText("≈ 40.000000 USDC");
   await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
-  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
-  await expect(lifecycle.locator("li span:nth-child(2)")).toHaveText([
-    "Obligation", "AI Assessment", "Assurance & Authorization", "Execution", "Reconciliation & Evidence",
-  ]);
+  await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
+  await page.getByText("Arc Testnet", { exact: true }).click();
+  await page.getByText("Read-only sample", { exact: true }).click();
+  await page.getByText("Demonstrations", { exact: true }).click();
   const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
   expect(stageBoxes[0]).toBeGreaterThan(stageBoxes[1]);
   expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
@@ -106,10 +143,24 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(page.locator("main")).toHaveAttribute("dir", "rtl");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeVisible();
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+  await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
+    "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
+  ]);
   await page.getByText("Demonstrations", { exact: true }).click();
-  await page.getByText("Simulated", { exact: true }).click();
+  await page.getByText("Read-only sample", { exact: true }).click();
+  const beforePlayback = unexpectedWrites.length;
+  await page.getByRole("button", { name: "Show sample playback" }).click();
+  const playback = page.getByRole("region", { name: "Read-only sample playback" });
+  await expect(playback).toContainText("No approval, assurance, provider call, or settlement is performed");
+  await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
+  expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
+  await page.getByRole("button", { name: "Hide sample playback" }).click();
   await page.getByText("Arc Testnet", { exact: true }).click();
   await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
+  await page.getByText("Arc Testnet", { exact: true }).click();
+  await page.getByText("Read-only sample", { exact: true }).click();
+  await page.getByText("Demonstrations", { exact: true }).click();
   const dimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,

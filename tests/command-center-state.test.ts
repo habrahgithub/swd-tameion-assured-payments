@@ -211,6 +211,22 @@ describe("Command Center server-derived authority headline", () => {
     expect(state.explanation).toContain("must still re-verify");
     expect(state.explanation).not.toContain("ready for execution");
   });
+
+  it("does not describe a simulated execution record as a genuine reconciled payment", () => {
+    const simulated = {
+      aggregate: { state: "RECONCILED", aggregate_version: 2, execution_state: "SETTLED" },
+      execution: { status: "SETTLED", provider_ref: "FAKE-REF" },
+      truth: {
+        tameion_control_truth: { execution_release_authority: "CONSUMED" },
+        settlement_truth: { runtime: "SIMULATED" },
+      },
+    } as Parameters<typeof workflowState>[0];
+    expect(workflowState(simulated)).toEqual({
+      label: "Simulated record — no Arc settlement",
+      tone: "neutral",
+      explanation: "The stored execution result used a simulated adapter and does not represent a vendor payment.",
+    });
+  });
 });
 
 import { authorizationBlockers, queueCompletionLabel, reconciliationLeadLine } from "../app/command-center";
@@ -266,12 +282,12 @@ describe("authorization blockers name the first unmet prerequisite in order", ()
 });
 
 describe("reconciliation leads with the absence of submission", () => {
-  it("says there is nothing to reconcile when no submission exists", () => {
-    expect(reconciliationLeadLine("loaded", null)).toBe("No submission; nothing to reconcile.");
+  it("says there is no Arc settlement when no execution exists", () => {
+    expect(reconciliationLeadLine("loaded", null)).toBe("No Arc settlement to reconcile.");
   });
 
-  it("does not claim nothing to reconcile once a submission exists", () => {
-    expect(reconciliationLeadLine("loaded", { status: "SUBMITTED" })).not.toContain("nothing to reconcile");
+  it("labels a stored execution as simulated and not an Arc settlement", () => {
+    expect(reconciliationLeadLine("loaded", { status: "SUBMITTED" })).toBe("Simulated execution SUBMITTED; no Arc settlement to reconcile.");
   });
 });
 
@@ -394,9 +410,9 @@ describe("unknown truth never asserts inactive or no-submission", () => {
     }
   });
 
-  it("asserts no submission only from loaded detail with an explicit null execution", () => {
-    expect(recon("loaded", null)).toBe("No submission; nothing to reconcile.");
-    expect(recon("loaded", undefined)).not.toContain("No submission");
+  it("asserts no Arc settlement only from loaded detail with an explicit null execution", () => {
+    expect(recon("loaded", null)).toBe("No Arc settlement to reconcile.");
+    expect(recon("loaded", undefined)).not.toContain("No Arc settlement");
   });
 });
 

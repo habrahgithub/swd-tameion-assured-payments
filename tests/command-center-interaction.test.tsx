@@ -285,14 +285,16 @@ describe("Command Center mounted Operational Report", () => {
     expect(demonstrations.open).toBe(false);
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
+    expect(Array.from(lifecycle.querySelectorAll("li div span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
       "Obligation",
-      "AI Assessment",
-      "Assurance & Authorization",
-      "Execution",
-      "Reconciliation & Evidence",
+      "Assessment",
+      "Authorization",
+      "Assurance",
+      "Payment",
+      "Reconciliation",
     ]);
-    expect(screen.getByText("NO ASSURANCE, NO EXECUTION")).toBeTruthy();
+    expect(screen.getByText("AI recommends · human authorizes · assurance controls release")).toBeTruthy();
+    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assessment");
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
     const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assess.disabled).toBe(false);
@@ -355,36 +357,32 @@ describe("Command Center mounted Operational Report", () => {
     expect(prerequisites.textContent).not.toContain("satisfy the existing readiness gate");
   });
 
-  it("surfaces the changed-destination proof in the isolated demo lane only", async () => {
+  it("plays a deterministic same-identity sample without invoking payment routes", async () => {
     fetchMock.mockImplementation((input) => {
       const url = String(input);
       if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-A")] }));
       if (url === "/api/obligations/OBL-A") return Promise.resolve(response(detail("OBL-A")));
-      if (url.endsWith("/simulated-happy-path")) return Promise.resolve(response({
-        happy_path: {
-          label: "SIMULATED_HAPPY_PATH", provider_label: "FAKE_TESTNET_ADAPTER", vendor_notice: "NOT_VENDOR_PAYMENT",
-          obligation_id: "DEMO-SIMULATED-HAPPY-001", obligation: { obligation_id: "DEMO-SIMULATED-HAPPY-001", state: "APPROVAL_PENDING" },
-          assessment: { decision: "PAY", provider_mode: "NOT_LIVE_AI" }, human_authorization: { state: "AUTHORIZED" },
-          assurance: { pae_state: "CONSUMED", safety_kernel_overall: "PASS" }, execution: { status: "SETTLED", provider_label: "FAKE_TESTNET_ADAPTER" },
-          reconciliation: { aggregate_state: "RECONCILED", execution_status: "SETTLED" },
-        },
-        changed_destination_attack: { label: "SIMULATED_CHANGED_DESTINATION_ATTACK", obligation_id: "DEMO-SIMULATED-ATTACK-001", blocked: true, reason: "PAE aggregate version mismatch", worker_calls: 1, provider_submissions: 0 },
-      }));
       return Promise.resolve(response({ error: "Unexpected request." }, 404));
     });
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
     fireEvent.click(screen.getByText("Demonstrations"));
-    fireEvent.click(screen.getByText("Simulated"));
-    fireEvent.click(screen.getByRole("button", { name: "Run safe simulated demo" }));
-    expect(await screen.findByText(/Sample workflow completed using a simulated provider/)).toBeTruthy();
-    expect(screen.getByText(/Destination-change security test:/)).toBeTruthy();
-    fireEvent.click(screen.getByText("Reviewer technical proof"));
-    const proof = await screen.findByRole("region", { name: "Destination-change security test" });
-    expect(proof.textContent).toContain("worker calls 1; provider submissions 0");
-    fireEvent.click(screen.getByRole("button", { name: "Reconciliation & Evidence" }));
-    expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
+    fireEvent.click(screen.getByText("Read-only sample"));
+    const callsBeforePlayback = fetchMock.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Show sample playback" }));
+    const fixture = await screen.findByRole("region", { name: "Read-only sample playback" });
+    expect(fixture.textContent).toContain("No approval, assurance, provider call, or settlement is performed");
+    expect(fixture.textContent).toContain("ORG-SAMPLE-PLAYBACK-001");
+    expect(fixture.textContent).toContain("DEMO-SAMPLE-OBLIGATION-001");
+    expect(fixture.textContent).toContain("Changed destination branch — expected BLOCK before provider submission");
+    expect(fixture.textContent).toContain("Same sample organization and obligation");
+    expect(fixture.textContent?.split("ORG-SAMPLE-PLAYBACK-001")).toHaveLength(3);
+    expect(fixture.textContent?.split("DEMO-SAMPLE-OBLIGATION-001")).toHaveLength(3);
+    expect(fetchMock.mock.calls.slice(callsBeforePlayback).some(([input, init]) =>
+      String(input).includes("/api/") && (init?.method ?? "GET") !== "GET",
+    )).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => /approve|execute|simulated-happy-path|real-testnet-payment/.test(String(input)))).toBe(false);
   });
 
   it("makes the current AI decision, reasons, and next action the assessment result", async () => {
@@ -409,6 +407,38 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText("Advisory — HOLD")).toBeTruthy();
     expect(screen.getByText("Destination trust evidence is not verified.")).toBeTruthy();
     expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
+  });
+
+  it("offers no more than one enabled primary action in the selected workspace", async () => {
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-ONE-ACTION")] }))
+      : Promise.resolve(response(detail("OBL-ONE-ACTION"))));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const main = screen.getByRole("main");
+    const primaryActions = Array.from(main.querySelectorAll<HTMLButtonElement>('button[data-primary-action="true"]'));
+    expect(primaryActions.filter((button) => !button.disabled)).toHaveLength(1);
+    expect(primaryActions.find((button) => !button.disabled)?.textContent).toContain("Run AI Assessment");
+  });
+
+  it("shows final assurance only as unavailable detail after a sealed PAE and keeps Arc payment blocked", async () => {
+    const authorized = assessedDetail("OBL-SEALED-PAE", "PAY");
+    authorized.pae_sealed = true;
+    authorized.aggregate.destination_verification_status = "VERIFIED";
+    authorized.aggregate.destination_operational_status = "ACTIVE";
+    authorized.aggregate.source_wallet_status = "ACTIVE";
+    authorized.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-SEALED-PAE", true), decision: "PAY", route_assurance_status: "Route assurance ready" }] }))
+      : Promise.resolve(response(authorized)));
+    render(<CommandCenter />);
+    const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
+    await waitFor(() => expect(lifecycle.textContent).toContain("Authorized — sealed PAE exists"));
+    expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
+    expect(lifecycle.textContent).toContain("AssurancePAE is sealed; detailed assurance unavailable in this view");
+    expect(lifecycle.textContent).toContain("PaymentBlocked — no Arc payment binding for this obligation");
+    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
 
   it("shows the current OBL-J0C-003 HOLD remediation and truthful lifecycle in the primary obligation workspace", async () => {
@@ -446,10 +476,11 @@ describe("Command Center mounted Operational Report", () => {
     expect(within(workspace).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(lifecycle.textContent).toContain("AI AssessmentRequires attention");
-    expect(lifecycle.textContent).toContain("Assurance & AuthorizationAssurance: requires attention · Authorization: locked");
-    expect(lifecycle.textContent).toContain("ExecutionNot started — blocked");
-    expect(lifecycle.textContent).toContain("Reconciliation & EvidenceNot started");
+    expect(lifecycle.textContent).toContain("AssessmentRequires attention");
+    expect(lifecycle.textContent).toContain("AuthorizationLocked — assessment requires attention");
+    expect(lifecycle.textContent).toContain("AssuranceFinal assurance not run");
+    expect(lifecycle.textContent).toContain("PaymentBlocked — no Arc payment binding for this obligation");
+    expect(lifecycle.textContent).toContain("ReconciliationNo Arc settlement to reconcile");
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
   });
 
@@ -497,15 +528,19 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
-    expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
+    expect(Array.from(lifecycle.querySelectorAll("li div span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
       "Obligation",
-      "AI Assessment",
-      "Assurance & Authorization",
-      "Execution",
-      "Reconciliation & Evidence",
+      "Assessment",
+      "Authorization",
+      "Assurance",
+      "Payment",
+      "Reconciliation",
     ]);
-    expect(lifecycle.textContent).toContain("PAY is advisory · Assurance: route not ready · Authorization: locked");
-    expect(lifecycle.textContent).toContain("Authorization: locked");
+    expect(lifecycle.textContent).toContain("PAY — advisory");
+    expect(lifecycle.textContent).toContain("Approval locked — route assurance not ready");
+    expect(lifecycle.textContent).toContain("Final assurance not run");
+    expect(lifecycle.textContent).toContain("Blocked — no Arc payment binding for this obligation");
+    expect(lifecycle.textContent).toContain("No Arc settlement to reconcile");
     const selectedHeader = screen.getByRole("heading", { name: "OBL-ASSURANCE-NOT-READY" }).parentElement?.parentElement;
     expect(within(selectedHeader as HTMLElement).getByText("PAY recommended — assurance not ready; authorization locked")).toBeTruthy();
 
@@ -637,7 +672,8 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Kill switch: selected obligation detail is stale/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Disable this obligation" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Submit for execution (simulated)" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Submit for execution (simulated)" })).toBeNull();
+    expect(screen.getByText(/Payment blocked: the fixed Arc Testnet intent is a separate synthetic identity/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry obligation detail" }));
     await waitFor(() => expect(screen.queryByText(/Last-known obligation details are stale/)).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: /Operational Report.*secondary/i }));

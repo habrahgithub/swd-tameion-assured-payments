@@ -298,9 +298,9 @@ export function authorizationBlockers(state: {
 export function reconciliationLeadLine(state: DetailState, execution: unknown): string {
   if (state === "stale") return "Last-known submission state is stale — refresh before relying on it.";
   if (state !== "loaded") return "Submission state unknown — authoritative detail is not loaded.";
-  if (execution === null) return "No submission; nothing to reconcile.";
+  if (execution === null) return "No Arc settlement to reconcile.";
   if (execution && typeof execution === "object" && typeof (execution as { status?: unknown }).status === "string") {
-    return `Submission status: ${(execution as { status: string }).status}.`;
+    return `Simulated execution ${(execution as { status: string }).status}; no Arc settlement to reconcile.`;
   }
   return "Submission state unknown — authoritative execution field is absent.";
 }
@@ -323,11 +323,17 @@ const PANELS: Array<{ key: PanelKey; label: string }> = [
 
 const PAYMENT_LIFECYCLE_STAGES = [
   "Obligation",
-  "AI Assessment",
-  "Assurance & Authorization",
-  "Execution",
-  "Reconciliation & Evidence",
+  "Assessment",
+  "Authorization",
+  "Assurance",
+  "Payment",
+  "Reconciliation",
 ] as const;
+
+const SAMPLE_PLAYBACK_IDENTITY = {
+  organizationId: "ORG-SAMPLE-PLAYBACK-001",
+  obligationId: "DEMO-SAMPLE-OBLIGATION-001",
+} as const;
 
 async function postJson(url: string, body?: unknown, headers: Record<string, string> = {}) {
   try {
@@ -362,6 +368,9 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
   const releaseAuthority = truth.tameion_control_truth.execution_release_authority;
 
   if (execution?.status === "SETTLED" && aggregate.state === "RECONCILED") {
+    if (detail.truth.settlement_truth.runtime === "SIMULATED") {
+      return { label: "Simulated record — no Arc settlement", tone: "neutral", explanation: "The stored execution result used a simulated adapter and does not represent a vendor payment." };
+    }
     return { label: "Reconciled", tone: "success", explanation: "Settlement matches the authorized obligation exactly." };
   }
   if (execution?.status === "UNKNOWN") {
@@ -447,7 +456,7 @@ function Field({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-[var(--color-border)] py-1.5 sm:gap-4">
       <dt className="min-w-0 flex-1 break-words text-[13px] text-[var(--color-ink-muted)]">{label}</dt>
-      <dd className="min-w-0 max-w-[60%] break-words text-end tabular text-[13px] font-medium text-[var(--color-ink)]">{value}</dd>
+      <dd className="min-w-0 max-w-[60%] break-words text-end tabular text-[13px] font-medium text-[var(--color-ink)]"><bdi dir="auto">{value}</bdi></dd>
     </div>
   );
 }
@@ -1066,6 +1075,7 @@ function PrimaryButton({
 }) {
   return (
     <button
+      data-primary-action="true"
       onClick={onClick}
       disabled={disabled}
       className={`w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1185,51 +1195,34 @@ function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; c
   );
 }
 
-function SimulatedDemoStages({ value }: { value: Record<string, unknown> }) {
-  const happyPath = value.happy_path as {
-    label: string;
-    provider_label: string;
-    vendor_notice: string;
-    obligation_id: string;
-    obligation: { obligation_id: string; state: string };
-    assessment: { decision: string; provider_mode: string };
-    human_authorization: { state: string };
-    assurance: { pae_state: string; safety_kernel_overall: string };
-    execution: { status: string; provider_label: string };
-    reconciliation: { aggregate_state: string; execution_status: string };
-  };
-  const attack = value.changed_destination_attack as {
-    label: string;
-    obligation_id: string;
-    blocked: boolean;
-    reason: string;
-    worker_calls: number;
-    provider_submissions: number;
-  } | undefined;
+function SimulatedDemoStages() {
+  const identity = SAMPLE_PLAYBACK_IDENTITY;
   return (
-    <div className="space-y-3 border-t border-[var(--color-border)] pt-3" data-testid="simulated-demo-result">
-      <p className="text-[12px] font-semibold text-[var(--color-warning)]">
-        Sample workflow completed using a simulated provider. No vendor payment was sent.
+    <div className="space-y-3 border-t border-[var(--color-border)] pt-3" data-testid="simulated-demo-result" role="region" aria-label="Read-only sample playback">
+      <p className="text-[13px] font-semibold text-[var(--color-warning)]">
+        Illustrative fixture only. No approval, assurance, provider call, or settlement is performed.
       </p>
-      <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        <DemoStage title="Obligation" value={happyPath.obligation.state.toLowerCase().replaceAll("_", " ")} />
-        <DemoStage title="Assessment" value={`${happyPath.assessment.decision} advisory recommendation`} />
-        <DemoStage title="Human Authorization" value={happyPath.human_authorization.state.toLowerCase().replaceAll("_", " ")} />
-        <DemoStage title="Assurance & Execution" value={`Safety review ${happyPath.assurance.safety_kernel_overall.toLowerCase()} · authorization envelope ${happyPath.assurance.pae_state.toLowerCase().replaceAll("_", " ")} · simulated execution ${happyPath.execution.status.toLowerCase().replaceAll("_", " ")}`} />
-        <DemoStage title="Reconciliation / Evidence" value={`${happyPath.reconciliation.aggregate_state.toLowerCase().replaceAll("_", " ")} · execution ${happyPath.reconciliation.execution_status.toLowerCase().replaceAll("_", " ")}`} />
+      <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <DemoStage title="Obligation" value="Sample obligation selected" />
+        <DemoStage title="Assessment" value="PAY recommendation — illustrative and advisory" />
+        <DemoStage title="Authorization" value="Not performed" />
+        <DemoStage title="Assurance" value="Not run; no PAE is created" />
+        <DemoStage title="Payment" value="Not submitted" />
+        <DemoStage title="Reconciliation" value="Unavailable — no payment was submitted" />
       </ol>
-      <p className="text-[11px] text-[var(--color-ink-muted)]">This sample result is separate from genuine obligations and their payment authority.</p>
-      <details className="rounded border border-[var(--color-border)] px-3 py-2 text-[12px]">
-        <summary className="cursor-pointer font-semibold text-[var(--color-ink-muted)]">Reviewer technical proof</summary>
-        <div className="mt-2 space-y-2 border-t border-[var(--color-border)] pt-2">
-          <p>Scenario: <bdi dir="ltr">{happyPath.label}</bdi>; provider adapter: <bdi dir="ltr">{happyPath.provider_label}</bdi>; assessment provider mode: <bdi dir="ltr">{happyPath.assessment.provider_mode}</bdi>; payment classification: <bdi dir="ltr">{happyPath.vendor_notice}</bdi>; synthetic obligation: <bdi dir="ltr" className="mono">{happyPath.obligation_id}</bdi>.</p>
-          {attack && (
-            <section aria-label="Destination-change security test" className="rounded border border-[var(--color-warning)] p-3">
-              <p className="text-[12px] font-semibold">Security test outcome: {attack.blocked ? "blocked before submission" : "not blocked"}</p>
-              <p className="text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation <bdi dir="ltr" className="mono">{attack.obligation_id}</bdi>: worker calls {attack.worker_calls}; provider submissions {attack.provider_submissions}. {attack.blocked ? `Technical reason: ${attack.reason}` : "Unexpectedly not blocked."}</p>
-            </section>
-          )}
+      <section className="grid gap-3 border-t border-[var(--color-border)] pt-3 sm:grid-cols-2" aria-label="Illustrative same-intent branches">
+        <div>
+          <p className="text-[13px] font-semibold">Unchanged-destination sample branch</p>
+          <p className="text-[12px] text-[var(--color-ink-muted)]">Same sample organization and obligation: <bdi dir="ltr" className="mono">{identity.organizationId}</bdi> · <bdi dir="ltr" className="mono">{identity.obligationId}</bdi>. No steps are executed.</p>
         </div>
+        <div>
+          <p className="text-[13px] font-semibold">Changed destination branch — expected BLOCK before provider submission</p>
+          <p className="text-[12px] text-[var(--color-ink-muted)]">Same sample organization and obligation: <bdi dir="ltr" className="mono">{identity.organizationId}</bdi> · <bdi dir="ltr" className="mono">{identity.obligationId}</bdi>; destination differs from the sample intent. This fixture invokes no worker or provider and is not a live security test.</p>
+        </div>
+      </section>
+      <details className="rounded border border-[var(--color-border)] px-3 py-2 text-[12px]">
+        <summary className="cursor-pointer font-semibold text-[var(--color-ink-muted)]">Evidence &amp; technical details</summary>
+        <p className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Deterministic sample fixture; zero network requests from playback. It does not prove readiness, selected-obligation execution, or live Arc settlement.</p>
       </details>
     </div>
   );
@@ -1238,8 +1231,8 @@ function SimulatedDemoStages({ value }: { value: Record<string, unknown> }) {
 function DemoStage({ title, value }: { title: string; value: string }) {
   return (
     <li className="min-w-0 border-s-2 border-[var(--color-warning)] ps-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{title}</p>
-      <p className="mt-1 break-words text-[12px] font-medium text-[var(--color-ink)]">{value}</p>
+      <p className="text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{title}</p>
+      <p className="mt-1 break-words text-[13px] leading-5 text-[var(--color-ink-muted)]">{value}</p>
     </li>
   );
 }
@@ -1248,9 +1241,7 @@ export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
-  const [demoStatus, setDemoStatus] = useState<"idle" | "loading" | "error" | "result">("idle");
-  const [demoResult, setDemoResult] = useState<Record<string, unknown> | null>(null);
-  const [demoError, setDemoError] = useState<string | null>(null);
+  const [samplePlaybackVisible, setSamplePlaybackVisible] = useState(false);
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
@@ -1301,23 +1292,6 @@ export function CommandCenter() {
       if (fetched[0]) setSelectedId(fetched[0].obligation_id);
     });
   }, []);
-
-  const runSimulatedDemo = async () => {
-    setDemoStatus("loading");
-    setDemoResult(null);
-    setDemoError(null);
-    try {
-      const result = await postJson("/api/internal/demo/simulated-happy-path", { confirm: "RUN_SIMULATED_HAPPY_PATH" });
-      if (!result.ok || !result.data || typeof result.data !== "object" || !("happy_path" in result.data)) {
-        throw new Error(actionErrorMessage(result.data));
-      }
-      setDemoResult(result.data as Record<string, unknown>);
-      setDemoStatus("result");
-    } catch (error) {
-      setDemoError(error instanceof Error ? error.message : "The simulated demo could not be run.");
-      setDemoStatus("error");
-    }
-  };
 
   const refreshDetail = async (id: string, preserveLastKnown = false): Promise<ObligationDetail | null> => {
     const requestId = ++detailGeneration.current;
@@ -1484,36 +1458,75 @@ export function CommandCenter() {
     ? currentReviewedAssessment(displayedAssessment, currentAssessment, selectedId, aggregateVersion)
     : null;
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
-    if (!detail || detailState === "loading" || detailState === "none") return "Loading";
+    if (detailState === "none") return stage === "Obligation" ? "No obligation selected" : "Waiting for selection";
+    if (detailState === "loading") return "Loading current detail";
     if (detailState === "failed") return "Unavailable";
     if (detailState === "stale") return "Last-known — stale";
+    if (!detail) return "Unavailable";
 
     switch (stage) {
       case "Obligation":
         return judgeReadableState(detail.truth.source_truth.obligation_state);
-      case "AI Assessment":
+      case "Assessment":
         if (!hasCurrentAssessment || !currentAssessment) return "Not current for this version";
         if (currentAssessment.decision === "HOLD") return "Requires attention";
         if (currentAssessment.decision === "ESCALATE") return "Escalation required";
         return "PAY — advisory";
-      case "Assurance & Authorization":
-        if (detail.pae_sealed) return "Assurance: Safety Kernel PASS · Authorization: sealed for this intent";
-        if (hasCurrentAssessment && currentAssessment?.decision === "HOLD") return "Assurance: requires attention · Authorization: locked";
-        if (hasCurrentAssessment && currentAssessment?.decision === "ESCALATE") return "Assurance: escalation required · Authorization: locked";
-        if (!hasCurrentPayAssessment) return "Assurance: current PAY assessment required · Authorization: locked";
-        if (!routeAssuranceReady) return "PAY is advisory · Assurance: route not ready · Authorization: locked";
-        return authorizationAssessment ? "Assurance: route ready · Authorization: human review complete" : "PAY is advisory · Assurance: route ready · Authorization: human review required";
-      case "Execution":
-        if (detail.execution) return `Execution ${judgeReadableState(detail.execution.status)}`;
-        if (currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE") return "Not started — blocked";
-        return detail.pae_sealed ? "Not started" : "Not started — awaits authorization and assurance";
-      case "Reconciliation & Evidence":
-        if (detail.aggregate.state === "RECONCILED") return "Reconciled";
-        if (detail.execution?.status === "SETTLED") return "Settlement recorded; reconciliation pending";
-        if (detail.execution) return `Not reconciled — execution ${judgeReadableState(detail.execution.status)}`;
-        return "Not started";
+      case "Authorization":
+        if (detail.pae_sealed) return "Authorized — sealed PAE exists";
+        if (currentAssessment?.decision === "HOLD") return "Locked — assessment requires attention";
+        if (currentAssessment?.decision === "ESCALATE") return "Locked — escalation required";
+        if (!hasCurrentPayAssessment) return "Locked — current PAY assessment required";
+        if (!routeAssuranceReady) return "Approval locked — route assurance not ready";
+        return authorizationAssessment ? "Awaiting human approval" : "Review the current PAY assessment";
+      case "Assurance":
+        if (detail.pae_sealed) return "PAE is sealed; detailed assurance unavailable in this view";
+        if (hasCurrentPayAssessment && routeAssuranceReady) return "Final assurance runs after human approval";
+        return "Final assurance not run";
+      case "Payment":
+        if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
+          return `Simulated execution ${judgeReadableState(detail.execution.status)}; no Arc payment binding`;
+        }
+        return "Blocked — no Arc payment binding for this obligation";
+      case "Reconciliation":
+        if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
+          return "Simulated evidence only; no Arc settlement to reconcile";
+        }
+        return "No Arc settlement to reconcile";
     }
   };
+
+  const currentLifecycleStage = !selectedId
+    ? "Obligation"
+    : detailState !== "loaded" || !detail
+      ? "Obligation"
+      : !allAssessed || !hasCurrentAssessment || !currentAssessment || currentAssessment.decision !== "PAY"
+        ? "Assessment"
+        : detail.pae_sealed
+          ? "Payment"
+          : "Authorization";
+
+  const selectedWorkspaceGuidance = !selectedId
+    ? "Choose one obligation from the queue."
+    : detailState === "loading"
+      ? "Loading current obligation status."
+      : detailState === "failed"
+        ? "Selected obligation status is unavailable; retry before taking action."
+        : detailState === "stale"
+          ? "Selected obligation status is stale; refresh before taking action."
+          : detail?.pae_sealed
+            ? "Blocker: this genuine obligation has no Arc payment binding; the separate fixed testnet intent does not represent it."
+            : !allAssessed
+              ? "Next step: assess the remaining obligations before authorization review."
+              : !hasCurrentAssessment || !currentAssessment
+                ? "Next step: assess this obligation; a PAY recommendation is advisory."
+                : currentAssessment.decision !== "PAY"
+                  ? `Blocked: current assessment is ${currentAssessment.decision}; resolve its findings before reassessment.`
+                  : !routeAssuranceReady
+                    ? "Blocker: payment-route assurance is not ready; authorization remains locked."
+                    : !authorizationAssessment
+                      ? "Next step: review the current PAY assessment before authorization."
+                      : "Next step: an authorized human may approve this exact reviewed obligation.";
 
   // HOLD/ESCALATE operational report — read-only, derived from authoritative
   // current assessment and obligation state. Fails closed when truth is
@@ -1585,10 +1598,9 @@ export function CommandCenter() {
           </p>
           <p className="mb-2 text-[12px] text-[var(--color-ink)]">{queueHeaderLabel(listPresentation, reportSummary)}</p>
           {/* Ledger header row — columnar alignment for operator scan */}
-          {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-2 gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)] sm:grid-cols-[1fr_auto_auto]">
+          {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             <span>Id</span>
             <span className="tabular text-end">Amount</span>
-            <span className="tabular text-end">Status</span>
           </div>}
           <ul className="border-y border-[var(--color-border)]">
             {obligations.map((o) => {
@@ -1609,33 +1621,33 @@ export function CommandCenter() {
                       setLastResult(null);
                       setDisplayedAssessment(null);
                     }}
-                    className={`grid w-full grid-cols-2 items-center gap-x-2 gap-y-0.5 px-2 py-1.5 text-start transition sm:grid-cols-[1fr_auto_auto] ${
+                    className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-2 py-2 text-start transition ${
                       o.obligation_id === selectedId
                         ? "border-s-2 border-s-[var(--color-accent)] bg-[var(--color-surface)]"
                         : "hover:bg-[var(--color-surface)]"
                     }`}
                   >
-                    <span className="mono text-[12px] font-medium text-[var(--color-ink)] col-span-1">
+                    <span className="col-span-1 min-w-0 text-[13px] font-medium text-[var(--color-ink)]">
                       <span
                         aria-label={o.assessed ? "assessment complete" : "assessment required"}
                         title={o.assessed ? `Assessment complete: ${o.decision} recommendation` : "Assessment required"}
                         className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                         style={{ background: o.assessed ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}
-                      {o.obligation_id}
+                      <bdi dir="ltr" className="mono whitespace-nowrap">{o.obligation_id}</bdi>
                     </span>
                     <span className="tabular text-end text-[12px] text-[var(--color-ink-muted)]">
                       {o.amount} {o.currency}
                     </span>
-                    <span className="col-span-2 tabular text-start text-[12px] font-medium sm:col-span-1 sm:text-end" style={{ color: statusColor }}>
+                    <span className="col-span-2 tabular text-start text-[13px] font-semibold" style={{ color: statusColor }}>
                       {o.assessed
                         ? o.decision === "PAY" ? "PAY recommendation (advisory)" : `${o.decision ?? "—"} assessment`
                         : "Assessment required"}
                     </span>
-                    <span className="col-span-2 truncate text-[11px] text-[var(--color-ink-muted)] sm:col-span-3">
+                    <span className="col-span-2 text-[12px] text-[var(--color-ink-muted)]">
                       {o.service_category.replaceAll("_", " ").toLowerCase()}
                     </span>
-                    <span className="col-span-2 text-[11px] leading-4 text-[var(--color-ink-muted)] sm:col-span-3">
+                    <span className="col-span-2 text-[12px] leading-4 text-[var(--color-ink-muted)]">
                       {o.assessed ? "Assessment complete; " : "Assessment required; "}{o.route_assurance_status ?? "route assurance status unavailable"}.
                       {o.decision === "PAY" ? " PAY remains advisory; authorization and execution are separate." : ""}
                     </span>
@@ -1664,8 +1676,8 @@ export function CommandCenter() {
           {selected && (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="mono text-base font-semibold text-[var(--color-ink)]">{selected.obligation_id}</h2>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
+                <h2 className="mono text-[24px] font-semibold leading-8 text-[var(--color-ink)] md:text-[28px]">{selected.obligation_id}</h2>
+                <p className="text-[13px] text-[var(--color-ink-muted)]">{selected.commercial_terms}</p>
               </div>
               <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
             </div>
@@ -1742,20 +1754,28 @@ export function CommandCenter() {
             </details>
           )}
 
-          <section aria-label="Payment lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-3">
+          <section aria-label="Payment lifecycle" className="space-y-3 border-b border-[var(--color-border)] pb-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Genuine payment lifecycle</p>
-              <p className="text-[11px] font-bold tracking-wide text-[var(--color-ink)]">NO ASSURANCE, NO EXECUTION</p>
+              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Selected obligation lifecycle</p>
+              <p className="text-[12px] font-semibold tracking-wide text-[var(--color-ink-muted)]">AI recommends · human authorizes · assurance controls release</p>
             </div>
-            <ol aria-label="Payment lifecycle" className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-5">
+            <ol aria-label="Payment lifecycle" className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
               {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
-                <li key={stage} className="grid min-w-0 grid-cols-[auto_1fr] gap-x-1 gap-y-1 border-s-2 border-[var(--color-border)] ps-2 py-1 text-[12px] text-[var(--color-ink-muted)]">
-                  <span className="mono text-[11px] font-semibold">{index + 1}.</span>
-                  <span className="min-w-0 break-words text-[12px] font-semibold leading-5">{stage}</span>
-                  <span className="col-span-2 min-w-0 break-words leading-5">{lifecycleStatus(stage)}</span>
+                <li key={stage} aria-current={currentLifecycleStage === stage ? "step" : undefined} className={`min-w-0 rounded-sm px-2 py-2 ${currentLifecycleStage === stage ? "border-s-2 border-[var(--color-accent)] bg-[var(--color-surface)]" : "border-s border-[var(--color-border)]"}`}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="mono text-[12px] font-semibold text-[var(--color-ink-muted)]">{index + 1}.</span>
+                    <span className="min-w-0 break-normal text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{stage}</span>
+                  </div>
+                  <span className="mt-1 block min-w-0 break-words text-[13px] leading-5 text-[var(--color-ink-muted)]">{lifecycleStatus(stage)}</span>
                 </li>
               ))}
             </ol>
+            {selected && (
+              <p className="text-[14px] leading-5 text-[var(--color-ink)]" aria-live="polite">
+                <strong>Current step: {currentLifecycleStage}.</strong>{" "}
+                {selectedWorkspaceGuidance}
+              </p>
+            )}
           </section>
 
           <nav aria-label="Command Center surfaces" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
@@ -2034,9 +2054,7 @@ export function CommandCenter() {
             {panel === "assurance" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  The Execution Worker independently re-verifies the sealed envelope and current destination/
-                  wallet trust before submitting — a changed destination is blocked here, before any provider
-                  call.
+                  This selected-obligation path uses a simulated adapter and has no Arc payment binding. No payment submission is available here. A destination-change sample is shown only as a read-only fixture below.
                 </p>
 
                 <div
@@ -2093,38 +2111,11 @@ export function CommandCenter() {
                 </div>
                 {currentResult?.label === "kill-switch" && <ActionResultBanner result={currentResult} />}
 
-                <div className="flex flex-wrap items-center gap-4">
-                  <PrimaryButton disabled={busy || detailState !== "loaded" || !selectedId || !detail?.pae_sealed} onClick={() => run("execute", () => postJson(`/api/obligations/${selectedId}/execute`))}>
-                    Submit for execution (simulated)
-                  </PrimaryButton>
-                  <button
-                    disabled={busy || detailState !== "loaded" || !selectedId || !detail?.pae_sealed}
-                    onClick={() =>
-                      run("prime-packet", async () => {
-                        const response = await fetch(`/api/obligations/${selectedId}/prime-approval-packet`);
-                        return { ok: response.ok, status: response.status, data: await response.json() };
-                      })
-                    }
-                    className="text-[13px] font-medium text-[var(--color-ink)] underline decoration-[var(--color-border)] underline-offset-4 hover:decoration-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    View exact intent for a real J2 transfer (Prime approval packet)
-                  </button>
-                </div>
+                <p className="border-s-2 border-[var(--color-warning)] ps-3 text-[13px] leading-5 text-[var(--color-warning)]">
+                  Payment blocked: the fixed Arc Testnet intent is a separate synthetic identity and cannot be used for this obligation.
+                </p>
                 {!detail?.pae_sealed && (
                   <p className="text-[12px] text-[var(--color-warning)]">{firstUnmetPrerequisite ?? "Authorize the obligation first."}</p>
-                )}
-                {currentResult?.label === "execute" && <ActionResultBanner result={currentResult} />}
-                {currentResult?.label === "execute" && <EvidencePanel value={currentResult.data} />}
-                {currentResult?.label === "prime-packet" && <ActionResultBanner result={currentResult} />}
-                {currentResult?.label === "prime-packet" && currentResult.ok && (
-                  <div className="max-w-xl border-s-[3px] border-s-[var(--color-warning)] ps-3">
-                    <p className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
-                      Retained Prime gate — not submitted
-                    </p>
-                    <pre className="tabular whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--color-ink)]">
-                      {(currentResult.data as { text?: string })?.text ?? JSON.stringify(currentResult.data, null, 2)}
-                    </pre>
-                  </div>
                 )}
               </div>
             )}
@@ -2321,26 +2312,18 @@ export function CommandCenter() {
         <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Demonstrations</summary>
         <div className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
           <details className="rounded border border-[var(--color-warning)] px-3 py-2">
-            <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-warning)]">Simulated</summary>
+            <summary className="cursor-pointer text-[13px] font-semibold text-[var(--color-warning)]">Read-only sample</summary>
             <section aria-label="Simulated demonstration" className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
               <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
                 <div>
-                  <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
-                  <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">This sample workflow uses a simulated provider. No Circle or Arc transfer is sent, and genuine obligations remain unchanged.</p>
+                  <p className="text-[13px] font-semibold text-[var(--color-warning)]">Illustrative only · not a genuine payment</p>
+                  <p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Playback uses a fixed local fixture. It makes no approval, assurance, provider, or execution requests.</p>
                 </div>
-                <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
-                  {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
-                </PrimaryButton>
+                <button type="button" aria-expanded={samplePlaybackVisible} onClick={() => setSamplePlaybackVisible((visible) => !visible)} className="rounded border border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-ink)] hover:bg-[var(--color-surface)]">
+                  {samplePlaybackVisible ? "Hide sample playback" : "Show sample playback"}
+                </button>
               </div>
-              {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
-              {demoStatus === "error" && (
-                <div role="alert" className="flex flex-col items-start gap-2 border-s-[3px] border-s-[var(--color-danger)] ps-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
-                  <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
-                </div>
-              )}
-              {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
-              <p className="border-s-2 border-[var(--color-warning)] ps-2 text-[12px] text-[var(--color-ink-muted)]"><strong>Destination-change security test:</strong> uses sample data only and sends no transfer. It cannot mutate a genuine obligation.</p>
+              {samplePlaybackVisible && <SimulatedDemoStages />}
             </section>
           </details>
 
