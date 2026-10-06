@@ -34,7 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",
       reasonText: body.reason_text ?? `Reviewed and approved ${id} for a testnet-fixture Arc payment.`,
-    });
+    }, state.trustedKeys);
     state.recordAuthorization({
       approval_record: approvalRecord.record,
       approval_record_hash: approvalRecord.approval_record_hash,

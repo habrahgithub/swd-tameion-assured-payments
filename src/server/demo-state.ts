@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
 import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import type { ProviderAdapter } from "../execution/provider-adapter";
 import type { StatusResult } from "../execution/provider-adapter";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import { ArcCircleProviderAdapter } from "../execution/provider-adapter";
@@ -30,6 +31,11 @@ import {
   verifyDurableAssuranceRecordHash,
 } from "../pae/durable-records";
 import { canonicalBytes, sha256Hex } from "../pae/canonicalize";
+import {
+  parseTrustedKeyRegistry,
+  TrustedKeyRegistry,
+  type TrustedKeyEntry,
+} from "../pae/keys";
 import { SupabaseDemoStateRepository } from "./supabase-demo-state-repository";
 
 /**
@@ -66,11 +72,12 @@ export interface DemoAuthorizationArtifacts {
 }
 
 export interface DemoStateSnapshot {
-  schema_version: 1;
+  schema_version: 2;
   authority: ReturnType<AuthorityStore["exportSnapshot"]>;
   assessment_operations: AssessmentOperation[];
   sealed_paes: Array<[string, SealedPae]>;
   authorization_history: DemoAuthorizationArtifacts[];
+  trusted_keys: TrustedKeyEntry[];
   execution_ledger: ExecutionRecord[];
   provider_adapter: FakeProviderAdapterSnapshot;
 }
@@ -130,15 +137,16 @@ function parseSha256(value: unknown): string {
   return value;
 }
 
-function parseSnapshot(value: unknown): DemoStateSnapshot {
+export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed Supabase demo-state snapshot.");
   const snapshot = value as Record<string, unknown>;
   if (
-    snapshot.schema_version !== 1 ||
+    (snapshot.schema_version !== 1 && snapshot.schema_version !== 2) ||
     !snapshot.authority || typeof snapshot.authority !== "object" || Array.isArray(snapshot.authority) ||
     !Array.isArray(snapshot.sealed_paes) || !Array.isArray(snapshot.authorization_history) ||
     !Array.isArray(snapshot.execution_ledger) || !snapshot.provider_adapter ||
-    typeof snapshot.provider_adapter !== "object" || Array.isArray(snapshot.provider_adapter)
+    typeof snapshot.provider_adapter !== "object" || Array.isArray(snapshot.provider_adapter) ||
+    (snapshot.schema_version === 2 && !Array.isArray(snapshot.trusted_keys))
   ) {
     throw new Error("Malformed Supabase demo-state snapshot.");
   }
@@ -150,6 +158,9 @@ function parseSnapshot(value: unknown): DemoStateSnapshot {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") throw new Error("Malformed persisted PAE entry.");
     return [entry[0], sealedPaeSchema.parse(entry[1])] as [string, SealedPae];
   });
+  const trustedKeys = snapshot.schema_version === 1
+    ? []
+    : parseTrustedKeyRegistry(snapshot.trusted_keys);
   const authorizationHistory = snapshot.authorization_history.map(authorizationArtifactsParser);
   const assessmentsByHash = new Map<string, {
     assessment_id: string;
@@ -235,11 +246,12 @@ function parseSnapshot(value: unknown): DemoStateSnapshot {
     }
   }
   return {
-    schema_version: 1,
+    schema_version: 2,
     authority: snapshot.authority as DemoStateSnapshot["authority"],
     assessment_operations: assessmentOperations,
     sealed_paes: sealedPaes,
     authorization_history: authorizationHistory,
+    trusted_keys: trustedKeys,
     execution_ledger: executionLedger,
     provider_adapter: providerAdapter,
   };
@@ -333,6 +345,7 @@ function toUsdcAmount(rawAmount: string, currency: string): string {
 }
 
 export class DemoState {
+  readonly trustedKeys = new TrustedKeyRegistry();
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   readonly adapter: FakeProviderAdapter;
@@ -348,13 +361,14 @@ export class DemoState {
     this.repository = repository;
     this.revision = revision;
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
     this.adapter = new FakeProviderAdapter(snapshot?.provider_adapter);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
     this.assessmentOperations = new Map(
       (snapshot?.assessment_operations ?? []).map((operation) => [operation.idempotency_key, { ...operation }]),
     );
-    this.worker = new ExecutionWorker(this.store, this.adapter, () => this.flush());
+    this.worker = new ExecutionWorker(this.store, this.adapter, () => this.flush(), this.trustedKeys);
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
 
     if (!snapshot) for (const record of this.liveUsageRecords) {
@@ -521,13 +535,22 @@ export class DemoState {
     this.setSealedPae(artifacts.sealed_pae.payload.obligation_ids[0], artifacts.sealed_pae);
   }
 
+  async revokeTrustedKey(signingKeyId: string): Promise<void> {
+    if (!this.repository || this.revision === undefined || this.namespace === undefined) {
+      throw new Error("A durable repository is required to persist trusted-key revocation.");
+    }
+    this.trustedKeys.revoke(signingKeyId);
+    await this.flush();
+  }
+
   exportSnapshot(): DemoStateSnapshot {
     return {
-      schema_version: 1,
+      schema_version: 2,
       authority: this.store.exportSnapshot(),
       assessment_operations: [...this.assessmentOperations.values()].map((operation) => ({ ...operation })),
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      trusted_keys: this.trustedKeys.export(),
       execution_ledger: this.worker.exportSnapshot(),
       provider_adapter: this.adapter.exportSnapshot(),
     };
@@ -551,6 +574,7 @@ export class DemoState {
  * Testnet demonstration. It intentionally has no genuine-obligation list
  * and never shares the simulated provider adapter. */
 export class J2aRealTestnetDemoState {
+  readonly trustedKeys = new TrustedKeyRegistry();
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
@@ -560,8 +584,14 @@ export class J2aRealTestnetDemoState {
   private namespace?: string;
   lastPreflight: J2aPreflightResult | null;
 
-  constructor(snapshot?: DemoStateSnapshot & { j2a_preflight?: J2aPreflightResult | null }, repository?: SupabaseDemoStateRepository, revision?: number) {
+  constructor(
+    snapshot?: DemoStateSnapshot & { j2a_preflight?: J2aPreflightResult | null },
+    repository?: SupabaseDemoStateRepository,
+    revision?: number,
+    providerAdapter?: ProviderAdapter,
+  ) {
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
     this.lastPreflight = snapshot?.j2a_preflight ?? null;
@@ -569,8 +599,9 @@ export class J2aRealTestnetDemoState {
     this.revision = revision;
     this.worker = new ExecutionWorker(
       this.store,
-      new ArcCircleProviderAdapter(undefined, () => this.lastPreflight),
+      providerAdapter ?? new ArcCircleProviderAdapter(undefined, () => this.lastPreflight),
       () => this.flush(),
+      this.trustedKeys,
     );
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
   }
@@ -596,6 +627,14 @@ export class J2aRealTestnetDemoState {
     this.setSealedPae(validated.sealed_pae.payload.obligation_ids[0], validated.sealed_pae);
   }
 
+  async revokeTrustedKey(signingKeyId: string): Promise<void> {
+    if (!this.repository || this.revision === undefined || this.namespace === undefined) {
+      throw new Error("A durable repository is required to persist trusted-key revocation.");
+    }
+    this.trustedKeys.revoke(signingKeyId);
+    await this.flush();
+  }
+
   recordPreflight(result: J2aPreflightResult): void {
     this.lastPreflight = result;
     if (result.readiness !== "READY") return;
@@ -616,11 +655,12 @@ export class J2aRealTestnetDemoState {
 
   exportSnapshot(): DemoStateSnapshot & { j2a_preflight: J2aPreflightResult | null } {
     return {
-      schema_version: 1,
+      schema_version: 2,
       authority: this.store.exportSnapshot(),
       assessment_operations: [],
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      trusted_keys: this.trustedKeys.export(),
       execution_ledger: this.worker.exportSnapshot(),
       provider_adapter: new FakeProviderAdapter().exportSnapshot(),
       j2a_preflight: this.lastPreflight,
@@ -641,11 +681,12 @@ export class J2aRealTestnetDemoState {
 
 function emptyJ2aSnapshot(): DemoStateSnapshot & { j2a_preflight: null } {
   return {
-    schema_version: 1,
+    schema_version: 2,
     authority: new AuthorityStore().exportSnapshot(),
     assessment_operations: [],
     sealed_paes: [],
     authorization_history: [],
+    trusted_keys: [],
     execution_ledger: [],
     provider_adapter: new FakeProviderAdapter().exportSnapshot(),
     j2a_preflight: null,
@@ -653,7 +694,7 @@ function emptyJ2aSnapshot(): DemoStateSnapshot & { j2a_preflight: null } {
 }
 
 function parseJ2aSnapshot(value: unknown): DemoStateSnapshot & { j2a_preflight: J2aPreflightResult | null } {
-  const parsed = parseSnapshot(value);
+  const parsed = parseDemoStateSnapshot(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed J2A demo-state snapshot.");
   const rawPreflight = (value as Record<string, unknown>).j2a_preflight;
   return {
@@ -668,7 +709,19 @@ async function createPersistentJ2aState(url: string, serviceRoleKey: string): Pr
   const stored = await repository.loadOrSeed(namespace, emptyJ2aSnapshot() as unknown as Record<string, unknown>);
   const state = new J2aRealTestnetDemoState(parseJ2aSnapshot(stored.snapshot), repository, stored.revision);
   state.attachRepository(repository, namespace, stored.revision);
+  await migrateLegacyTrustedKeys(stored.snapshot, state);
   return state;
+}
+
+async function migrateLegacyTrustedKeys(
+  snapshot: Record<string, unknown>,
+  state: { flush(): Promise<void> },
+): Promise<void> {
+  if (snapshot.schema_version !== 1) return;
+  // Legacy snapshots contain no authoritative trust or revocation status.
+  // Their PAEs remain non-executable; current signing secrets do not prove
+  // that a legacy key was never revoked.
+  await state.flush();
 }
 
 export async function getJ2aRealTestnetDemoState(): Promise<J2aRealTestnetDemoState> {
@@ -721,8 +774,9 @@ async function createPersistentDemoState(url: string, serviceRoleKey: string): P
   const repository = new SupabaseDemoStateRepository(url, serviceRoleKey);
   const initial = new DemoState();
   const stored = await repository.loadOrSeed(namespace, initial.exportSnapshot() as unknown as Record<string, unknown>);
-  const state = new DemoState(parseSnapshot(stored.snapshot), repository, stored.revision);
+  const state = new DemoState(parseDemoStateSnapshot(stored.snapshot), repository, stored.revision);
   state.attachRepository(repository, namespace, stored.revision);
+  await migrateLegacyTrustedKeys(stored.snapshot, state);
   return state;
 }
 

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PaeKeyError, exportPublicKeySpkiBase64Url, loadServerSigningKey, signingKeyEnvironmentVariableName } from "../src/pae/keys";
+import { PaeKeyError, TrustedKeyRegistry, exportPublicKeySpkiBase64Url, generateEd25519KeyPair, loadServerSigningKey, signingKeyEnvironmentVariableName } from "../src/pae/keys";
 
 const LOGICAL_KEY_ID = "TAMEION-DEMO-PAE-KEY-1";
 const ENV_KEY = "PAE_SIGNING_KEY_TAMEION_DEMO_PAE_KEY_1_PEM";
@@ -19,6 +19,44 @@ afterEach(() => {
 });
 
 describe("PAE signing-key environment mapping", () => {
+  it("isolates entries and revocation between namespace-owned registries", () => {
+    const namespaceA = new TrustedKeyRegistry();
+    const namespaceB = new TrustedKeyRegistry();
+    const keyA = generateEd25519KeyPair();
+    const keyB = generateEd25519KeyPair();
+    namespaceA.register({
+      signing_key_id: "SHARED-KEY-ID",
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: exportPublicKeySpkiBase64Url(keyA.publicKey),
+      status: "ACTIVE",
+    });
+    namespaceB.register({
+      signing_key_id: "SHARED-KEY-ID",
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: exportPublicKeySpkiBase64Url(keyB.publicKey),
+      status: "ACTIVE",
+    });
+
+    namespaceA.revoke("SHARED-KEY-ID");
+
+    expect(namespaceA.export()).toHaveLength(1);
+    expect(namespaceB.export()).toMatchObject([{ status: "ACTIVE" }]);
+    expect(() => namespaceA.resolve("SHARED-KEY-ID", "Ed25519")).toThrow(PaeKeyError);
+    expect(() => namespaceB.resolve("SHARED-KEY-ID", "Ed25519")).not.toThrow();
+  });
+
+  it.each([
+    { entries: [{ signing_key_id: "K", signing_algorithm: "RSA", public_key_spki_base64url: "abc", status: "ACTIVE" }] },
+    { entries: [{ signing_key_id: "K", signing_algorithm: "Ed25519", public_key_spki_base64url: "!", status: "ACTIVE" }] },
+    { entries: [
+      { signing_key_id: "K", signing_algorithm: "Ed25519", public_key_spki_base64url: "abc", status: "ACTIVE" },
+      { signing_key_id: "K", signing_algorithm: "Ed25519", public_key_spki_base64url: "abc", status: "REVOKED" },
+    ] },
+  ])("rejects malformed or duplicate trusted-key entries", ({ entries }) => {
+    const registry = new TrustedKeyRegistry();
+    expect(() => registry.restore(entries as never)).toThrow(PaeKeyError);
+  });
+
   it("maps the logical demo key to the Vercel-safe name without changing its identity", () => {
     expect(signingKeyEnvironmentVariableName(LOGICAL_KEY_ID)).toBe(ENV_KEY);
     expect(ENV_KEY).toMatch(/^[A-Za-z0-9_]+$/);

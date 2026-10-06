@@ -56,27 +56,143 @@ export interface TrustedKeyEntry {
   status: "ACTIVE" | "REVOKED";
 }
 
-const registry = new Map<string, TrustedKeyEntry>();
+export class TrustedKeyRegistry {
+  private readonly entries = new Map<string, TrustedKeyEntry>();
 
-export function registerTrustedKey(entry: TrustedKeyEntry): void {
-  registry.set(entry.signing_key_id, entry);
+  register(entry: TrustedKeyEntry): void {
+    const existing = this.entries.get(entry.signing_key_id);
+    if (existing?.status === "REVOKED" && entry.status === "ACTIVE") {
+      throw new PaeKeyError(`Revoked signing_key_id "${entry.signing_key_id}" cannot be reactivated`, "PAE-015");
+    }
+    if (existing && (
+      existing.signing_algorithm !== entry.signing_algorithm ||
+      existing.public_key_spki_base64url !== entry.public_key_spki_base64url
+    )) {
+      throw new PaeKeyError(`Conflicting trusted material for "${entry.signing_key_id}"`, "PAE-015");
+    }
+    this.entries.set(entry.signing_key_id, { ...entry });
+  }
+
+  /** Public verification material is durable state; private signing bytes never enter this snapshot. */
+  export(): TrustedKeyEntry[] {
+    return [...this.entries.values()]
+      .map((entry) => ({ ...entry }))
+      .sort((left, right) => left.signing_key_id.localeCompare(right.signing_key_id));
+  }
+
+  /** Restore durable entries without allowing stale snapshots to reactivate local revocations. */
+  restore(value: unknown): void {
+    for (const entry of parseTrustedKeyRegistry(value)) {
+      const existing = this.entries.get(entry.signing_key_id);
+      if (existing && (
+        existing.signing_algorithm !== entry.signing_algorithm ||
+        existing.public_key_spki_base64url !== entry.public_key_spki_base64url ||
+        (existing.status === "REVOKED" && entry.status === "ACTIVE")
+      )) {
+        throw new PaeKeyError(`Persisted trust conflicts with current key state for "${entry.signing_key_id}"`, "PAE-015");
+      }
+      this.entries.set(entry.signing_key_id, { ...entry });
+    }
+  }
+
+  resolve(signingKeyId: string, signingAlgorithm: string): KeyObject {
+    const entry = this.entries.get(signingKeyId);
+    if (!entry) throw new PaeKeyError(`Unknown signing_key_id "${signingKeyId}"`, "PAE-015");
+    if (entry.signing_algorithm !== signingAlgorithm) {
+      throw new PaeKeyError(`signing_algorithm mismatch for "${signingKeyId}"`, "PAE-015");
+    }
+    if (entry.status !== "ACTIVE") throw new PaeKeyError(`signing_key_id "${signingKeyId}" is ${entry.status}`, "PAE-015");
+    return importPublicKeySpkiBase64Url(entry.public_key_spki_base64url);
+  }
+
+  revoke(signingKeyId: string): void {
+    const entry = this.entries.get(signingKeyId);
+    if (!entry) throw new PaeKeyError(`Unknown signing_key_id "${signingKeyId}"`, "PAE-015");
+    this.entries.set(signingKeyId, { ...entry, status: "REVOKED" });
+  }
+
+  initializeServerTrustedKey(signingKeyId: string): void {
+    const envVar = signingKeyEnvironmentVariableName(signingKeyId);
+    const pem = process.env[envVar];
+    if (!pem) throw new PaeKeyError(`No server signing key configured for "${signingKeyId}"`, "PAE-015");
+    let publicKeySpki: string;
+    try {
+      const privateKey = importPrivateKeyPem(pem);
+      const publicKey = createPublicKey(privateKey);
+      if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("Unexpected key type");
+      publicKeySpki = exportPublicKeySpkiBase64Url(publicKey);
+    } catch {
+      throw new PaeKeyError("Configured server signing key is invalid", "PAE-015");
+    }
+    const existing = this.entries.get(signingKeyId);
+    if (existing) {
+      if (existing.status !== "ACTIVE" || existing.public_key_spki_base64url !== publicKeySpki) {
+        throw new PaeKeyError(`Configured server key does not match active trust for "${signingKeyId}"`, "PAE-015");
+      }
+      return;
+    }
+    this.register({
+      signing_key_id: signingKeyId,
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: publicKeySpki,
+      status: "ACTIVE",
+    });
+  }
+
+  loadServerSigningKey(signingKeyId: string): Ed25519KeyPair {
+    return loadServerSigningKey(signingKeyId, this);
+  }
 }
 
-export function resolveTrustedPublicKey(signingKeyId: string, signingAlgorithm: string): KeyObject {
-  const entry = registry.get(signingKeyId);
-  if (!entry) {
-    throw new PaeKeyError(`Unknown signing_key_id "${signingKeyId}"`, "PAE-015");
-  }
-  if (entry.signing_algorithm !== signingAlgorithm) {
-    throw new PaeKeyError(
-      `signing_algorithm mismatch for "${signingKeyId}": expected ${entry.signing_algorithm}`,
-      "PAE-015",
-    );
-  }
-  if (entry.status !== "ACTIVE") {
-    throw new PaeKeyError(`signing_key_id "${signingKeyId}" is ${entry.status}`, "PAE-015");
-  }
-  return importPublicKeySpkiBase64Url(entry.public_key_spki_base64url);
+export function parseTrustedKeyRegistry(value: unknown): TrustedKeyEntry[] {
+  if (!Array.isArray(value)) throw new PaeKeyError("Persisted trusted-key registry is malformed", "PAE-015");
+  const seen = new Set<string>();
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new PaeKeyError("Persisted trusted-key entry is malformed", "PAE-015");
+    }
+    const entry = item as Record<string, unknown>;
+    const allowedProperties = new Set(["signing_key_id", "signing_algorithm", "public_key_spki_base64url", "status"]);
+    if (Object.keys(entry).some((key) => !allowedProperties.has(key)) ||
+        typeof entry.signing_key_id !== "string" || !entry.signing_key_id ||
+        entry.signing_algorithm !== "Ed25519" || typeof entry.public_key_spki_base64url !== "string" ||
+        !/^[A-Za-z0-9_-]+$/.test(entry.public_key_spki_base64url) ||
+        (entry.status !== "ACTIVE" && entry.status !== "REVOKED") || seen.has(entry.signing_key_id)) {
+      throw new PaeKeyError("Persisted trusted-key entry is invalid or duplicated", "PAE-015");
+    }
+    try {
+      const publicKey = importPublicKeySpkiBase64Url(entry.public_key_spki_base64url);
+      if (publicKey.asymmetricKeyType !== "ed25519") throw new Error("Unexpected key type");
+    } catch {
+      throw new PaeKeyError("Persisted trusted-key public material is invalid", "PAE-015");
+    }
+    seen.add(entry.signing_key_id);
+    return {
+      signing_key_id: entry.signing_key_id,
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: entry.public_key_spki_base64url,
+      status: entry.status,
+    };
+  });
+}
+
+/** Process-local registry reserved for callers without persisted state ownership. */
+export const processTrustedKeyRegistry = new TrustedKeyRegistry();
+
+export function registerTrustedKey(entry: TrustedKeyEntry, registry = processTrustedKeyRegistry): void {
+  registry.register(entry);
+}
+
+export function exportTrustedKeyRegistry(registry = processTrustedKeyRegistry): TrustedKeyEntry[] {
+  return registry.export();
+}
+
+export function restoreTrustedKeyRegistry(value: unknown, registry = processTrustedKeyRegistry): void {
+  registry.restore(value);
+}
+
+export function resolveTrustedPublicKey(signingKeyId: string, signingAlgorithm: string, registry = processTrustedKeyRegistry): KeyObject {
+  return registry.resolve(signingKeyId, signingAlgorithm);
 }
 
 /**
@@ -84,45 +200,12 @@ export function resolveTrustedPublicKey(signingKeyId: string, signingAlgorithm: 
  * replacing an existing trust decision. Unlike the signing loader, this has
  * no development-key fallback and never reactivates a revoked key.
  */
-export function initializeServerTrustedKey(signingKeyId: string): void {
-  const envVar = signingKeyEnvironmentVariableName(signingKeyId);
-  const pem = process.env[envVar];
-  if (!pem) {
-    throw new PaeKeyError(`No server signing key configured for "${signingKeyId}"`, "PAE-015");
-  }
-
-  let publicKeySpki: string;
-  try {
-    const privateKey = importPrivateKeyPem(pem);
-    publicKeySpki = exportPublicKeySpkiBase64Url(createPublicKey(privateKey));
-  } catch {
-    throw new PaeKeyError("Configured server signing key is invalid", "PAE-015");
-  }
-
-  const existing = registry.get(signingKeyId);
-  if (existing) {
-    if (
-      existing.status !== "ACTIVE" || existing.signing_algorithm !== "Ed25519" ||
-      existing.public_key_spki_base64url !== publicKeySpki
-    ) {
-      throw new PaeKeyError(`Configured server key does not match active trust for "${signingKeyId}"`, "PAE-015");
-    }
-    return;
-  }
-
-  registerTrustedKey({
-    signing_key_id: signingKeyId,
-    signing_algorithm: "Ed25519",
-    public_key_spki_base64url: publicKeySpki,
-    status: "ACTIVE",
-  });
+export function initializeServerTrustedKey(signingKeyId: string, registry = processTrustedKeyRegistry): void {
+  registry.initializeServerTrustedKey(signingKeyId);
 }
 
-export function revokeTrustedKey(signingKeyId: string): void {
-  const entry = registry.get(signingKeyId);
-  if (entry) {
-    registry.set(signingKeyId, { ...entry, status: "REVOKED" });
-  }
+export function revokeTrustedKey(signingKeyId: string, registry = processTrustedKeyRegistry): void {
+  registry.revoke(signingKeyId);
 }
 
 const signingKeyEnvironmentNameOverrides: Readonly<Record<string, string>> = {
@@ -159,16 +242,24 @@ export function signingKeyEnvironmentVariableName(signingKeyId: string): string 
  */
 const devSigningKeys = new Map<string, Ed25519KeyPair>();
 
-export function loadServerSigningKey(signingKeyId: string): Ed25519KeyPair {
+export function loadServerSigningKey(signingKeyId: string, registry = processTrustedKeyRegistry): Ed25519KeyPair {
   const envVar = signingKeyEnvironmentVariableName(signingKeyId);
   const pem = process.env[envVar];
   if (pem) {
     const privateKey = importPrivateKeyPem(pem);
     const publicKey = createPublicKey(privateKey);
-    registerTrustedKey({
+    const publicKeySpki = exportPublicKeySpkiBase64Url(publicKey);
+    const existing = registry.export().find((entry) => entry.signing_key_id === signingKeyId);
+    if (existing && (
+      existing.status !== "ACTIVE" || existing.signing_algorithm !== "Ed25519" ||
+      existing.public_key_spki_base64url !== publicKeySpki
+    )) {
+      throw new PaeKeyError(`Configured server key does not match active trust for "${signingKeyId}"`, "PAE-015");
+    }
+    if (!existing) registry.register({
       signing_key_id: signingKeyId,
       signing_algorithm: "Ed25519",
-      public_key_spki_base64url: exportPublicKeySpkiBase64Url(publicKey),
+      public_key_spki_base64url: publicKeySpki,
       status: "ACTIVE",
     });
     return { privateKey, publicKey };
@@ -185,17 +276,24 @@ export function loadServerSigningKey(signingKeyId: string): Ed25519KeyPair {
   if (!pair) {
     pair = generateEd25519KeyPair();
     devSigningKeys.set(signingKeyId, pair);
-    registerTrustedKey({
-      signing_key_id: signingKeyId,
-      signing_algorithm: "Ed25519",
-      public_key_spki_base64url: exportPublicKeySpkiBase64Url(pair.publicKey),
-      status: "ACTIVE",
-    });
     // eslint-disable-next-line no-console
     console.warn(
       `[pae/keys] PROTOTYPE ONLY: generated an ephemeral dev signing key for "${signingKeyId}" ` +
         `because ${envVar} is not set. Never use this outside mocked/testnet-fixture execution.`,
     );
+  }
+  const publicKeySpki = exportPublicKeySpkiBase64Url(pair.publicKey);
+  const existing = registry.export().find((entry) => entry.signing_key_id === signingKeyId);
+  if (existing && (existing.status !== "ACTIVE" || existing.public_key_spki_base64url !== publicKeySpki)) {
+    throw new PaeKeyError(`Configured server key does not match active trust for "${signingKeyId}"`, "PAE-015");
+  }
+  if (!existing) {
+    registry.register({
+      signing_key_id: signingKeyId,
+      signing_algorithm: "Ed25519",
+      public_key_spki_base64url: publicKeySpki,
+      status: "ACTIVE",
+    });
   }
   return pair;
 }

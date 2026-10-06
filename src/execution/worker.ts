@@ -2,6 +2,7 @@ import type { AuthorityStore } from "../authority/aggregate";
 import { AuthorityError } from "../authority/aggregate";
 import type { SealedPae } from "../domain/schemas";
 import { verifySealedPae } from "../pae/sign-verify";
+import { processTrustedKeyRegistry, type TrustedKeyRegistry } from "../pae/keys";
 import { ProviderPreSubmitBlockedError, type ProviderAdapter, type StatusResult } from "./provider-adapter";
 
 export class ExecutionBlockedError extends Error {
@@ -44,6 +45,7 @@ export class ExecutionWorker {
     private readonly store: AuthorityStore,
     private readonly adapter: ProviderAdapter,
     private readonly onDurableStateChange?: () => Promise<void>,
+    private readonly trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry,
   ) {}
 
   restoreSnapshot(records: ExecutionRecord[]): void {
@@ -66,7 +68,7 @@ export class ExecutionWorker {
    */
   async execute(sealed: SealedPae): Promise<ExecutionRecord> {
     // (6) No execution without a valid current one-obligation PAE.
-    verifySealedPae(sealed);
+    verifySealedPae(sealed, this.trustedKeys);
 
     const key = sealed.payload.idempotency_key;
     const pending = this.inFlight.get(key);

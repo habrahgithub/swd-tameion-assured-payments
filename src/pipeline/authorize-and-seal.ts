@@ -4,7 +4,7 @@ import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate"
 import { AuthorityError } from "../authority/aggregate";
 import { runSafetyKernel, SAFETY_KERNEL_VERSION, type SafetyKernelResult } from "../safety-kernel/kernel";
 import { hashApprovalReason, sealDurableApprovalRecord, sealDurableAssuranceRecord } from "../pae/durable-records";
-import { loadServerSigningKey } from "../pae/keys";
+import { loadServerSigningKey, processTrustedKeyRegistry, type TrustedKeyRegistry } from "../pae/keys";
 import { sealPae } from "../pae/sign-verify";
 import type { ControlResult, PaeUnsignedPayload, SealedPae } from "../domain/schemas";
 
@@ -50,6 +50,7 @@ export function approveAndSealPae(
   store: AuthorityStore,
   signingKeyId: string,
   input: ApprovalInput,
+  trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry,
 ): {
   aggregate: AuthorityAggregate;
   sealed: SealedPae;
@@ -119,7 +120,7 @@ export function approveAndSealPae(
 
   const postSealAggregate = store.markPaeSealed(input.organizationId, input.obligationId, aggregate.aggregate_version);
 
-  const { privateKey } = loadServerSigningKey(signingKeyId);
+  const { privateKey } = loadServerSigningKey(signingKeyId, trustedKeys);
   const expiry = new Date(now().getTime() + 30 * 60 * 1000).toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
 
   const unsignedPayload: PaeUnsignedPayload = {

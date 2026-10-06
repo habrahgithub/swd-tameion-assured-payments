@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       actorRole: "PRIME",
       policyVersion: aggregate.policy_version,
       reasonText: body.reason_text,
-    });
+    }, state.trustedKeys);
     state.recordAuthorization({
       approval_record: authorized.approvalRecord.record,
       approval_record_hash: authorized.approvalRecord.approval_record_hash,

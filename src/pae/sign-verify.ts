@@ -2,7 +2,7 @@ import { type KeyObject, sign as nodeSign, verify as nodeVerify } from "node:cry
 
 import { paeUnsignedPayloadSchema, type PaeUnsignedPayload, type SealedPae } from "../domain/schemas";
 import { canonicalBytes, sha256Hex } from "./canonicalize";
-import { resolveTrustedPublicKey } from "./keys";
+import { processTrustedKeyRegistry, resolveTrustedPublicKey, type TrustedKeyRegistry } from "./keys";
 
 export class PaeVerificationError extends Error {
   constructor(
@@ -41,7 +41,7 @@ export function sealPae(unsignedPayload: PaeUnsignedPayload, privateKey: KeyObje
  * never trust a pre-computed instruction_hash/signature without recomputing
  * both from the payload bytes.
  */
-export function verifySealedPae(sealed: SealedPae): void {
+export function verifySealedPae(sealed: SealedPae, trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry): void {
   const parseResult = paeUnsignedPayloadSchema.safeParse(sealed.payload);
   if (!parseResult.success) {
     throw new PaeVerificationError(
@@ -60,7 +60,7 @@ export function verifySealedPae(sealed: SealedPae): void {
     );
   }
 
-  const publicKey = resolveTrustedPublicKey(validated.signing_key_id, validated.signing_algorithm);
+  const publicKey = resolveTrustedPublicKey(validated.signing_key_id, validated.signing_algorithm, trustedKeys);
   const digest = Buffer.from(sealed.instruction_hash, "hex");
   const signature = Buffer.from(sealed.signature, "hex");
   const signatureValid = nodeVerify(null, digest, publicKey, signature);

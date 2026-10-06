@@ -335,6 +335,45 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(submissionCount).toBe(1);
   });
 
+  it("reconciles an accepted-but-lost provider response after restart by the same idempotency key", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissionCount = 0;
+    let acceptedIdempotencyKey: string | undefined;
+    const adapter = {
+      name: "accepted-lost-response-test-adapter",
+      async submitTransfer(request: { idempotencyKey: string }) {
+        submissionCount += 1;
+        acceptedIdempotencyKey = request.idempotencyKey;
+        throw new Error("provider accepted request but response was lost");
+      },
+      async getStatusByIdempotencyKey(idempotencyKey: string) {
+        expect(idempotencyKey).toBe(acceptedIdempotencyKey);
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+        };
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const firstWorker = new ExecutionWorker(store, adapter);
+    const first = await firstWorker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(submissionCount).toBe(1);
+
+    const restartedStore = AuthorityStore.fromSnapshot(store.exportSnapshot());
+    const restartedWorker = new ExecutionWorker(restartedStore, adapter);
+    restartedWorker.restoreSnapshot(firstWorker.exportSnapshot());
+    const recovered = await restartedWorker.reconcilePendingByIdempotencyKey(
+      sealed.payload.idempotency_key,
+      sealed.payload.organization_id,
+    );
+
+    expect(recovered.status).toBe("SETTLED");
+    expect(acceptedIdempotencyKey).toBe(sealed.payload.idempotency_key);
+    expect(submissionCount).toBe(1);
+  });
+
   it("recovers a persisted SUBMITTING marker as UNKNOWN after restart without a provider resubmit", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     const adapter = new FakeProviderAdapter();

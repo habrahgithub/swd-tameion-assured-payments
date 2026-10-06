@@ -29,7 +29,7 @@ export async function GET() {
       : state.store.getCurrentAssessment(J2A_DEMO_ORGANIZATION_ID, J2A_DEMO_OBLIGATION_ID) ?? null;
     if (sealedPae) {
       try {
-        verifyJ2aSealedPae(sealedPae);
+        verifyJ2aSealedPae(sealedPae, state.trustedKeys);
         paeVerificationStatus = "VERIFIED";
         execution = state.worker.getExecutionRecord(sealedPae.payload.idempotency_key) ?? null;
         if (execution?.status === "SUBMITTING") {

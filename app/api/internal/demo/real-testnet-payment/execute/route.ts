@@ -68,7 +68,7 @@ export async function POST(request: Request) {
 
   let packet: ReturnType<typeof buildJ2aExecutionPacket>;
   try {
-    verifyJ2aSealedPae(sealedPae);
+    verifyJ2aSealedPae(sealedPae, state.trustedKeys);
   } catch (error) {
     return NextResponse.json({
       error: "The sealed PAE could not be verified against configured server trust.",

@@ -4,6 +4,8 @@ const stateRef = vi.hoisted(() => ({
   current: null as Record<string, unknown> | null,
   approveAndSealPae: vi.fn(),
   verifyJ2aSealedPae: vi.fn(),
+  realVerifier: null as ((sealed: any, trustedKeys: any) => void) | null,
+  coldExecute: null as ((request: Request) => Promise<Response>) | null,
 }));
 
 vi.mock("../src/server/demo-state", () => ({
@@ -13,17 +15,20 @@ vi.mock("../src/pipeline/authorize-and-seal", () => ({
   approveAndSealPae: stateRef.approveAndSealPae,
   AssuranceFailedError: class AssuranceFailedError extends Error {},
 }));
-vi.mock("../src/pae/sign-verify", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../src/pae/sign-verify")>(),
-  verifySealedPae: vi.fn(),
+vi.mock("../src/demo/verify-j2a-pae", () => ({
+  verifyJ2aSealedPae: (sealed: unknown, trustedKeys: unknown) => stateRef.realVerifier
+    ? stateRef.realVerifier(sealed, trustedKeys)
+    : stateRef.verifyJ2aSealedPae(sealed),
 }));
-vi.mock("../src/demo/verify-j2a-pae", () => ({ verifyJ2aSealedPae: stateRef.verifyJ2aSealedPae }));
 
 import { GET as getDemoStatus } from "../app/api/internal/demo/real-testnet-payment/status/route";
 import { POST as executeDemo } from "../app/api/internal/demo/real-testnet-payment/execute/route";
 import { POST as authorizeDemo } from "../app/api/internal/demo/real-testnet-payment/authorize/route";
-import { buildJ2aExecutionPacket } from "../src/demo/real-testnet-payment";
+import { buildJ2aExecutionPacket, J2A_PAE_SIGNING_KEY_ID } from "../src/demo/real-testnet-payment";
 import { PaeVerificationError } from "../src/pae/sign-verify";
+import { sealPae } from "../src/pae/sign-verify";
+import { exportPublicKeySpkiBase64Url, generateEd25519KeyPair, TrustedKeyRegistry } from "../src/pae/keys";
+import type { PaeUnsignedPayload } from "../src/domain/schemas";
 
 function authorizedLineageFixture(overrides: {
   assessmentId?: string;
@@ -153,11 +158,48 @@ function stateWithoutPreflight() {
   } as unknown as Record<string, unknown>;
 }
 
+async function restoreColdJ2aState(fixture: ReturnType<typeof authorizedLineageFixture>, revoked = false) {
+  const { privateKey, publicKey } = generateEd25519KeyPair();
+  const sealed = sealPae({
+    ...fixture.sealed.payload,
+    signing_key_id: J2A_PAE_SIGNING_KEY_ID,
+    signing_algorithm: "Ed25519",
+  } as PaeUnsignedPayload, privateKey);
+  fixture.sealed = sealed;
+  fixture.authorization.sealed_pae = sealed;
+  const trustedKeys = new TrustedKeyRegistry();
+  trustedKeys.register({
+    signing_key_id: J2A_PAE_SIGNING_KEY_ID,
+    signing_algorithm: "Ed25519",
+    public_key_spki_base64url: exportPublicKeySpkiBase64Url(publicKey),
+    status: revoked ? "REVOKED" : "ACTIVE",
+  });
+
+  const { J2aRealTestnetDemoState } = await vi.importActual<typeof import("../src/server/demo-state")>("../src/server/demo-state");
+  const beforeRestart = new J2aRealTestnetDemoState();
+  beforeRestart.setSealedPae(fixture.sealed.payload.obligation_ids[0]!, sealed);
+  const snapshot = beforeRestart.exportSnapshot();
+  snapshot.trusted_keys = trustedKeys.export();
+
+  vi.resetModules();
+  const [{ J2aRealTestnetDemoState: ColdState }, coldVerifier, coldRoute] = await Promise.all([
+    vi.importActual<typeof import("../src/server/demo-state")>("../src/server/demo-state"),
+    vi.importActual<typeof import("../src/demo/verify-j2a-pae")>("../src/demo/verify-j2a-pae"),
+    vi.importActual<typeof import("../app/api/internal/demo/real-testnet-payment/execute/route")>("../app/api/internal/demo/real-testnet-payment/execute/route"),
+  ]);
+  const restored = new ColdState(snapshot);
+  stateRef.realVerifier = coldVerifier.verifyJ2aSealedPae;
+  stateRef.coldExecute = coldRoute.POST;
+  return { fixture, restored, trustedKeys: restored.trustedKeys };
+}
+
 describe("J2A real-testnet API gates", () => {
   beforeEach(() => {
     stateRef.current = stateWithoutPreflight();
     stateRef.approveAndSealPae.mockReset();
     stateRef.verifyJ2aSealedPae.mockReset();
+    stateRef.realVerifier = null;
+    stateRef.coldExecute = null;
   });
 
   it("reports the isolated lifecycle while keeping execution locked and performing no provider write", async () => {
@@ -433,6 +475,71 @@ describe("J2A real-testnet API gates", () => {
     expect(response.status).toBe(200);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(stateRef.verifyJ2aSealedPae).toHaveBeenCalledWith(fixture.sealed);
+  });
+
+  it("restores persisted trust after a cold start before the exact packet reaches the worker", async () => {
+    const { fixture, restored, trustedKeys } = await restoreColdJ2aState(authorizedLineageFixture());
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+    const execute = vi.fn(async () => ({ status: "SETTLED", idempotency_key: "j2a-exact-key" }));
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      trustedKeys,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => restored.getSealedPae("DEMO-ARC-TESTNET-001")),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", packet.packet_sha256);
+
+    const response = await (stateRef.coldExecute ?? executeDemo)(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_version: 4, packet_sha256: packet.packet_sha256, pae_instruction_hash: fixture.sealed.instruction_hash, confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER" }),
+    }));
+
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(fixture.sealed);
+  });
+
+  it("blocks the execution route when the persisted cold-start key is revoked", async () => {
+    const { fixture, restored, trustedKeys } = await restoreColdJ2aState(authorizedLineageFixture(), true);
+    const packet = buildJ2aExecutionPacket({
+      preflight: fixture.preflight as never, aggregate: fixture.aggregate as never,
+      assessment: fixture.assessment as never, assessmentHash: fixture.assessmentHash, sealedPae: fixture.sealed as never,
+    });
+    const execute = vi.fn();
+    stateRef.current = {
+      lastPreflight: fixture.preflight,
+      trustedKeys,
+      store: {
+        get: vi.fn(() => fixture.aggregate),
+        getCurrentAssessment: vi.fn(() => null),
+        getAssessmentHistory: vi.fn(() => fixture.history),
+      },
+      getSealedPae: vi.fn(() => restored.getSealedPae("DEMO-ARC-TESTNET-001")),
+      getAuthorizationArtifacts: vi.fn(() => fixture.authorization),
+      worker: { execute },
+      flush: vi.fn(),
+    } as unknown as Record<string, unknown>;
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", packet.packet_sha256);
+
+    const response = await (stateRef.coldExecute ?? executeDemo)(new Request("http://localhost/api/internal/demo/real-testnet-payment/execute", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_version: 4, packet_sha256: packet.packet_sha256, pae_instruction_hash: fixture.sealed.instruction_hash, confirmation: "SUBMIT EXACT TESTNET DEMO TRANSFER" }),
+    }));
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.code).toBe("PAE-015");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("returns a safe verification code and makes no worker call when PAE trust initialization fails", async () => {

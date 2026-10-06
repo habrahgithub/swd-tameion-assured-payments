@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { hashApprovalReason, sealDurableApprovalRecord, sealDurableAssuranceRecord } from "../src/pae/durable-records";
-import { generateEd25519KeyPair, exportPublicKeySpkiBase64Url, exportPrivateKeyPem, registerTrustedKey, signingKeyEnvironmentVariableName } from "../src/pae/keys";
+import { generateEd25519KeyPair, exportPublicKeySpkiBase64Url, exportPrivateKeyPem, TrustedKeyRegistry, signingKeyEnvironmentVariableName } from "../src/pae/keys";
 import { sealPae, verifySealedPae, PaeVerificationError } from "../src/pae/sign-verify";
 import type { PaeUnsignedPayload, ControlResult } from "../src/domain/schemas";
 import { REQUIRED_CONTROL_IDS_P0 } from "../src/domain/schemas";
@@ -14,7 +14,8 @@ function passControls(): ControlResult[] {
 
 function buildFixture(signingKeyId = "TEST-KEY-1") {
   const { privateKey, publicKey } = generateEd25519KeyPair();
-  registerTrustedKey({
+  const trustedKeys = new TrustedKeyRegistry();
+  trustedKeys.register({
     signing_key_id: signingKeyId,
     signing_algorithm: "Ed25519",
     public_key_spki_base64url: exportPublicKeySpkiBase64Url(publicKey),
@@ -100,21 +101,37 @@ function buildFixture(signingKeyId = "TEST-KEY-1") {
     idempotency_key: "idem-OBL-J0C-002-0001",
   };
 
-  return { privateKey, unsignedPayload, approvalRecord, assuranceRecord };
+  return { privateKey, publicKey, trustedKeys, unsignedPayload, approvalRecord, assuranceRecord };
 }
 
 describe("PAE golden vector", () => {
-  it("restores trusted verification in a cold module registry from the configured server key", async () => {
+  it("restores active trust and preserves revocation from the durable registry across cold starts", async () => {
     const keyId = "TAMEION-J2A-TESTNET-DEMO-PAE-KEY-1";
-    const { privateKey, unsignedPayload } = buildFixture(keyId);
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture(keyId);
     const sealed = sealPae(unsignedPayload, privateKey);
-    vi.stubEnv(signingKeyEnvironmentVariableName(keyId), exportPrivateKeyPem(privateKey));
-    vi.stubEnv("VERCEL_ENV", "preview");
+    const { J2aRealTestnetDemoState } = await import("../src/server/demo-state");
+    const persisted = new J2aRealTestnetDemoState().exportSnapshot();
+    persisted.sealed_paes.push(["OBL-J0C-002", sealed]);
+    persisted.trusted_keys = trustedKeys.export();
+
     vi.resetModules();
+    const [{ J2aRealTestnetDemoState: ColdState }, coldVerifier] = await Promise.all([
+      import("../src/server/demo-state"),
+      import("../src/demo/verify-j2a-pae"),
+    ]);
+    const restored = new ColdState(persisted);
+    expect(() => coldVerifier.verifyJ2aSealedPae(sealed, restored.trustedKeys)).not.toThrow();
 
-    const coldVerifier = await import("../src/demo/verify-j2a-pae");
-
-    expect(() => coldVerifier.verifyJ2aSealedPae(sealed)).not.toThrow();
+    restored.trustedKeys.revoke(keyId);
+    const revokedSnapshot = restored.exportSnapshot();
+    expect(revokedSnapshot.trusted_keys).toContainEqual(expect.objectContaining({ signing_key_id: keyId, status: "REVOKED" }));
+    vi.resetModules();
+    const [{ J2aRealTestnetDemoState: RevokedState }, revokedVerifier] = await Promise.all([
+      import("../src/server/demo-state"),
+      import("../src/demo/verify-j2a-pae"),
+    ]);
+    const revokedState = new RevokedState(revokedSnapshot);
+    expect(() => revokedVerifier.verifyJ2aSealedPae(sealed, revokedState.trustedKeys)).toThrow(expect.objectContaining({ code: "PAE-015" }));
   });
 
   it("rejects an envelope that names a key outside the fixed J2A trust boundary", async () => {
@@ -123,7 +140,7 @@ describe("PAE golden vector", () => {
     vi.resetModules();
     const coldVerifier = await import("../src/demo/verify-j2a-pae");
 
-    expect(() => coldVerifier.verifyJ2aSealedPae(sealed)).toThrow(expect.objectContaining({ code: "PAE-015" }));
+    expect(() => coldVerifier.verifyJ2aSealedPae(sealed, new TrustedKeyRegistry())).toThrow(expect.objectContaining({ code: "PAE-015" }));
   });
 
   it("does not initialize verification trust without the configured server key", async () => {
@@ -171,63 +188,63 @@ describe("PAE golden vector", () => {
   });
 
   it("seals and independently verifies a valid PAE", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     expect(sealed.instruction_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(sealed.signature).toMatch(/^[0-9a-f]{128}$/);
-    expect(() => verifySealedPae(sealed)).not.toThrow();
+    expect(() => verifySealedPae(sealed, trustedKeys)).not.toThrow();
   });
 
   it("is deterministic: identical payload always yields the identical instruction_hash", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const first = sealPae(unsignedPayload, privateKey);
     const second = sealPae({ ...unsignedPayload }, privateKey);
     expect(second.instruction_hash).toBe(first.instruction_hash);
   });
 
   it("rejects a tampered amount", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     const tampered = { ...sealed, payload: { ...sealed.payload, amount: "9999.000000" } };
-    expect(() => verifySealedPae(tampered)).toThrow(PaeVerificationError);
+    expect(() => verifySealedPae(tampered, trustedKeys)).toThrow(PaeVerificationError);
   });
 
   it("rejects a tampered destination address", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     const tampered = {
       ...sealed,
       payload: { ...sealed.payload, destination_address: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" },
     };
-    expect(() => verifySealedPae(tampered)).toThrow(PaeVerificationError);
+    expect(() => verifySealedPae(tampered, trustedKeys)).toThrow(PaeVerificationError);
   });
 
   it("rejects a tampered aggregate_version", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     const tampered = { ...sealed, payload: { ...sealed.payload, aggregate_version: "999" } };
-    expect(() => verifySealedPae(tampered)).toThrow(PaeVerificationError);
+    expect(() => verifySealedPae(tampered, trustedKeys)).toThrow(PaeVerificationError);
   });
 
   it("rejects a tampered expiry", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     const tampered = { ...sealed, payload: { ...sealed.payload, expiry: "2099-01-01T00:00:00.000Z" } };
-    expect(() => verifySealedPae(tampered)).toThrow(PaeVerificationError);
+    expect(() => verifySealedPae(tampered, trustedKeys)).toThrow(PaeVerificationError);
   });
 
   it("rejects a corrupted signature even if instruction_hash matches", () => {
-    const { privateKey, unsignedPayload } = buildFixture();
+    const { privateKey, trustedKeys, unsignedPayload } = buildFixture();
     const sealed = sealPae(unsignedPayload, privateKey);
     const corruptSignature = `${"0".repeat(128)}`;
     const tampered = { ...sealed, signature: corruptSignature };
-    expect(() => verifySealedPae(tampered)).toThrow(PaeVerificationError);
+    expect(() => verifySealedPae(tampered, trustedKeys)).toThrow(PaeVerificationError);
   });
 
   it("rejects a signature from a different key", () => {
-    const { unsignedPayload } = buildFixture();
+    const { trustedKeys, unsignedPayload } = buildFixture();
     const other = generateEd25519KeyPair();
     const sealed = sealPae(unsignedPayload, other.privateKey); // not registered as trusted
-    expect(() => verifySealedPae(sealed)).toThrow();
+    expect(() => verifySealedPae(sealed, trustedKeys)).toThrow();
   });
 });
