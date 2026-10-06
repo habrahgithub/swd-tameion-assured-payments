@@ -724,6 +724,44 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
+  it("uses the server winner projection when five current PAY candidates exist", async () => {
+    const fivePay = ["PAY-QUEUE-E", "PAY-QUEUE-C", "PAY-QUEUE-A", "PAY-QUEUE-D", "PAY-QUEUE-B"]
+      .map((id, index) => ({
+        ...obligation(id, true),
+        due_date: `2026-10-${String(10 + index).padStart(2, "0")}`,
+        decision: "PAY" as const,
+        provider_mode: "LIVE_AI" as const,
+      }));
+    const winner = [...fivePay].sort((a, b) => a.due_date.localeCompare(b.due_date) || a.obligation_id.localeCompare(b.obligation_id))[0]!;
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({
+        obligations: fivePay,
+        assessed_count: fivePay.length,
+        total_count: fivePay.length,
+        sole_pay_candidate_id: winner.obligation_id,
+      }));
+      const id = url.split("/").at(-1)!;
+      const current = assessedDetail(id, "PAY");
+      current.current_assessment.provider_mode = "LIVE_AI";
+      current.current_assessment.provider_used = "mock-live-ai";
+      current.record.due_date = fivePay.find((item) => item.obligation_id === id)?.due_date;
+      return Promise.resolve(response(current));
+    });
+
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: new RegExp(winner.obligation_id) });
+    expect(screen.getByText(/Assessment complete — 5 PAY recommendations/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(await screen.findByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
+
+    const nonwinner = fivePay.find((item) => item.obligation_id !== winner.obligation_id)!;
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(nonwinner.obligation_id) }));
+    await waitFor(() => expect(screen.getByText(new RegExp(`The existing deterministic gate selected ${winner.obligation_id}`))).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeNull();
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/preflight") && init?.method === "POST")).toBe(false);
+  });
+
   it.each([
     ["HOLD", "Requires attention"],
     ["ESCALATE", "Escalation required"],

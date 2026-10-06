@@ -9,17 +9,17 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const state = await getDemoState();
   try {
-    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
-    const record = state.getRecord(id);
-    const canonicalObligation = state.getCanonicalObligation(id);
+    let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
+    let record = state.getRecord(id);
+    let canonicalObligation = state.getCanonicalObligation(id);
     if (!record || !canonicalObligation) {
       return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
     }
-    const currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
-    const sealed = state.getSealedPae(id);
+    let currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
+    let sealed = state.getSealedPae(id);
     let execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
-    const executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
-    const executionPacket = getCurrentSettlementProxyPacket(state, id);
+    let executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
+    let executionPacket: ReturnType<typeof getCurrentSettlementProxyPacket> = null;
     let providerStatus = "NOT_SUBMITTED";
     if (execution) {
       try {
@@ -36,6 +36,19 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       } catch {
         providerStatus = "PROVIDER_QUERY_FAILED";
       }
+    }
+    // Reconciliation may have durably advanced execution and aggregate state.
+    // Build every response layer from one post-reconciliation authority read.
+    aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
+    record = state.getRecord(id);
+    canonicalObligation = state.getCanonicalObligation(id);
+    currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
+    sealed = state.getSealedPae(id);
+    execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
+    executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
+    executionPacket = getCurrentSettlementProxyPacket(state, id);
+    if (!record || !canonicalObligation) {
+      return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
     }
     const settlementRuntime = state.providerAdapter.name === "fake-testnet" ? "SIMULATED" as const : "LIVE" as const;
     const truth = buildPaymentTruthLayers({
@@ -84,10 +97,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       source_payable_state: record.state_at_event_baseline,
       execution_packet: executionPacket,
       sealed_pae_instruction_hash: sealed?.instruction_hash ?? null,
-      execution_gate: executionPacket && state.providerAdapter.name === "arc-circle-live" &&
-        process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === executionPacket.packet_sha256
-        ? "PRIME_AUTHORIZED_EXACT_PACKET"
-        : executionPacket ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
+      execution_gate: execution
+        ? execution.status === "UNKNOWN" || execution.status === "SUBMITTING" ? "RECONCILIATION_ONLY" : "EXECUTION_ALREADY_RECORDED"
+        : executionPacket && state.providerAdapter.name === "arc-circle-live" &&
+          process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === executionPacket.packet_sha256
+          ? "PRIME_AUTHORIZED_EXACT_PACKET"
+          : executionPacket ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
       execution_kill_switched: executionKillSwitched,
     });
   } catch (error) {

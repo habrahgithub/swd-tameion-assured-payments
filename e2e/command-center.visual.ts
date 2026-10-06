@@ -87,7 +87,12 @@ async function openFixture(page: Page) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
-    if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation, secondObligation, proxiedObligation], assessed_count: 3, total_count: 3 } });
+    if (url.pathname === "/api/obligations") return route.fulfill({ json: {
+      obligations: [obligation, secondObligation, proxiedObligation],
+      assessed_count: 3,
+      total_count: 3,
+      sole_pay_candidate_id: "OBL-UAT-01",
+    } });
     if (url.pathname === "/api/obligations/OBL-UAT-01") return route.fulfill({ json: detail });
     if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02") });
     if (url.pathname === "/api/obligations/OBL-UAT-03") return route.fulfill({ json: detailWithProxy() });

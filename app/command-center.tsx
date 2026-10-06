@@ -960,6 +960,7 @@ function DemoStage({ title, value }: { title: string; value: string }) {
 
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
+  const [solePayCandidateId, setSolePayCandidateId] = useState<string | null>(null);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
   const [samplePlaybackVisible, setSamplePlaybackVisible] = useState(false);
@@ -992,14 +993,17 @@ export function CommandCenter() {
       if (!response.ok || !data || typeof data !== "object" || !Array.isArray((data as { obligations?: unknown }).obligations)) {
         throw new Error(obligationsFetchErrorMessage(response.status, data));
       }
-      const fetched = (data as { obligations: ObligationSummary[] }).obligations;
+      const list = data as { obligations: ObligationSummary[]; sole_pay_candidate_id?: unknown };
+      const fetched = list.obligations;
       setObligations(fetched);
+      setSolePayCandidateId(typeof list.sole_pay_candidate_id === "string" ? list.sole_pay_candidate_id : null);
       setObligationsStatus("ready");
       if (fetched.length === 0) setSelectedId("");
       return fetched;
     } catch (error) {
       if (!preserveLastKnown) {
         setObligations([]);
+        setSolePayCandidateId(null);
         setSelectedId("");
       }
       setObligationsStatus("error");
@@ -1178,7 +1182,7 @@ export function CommandCenter() {
   );
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const proxyPreparationReady = Boolean(detailState === "loaded" && detail && selectedId && !detail.settlement_proxy && !detail.pae_sealed &&
-    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && allAssessed && payCandidateCount === 1 &&
+    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && allAssessed && solePayCandidateId === selectedId &&
     currentAssessment?.race && currentAssessment.race.result.validated_findings.length === 0 && currentAssessment.race.remediation.length === 0 &&
     currentAssessment.race.evidence.authoritative_facts.obligation_id === selectedId);
   const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
@@ -1824,6 +1828,12 @@ export function CommandCenter() {
                         </PrimaryButton>
                       </div>
                     )}
+                    {!detail.settlement_proxy && hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" &&
+                      allAssessed && solePayCandidateId && solePayCandidateId !== selectedId && (
+                        <p role="status" className="text-[12px] text-[var(--color-warning)]">
+                          The existing deterministic gate selected {solePayCandidateId}; select that obligation before preparing a testnet proxy.
+                        </p>
+                      )}
                   </section>
                 )}
                 {authorizationAssessment && (

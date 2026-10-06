@@ -36,6 +36,27 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         aggregateBeforeApproval.destination_address.toLowerCase() !== proxy.preflight.destination_wallet.address.toLowerCase()) {
       return NextResponse.json({ error: "A current selected-source Arc Testnet settlement proxy is required before authorization." }, { status: 409 });
     }
+    const currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
+    if (!currentAssessment || currentAssessment.record.aggregate_version !== String(aggregateBeforeApproval.aggregate_version) ||
+        currentAssessment.record.provider_mode !== "LIVE_AI" || currentAssessment.record.decision !== "PAY" ||
+        currentAssessment.record.missing_evidence.length !== 0 || !currentAssessment.record.race ||
+        currentAssessment.record.race.result.decision !== "PAY" ||
+        currentAssessment.record.race.result.validated_findings.length !== 0 ||
+        currentAssessment.record.race.remediation.length !== 0 ||
+        currentAssessment.record.race.evidence.authoritative_facts.obligation_id !== id ||
+        currentAssessment.record.race.evidence.authoritative_facts.aggregate_version !== String(aggregateBeforeApproval.aggregate_version)) {
+      return NextResponse.json({ error: "Authorization requires a current LIVE_AI PAY assessment with zero missing evidence, findings, or remediation blockers." }, { status: 409 });
+    }
+    const unassessed = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
+    const soleCandidate = state.getSolePayCandidateId();
+    const committedCandidate = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, id);
+    if (unassessed || soleCandidate !== id || committedCandidate) {
+      return NextResponse.json({
+        error: unassessed
+          ? `Assess every genuine obligation before authorization; ${unassessed} is not current.`
+          : `The existing sole-candidate gate selected ${soleCandidate ?? "no obligation"}; authorization is blocked for this source.`,
+      }, { status: 409 });
+    }
     const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,

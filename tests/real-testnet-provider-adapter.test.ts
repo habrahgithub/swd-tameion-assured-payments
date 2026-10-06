@@ -202,6 +202,9 @@ describe("Arc Circle provider adapter for J2A", () => {
   });
 
   it("rejects source, destination, network, asset and amount substitutions before provider submission", async () => {
+    const authorizedApi = createClient();
+    const authorized = await runJ2aReadOnlyPreflight(authorizedApi);
+    expect(authorized.readiness).toBe("READY");
     const invalid = [
       { sourceWalletRef: "other-wallet" },
       { destinationAddress: "0x0000000000000000000000000000000000000001" },
@@ -211,7 +214,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     ];
     for (const override of invalid) {
       const api = createClient();
-      const adapter = new ArcCircleProviderAdapter(api);
+      const adapter = new ArcCircleProviderAdapter(api, () => authorized);
       await expect(adapter.submitTransfer({
         idempotencyKey: "stable-key",
         sourceWalletRef: J2A_DEMO_SOURCE.id,

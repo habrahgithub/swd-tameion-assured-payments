@@ -8,6 +8,7 @@ import { deriveJ2aCircleRefId, J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_W
 import { ExecutionBlockedError } from "../src/execution/worker";
 import { DemoStateConflictError, type SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
 import { sealTestAssessment, currentAssessmentReview } from "./test-support/seal-assessment";
+import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 
 function selectCandidate(state: DemoState): string {
   const record = state.liveUsageRecords.find((candidate) => Boolean(
@@ -202,6 +203,25 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(provider.createCount()).toBe(0);
   });
 
+  it("blocks the old PAE after a normal same-identity material change with PAE-011 and revokes it", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const provider = circleClient();
+    const state = restoredWithCircle(snapshot, provider);
+    const aggregateBeforeChange = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+
+    state.store.applyMaterialChange(
+      DEMO_ORGANIZATION_ID,
+      selectedId,
+      aggregateBeforeChange.aggregate_version,
+      { destination_operational_status: "ON_HOLD" },
+    );
+
+    await expect(state.worker.execute(sealed)).rejects.toMatchObject({ code: "PAE-011" });
+    const aggregateAfterBlock = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    expect(aggregateAfterBlock).toMatchObject({ execution_state: "BLOCKED", pae_state: "REVOKED" });
+    expect(provider.createCount()).toBe(0);
+  });
+
   it("blocks at the actual durable worker pre-submit CAS when another writer advances currentness", async () => {
     const { snapshot, sealed, selectedId } = await authorizedSnapshot();
     const provider = circleClient();
@@ -236,5 +256,42 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(provider.client.listTransactions).toHaveBeenCalledWith(expect.objectContaining({ walletIds: [J2A_DEMO_SOURCE.id] }));
     expect(deriveJ2aCircleRefId(sealed.payload.idempotency_key)).toBe((provider.client.createTransaction as ReturnType<typeof vi.fn>).mock.calls[0][0].refId);
     expect(restarted.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
+  });
+
+  it("returns one post-reconciliation authority read after GET resolves a persisted UNKNOWN", async () => {
+    const { snapshot, sealed, provider, selectedId } = await authorizedSnapshot();
+    const acceptingThenLosingResponse = circleClient({ loseCreateResponse: true });
+    const state = restoredWithCircle(snapshot, acceptingThenLosingResponse);
+    expect((await state.worker.execute(sealed)).status).toBe("UNKNOWN");
+    expect(acceptingThenLosingResponse.createCount()).toBe(1);
+
+    const globalState = globalThis as typeof globalThis & { __tameionDemoState?: DemoState };
+    const previousState = globalState.__tameionDemoState;
+    globalState.__tameionDemoState = state;
+    try {
+      const response = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
+        params: Promise.resolve({ id: selectedId }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.execution).toMatchObject({ status: "SETTLED", idempotency_key: sealed.payload.idempotency_key });
+      expect(body.aggregate).toMatchObject({ state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" });
+      expect(body.truth.tameion_control_truth).toMatchObject({
+        aggregate_version: body.aggregate.aggregate_version,
+        aggregate_state: "RECONCILED",
+        execution_state: "SETTLED",
+        pae_state: "CONSUMED",
+        pae_sealed: true,
+      });
+      expect(body.truth.settlement_truth.status).toBe("SETTLED");
+      expect(body.record.state_at_event_baseline).toBe("OUTSTANDING");
+      expect(body.source_payable_state).toBe("OUTSTANDING");
+      expect(body.execution_packet.packet_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.execution_gate).toBe("EXECUTION_ALREADY_RECORDED");
+      expect(acceptingThenLosingResponse.createCount()).toBe(1);
+    } finally {
+      if (previousState) globalState.__tameionDemoState = previousState;
+      else delete globalState.__tameionDemoState;
+    }
   });
 });
