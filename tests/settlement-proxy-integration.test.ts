@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
+const stateMocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
+vi.mock("../src/server/demo-state", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/server/demo-state")>();
+  return { ...actual, getDemoState: stateMocks.getDemoState };
+});
+
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -265,9 +271,7 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect((await state.worker.execute(sealed)).status).toBe("UNKNOWN");
     expect(acceptingThenLosingResponse.createCount()).toBe(1);
 
-    const globalState = globalThis as typeof globalThis & { __tameionDemoState?: DemoState };
-    const previousState = globalState.__tameionDemoState;
-    globalState.__tameionDemoState = state;
+    stateMocks.getDemoState.mockResolvedValue(state);
     try {
       const response = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
         params: Promise.resolve({ id: selectedId }),
@@ -290,8 +294,62 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
       expect(body.execution_gate).toBe("EXECUTION_ALREADY_RECORDED");
       expect(acceptingThenLosingResponse.createCount()).toBe(1);
     } finally {
-      if (previousState) globalState.__tameionDemoState = previousState;
-      else delete globalState.__tameionDemoState;
+      stateMocks.getDemoState.mockReset();
     }
+  });
+
+  it("does not publish a locally reconciled success when attached durable CAS rejects, then permits a safe read-only follow-up", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const acceptingThenLosingResponse = circleClient({ loseCreateResponse: true });
+    const staleWriter = restoredWithCircle(snapshot, acceptingThenLosingResponse);
+    expect((await staleWriter.worker.execute(sealed)).status).toBe("UNKNOWN");
+    expect(acceptingThenLosingResponse.createCount()).toBe(1);
+
+    let durableRevision = 1;
+    let durableSnapshot: ReturnType<DemoState["exportSnapshot"]> = staleWriter.exportSnapshot();
+    let rejectNextWrite = true;
+    const repository = {
+      loadOrSeed: vi.fn(async () => ({ revision: durableRevision, snapshot: structuredClone(durableSnapshot) })),
+      compareAndSet: vi.fn(async (_namespace: string, expectedRevision: number, nextSnapshot: Record<string, unknown>) => {
+        if (rejectNextWrite) {
+          rejectNextWrite = false;
+          durableRevision += 1; // another writer wins; persisted state still records UNKNOWN
+          throw new DemoStateConflictError();
+        }
+        if (expectedRevision !== durableRevision) throw new DemoStateConflictError();
+        durableRevision += 1;
+        durableSnapshot = structuredClone(nextSnapshot) as unknown as ReturnType<DemoState["exportSnapshot"]>;
+        return durableRevision;
+      }),
+    } as unknown as SupabaseDemoStateRepository;
+    staleWriter.attachRepository(repository, "identity-integration-reconcile-cas", 1);
+
+    const reloadedAuthority = restoredWithCircle(durableSnapshot, acceptingThenLosingResponse);
+    reloadedAuthority.attachRepository(repository, "identity-integration-reconcile-cas", 2);
+    stateMocks.getDemoState.mockResolvedValueOnce(staleWriter).mockResolvedValue(reloadedAuthority);
+
+    const firstResponse = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
+      params: Promise.resolve({ id: selectedId }),
+    });
+    expect(firstResponse.status).toBe(409);
+    const firstBody = await firstResponse.json();
+    expect(firstBody.code).toBe("OPS-002");
+    expect(firstBody.provider_observation).toMatchObject({ status: "CONFIRMED", durably_recorded: false });
+    expect(firstBody.authoritative_state).toMatchObject({ execution_status: "UNKNOWN", source_payable_state: "OUTSTANDING" });
+    expect(firstBody.execution).toBeUndefined();
+    expect(firstBody.truth).toBeUndefined();
+    expect(acceptingThenLosingResponse.createCount()).toBe(1);
+
+    const followUp = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
+      params: Promise.resolve({ id: selectedId }),
+    });
+    expect(followUp.status).toBe(200);
+    const followUpBody = await followUp.json();
+    expect(followUpBody.execution.status).toBe("SETTLED");
+    expect(followUpBody.aggregate).toMatchObject({ state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" });
+    expect(followUpBody.source_payable_state).toBe("OUTSTANDING");
+    expect(followUpBody.execution_gate).toBe("EXECUTION_ALREADY_RECORDED");
+    expect(acceptingThenLosingResponse.createCount()).toBe(1);
+    expect(repository.compareAndSet).toHaveBeenCalledTimes(2);
   });
 });

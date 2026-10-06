@@ -383,8 +383,13 @@ describe("Command Center mounted Operational Report", () => {
 
   it("keeps a missing route owner/product action explicit and no longer uses generic gate copy", async () => {
     const pay = assessedDetail("OBL-ASSURANCE-NOT-READY", "PAY");
+    pay.current_assessment.provider_mode = "LIVE_AI";
+    pay.current_assessment.provider_used = "mock-live-ai";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
-      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-ASSURANCE-NOT-READY", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }] }))
+      ? Promise.resolve(response({
+        obligations: [{ ...obligation("OBL-ASSURANCE-NOT-READY", true), decision: "PAY", provider_mode: "LIVE_AI", route_assurance_status: "Route assurance not ready" }],
+        sole_pay_candidate_id: "OBL-ASSURANCE-NOT-READY",
+      }))
       : Promise.resolve(response(pay)));
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
@@ -393,7 +398,10 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
     expect(prerequisites.textContent).toContain("Owner: unavailable");
-    expect(prerequisites.textContent).toContain("no product action is available here");
+    expect(screen.getByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
+    expect(prerequisites.textContent).toContain("External-evidence step");
+    expect(prerequisites.textContent).toContain("fresh assessment after preparation");
+    expect(prerequisites.textContent).not.toContain("no product action is available here");
     expect(prerequisites.textContent).not.toContain("satisfy the existing readiness gate");
   });
 

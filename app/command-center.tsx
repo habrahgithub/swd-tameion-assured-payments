@@ -337,6 +337,7 @@ export function authorizationBlockers(state: {
   destinationOperational?: string;
   sourceWallet?: string;
   productTrustProvenance?: string;
+  proxyPreparationAvailable?: boolean;
   reviewed: boolean;
   killSwitchEngaged: boolean;
 }): string[] {
@@ -351,7 +352,7 @@ export function authorizationBlockers(state: {
       state.sourceWallet && `source wallet is ${judgeReadableState(state.sourceWallet).toLowerCase()}`,
       `product-trust provenance is ${state.productTrustProvenance ? judgeReadableState(state.productTrustProvenance).toLowerCase() : "unavailable"}`,
     ].filter(Boolean);
-    blockers.push(`Payment-route assurance is not ready${facts.length ? `: ${facts.join("; ")}.` : ". Current route evidence is unavailable."} Owner: unavailable. Next action: request current route evidence through its owning workflow; no product action is available here. Expected result: current product trust, verified destination, and active destination operations and source wallet.`);
+    blockers.push(`Payment-route assurance is not ready${facts.length ? `: ${facts.join("; ")}.` : ". Current route evidence is unavailable."} External-evidence step: obtain current product trust, verified destination, and active destination/source-wallet evidence. Owner: unavailable.${state.proxyPreparationAvailable ? " The selected candidate may be prepared as an Arc Testnet proxy; this does not satisfy assurance. Obtain a fresh assessment after preparation, before authorization." : " This external evidence is unavailable in this product flow."}`);
   }
   if (state.hasCurrentPayAssessment && !state.reviewed) blockers.push("Review the current PAY assessment before authorization.");
   if (state.killSwitchEngaged) blockers.push("Kill switch engaged — execution is disabled for this obligation.");
@@ -1346,6 +1347,7 @@ export function CommandCenter() {
     destinationOperational: detail?.aggregate.destination_operational_status,
     sourceWallet: detail?.aggregate.source_wallet_status,
     productTrustProvenance: detail?.aggregate.product_trust_provenance,
+    proxyPreparationAvailable: proxyPreparationReady,
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
@@ -1856,6 +1858,7 @@ export function CommandCenter() {
                     destinationOperational: detail?.aggregate.destination_operational_status,
                     sourceWallet: detail?.aggregate.source_wallet_status,
                     productTrustProvenance: detail?.aggregate.product_trust_provenance,
+                    proxyPreparationAvailable: proxyPreparationReady,
                     reviewed: Boolean(authorizationAssessment),
                     killSwitchEngaged: killSwitchView === "engaged",
                   });

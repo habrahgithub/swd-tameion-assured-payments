@@ -3,7 +3,14 @@ export interface DemoStateRevision {
   snapshot: Record<string, unknown>;
 }
 
-export class DemoStateConflictError extends Error {
+export class DemoStatePersistenceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DemoStatePersistenceError";
+  }
+}
+
+export class DemoStateConflictError extends DemoStatePersistenceError {
   constructor() {
     super("Durable demo state changed during this request; reload current state and retry the human action.");
     this.name = "DemoStateConflictError";
@@ -35,15 +42,20 @@ export class SupabaseDemoStateRepository {
     expectedRevision: number,
     nextSnapshot: Record<string, unknown>,
   ): Promise<number> {
-    const result = await this.rpc("tameion_state_compare_and_set", {
-      p_namespace: namespace,
-      p_expected_revision: expectedRevision,
-      p_next_snapshot: nextSnapshot,
-    });
-    const response = asRecord(result);
+    let response: Record<string, unknown>;
+    try {
+      const result = await this.rpc("tameion_state_compare_and_set", {
+        p_namespace: namespace,
+        p_expected_revision: expectedRevision,
+        p_next_snapshot: nextSnapshot,
+      });
+      response = asRecord(result);
+    } catch (error) {
+      throw new DemoStatePersistenceError("Durable demo-state compare-and-set failed.", { cause: error });
+    }
     if (response.accepted !== true) throw new DemoStateConflictError();
     if (!Number.isSafeInteger(response.revision) || (response.revision as number) !== expectedRevision + 1) {
-      throw new Error("Supabase returned an invalid durable-state revision.");
+      throw new DemoStatePersistenceError("Supabase returned an invalid durable-state revision.");
     }
     return response.revision as number;
   }

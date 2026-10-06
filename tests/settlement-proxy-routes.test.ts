@@ -21,6 +21,7 @@ import {
   J2A_DEMO_WALLET_SET_ID,
   runJ2aReadOnlyPreflight,
 } from "../src/demo/real-testnet-payment";
+import type { SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const originalPrimePacketHash = process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
@@ -132,9 +133,18 @@ async function authorizedState(selectedIndex = 0) {
 }
 
 async function expiredAuthorizedState() {
-  const fixture = await preparedState();
-  sealAuthorization(fixture.state, fixture.selectedId, () => new Date("2000-01-01T00:00:00.000Z"));
-  return fixture;
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
+  try {
+    const fixture = await preparedState();
+    const sealed = sealAuthorization(fixture.state, fixture.selectedId, () => new Date());
+    const packet = (await import("../src/server/settlement-proxy-packet")).getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    if (!packet) throw new Error("Expired-PAE fixture must begin with a valid, current exact packet.");
+    vi.setSystemTime(new Date("2026-10-06T19:00:00.000Z"));
+    return { ...fixture, sealed, packet };
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 function executeRequest(obligationId: string, packet: { packet_sha256: string }, instructionHash: string, version: number, confirmation = exactConfirmation) {
@@ -156,13 +166,14 @@ function setPrimeHash(value: string) {
 
 afterEach(() => {
   mocks.getDemoState.mockReset();
+  vi.useRealTimers();
   if (originalPrimePacketHash === undefined) delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
   else process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = originalPrimePacketHash;
 });
 
 describe("selected genuine Arc proxy route enforcement", () => {
   it("rejects authorization after proxy preparation when the current assessment is stale", async () => {
-    const { state, selectedId } = await preparedState();
+    const { state, selectedId, api } = await preparedState();
     const stale = { reviewedAssessmentId: "stale-review", reviewedAssessmentHash: "a".repeat(64) };
     mocks.getDemoState.mockResolvedValue(state);
 
@@ -171,10 +182,11 @@ describe("selected genuine Arc proxy route enforcement", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/current LIVE_AI PAY assessment/i);
     expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects authorization when the post-binding assessment is not LIVE_AI", async () => {
-    const { state, selectedId } = await preparedState();
+    const { state, selectedId, api } = await preparedState();
     reassess(state, selectedId, { provider_mode: "NOT_LIVE_AI" });
     mocks.getDemoState.mockResolvedValue(state);
 
@@ -183,10 +195,11 @@ describe("selected genuine Arc proxy route enforcement", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/current LIVE_AI PAY assessment/i);
     expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
   it("rejects authorization if the unchanged sole-candidate rule has since selected a different PAY winner", async () => {
-    const { state, selectedId, records } = await preparedState(-1);
+    const { state, selectedId, records, api } = await preparedState(-1);
     reassess(state, selectedId);
     const earlierWinner = records[0];
     if (!earlierWinner || earlierWinner.obligation_id === selectedId) throw new Error("Fixture did not provide a distinct earlier-due source.");
@@ -199,6 +212,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).error).toContain(earlierWinner.obligation_id);
     expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
   it("projects the deterministic winner when five current assessments are PAY", async () => {
@@ -232,7 +246,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
   });
 
   it("requires exact confirmation, request hash, Prime packet hash, and current aggregate version before execute", async () => {
-    const { state, selectedId, packet } = await authorizedState();
+    const { state, selectedId, packet, api } = await authorizedState();
     const sealed = state.getSealedPae(selectedId)!;
     const version = state.store.get(DEMO_ORGANIZATION_ID, selectedId).aggregate_version;
     mocks.getDemoState.mockResolvedValue(state);
@@ -240,14 +254,18 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const wrongConfirmation = await execute(executeRequest(selectedId, packet, sealed.instruction_hash, version, "SUBMIT"), { params: Promise.resolve({ id: selectedId }) });
     expect(wrongConfirmation.status).toBe(400);
+    expect(api.createTransaction).not.toHaveBeenCalled();
     const wrongRequestHash = await execute(executeRequest(selectedId, { packet_sha256: "0".repeat(64) }, sealed.instruction_hash, version), { params: Promise.resolve({ id: selectedId }) });
     expect(wrongRequestHash.status).toBe(403);
+    expect(api.createTransaction).not.toHaveBeenCalled();
     setPrimeHash("f".repeat(64));
     const wrongPrimeHash = await execute(executeRequest(selectedId, packet, sealed.instruction_hash, version), { params: Promise.resolve({ id: selectedId }) });
     expect(wrongPrimeHash.status).toBe(403);
+    expect(api.createTransaction).not.toHaveBeenCalled();
     setPrimeHash(packet.packet_sha256);
     const staleVersion = await execute(executeRequest(selectedId, packet, sealed.instruction_hash, version - 1), { params: Promise.resolve({ id: selectedId }) });
     expect(staleVersion.status).toBe(403);
+    expect(api.createTransaction).not.toHaveBeenCalled();
     expect(state.providerAdapter.name).toBe("arc-circle-live");
     expect((state.providerAdapter as ArcCircleProviderAdapter)).toBeTruthy();
   });
@@ -255,17 +273,36 @@ describe("selected genuine Arc proxy route enforcement", () => {
   it.each(["expired", "revoked"] as const)("blocks the selected execute route for a %s PAE without provider submission", async (scenario) => {
     const fixture = scenario === "expired" ? await expiredAuthorizedState() : await authorizedState();
     const { state, selectedId, api } = fixture;
-    const currentPacket = scenario === "expired" ? null :
-      (await import("../src/server/settlement-proxy-packet")).getCurrentSettlementProxyPacket(state, selectedId);
     const sealed = state.getSealedPae(selectedId)!;
+    let packet = fixture.packet;
+    if (scenario === "revoked") {
+      const currentPacket = (await import("../src/server/settlement-proxy-packet")).getCurrentSettlementProxyPacket(state, selectedId);
+      if (!currentPacket) throw new Error("Revocation fixture must begin from a current exact packet.");
+      packet = currentPacket;
+      const repository = { compareAndSet: vi.fn(async (_namespace: string, expectedRevision: number) => expectedRevision + 1) };
+      state.attachRepository(repository as unknown as SupabaseDemoStateRepository, "revoked-route-test", 1);
+      await state.revokeTrustedKey(signingKeyId);
+    }
     if (scenario === "expired") {
       expect(Date.parse(sealed.payload.expiry)).toBeLessThan(Date.now());
-      expect(currentPacket).toBeNull();
     }
-    if (scenario !== "expired" && !currentPacket) throw new Error("Expected a current packet for the revoked PAE fixture.");
-    const packet = { packet_sha256: currentPacket?.packet_sha256 ?? "0".repeat(64) };
     const version = state.store.get(DEMO_ORGANIZATION_ID, selectedId).aggregate_version;
-    if (scenario === "revoked") state.store.applyMaterialChange(DEMO_ORGANIZATION_ID, selectedId, version, { destination_operational_status: "ON_HOLD" });
+    expect(packet?.packet_sha256).toMatch(/^[0-9a-f]{64}$/);
+    mocks.getDemoState.mockResolvedValue(state);
+    setPrimeHash(packet!.packet_sha256);
+
+    const response = await execute(executeRequest(selectedId, packet!, sealed.instruction_hash, version), { params: Promise.resolve({ id: selectedId }) });
+
+    expect(response.status).toBe(403);
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses malformed authorization lineage on execute with a valid exact packet baseline", async () => {
+    const { state, selectedId, packet, api } = await authorizedState();
+    const sealed = state.getSealedPae(selectedId)!;
+    const version = state.store.get(DEMO_ORGANIZATION_ID, selectedId).aggregate_version;
+    const lineage = state.getAuthorizationArtifacts(selectedId)!;
+    lineage.approval_record_hash = "0".repeat(64);
     mocks.getDemoState.mockResolvedValue(state);
     setPrimeHash(packet.packet_sha256);
 
@@ -273,6 +310,21 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     expect(response.status).toBe(403);
     expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("successfully exercises the selected execute route with one mocked provider create", async () => {
+    const { state, selectedId, packet, api } = await authorizedState();
+    const sealed = state.getSealedPae(selectedId)!;
+    const version = state.store.get(DEMO_ORGANIZATION_ID, selectedId).aggregate_version;
+    mocks.getDemoState.mockResolvedValue(state);
+    setPrimeHash(packet.packet_sha256);
+
+    const response = await execute(executeRequest(selectedId, packet, sealed.instruction_hash, version), { params: Promise.resolve({ id: selectedId }) });
+    const body = await response.json();
+
+    expect([200, 202]).toContain(response.status);
+    expect(body.execution.idempotency_key).toBe(sealed.payload.idempotency_key);
+    expect(api.createTransaction).toHaveBeenCalledTimes(1);
   });
 
   it.each([

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST } from "../app/api/obligations/[id]/assess/route";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, getDemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
+import { DemoStatePersistenceError } from "../src/server/supabase-demo-state-repository";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const originalFetch = globalThis.fetch;
@@ -374,7 +375,9 @@ describe("assessment request idempotency across durable CAS races", () => {
     const first = callAssessment();
     await durable.providerStarted;
     durable.releaseProvider();
-    await expect(first).rejects.toThrow("simulated committed provider-result checkpoint with lost response");
+    const lostResponse = await first.catch((error: unknown) => error);
+    expect(lostResponse).toBeInstanceOf(DemoStatePersistenceError);
+    expect((lostResponse as DemoStatePersistenceError).cause).toMatchObject({ message: "simulated committed provider-result checkpoint with lost response" });
     expect(durable.snapshot?.assessment_operations[0].status).toBe("PROVIDER_RESULT_DURABLE");
 
     const replay = await callAssessment();

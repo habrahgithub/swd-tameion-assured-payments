@@ -263,12 +263,15 @@ describe("authorization blockers name the first unmet prerequisite in order", ()
       hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true,
       routeAssuranceReady: false, destinationVerification: "PENDING_VERIFICATION",
       destinationOperational: "ON_HOLD", sourceWallet: "INACTIVE", reviewed: false, killSwitchEngaged: false,
+      proxyPreparationAvailable: true,
     });
     expect(blockers[0]).toContain("Destination verification is pending verification");
     expect(blockers[0]).toContain("destination operations are on hold");
     expect(blockers[0]).toContain("source wallet is inactive");
     expect(blockers[0]).toContain("Owner: unavailable");
-    expect(blockers[0]).toContain("no product action is available here");
+    expect(blockers[0]).toContain("External-evidence step");
+    expect(blockers[0]).toContain("fresh assessment after preparation");
+    expect(blockers[0]).not.toContain("no product action is available here");
     expect(blockers[0]).not.toContain("satisfy the existing readiness gate");
   });
 

@@ -4,10 +4,11 @@ import { AuthorityError } from "../../../../src/authority/aggregate";
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
 import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
 import { getCurrentSettlementProxyPacket } from "../../../../src/server/settlement-proxy-packet";
+import { DemoStateConflictError, DemoStatePersistenceError } from "../../../../src/server/supabase-demo-state-repository";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const state = await getDemoState();
+  let state = await getDemoState();
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -29,11 +30,54 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           }
           execution = await state.worker.reconcilePendingByIdempotencyKey(execution.idempotency_key, DEMO_ORGANIZATION_ID);
           providerStatus = execution.status;
-          await state.flush();
         } else if (execution.provider_ref) {
           providerStatus = (await state.providerAdapter.getStatus(execution.provider_ref, execution.idempotency_key)).status;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof DemoStatePersistenceError) {
+          const locallyObserved = state.worker.getExecutionRecord(sealed!.payload.idempotency_key);
+          const evidence = locallyObserved?.provider_evidence;
+          const providerObservation = evidence && typeof evidence === "object" && "status" in evidence
+            ? { idempotency_key: sealed!.payload.idempotency_key, status: evidence.status, durably_recorded: false }
+            : null;
+          try {
+            const authoritativeState = await getDemoState();
+            if (authoritativeState === state) throw new Error("Authoritative reload returned the failed writer instance.");
+            const authoritativeSealed = authoritativeState.getSealedPae(id);
+            const authoritativeExecution = authoritativeSealed
+              ? authoritativeState.worker.getExecutionRecord(authoritativeSealed.payload.idempotency_key)
+              : undefined;
+            const authoritativeAggregate = authoritativeState.store.get(DEMO_ORGANIZATION_ID, id);
+            const authoritativeRecord = authoritativeState.getRecord(id);
+            return NextResponse.json({
+              error: providerObservation?.status === "CONFIRMED"
+                ? "Provider confirmation was observed, but the durable reconciliation write failed. Settlement may have occurred; no persisted success is claimed."
+                : "Durable reconciliation state could not be saved. The outcome remains unresolved.",
+              code: error instanceof DemoStateConflictError ? "OPS-002" : "OPS-003",
+              provider_observation: providerObservation,
+              authoritative_state: {
+                execution_status: authoritativeExecution?.status ?? "NOT_RECORDED",
+                aggregate_state: authoritativeAggregate.state,
+                execution_state: authoritativeAggregate.execution_state,
+                pae_state: authoritativeAggregate.pae_state,
+                source_payable_state: authoritativeRecord?.state_at_event_baseline ?? "UNKNOWN",
+              },
+              execution_gate: "RECONCILIATION_ONLY",
+              next_action: "Retry this read-only reconciliation for the same identity. Do not resubmit.",
+            }, { status: error instanceof DemoStateConflictError ? 409 : 503 });
+          } catch {
+            return NextResponse.json({
+              error: providerObservation?.status === "CONFIRMED"
+                ? "Provider confirmation was observed, but both durable reconciliation and authoritative reload failed. Settlement may have occurred; do not resubmit."
+                : "Durable reconciliation and authoritative reload failed. Outcome is unresolved; do not resubmit.",
+              code: error instanceof DemoStateConflictError ? "OPS-002" : "OPS-003",
+              provider_observation: providerObservation,
+              authoritative_state: "UNAVAILABLE",
+              execution_gate: "RECONCILIATION_ONLY",
+              next_action: "Retry this read-only reconciliation for the same identity. Do not resubmit.",
+            }, { status: 503 });
+          }
+        }
         providerStatus = "PROVIDER_QUERY_FAILED";
       }
     }
