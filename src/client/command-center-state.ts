@@ -24,6 +24,17 @@ export function judgeReadableState(value: string): string {
     .join(" ");
 }
 
+function judgeDatePosition(value: string): string {
+  const label: Record<string, string> = {
+    NOT_STATED: "date not stated",
+    INVALID: "date invalid",
+    OVERDUE: "overdue",
+    DUE_TODAY: "due today",
+    FUTURE: "future",
+  };
+  return label[value] ?? "position unknown";
+}
+
 export function hasSimulatedTrustFixture(flag: boolean, sourceWalletRef: string): boolean {
   return flag || /simulated/i.test(sourceWalletRef);
 }
@@ -52,7 +63,7 @@ export function settlementDisplay(
   return `≈ ${settlement.amount} ${settlement.asset} (indicative only)${policyRate} · No payment intent exists.`;
 }
 
-export type AssessmentTraceStepId = "SOURCE_IDS" | "SUPPLIED_FACTS" | "PROPOSAL" | "VALIDATED_FINDINGS" | "CATALOG";
+export type AssessmentTraceStepId = "SOURCE_IDS" | "SUPPLIED_FACTS" | "APPLICATION_OVERLAYS" | "PROPOSAL" | "VALIDATED_FINDINGS" | "CATALOG";
 
 export interface AssessmentTraceStep {
   step: AssessmentTraceStepId;
@@ -72,6 +83,13 @@ export function buildAssessmentTrace(race: RaceAssessment): AssessmentTraceStep[
   const proposed = race.caveats.model_proposed_findings ?? [];
   const rejected = proposed.filter((code) => !validatedCodes.has(code));
 
+  const dueDateProvenance = facts.effective_due_date_provenance;
+  const provenanceLabel = dueDateProvenance?.provenance_class === "SOURCE_INVOICE_DATE"
+    ? `source invoice date (evidence ${dueDateProvenance.evidence_id})`
+    : dueDateProvenance?.provenance_class === "AUTHORIZED_OPERATOR_ATTESTATION"
+      ? `authorized operator attestation (${dueDateProvenance.authority_reference})`
+      : "not recorded";
+
   return [
     {
       step: "SOURCE_IDS",
@@ -86,15 +104,34 @@ export function buildAssessmentTrace(race: RaceAssessment): AssessmentTraceStep[
       authority: "SUPPLIED_FACTS",
       items: [
         `Amount ${facts.amount} ${facts.currency}`,
-        `Due date ${facts.due_date ?? "not stated"} (${facts.due_date_position} as of ${facts.as_of_date})`,
+        `Raw due date: ${facts.due_date ?? "Not captured on source"}`,
+        `Source due-date status: ${facts.due_date_status === "STATED_ON_SOURCE" ? "Stated on source" : "Not stated on source"}`,
+        `Source issue/invoice date: ${facts.issue_date ?? "Not captured"}`,
+        `Effective due date: ${facts.effective_due_date ?? "Not derived"}`,
+        `Effective date basis: ${facts.effective_due_date_basis ?? "None recorded"}`,
+        `Effective date authority: ${provenanceLabel}`,
+        `Assessment as of: ${facts.as_of_date} (${judgeDatePosition(facts.due_date_position)})`,
         `Source evidence present: ${facts.source_evidence_present ? "yes" : "no"}`,
         `Business purpose confirmed: ${facts.business_purpose_confirmed ? "yes" : "no"}`,
-        `Destination: ${facts.destination_status}`,
-        `Destination readiness source: ${facts.destination_readiness_source ?? "not recorded"}`,
-        `Due date status: ${facts.due_date_status}`,
+        `Source destination fact: ${judgeReadableState(facts.destination_status)}`,
         "Source-to-context completeness: UNVERIFIED — this record does not establish that every source fact was supplied.",
       ],
       empty_reason: null,
+    },
+    {
+      step: "APPLICATION_OVERLAYS",
+      label: "Application readiness overlay",
+      authority: "APPLICATION_OWNED",
+      items: facts.destination_readiness_source === "SIMULATED_DEMO_FIXTURE"
+        ? ["Destination readiness shown by this assessment comes from a simulated demo fixture; it is not source evidence or current product trust."]
+        : facts.destination_readiness_source === "SYNTHETIC_EVALUATION_FIXTURE"
+          ? ["Destination readiness comes from a synthetic evaluation fixture; it is not source evidence or current product trust."]
+          : facts.destination_readiness_source === "CURRENT_PRODUCT_TRUST_EVIDENCE"
+            ? ["Destination readiness is an application overlay from current product trust evidence."]
+            : facts.destination_readiness_source === "UNVERIFIED_CURRENT_TRUST"
+              ? ["Current destination trust is unverified by the application."]
+              : [],
+      empty_reason: facts.destination_readiness_source ? null : "No separate application readiness overlay is recorded.",
     },
     {
       step: "PROPOSAL",

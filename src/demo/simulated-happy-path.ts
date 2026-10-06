@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { AuthorityStore, type AuthorityAggregate, type ObligationState } from "../authority/aggregate";
 import { approveAndSealPae, AssuranceFailedError } from "../pipeline/authorize-and-seal";
-import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import { ExecutionBlockedError, ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter } from "../execution/fake-provider-adapter";
 import type { ControlResult, DurableAssessmentRecord } from "../domain/schemas";
 import type { RaceAssessment } from "../agent/schema";
@@ -23,6 +23,7 @@ export const NOT_VENDOR_PAYMENT_LABEL = "NOT_VENDOR_PAYMENT" as const;
 
 export const SIMULATED_HAPPY_PATH_OBLIGATION_ID = "DEMO-SIMULATED-HAPPY-001";
 export const SIMULATED_BLOCKED_OBLIGATION_ID = "DEMO-SIMULATED-BLOCKED-001";
+export const SIMULATED_ATTACK_OBLIGATION_ID = "DEMO-SIMULATED-ATTACK-001";
 export const SIMULATED_ORGANIZATION_ID = "ORG-DEMO-SIMULATED";
 
 /** Logical PAE signing key id for this isolated demo slice only; resolved
@@ -269,6 +270,72 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     execution: { ...execution, provider_label: FAKE_PROVIDER_LABEL },
     provider_submission_count: adapter.getSubmissionCount(),
   };
+}
+
+export interface SimulatedAttackVariantResult {
+  label: "SIMULATED_CHANGED_DESTINATION_ATTACK";
+  provider_label: typeof FAKE_PROVIDER_LABEL;
+  vendor_notice: typeof NOT_VENDOR_PAYMENT_LABEL;
+  obligation_id: string;
+  blocked: true;
+  reason: string;
+  worker_calls: 1;
+  provider_submissions: 0;
+}
+
+/** Isolated post-authorization changed-destination demonstration. The sealed
+ * synthetic PAE is checked by the real worker against mutated in-memory state;
+ * the fake adapter must receive zero calls. */
+export async function runSimulatedAttackVariant(): Promise<SimulatedAttackVariantResult> {
+  const obligationId = SIMULATED_ATTACK_OBLIGATION_ID;
+  assertSyntheticObligationId(obligationId);
+  const store = new AuthorityStore();
+  store.seed(buildSeedAggregate(obligationId, {
+    destinationRef: "DEST-DEMO-ATTACK-001-SEEDED",
+    sourceWalletRef: "WALLET-SOURCE-DEMO-ATTACK-001",
+    destinationVerified: true,
+  }));
+  store.sealAssessment(buildAssessmentRecord(obligationId, 1));
+  const current = store.getCurrentAssessment(SIMULATED_ORGANIZATION_ID, obligationId);
+  if (!current) throw new SimulatedDemoGuardError("Failed to seal the synthetic attack assessment fixture", "DEMO-002");
+  const { sealed } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+    organizationId: SIMULATED_ORGANIZATION_ID,
+    obligationId,
+    expectedVersion: 1,
+    reviewedAssessmentId: current.record.assessment_id,
+    reviewedAssessmentHash: current.hash,
+    actorId: "USR-DEMO-SIMULATED-OPERATOR",
+    actorRole: "FINANCE_APPROVER",
+    policyVersion: "POLICY-DEMO-SIMULATED-1",
+    reasonText: `Synthetic changed-destination attack demonstration for ${obligationId}; no genuine obligation or payment provider is used.`,
+  });
+  const authorized = store.get(SIMULATED_ORGANIZATION_ID, obligationId);
+  store.applyMaterialChange(SIMULATED_ORGANIZATION_ID, obligationId, authorized.aggregate_version, {
+    destination_ref: `DEST-${obligationId}-ATTACKER`,
+    destination_version: authorized.destination_version + 1,
+    destination_address: `0x${"e".repeat(40)}`,
+    destination_verification_status: "PENDING_VERIFICATION",
+  });
+  const adapter = new FakeProviderAdapter();
+  const worker = new ExecutionWorker(store, adapter);
+  try {
+    await worker.execute(sealed);
+  } catch (error) {
+    if (!(error instanceof ExecutionBlockedError)) throw error;
+    const providerSubmissions = adapter.getSubmissionCount();
+    if (providerSubmissions !== 0) throw new SimulatedDemoGuardError("Synthetic changed-destination attack reached the fake provider", "DEMO-004");
+    return {
+      label: "SIMULATED_CHANGED_DESTINATION_ATTACK",
+      provider_label: FAKE_PROVIDER_LABEL,
+      vendor_notice: NOT_VENDOR_PAYMENT_LABEL,
+      obligation_id: obligationId,
+      blocked: true,
+      reason: error.message,
+      worker_calls: 1,
+      provider_submissions: 0,
+    };
+  }
+  throw new SimulatedDemoGuardError("Synthetic changed-destination attack unexpectedly passed worker verification", "DEMO-003");
 }
 
 export interface SimulatedBlockedVariantResult {

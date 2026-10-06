@@ -298,6 +298,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(workspace.textContent).toContain("indicative only");
     expect(workspace.textContent).toContain("1 USD = AED 3.6725");
     expect(workspace.textContent).toContain("No payment intent exists");
+    expect(workspace.textContent).toContain("No payment intent created");
     expect(workspace.textContent).toContain("Execution authorityNot Granted");
     expect(workspace.textContent).not.toContain("SIMULATED");
     expect(workspace.textContent).not.toContain("TEST-WALLET");
@@ -312,6 +313,69 @@ describe("Command Center mounted Operational Report", () => {
 
     fireEvent.click(assess);
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
+  });
+
+  it("announces the selected surface programmatically and gives refusal feedback alert semantics", async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-A")] }));
+      if (url.endsWith("/assess") && init?.method === "POST") return Promise.resolve(response({ error: "Assessment unavailable." }, 503));
+      return Promise.resolve(response(detail("OBL-A")));
+    });
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    const nav = screen.getByRole("navigation", { name: "Command Center surfaces" });
+    expect(within(nav).getByRole("button", { name: "Obligations" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(nav).getByRole("button", { name: "Assessment" }));
+    expect(within(nav).getByRole("button", { name: "Assessment" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(nav).getByRole("button", { name: "Obligations" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Assessment unavailable.");
+  });
+
+  it("keeps a missing route owner/product action explicit and no longer uses generic gate copy", async () => {
+    const pay = assessedDetail("OBL-ASSURANCE-NOT-READY", "PAY");
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-ASSURANCE-NOT-READY", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }] }))
+      : Promise.resolve(response(pay)));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(screen.getByRole("button", { name: /OBL-ASSURANCE-NOT-READY/ }).textContent).toContain("PAY recommendation (advisory)");
+    expect(screen.getByRole("button", { name: /OBL-ASSURANCE-NOT-READY/ }).textContent).toContain("Route assurance not ready");
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
+    expect(prerequisites.textContent).toContain("Owner: unavailable");
+    expect(prerequisites.textContent).toContain("no product action is available here");
+    expect(prerequisites.textContent).not.toContain("satisfy the existing readiness gate");
+  });
+
+  it("surfaces the changed-destination proof in the isolated demo lane only", async () => {
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-A")] }));
+      if (url === "/api/obligations/OBL-A") return Promise.resolve(response(detail("OBL-A")));
+      if (url.endsWith("/simulated-happy-path")) return Promise.resolve(response({
+        happy_path: {
+          label: "SIMULATED_HAPPY_PATH", provider_label: "FAKE_TESTNET_ADAPTER", vendor_notice: "NOT_VENDOR_PAYMENT",
+          obligation_id: "DEMO-SIMULATED-HAPPY-001", obligation: { obligation_id: "DEMO-SIMULATED-HAPPY-001", state: "APPROVAL_PENDING" },
+          assessment: { decision: "PAY", provider_mode: "NOT_LIVE_AI" }, human_authorization: { state: "AUTHORIZED" },
+          assurance: { pae_state: "CONSUMED", safety_kernel_overall: "PASS" }, execution: { status: "SETTLED", provider_label: "FAKE_TESTNET_ADAPTER" },
+          reconciliation: { aggregate_state: "RECONCILED", execution_status: "SETTLED" },
+        },
+        changed_destination_attack: { label: "SIMULATED_CHANGED_DESTINATION_ATTACK", obligation_id: "DEMO-SIMULATED-ATTACK-001", blocked: true, reason: "PAE aggregate version mismatch", worker_calls: 1, provider_submissions: 0 },
+      }));
+      return Promise.resolve(response({ error: "Unexpected request." }, 404));
+    });
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
+    fireEvent.click(screen.getByText("Demo Mode — simulated, non-economic workflow"));
+    fireEvent.click(screen.getByRole("button", { name: "Run safe simulated demo" }));
+    const proof = await screen.findByRole("region", { name: "Isolated changed-destination attack demonstration" });
+    expect(proof.textContent).toContain("worker calls 1; provider submissions 0");
+    fireEvent.click(screen.getByRole("button", { name: "Reconciliation & Evidence" }));
+    expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
   });
 
   it("makes the current AI decision, reasons, and next action the assessment result", async () => {
@@ -374,10 +438,41 @@ describe("Command Center mounted Operational Report", () => {
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     expect(lifecycle.textContent).toContain("AI AssessmentRequires attention");
-    expect(lifecycle.textContent).toContain("Assurance & AuthorizationRequires attention — authorization locked");
+    expect(lifecycle.textContent).toContain("Assurance & AuthorizationAssurance: requires attention · Authorization: locked");
     expect(lifecycle.textContent).toContain("ExecutionNot started — blocked");
     expect(lifecycle.textContent).toContain("Reconciliation & EvidenceNot started");
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
+  });
+
+  it("renders attested effective due date and readiness fixture provenance in the assessment trace", async () => {
+    const assessed = assessedDetail("OBL-DATE-PROVENANCE", "HOLD");
+    const facts = assessed.current_assessment!.race!.evidence.authoritative_facts as Record<string, unknown>;
+    Object.assign(facts, {
+      due_date: null,
+      due_date_status: "NOT_STATED_ON_SOURCE",
+      issue_date: "2026-09-01",
+      effective_due_date: "2026-09-01",
+      effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "UAT-AUTH-REF-1" },
+      due_date_position: "OVERDUE",
+      destination_readiness_source: "SIMULATED_DEMO_FIXTURE",
+    });
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-DATE-PROVENANCE", true)] }))
+      : Promise.resolve(response(assessed)));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review assessment evidence" }));
+    const traceSummary = await screen.findByText("Assessment trace — evidence, facts, model proposal, validated findings, remediation");
+    fireEvent.click(traceSummary);
+    const trace = screen.getByTestId("assessment-trace");
+    expect(trace.textContent).toContain("Raw due date: Not captured on source");
+    expect(trace.textContent).toContain("Effective due date: 2026-09-01");
+    expect(trace.textContent).toContain("INVOICE_DATE_CASH_TERM");
+    expect(trace.textContent).toContain("authorized operator attestation (UAT-AUTH-REF-1)");
+    expect(trace.textContent).toContain("Assessment as of: 2026-10-04 (overdue)");
+    expect(trace.textContent).toContain("simulated demo fixture; it is not source evidence or current product trust");
   });
 
   it("presents PAY separately from route assurance and keeps authorization locked when assurance is not ready", async () => {
@@ -400,20 +495,43 @@ describe("Command Center mounted Operational Report", () => {
       "Execution",
       "Reconciliation & Evidence",
     ]);
-    expect(lifecycle.textContent).toContain("PAY recommended — assurance not ready");
-    expect(lifecycle.textContent).toContain("authorization locked");
+    expect(lifecycle.textContent).toContain("PAY is advisory · Assurance: route not ready · Authorization: locked");
+    expect(lifecycle.textContent).toContain("Authorization: locked");
     const selectedHeader = screen.getByRole("heading", { name: "OBL-ASSURANCE-NOT-READY" }).parentElement?.parentElement;
     expect(within(selectedHeader as HTMLElement).getByText("PAY recommended — assurance not ready; authorization locked")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
-    expect(within(prerequisites).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
-      "Payment-route assurance is not ready; satisfy the existing readiness gate before authorization review.",
+    expect(within(prerequisites).getAllByRole("listitem").map((item) => item.textContent?.trim())).toEqual([
+      expect.stringContaining("Payment-route assurance is not ready: Destination verification is pending verification"),
       "Review the current PAY assessment before authorization.",
     ]);
     expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
-    expect(screen.getByText("Payment-route assurance is not ready; satisfy the existing readiness gate before authorization review.")).toBeTruthy();
+    expect(screen.getByText(/Payment-route assurance is not ready: Destination verification is pending verification/)).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
+  });
+
+  it("shows the current amount, destination, FX and authority boundary before an approval control can enable", async () => {
+    const pay = assessedDetail("OBL-EXACT-INTENT", "PAY");
+    pay.aggregate.destination_verification_status = "VERIFIED";
+    pay.aggregate.destination_operational_status = "ACTIVE";
+    pay.aggregate.source_wallet_status = "ACTIVE";
+    pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    Object.assign(pay.aggregate, { counterparty_id: "CP-CURRENT-01" });
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-EXACT-INTENT", true), decision: "PAY", route_assurance_status: "Route assurance ready" }] }))
+      : Promise.resolve(response(pay)));
+    render(<CommandCenter />);
+    const summary = await screen.findByRole("region", { name: "Exact payment intent summary" });
+    expect(summary.textContent).toContain("Exact current intent summary — before authorization");
+    expect(summary.textContent).toContain("125.00 USD");
+    expect(summary.textContent).toContain("125.000000 USDC · ARC_TESTNET");
+    expect(summary.textContent).toContain("CP-CURRENT-01");
+    expect(summary.textContent).toContain("No FX rate recorded");
+    expect(summary.textContent).toContain("Pending separate Safety Kernel review and human authorization");
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 

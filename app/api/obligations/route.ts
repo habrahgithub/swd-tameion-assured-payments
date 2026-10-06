@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 
-import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../src/server/demo-state";
+import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, getDemoState } from "../../../src/server/demo-state";
 
 export async function GET() {
   const state = await getDemoState();
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);
+    const routeAssuranceReady = !DEMO_ARC_TRUST_SIMULATED &&
+      current.product_trust_provenance === "CURRENT_PRODUCT_EVIDENCE" &&
+      current.destination_verification_status === "VERIFIED" &&
+      current.destination_operational_status === "ACTIVE" &&
+      current.source_wallet_status === "ACTIVE";
     // A sealed assessment only counts toward coverage while it is still
     // bound to the obligation's current version — the same staleness rule
     // approve() itself enforces (AUT-009); a stale assessment must not be
@@ -17,6 +22,7 @@ export async function GET() {
       assessed: isCurrent,
       decision: isCurrent ? sealed?.record.decision : null,
       provider_mode: isCurrent ? sealed?.record.provider_mode : null,
+      route_assurance_status: routeAssuranceReady ? "Route assurance ready" : "Route assurance not ready",
     };
   });
   return NextResponse.json({

@@ -222,12 +222,15 @@ describe("queue completion: incomplete assessment is never a completed no-candid
 
   it("reports a completed no-candidate result only when every obligation is assessed and none is PAY", () => {
     const label = queueCompletionLabel({ total: 5, unassessed: 0, hold: 4, escalate: 1, pay: 0 });
-    expect(label).toContain("Completed");
+    expect(label).toContain("Assessment complete");
     expect(label).toContain("no PAY candidate");
   });
 
   it("reports PAY candidates as advisory, not authorized", () => {
-    expect(queueCompletionLabel({ total: 5, unassessed: 0, hold: 3, escalate: 0, pay: 2 })).toContain("2 PAY recommendation");
+    const label = queueCompletionLabel({ total: 5, unassessed: 0, hold: 3, escalate: 0, pay: 2 });
+    expect(label).toContain("2 PAY recommendation");
+    expect(label).toContain("Assessment complete");
+    expect(label).not.toContain("Completed");
   });
 });
 
@@ -237,6 +240,20 @@ describe("authorization blockers name the first unmet prerequisite in order", ()
     expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
     expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("PAY assessment");
     expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: false, killSwitchEngaged: false })[0]).toContain("Review");
+  });
+
+  it("names actual assurance facts and does not invent an owner or generic readiness task", () => {
+    const blockers = authorizationBlockers({
+      hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true,
+      routeAssuranceReady: false, destinationVerification: "PENDING_VERIFICATION",
+      destinationOperational: "ON_HOLD", sourceWallet: "INACTIVE", reviewed: false, killSwitchEngaged: false,
+    });
+    expect(blockers[0]).toContain("Destination verification is pending verification");
+    expect(blockers[0]).toContain("destination operations are on hold");
+    expect(blockers[0]).toContain("source wallet is inactive");
+    expect(blockers[0]).toContain("Owner: unavailable");
+    expect(blockers[0]).toContain("no product action is available here");
+    expect(blockers[0]).not.toContain("satisfy the existing readiness gate");
   });
 
   it("returns no blockers only when every prerequisite is met", () => {
@@ -274,7 +291,7 @@ describe("obligations queue header distinguishes incomplete from completed state
   });
 
   it("reports completed no-candidate only after every obligation is assessed with no PAY", () => {
-    expect(queueHeaderLabel("ready", summary(0, 0))).toContain("Completed — no PAY candidate");
+    expect(queueHeaderLabel("ready", summary(0, 0))).toContain("Assessment complete — no PAY candidate");
   });
 });
 
@@ -314,7 +331,7 @@ const stepNamed = (steps: AssessmentTraceStep[], step: AssessmentTraceStep["step
 describe("assessment trace hierarchy derived from existing RACE fields", () => {
   it("orders the trace sourceIDs → facts → proposal → validated findings → catalog", () => {
     expect(buildAssessmentTrace(race()).map((s) => s.step)).toEqual([
-      "SOURCE_IDS", "SUPPLIED_FACTS", "PROPOSAL", "VALIDATED_FINDINGS", "CATALOG",
+      "SOURCE_IDS", "SUPPLIED_FACTS", "APPLICATION_OVERLAYS", "PROPOSAL", "VALIDATED_FINDINGS", "CATALOG",
     ]);
   });
 
@@ -398,8 +415,8 @@ describe("one lifecycle truth for the genuine path (STOP before all assessed)", 
   });
 
   it("states completion only when all assessed and no PAY candidate exists", () => {
-    expect(lifecycleStopLabel(ready(5, 5, 0))).toContain("Completed");
-    expect(lifecycleStopLabel(ready(5, 5, 2))).not.toContain("Completed — no PAY");
+    expect(lifecycleStopLabel(ready(5, 5, 0))).toContain("Assessment complete");
+    expect(lifecycleStopLabel(ready(5, 5, 2))).not.toContain("Assessment complete — no PAY");
   });
 });
 
@@ -466,13 +483,31 @@ describe("trace exposes due-date and readiness provenance and qualifies complete
   it("states the due-date status and the destination readiness source from the record", () => {
     const steps = buildAssessmentTrace(race());
     const facts = stepNamed(steps, "SUPPLIED_FACTS").items.join(" | ");
-    expect(facts).toContain("Due date status: STATED_ON_SOURCE");
-    expect(facts).toContain("Destination readiness source:");
+    expect(facts).toContain("Source due-date status: Stated on source");
+    expect(stepNamed(steps, "APPLICATION_OVERLAYS").label).toBe("Application readiness overlay");
   });
 
   it("qualifies source-to-context completeness as UNVERIFIED", () => {
     const facts = stepNamed(buildAssessmentTrace(race()), "SUPPLIED_FACTS").items.join(" | ");
     expect(facts).toContain("Source-to-context completeness: UNVERIFIED");
+  });
+
+  it("separates raw and effective dates, basis, authority, and as-of date", () => {
+    const attested = race();
+    const facts = attested.evidence.authoritative_facts as Record<string, unknown>;
+    facts.due_date = null;
+    facts.due_date_status = "NOT_STATED_ON_SOURCE";
+    facts.issue_date = "2026-01-01";
+    facts.effective_due_date = "2026-01-31";
+    facts.effective_due_date_basis = "INVOICE_DATE_CASH_TERM";
+    facts.effective_due_date_provenance = { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "AUTH-REF-7" };
+    const items = stepNamed(buildAssessmentTrace(attested), "SUPPLIED_FACTS").items.join(" | ");
+    expect(items).toContain("Raw due date: Not captured on source");
+    expect(items).toContain("Effective due date: 2026-01-31");
+    expect(items).toContain("INVOICE_DATE_CASH_TERM");
+    expect(items).toContain("authorized operator attestation");
+    expect(items).toContain("AUTH-REF-7");
+    expect(items).toContain("Assessment as of: 2026-01-01");
   });
 });
 

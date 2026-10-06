@@ -13,8 +13,9 @@
     "start": "next start",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
+    "test:visual": "playwright test -c playwright.config.ts",
     "check:hygiene": "node scripts/check-repository-hygiene.mjs",
-    "verify": "npm run check:hygiene && npm run typecheck && npm test && npm run build"
+    "verify": "npm run check:hygiene && npm run typecheck && npm test && npm run build && npm run test:visual"
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "10.8.1",
@@ -25,6 +26,8 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",

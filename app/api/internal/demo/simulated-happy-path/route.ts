@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   runSimulatedBlockedVariant,
+  runSimulatedAttackVariant,
   runSimulatedHappyPath,
   SimulatedDemoGuardError,
   SIMULATED_HAPPY_PATH_LABEL,
@@ -48,6 +49,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     const happyPath = await runSimulatedHappyPath();
     const blockedVariant = runSimulatedBlockedVariant();
+    const attackVariant = await runSimulatedAttackVariant();
     return reply(
       {
         status: "PASS",
@@ -56,6 +58,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         vendor_notice: NOT_VENDOR_PAYMENT_LABEL,
         happy_path: happyPath,
         blocked_variant: blockedVariant,
+        changed_destination_attack: attackVariant,
       },
       200,
     );

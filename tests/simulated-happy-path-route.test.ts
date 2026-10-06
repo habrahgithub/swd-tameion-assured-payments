@@ -34,6 +34,9 @@ describe("simulated happy-path route: isolated, non-economic, typed negatives", 
     expect(body.happy_path.provider_submission_count).toBe(1);
     expect(body.blocked_variant.blocked).toBe(true);
     expect(body.blocked_variant.provider_submission_count).toBe(0);
+    expect(body.changed_destination_attack.blocked).toBe(true);
+    expect(body.changed_destination_attack.worker_calls).toBe(1);
+    expect(body.changed_destination_attack.provider_submissions).toBe(0);
   });
 
   it("refuses a missing or wrong confirmation with a typed 400 before any execution", async () => {
