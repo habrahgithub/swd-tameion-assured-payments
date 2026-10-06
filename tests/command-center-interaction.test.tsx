@@ -456,6 +456,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     expect(await screen.findByText(/An authorization envelope is already sealed for this obligation/)).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/No payment intent exists at this step/)).toBeNull();
     const sealedAction = screen.getByRole("button", { name: "Authorization already sealed" }) as HTMLButtonElement;
     expect(sealedAction.disabled).toBe(true);
@@ -488,15 +489,29 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     expect(await screen.findByText("Loading current obligation detail; authorization status is not yet available.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
     expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
 
     selectedDetail.resolve(response(null, 503));
     expect(await screen.findByText("Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
     expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+  });
+
+  it("does not show actionable authorization prerequisites with no selected obligation", async () => {
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [] }))
+      : Promise.resolve(response(null, 404)));
+
+    render(<CommandCenter />);
+    await screen.findByText("Genuine obligations are not selected.");
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(screen.getByText("Select an obligation to review its authorization and payment-intent status.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
   });
 
   it("makes review the primary PAY action, then removes primary action while route assurance blocks", async () => {
@@ -770,6 +785,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     expect(screen.getByText(/Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status/)).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect((screen.getByRole("button", { name: "Authorization status unavailable" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Kill switch: selected obligation detail is stale/)).toBeTruthy();

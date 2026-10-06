@@ -184,6 +184,12 @@ export function authorizationPanelCopy(state: DetailState, hasSelection: boolean
   return "Current detail confirms no payment intent exists. If every deterministic Safety Kernel control passes, the system can seal a signed Payment Authorization Envelope; no provider submission occurs here.";
 }
 
+/** Actionable authorization prerequisites are meaningful only for current,
+ * selected detail that has not already sealed its authorization envelope. */
+export function authorizationPrerequisitesVisible(state: DetailState, hasSelection: boolean, paeSealed: boolean): boolean {
+  return state === "loaded" && hasSelection && !paeSealed;
+}
+
 export function assessmentPrimaryAction(state: {
   detailState: DetailState;
   hasSelection: boolean;
@@ -2098,7 +2104,7 @@ export function CommandCenter() {
                     <RacePanel race={authorizationAssessment.race} />
                   </dl>
                 )}
-                {(() => {
+                {authorizationPrerequisitesVisible(detailState, Boolean(selectedId), Boolean(detail?.pae_sealed)) && (() => {
                   const blockers = authorizationBlockers({
                     hasSelection: Boolean(selectedId),
                     allAssessed,
