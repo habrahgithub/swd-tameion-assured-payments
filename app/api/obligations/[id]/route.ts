@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { AuthorityError } from "../../../../src/authority/aggregate";
-import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
+import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
 import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
+import { getCurrentSettlementProxyPacket } from "../../../../src/server/settlement-proxy-packet";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -16,23 +17,27 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     }
     const currentAssessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, id);
     const sealed = state.getSealedPae(id);
-    const execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
+    let execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
     const executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
+    const executionPacket = getCurrentSettlementProxyPacket(state, id);
     let providerStatus = "NOT_SUBMITTED";
     if (execution) {
       try {
-        if (execution.provider_ref) {
-          providerStatus = (await state.adapter.getStatus(execution.provider_ref)).status;
-        } else if (execution.status === "SUBMITTING" || execution.status === "UNKNOWN") {
-          providerStatus = state.adapter.getStatusByIdempotencyKey
-            ? (await state.adapter.getStatusByIdempotencyKey(execution.idempotency_key)).status
-            : "IN_DOUBT";
+        if (execution.status === "SUBMITTING" || execution.status === "UNKNOWN") {
+          if (execution.status === "SUBMITTING") {
+            execution = await state.worker.recoverSubmittingByIdempotencyKey(execution.idempotency_key, DEMO_ORGANIZATION_ID) ?? execution;
+          }
+          execution = await state.worker.reconcilePendingByIdempotencyKey(execution.idempotency_key, DEMO_ORGANIZATION_ID);
+          providerStatus = execution.status;
+          await state.flush();
+        } else if (execution.provider_ref) {
+          providerStatus = (await state.providerAdapter.getStatus(execution.provider_ref, execution.idempotency_key)).status;
         }
       } catch {
         providerStatus = "PROVIDER_QUERY_FAILED";
       }
     }
-    const settlementRuntime = state.adapter.name === "fake-testnet" ? "SIMULATED" as const : "LIVE" as const;
+    const settlementRuntime = state.providerAdapter.name === "fake-testnet" ? "SIMULATED" as const : "LIVE" as const;
     const truth = buildPaymentTruthLayers({
       obligation: canonicalObligation,
       source_obligation_state: record.state_at_event_baseline,
@@ -71,9 +76,18 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         provider_mode: currentAssessment.record.provider_mode,
         ...(currentAssessment.record.race ? { race: currentAssessment.record.race } : {}),
       } : null,
-      demo_arc_trust_simulated: DEMO_ARC_TRUST_SIMULATED,
+      demo_arc_trust_simulated: aggregate.product_trust_provenance === "SIMULATED_DEMO_FIXTURE",
       pae_sealed: Boolean(sealed),
       execution: execution ?? null,
+      settlement_proxy: state.getSettlementProxy(id) ?? null,
+      source_settlement_disclosure: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+      source_payable_state: record.state_at_event_baseline,
+      execution_packet: executionPacket,
+      sealed_pae_instruction_hash: sealed?.instruction_hash ?? null,
+      execution_gate: executionPacket && state.providerAdapter.name === "arc-circle-live" &&
+        process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === executionPacket.packet_sha256
+        ? "PRIME_AUTHORIZED_EXACT_PACKET"
+        : executionPacket ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
       execution_kill_switched: executionKillSwitched,
     });
   } catch (error) {

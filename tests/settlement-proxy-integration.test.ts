@@ -1,0 +1,240 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
+import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
+import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
+import { getCurrentSettlementProxyPacket } from "../src/server/settlement-proxy-packet";
+import { deriveJ2aCircleRefId, J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
+import { ExecutionBlockedError } from "../src/execution/worker";
+import { DemoStateConflictError, type SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
+import { sealTestAssessment, currentAssessmentReview } from "./test-support/seal-assessment";
+
+function selectCandidate(state: DemoState): string {
+  const record = state.liveUsageRecords.find((candidate) => Boolean(
+    candidate.issue_date && candidate.due_date && candidate.effective_due_date &&
+    candidate.business_purpose_confirmed && candidate.source_evidence.length > 0 &&
+    candidate.state_at_event_baseline === "OUTSTANDING" && candidate.currency === "USD"
+  ));
+  if (!record) throw new Error("Frozen genuine source set has no fully dated USD obligation fixture for the mocked integration proof.");
+  return record.obligation_id;
+}
+const SIGNING_KEY_ID = "IDENTITY-INTEGRATION-TEST-KEY";
+
+function circleClient(options: { loseCreateResponse?: boolean } = {}) {
+  let transaction: Record<string, unknown> | null = null;
+  let createCount = 0;
+  const client: J2aCircleClient = {
+    getWallet: vi.fn(async ({ id }) => ({ data: { wallet: {
+      id,
+      address: id === J2A_DEMO_SOURCE.id ? J2A_DEMO_SOURCE.address : J2A_DEMO_DESTINATION.address,
+      blockchain: "ARC-TESTNET",
+      walletSetId: J2A_DEMO_WALLET_SET_ID,
+      state: "LIVE",
+    } } })),
+    getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+      amount: "100.000000",
+      token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
+    }] } })),
+    estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
+    listTransactions: vi.fn(async () => ({ data: { transactions: transaction ? [transaction] : [] } })),
+    getTransaction: vi.fn(async ({ id }) => ({ data: { transaction: transaction?.id === id ? transaction : undefined } })),
+    createTransaction: vi.fn(async (input) => {
+      createCount += 1;
+      transaction = {
+        id: "circle-tx-identity-1",
+        state: "COMPLETE",
+        transactionType: "OUTBOUND",
+        blockchain: "ARC-TESTNET",
+        walletId: input.walletId,
+        sourceAddress: J2A_DEMO_SOURCE.address,
+        destinationAddress: input.destinationAddress,
+        amounts: input.amount,
+        tokenId: input.tokenId,
+        refId: input.refId,
+        networkFee: "0.001000",
+        txHash: `0x${"a".repeat(64)}`,
+      };
+      if (options.loseCreateResponse && createCount === 1) throw new Error("provider accepted request; response was lost");
+      return { data: { id: "circle-tx-identity-1" } };
+    }),
+  };
+  return { client, createCount: () => createCount };
+}
+
+function assessEveryFrozenObligation(state: DemoState, selectedId: string, selectedDecision: "PAY" | "HOLD" = "PAY", selectedMode: "LIVE_AI" | "NOT_LIVE_AI" = "LIVE_AI") {
+  for (const record of state.liveUsageRecords) {
+    sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, record.obligation_id, state.store.get(DEMO_ORGANIZATION_ID, record.obligation_id).aggregate_version, {
+      decision: record.obligation_id === selectedId ? selectedDecision : "HOLD",
+      provider_mode: record.obligation_id === selectedId ? selectedMode : "LIVE_AI",
+    });
+  }
+}
+
+async function authorizedSnapshot() {
+  const state = new DemoState();
+  const selectedId = selectCandidate(state);
+  assessEveryFrozenObligation(state, selectedId);
+  const source = structuredClone(state.getRecord(selectedId));
+  const provider = circleClient();
+  const preflight = await runJ2aReadOnlyPreflight(provider.client, () => new Date("2026-10-06T18:00:00.000Z"), state.createSettlementProxyIntent(selectedId));
+  expect(preflight.readiness).toBe("READY");
+  if (preflight.readiness !== "READY") throw new Error("mocked Circle preflight did not return READY");
+  state.bindSettlementProxy(preflight, 1);
+  const preparedAggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+  sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, selectedId, preparedAggregate.aggregate_version, { provider_mode: "LIVE_AI" });
+  const review = currentAssessmentReview(state.store, DEMO_ORGANIZATION_ID, selectedId);
+  const authorized = approveAndSealPae(state.store, SIGNING_KEY_ID, {
+    organizationId: DEMO_ORGANIZATION_ID,
+    obligationId: selectedId,
+    expectedVersion: preparedAggregate.aggregate_version,
+    ...review,
+    actorId: "USR-TEST-PRIME",
+    actorRole: "FINANCE_APPROVER",
+    policyVersion: preparedAggregate.policy_version,
+    reasonText: "Approve exact Arc Testnet proxy for this genuine source obligation; source payable remains outstanding.",
+  }, state.trustedKeys);
+  state.recordAuthorization({
+    approval_record: authorized.approvalRecord.record,
+    approval_record_hash: authorized.approvalRecord.approval_record_hash,
+    assurance_record: authorized.assuranceRecord.record,
+    assurance_hash: authorized.assuranceRecord.assurance_hash,
+    sealed_pae: authorized.sealed,
+  });
+  expect(state.getRecord(selectedId)).toEqual(source);
+  return { snapshot: state.exportSnapshot(), sealed: authorized.sealed, provider, selectedId };
+}
+
+function restoredWithCircle(snapshot: ReturnType<DemoState["exportSnapshot"]>, provider: ReturnType<typeof circleClient>) {
+  let state: DemoState;
+  const adapter = new ArcCircleProviderAdapter(provider.client, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
+  state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter);
+  return state;
+}
+
+describe("selected genuine obligation to Arc Testnet proxy integration", () => {
+  it("carries one genuine source identity through current LIVE_AI PAY, human assurance, cold PAE verification, and one provider submission", async () => {
+    const { snapshot, sealed, provider, selectedId } = await authorizedSnapshot();
+    const state = restoredWithCircle(snapshot, provider);
+    const source = state.getRecord(selectedId)!;
+    const proxy = state.getSettlementProxy(selectedId)!;
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    const packet = getCurrentSettlementProxyPacket(state, selectedId);
+
+    expect(state.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
+    expect(proxy.preflight.obligation_id).toBe(source.obligation_id);
+    expect(proxy.preflight.source_amount).toBe(source.amount);
+    expect(proxy.preflight.source_currency).toBe(source.currency);
+    expect(proxy.preflight.amount).toBe(aggregate.amount);
+    expect(proxy.preflight.classification).toBe("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.");
+    expect(aggregate.destination_ref).toBe(`ARC-TESTNET-SETTLEMENT-PROXY:${proxy.preflight.destination_wallet.id}`);
+    expect(aggregate.destination_ref).not.toBe((source as unknown as Record<string, unknown>).source_destination_reference_token);
+    expect(sealed.payload).toMatchObject({
+      organization_id: DEMO_ORGANIZATION_ID,
+      obligation_ids: [selectedId],
+      aggregate_version: String(aggregate.aggregate_version),
+      amount: proxy.preflight.amount,
+      atomic_amount: (BigInt(proxy.preflight.amount.split(".")[0]!) * 1_000_000n + BigInt(proxy.preflight.amount.split(".")[1]!)).toString(),
+      asset: "USDC",
+      network: "ARC_TESTNET",
+      source_wallet_ref: proxy.preflight.source_wallet.id,
+      destination_ref: aggregate.destination_ref,
+      destination_address: proxy.preflight.destination_wallet.address,
+      idempotency_key: expect.any(String),
+      evidence_hashes: expect.arrayContaining([proxy.preflight.evidence_sha256, source!.source_evidence[0]!.content_sha256]),
+      approval_evidence: [expect.objectContaining({ assessment_hash: expect.any(String), authorized_aggregate_version: String(aggregate.aggregate_version) })],
+      assurance_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(packet?.packet).toMatchObject({
+      organization_id: DEMO_ORGANIZATION_ID,
+      obligation_id: selectedId,
+      source_amount: source.amount,
+      source_currency: source.currency,
+      settlement_amount: proxy.preflight.amount,
+      source_identity_disclosure: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+    });
+
+    // Construction above restores only persisted public trust; this real verifier
+    // proves no authorization/signing cache is needed after cold restoration.
+    const execution = await state.worker.execute(sealed);
+    expect(execution.status).toBe("SETTLED");
+    expect(execution.obligation_id).toBe(selectedId);
+    expect(execution.atomic_amount).toBe((BigInt(proxy.preflight.amount.split(".")[0]!) * 1_000_000n + BigInt(proxy.preflight.amount.split(".")[1]!)).toString());
+    expect(execution.destination_address).toBe(proxy.preflight.destination_wallet.address);
+    expect(provider.createCount()).toBe(1);
+    expect(state.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
+    expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).state).toBe("RECONCILED");
+    expect((await state.worker.execute(sealed)).status).toBe("SETTLED");
+    expect(provider.createCount()).toBe(1);
+  });
+
+  it("blocks proxy preparation unless the current candidate is LIVE_AI PAY and the sole-candidate gate is satisfied", async () => {
+    const state = new DemoState();
+    const selectedId = selectCandidate(state);
+    assessEveryFrozenObligation(state, selectedId, "HOLD");
+    const hold = await runJ2aReadOnlyPreflight(circleClient().client, undefined, state.createSettlementProxyIntent(selectedId));
+    expect(hold.readiness).toBe("READY");
+    if (hold.readiness === "READY") expect(() => state.bindSettlementProxy(hold, 1)).toThrow(/LIVE_AI PAY/);
+
+    const fallbackState = new DemoState();
+    const fallbackSelectedId = selectCandidate(fallbackState);
+    assessEveryFrozenObligation(fallbackState, fallbackSelectedId, "PAY", "NOT_LIVE_AI");
+    const fallback = await runJ2aReadOnlyPreflight(circleClient().client, undefined, fallbackState.createSettlementProxyIntent(fallbackSelectedId));
+    expect(fallback.readiness).toBe("READY");
+    if (fallback.readiness === "READY") expect(() => fallbackState.bindSettlementProxy(fallback, 1)).toThrow(/LIVE_AI PAY/);
+
+    const twoPayState = new DemoState();
+    const soleCandidate = selectCandidate(twoPayState);
+    assessEveryFrozenObligation(twoPayState, soleCandidate);
+    const secondPay = twoPayState.liveUsageRecords.find((record) => record.obligation_id !== soleCandidate)!;
+    sealTestAssessment(twoPayState.store, DEMO_ORGANIZATION_ID, secondPay.obligation_id, 1, { provider_mode: "LIVE_AI", decision: "PAY" });
+    const twoPayPreflight = await runJ2aReadOnlyPreflight(circleClient().client, undefined, twoPayState.createSettlementProxyIntent(soleCandidate));
+    expect(twoPayPreflight.readiness).toBe("READY");
+    if (twoPayPreflight.readiness === "READY") expect(() => twoPayState.bindSettlementProxy(twoPayPreflight, 1)).toThrow(/existing sole-candidate gate selected/i);
+  });
+
+  it("blocks a destination change before the provider boundary", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const provider = circleClient();
+    const state = restoredWithCircle(snapshot, provider);
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    state.store.seed({ ...aggregate, destination_address: "0x0000000000000000000000000000000000000001" });
+    await expect(state.worker.execute(sealed)).rejects.toBeInstanceOf(ExecutionBlockedError);
+    expect(provider.createCount()).toBe(0);
+  });
+
+  it("blocks at the actual durable worker pre-submit CAS when another writer advances currentness", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const provider = circleClient();
+    const state = restoredWithCircle(snapshot, provider);
+    let durableRevision = 1;
+    const repository = {
+      compareAndSet: vi.fn(async (_namespace: string, expectedRevision: number) => {
+        if (expectedRevision !== durableRevision) throw new DemoStateConflictError();
+        durableRevision += 1; // model the durable namespace advancing before this worker's pre-submit write
+        throw new DemoStateConflictError();
+      }),
+    } as unknown as SupabaseDemoStateRepository;
+    state.attachRepository(repository, "identity-integration-cas", 1);
+    await expect(state.worker.execute(sealed)).rejects.toBeInstanceOf(DemoStateConflictError);
+    expect(provider.createCount()).toBe(0);
+    expect(state.worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("SUBMITTING");
+  });
+
+  it("recovers provider acceptance with a lost response by the same idempotency identity and never submits again", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const provider = circleClient({ loseCreateResponse: true });
+    const state = restoredWithCircle(snapshot, provider);
+    const first = await state.worker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(provider.createCount()).toBe(1);
+    const persisted = state.exportSnapshot();
+    const restarted = restoredWithCircle(persisted, provider);
+    const reconciled = await restarted.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
+    expect(reconciled.status).toBe("SETTLED");
+    expect(reconciled.idempotency_key).toBe(sealed.payload.idempotency_key);
+    expect(provider.createCount()).toBe(1);
+    expect(provider.client.listTransactions).toHaveBeenCalledWith(expect.objectContaining({ walletIds: [J2A_DEMO_SOURCE.id] }));
+    expect(deriveJ2aCircleRefId(sealed.payload.idempotency_key)).toBe((provider.client.createTransaction as ReturnType<typeof vi.fn>).mock.calls[0][0].refId);
+    expect(restarted.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
+  });
+});

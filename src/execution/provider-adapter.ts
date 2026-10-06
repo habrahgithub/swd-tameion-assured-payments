@@ -5,10 +5,12 @@ import {
   deriveJ2aCircleIdempotencyUuid,
   deriveJ2aCircleRefId,
   hashJ2aBusinessPaymentInstruction,
+  hashJ2aPreflightEvidence,
   J2A_DEMO_DESTINATION,
   J2A_DEMO_SOURCE,
   J2A_MAX_NETWORK_FEE,
   J2A_TRANSFER_AMOUNT,
+  type GenuineSettlementProxyIntent,
   j2aArcTestnetExplorerReference,
   runJ2aReadOnlyPreflight,
   type J2aPreflightResult,
@@ -126,6 +128,7 @@ function statusForCircleTransaction(
   tokenDecimals: number,
   providerRef: string,
   expectedIdempotencyKey?: string,
+  authorizedPreflight?: Extract<J2aPreflightResult, { readiness: "READY" }>,
 ): StatusResult {
   const parsed = circleTransactionSchema.safeParse(value);
   if (!parsed.success || !parsed.data.data.transaction) return { status: "UNKNOWN" };
@@ -158,11 +161,13 @@ function statusForCircleTransaction(
     const settlementScale = 10n ** BigInt(tokenDecimals - USDC_DECIMALS);
     if (providerAmount % settlementScale === 0n) evidence.atomic_amount = (providerAmount / settlementScale).toString(10);
   }
-  const expectedProviderAmount = decimalToAtomicAtScale(J2A_TRANSFER_AMOUNT, tokenDecimals);
+  const expectedProviderAmount = decimalToAtomicAtScale(authorizedPreflight?.amount ?? J2A_TRANSFER_AMOUNT, tokenDecimals);
   const amountMatchesIntent = providerAmount !== null && expectedProviderAmount !== null && providerAmount === expectedProviderAmount;
 
+  const expectedSource = authorizedPreflight?.source_wallet.id ?? J2A_DEMO_SOURCE.id;
+  const expectedDestination = authorizedPreflight?.destination_wallet.address ?? J2A_DEMO_DESTINATION.address;
   const exactIdentity = tx.id === providerRef && tx.blockchain === "ARC-TESTNET" &&
-    tx.walletId === J2A_DEMO_SOURCE.id && tx.destinationAddress?.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
+    tx.walletId === expectedSource && tx.destinationAddress?.toLowerCase() === expectedDestination.toLowerCase() &&
     tx.tokenId === tokenId && amountMatchesIntent &&
     tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
   if (!exactIdentity) return { status: "UNKNOWN", ...evidence };
@@ -172,7 +177,7 @@ function statusForCircleTransaction(
   try {
     if (!fee) return { status: "UNKNOWN", ...evidence };
     const feeAtomic = decimalToAtomicAtScale(fee, tokenDecimals);
-    const maxFeeAtomic = decimalToAtomicAtScale(J2A_MAX_NETWORK_FEE, tokenDecimals);
+    const maxFeeAtomic = decimalToAtomicAtScale(authorizedPreflight?.max_network_fee ?? J2A_MAX_NETWORK_FEE, tokenDecimals);
     if (feeAtomic === null || maxFeeAtomic === null || feeAtomic > maxFeeAtomic) return { status: "UNKNOWN", ...evidence };
   } catch {
     return { status: "UNKNOWN", ...evidence };
@@ -185,7 +190,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
 
   constructor(
     private readonly suppliedClient?: J2aCircleClient,
-    private readonly authorizedPreflight?: () => J2aPreflightResult | null,
+    private readonly authorizedPreflight?: (idempotencyKey: string) => J2aPreflightResult | null,
   ) {}
 
   private client(): J2aCircleClient {
@@ -197,20 +202,39 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
   }
 
   async submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult> {
-    if (params.network !== "ARC_TESTNET" || params.asset !== "USDC" ||
-        params.sourceWalletRef !== J2A_DEMO_SOURCE.id ||
-        params.destinationAddress.toLowerCase() !== J2A_DEMO_DESTINATION.address.toLowerCase() ||
-        params.atomicAmount !== "5000000" || atomicToDecimal(params.atomicAmount, USDC_DECIMALS) !== J2A_TRANSFER_AMOUNT) {
-      throw new ProviderNotConfiguredError("Circle adapter accepts only the fixed J2A Arc Testnet demonstration intent.");
+    const authorized = this.authorizedPreflight?.(params.idempotencyKey);
+    if (!authorized || authorized.readiness !== "READY" || params.network !== "ARC_TESTNET" || params.asset !== "USDC" ||
+        params.sourceWalletRef !== authorized.source_wallet.id ||
+        params.destinationAddress.toLowerCase() !== authorized.destination_wallet.address.toLowerCase() ||
+        params.atomicAmount !== String(decimalToAtomicAtScale(authorized.amount, USDC_DECIMALS)) ||
+        atomicToDecimal(params.atomicAmount, USDC_DECIMALS) !== authorized.amount) {
+      throw new ProviderNotConfiguredError("Circle adapter accepts only the current PAE-bound Arc Testnet settlement proxy intent.");
+    }
+    if (hashJ2aPreflightEvidence(authorized as unknown as Record<string, unknown>) !== authorized.evidence_sha256) {
+      throw new ProviderPreSubmitBlockedError("Persisted Arc preflight evidence no longer matches its authorized digest.");
     }
     const client = this.client();
-    const preflight = await runJ2aReadOnlyPreflight(client);
+    const commercial = authorized.business_payment_instruction.commercial;
+    const intent: GenuineSettlementProxyIntent = {
+      organization_id: authorized.organization_id,
+      obligation_id: authorized.obligation_id,
+      source_amount: authorized.source_amount,
+      source_currency: authorized.source_currency,
+      settlement_amount: authorized.amount,
+      source_evidence_ids: authorized.source_evidence_ids,
+      classification: authorized.classification,
+      invoice_reference: commercial.invoice_reference,
+      invoice_date: commercial.invoice_date,
+      effective_due_date: commercial.effective_due_date,
+      payment_basis: commercial.payment_basis,
+      particulars: commercial.particulars,
+    };
+    const preflight = await runJ2aReadOnlyPreflight(client, undefined, intent);
     if (preflight.readiness !== "READY" || preflight.source_wallet.id !== params.sourceWalletRef ||
-        preflight.destination_wallet.address.toLowerCase() !== params.destinationAddress.toLowerCase() || preflight.amount !== J2A_TRANSFER_AMOUNT) {
-      throw new ProviderPreSubmitBlockedError("Fresh Circle preflight did not confirm the fixed J2A transfer intent.");
+        preflight.destination_wallet.address.toLowerCase() !== params.destinationAddress.toLowerCase() || preflight.amount !== authorized.amount) {
+      throw new ProviderPreSubmitBlockedError("Fresh Circle preflight did not confirm the PAE-bound genuine-obligation proxy intent.");
     }
-    const authorized = this.authorizedPreflight?.();
-    if (!authorized || authorized.readiness !== "READY" ||
+    if (
         preflight.wallet_set_id !== authorized.wallet_set_id ||
         preflight.beneficiary_id !== authorized.beneficiary_id ||
         preflight.source_wallet.wallet_set_id !== authorized.source_wallet.wallet_set_id ||
@@ -225,10 +249,10 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
       throw new ProviderPreSubmitBlockedError("Fresh Circle token or fee evidence differs from the Prime-reviewed J2A intent.");
     }
     const response = await client.createTransaction({
-      amount: [J2A_TRANSFER_AMOUNT],
-      destinationAddress: J2A_DEMO_DESTINATION.address,
+      amount: [authorized.amount],
+      destinationAddress: authorized.destination_wallet.address,
       tokenId: preflight.provider_token.id,
-      walletId: J2A_DEMO_SOURCE.id,
+      walletId: authorized.source_wallet.id,
       fee: { type: "level", config: { feeLevel: "MEDIUM" } },
       idempotencyKey: deriveJ2aCircleIdempotencyUuid(params.idempotencyKey),
       refId: deriveJ2aCircleRefId(params.idempotencyKey),
@@ -239,8 +263,10 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
   }
 
   async getStatus(providerRef: string, idempotencyKey?: string): Promise<StatusResult> {
+    const authorized = idempotencyKey ? this.authorizedPreflight?.(idempotencyKey) : null;
+    if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     const client = this.client();
-    const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: J2A_DEMO_SOURCE.id, includeAll: true }));
+    const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: authorized.source_wallet.id, includeAll: true }));
     if (!balances.success) return { status: "UNKNOWN" };
     const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) =>
       typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&
@@ -253,9 +279,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         (nativeUsdcToken.tokenAddress !== undefined && nativeUsdcToken.tokenAddress !== null && typeof nativeUsdcToken.tokenAddress !== "string")) {
       return { status: "UNKNOWN" };
     }
-    const reviewedPreflight = this.authorizedPreflight?.();
-    if (reviewedPreflight?.readiness === "READY" &&
-        (nativeUsdcToken.id !== reviewedPreflight.provider_token.id || nativeUsdcToken.decimals !== reviewedPreflight.provider_token.decimals)) {
+    if (nativeUsdcToken.id !== authorized.provider_token.id || nativeUsdcToken.decimals !== authorized.provider_token.decimals) {
       return { status: "UNKNOWN" };
     }
     return statusForCircleTransaction(
@@ -264,12 +288,15 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
       nativeUsdcToken.decimals,
       providerRef,
       idempotencyKey,
+      authorized,
     );
   }
 
   async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
+    const authorized = this.authorizedPreflight?.(idempotencyKey);
+    if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     const response = listedTransactionsSchema.safeParse(await this.client().listTransactions({
-      txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
+      txType: "OUTBOUND", walletIds: [authorized.source_wallet.id], pageSize: 50, order: "DESC",
     }));
     if (!response.success) return { status: "UNKNOWN" };
     const found = response.data.data.transactions.filter((value) => {

@@ -9,9 +9,12 @@ import type { StatusResult } from "../execution/provider-adapter";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import { ArcCircleProviderAdapter } from "../execution/provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
+import { selectSoleCandidate } from "../agent/finance-agent";
 import {
   buildJ2aDemoAggregate,
+  hashJ2aPreflightEvidence,
   j2aPreflightResultSchema,
+  type GenuineSettlementProxyIntent,
   type J2aPreflightResult,
 } from "../demo/real-testnet-payment";
 import { adaptDirectEvidenceObligation, type CanonicalPaymentObligation } from "../domain/payment-control-boundary";
@@ -80,6 +83,13 @@ export interface DemoStateSnapshot {
   trusted_keys: TrustedKeyEntry[];
   execution_ledger: ExecutionRecord[];
   provider_adapter: FakeProviderAdapterSnapshot;
+  settlement_proxies?: StoredSettlementProxy[];
+}
+
+export interface StoredSettlementProxy {
+  preflight: Extract<J2aPreflightResult, { readiness: "READY" }>;
+  source_aggregate_version: number;
+  mapped_aggregate_version: number;
 }
 
 export interface AssessmentOperation {
@@ -245,6 +255,26 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
       ) throw new Error("Persisted assessment operation does not match its sealed assessment.");
     }
   }
+  const rawSettlementProxies = snapshot.settlement_proxies ?? [];
+  if (!Array.isArray(rawSettlementProxies)) throw new Error("Malformed persisted settlement-proxy evidence.");
+  const settlementProxies = rawSettlementProxies.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted settlement-proxy evidence.");
+    const item = value as Record<string, unknown>;
+    const preflight = j2aPreflightResultSchema.parse(item.preflight);
+    if (preflight.readiness !== "READY" || preflight.organization_id !== DEMO_ORGANIZATION_ID ||
+        !Number.isSafeInteger(item.source_aggregate_version) || (item.source_aggregate_version as number) < 1 ||
+        !Number.isSafeInteger(item.mapped_aggregate_version) || (item.mapped_aggregate_version as number) !== (item.source_aggregate_version as number) + 1) {
+      throw new Error("Persisted settlement-proxy identity or aggregate binding is invalid.");
+    }
+    return {
+      preflight,
+      source_aggregate_version: item.source_aggregate_version as number,
+      mapped_aggregate_version: item.mapped_aggregate_version as number,
+    };
+  });
+  if (new Set(settlementProxies.map(({ preflight }) => preflight.obligation_id)).size !== settlementProxies.length) {
+    throw new Error("Persisted settlement-proxy evidence contains duplicate obligation identities.");
+  }
   return {
     schema_version: 2,
     authority: snapshot.authority as DemoStateSnapshot["authority"],
@@ -254,6 +284,7 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
     trusted_keys: trustedKeys,
     execution_ledger: executionLedger,
     provider_adapter: providerAdapter,
+    settlement_proxies: settlementProxies,
   };
 }
 
@@ -349,14 +380,16 @@ export class DemoState {
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   readonly adapter: FakeProviderAdapter;
+  readonly providerAdapter: ProviderAdapter;
   readonly liveUsageRecords: LiveUsageObligationRecord[];
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
   private readonly authorizationHistory: DemoAuthorizationArtifacts[];
   private readonly assessmentOperations: Map<string, AssessmentOperation>;
+  private readonly settlementProxies: Map<string, StoredSettlementProxy>;
   private repository?: SupabaseDemoStateRepository;
   private revision?: number;
 
-  constructor(snapshot?: DemoStateSnapshot, repository?: SupabaseDemoStateRepository, revision?: number) {
+  constructor(snapshot?: DemoStateSnapshot, repository?: SupabaseDemoStateRepository, revision?: number, adapter?: ProviderAdapter) {
     this.liveUsageRecords = loadLiveUsageSet();
     this.repository = repository;
     this.revision = revision;
@@ -368,7 +401,9 @@ export class DemoState {
     this.assessmentOperations = new Map(
       (snapshot?.assessment_operations ?? []).map((operation) => [operation.idempotency_key, { ...operation }]),
     );
-    this.worker = new ExecutionWorker(this.store, this.adapter, () => this.flush(), this.trustedKeys);
+    this.settlementProxies = new Map((snapshot?.settlement_proxies ?? []).map((item) => [item.preflight.obligation_id, structuredClone(item)]));
+    this.providerAdapter = adapter ?? this.adapter;
+    this.worker = new ExecutionWorker(this.store, this.providerAdapter, () => this.flush(), this.trustedKeys);
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
 
     if (!snapshot) for (const record of this.liveUsageRecords) {
@@ -428,6 +463,123 @@ export class DemoState {
   getCanonicalObligation(obligationId: string): CanonicalPaymentObligation | undefined {
     const record = this.getRecord(obligationId);
     return record ? adaptDirectEvidenceObligation(record) : undefined;
+  }
+
+  getSolePayCandidateId(): string | null {
+    const decisions = this.liveUsageRecords.map((record) => this.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, record.obligation_id));
+    if (decisions.some((assessment) => !assessment)) return null;
+    const selection = selectSoleCandidate(
+      decisions.map((assessment) => ({ obligation_id: assessment!.record.obligation_id, decision: assessment!.record.decision })),
+      Object.fromEntries(this.liveUsageRecords.map((record) => [record.obligation_id, record.effective_due_date ?? null])),
+    );
+    return selection.selected_obligation_id;
+  }
+
+  createSettlementProxyIntent(obligationId: string): GenuineSettlementProxyIntent {
+    const record = this.getRecord(obligationId);
+    if (!record) throw new Error("Selected ID is not in the frozen genuine obligation set.");
+    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
+    const conversion = convertSourceToSettlement(record.amount, record.currency);
+    if (!record.issue_date || !record.effective_due_date || !record.effective_due_date_basis || !record.commercial_terms) {
+      throw new Error("Selected source record lacks the dated commercial facts required for a truthful settlement proxy instruction.");
+    }
+    if (aggregate.source_amount !== record.amount || aggregate.source_currency !== record.currency || aggregate.amount !== conversion.settlementAmount) {
+      throw new Error("Source amount or settlement conversion is stale; refresh the selected obligation before proxy preflight.");
+    }
+    return {
+      organization_id: DEMO_ORGANIZATION_ID,
+      obligation_id: obligationId,
+      source_amount: record.amount,
+      source_currency: record.currency,
+      settlement_amount: conversion.settlementAmount,
+      source_evidence_ids: record.source_evidence.map((evidence) => evidence.evidence_id),
+      classification: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+      invoice_reference: obligationId,
+      invoice_date: record.issue_date,
+      effective_due_date: record.effective_due_date,
+      payment_basis: record.effective_due_date_basis,
+      particulars: record.commercial_terms,
+    };
+  }
+
+  getSettlementProxy(obligationId: string): StoredSettlementProxy | undefined {
+    const found = this.settlementProxies.get(obligationId);
+    return found ? structuredClone(found) : undefined;
+  }
+
+  getSettlementProxyByIdempotencyKey(idempotencyKey: string): StoredSettlementProxy | undefined {
+    for (const sealed of this.sealedPaeByObligation.values()) {
+      if (sealed.payload.idempotency_key === idempotencyKey) return this.getSettlementProxy(sealed.payload.obligation_ids[0]);
+    }
+    return undefined;
+  }
+
+  bindSettlementProxy(
+    preflight: Extract<J2aPreflightResult, { readiness: "READY" }>,
+    expectedVersion: number,
+  ): StoredSettlementProxy {
+    const intent = this.createSettlementProxyIntent(preflight.obligation_id);
+    const current = this.store.get(DEMO_ORGANIZATION_ID, preflight.obligation_id);
+    if (current.aggregate_version !== expectedVersion) throw new Error("Settlement proxy preflight is stale; refresh the selected aggregate version.");
+    if (preflight.organization_id !== DEMO_ORGANIZATION_ID || preflight.profile !== "GENUINE_OBLIGATION_ARC_TESTNET_PROXY" ||
+        preflight.source_amount !== intent.source_amount || preflight.source_currency !== intent.source_currency ||
+        preflight.amount !== intent.settlement_amount || preflight.source_evidence_ids.join("\0") !== intent.source_evidence_ids.join("\0") ||
+        preflight.business_payment_instruction.payer.organization_id !== DEMO_ORGANIZATION_ID ||
+        preflight.business_payment_instruction.commercial.obligation_id !== preflight.obligation_id ||
+        preflight.business_payment_instruction.commercial.source_amount !== intent.source_amount ||
+        preflight.business_payment_instruction.commercial.source_currency !== intent.source_currency ||
+        preflight.business_payment_instruction.commercial.settlement_amount !== intent.settlement_amount ||
+        preflight.business_payment_instruction.commercial.source_evidence_ids?.join("\0") !== intent.source_evidence_ids.join("\0") ||
+        hashJ2aPreflightEvidence(preflight as unknown as Record<string, unknown>) !== preflight.evidence_sha256) {
+      throw new Error("Arc Testnet proxy preflight does not bind the selected genuine source identity and derived amount.");
+    }
+    if (this.settlementProxies.has(preflight.obligation_id) || this.hasLivePaeAuthority(preflight.obligation_id)) {
+      throw new Error("A proxy intent or authorization already exists for this source obligation; refresh and reconcile its current state.");
+    }
+    const assessment = this.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, preflight.obligation_id);
+    if (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
+        assessment.record.missing_evidence.length !== 0 || !assessment.record.race ||
+        assessment.record.race.result.decision !== "PAY" || assessment.record.race.result.validated_findings.length !== 0 ||
+        assessment.record.race.remediation.length !== 0) {
+      throw new Error("Only a current LIVE_AI PAY assessment with no findings or missing evidence can prepare an Arc Testnet proxy.");
+    }
+    const unassessed = this.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
+    if (unassessed) throw new Error(`Assess every frozen genuine obligation before selecting a sole PAY candidate (${unassessed} is not current).`);
+    const otherCandidate = this.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, preflight.obligation_id);
+    if (otherCandidate) throw new Error(`Another genuine obligation is already the committed sole candidate (${otherCandidate}).`);
+    const solePayCandidate = this.getSolePayCandidateId();
+    if (solePayCandidate !== preflight.obligation_id) {
+      throw new Error(`The existing sole-candidate gate selected ${solePayCandidate ?? "no obligation"}; the selected source is not eligible for proxy preparation.`);
+    }
+
+    const versioned = this.store.applyMaterialChange(DEMO_ORGANIZATION_ID, preflight.obligation_id, expectedVersion, {
+      counterparty_id: preflight.beneficiary_id,
+      counterparty_version: current.counterparty_version + 1,
+      destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${preflight.destination_wallet.id}`,
+      destination_version: current.destination_version + 1,
+      destination_address: preflight.destination_wallet.address,
+      destination_verification_status: "VERIFIED",
+      destination_operational_status: "ACTIVE",
+      source_wallet_ref: preflight.source_wallet.id,
+      source_wallet_version: current.source_wallet_version + 1,
+      source_wallet_status: "ACTIVE",
+    });
+    const sourceEvidenceHashes = this.getRecord(preflight.obligation_id)!.source_evidence
+      .map((evidence) => evidence.content_sha256)
+      .filter((hash): hash is string => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash));
+    const mapped = {
+      ...versioned,
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE" as const,
+      evidence_hashes: [...new Set([...current.evidence_hashes, ...sourceEvidenceHashes, preflight.evidence_sha256])].sort(),
+    };
+    this.store.seed(mapped);
+    const stored: StoredSettlementProxy = {
+      preflight: structuredClone(preflight),
+      source_aggregate_version: expectedVersion,
+      mapped_aggregate_version: versioned.aggregate_version,
+    };
+    this.settlementProxies.set(preflight.obligation_id, stored);
+    return structuredClone(stored);
   }
 
   getAssessmentOperation(idempotencyKey: string): AssessmentOperation | undefined {
@@ -530,6 +682,12 @@ export class DemoState {
     return this.sealedPaeByObligation.get(obligationId);
   }
 
+  getAuthorizationArtifacts(obligationId: string): DemoAuthorizationArtifacts | undefined {
+    return [...this.authorizationHistory].reverse().find((entry) =>
+      entry.sealed_pae.payload.organization_id === DEMO_ORGANIZATION_ID &&
+      entry.sealed_pae.payload.obligation_ids.length === 1 && entry.sealed_pae.payload.obligation_ids[0] === obligationId);
+  }
+
   recordAuthorization(artifacts: DemoAuthorizationArtifacts): void {
     this.authorizationHistory.push(authorizationArtifactsParser(artifacts));
     this.setSealedPae(artifacts.sealed_pae.payload.obligation_ids[0], artifacts.sealed_pae);
@@ -553,6 +711,7 @@ export class DemoState {
       trusted_keys: this.trustedKeys.export(),
       execution_ledger: this.worker.exportSnapshot(),
       provider_adapter: this.adapter.exportSnapshot(),
+      settlement_proxies: [...this.settlementProxies.values()].map((item) => structuredClone(item)),
     };
   }
 
@@ -774,9 +933,22 @@ async function createPersistentDemoState(url: string, serviceRoleKey: string): P
   const repository = new SupabaseDemoStateRepository(url, serviceRoleKey);
   const initial = new DemoState();
   const stored = await repository.loadOrSeed(namespace, initial.exportSnapshot() as unknown as Record<string, unknown>);
-  const state = new DemoState(parseDemoStateSnapshot(stored.snapshot), repository, stored.revision);
+  const state = createRuntimeDemoState(parseDemoStateSnapshot(stored.snapshot), repository, stored.revision);
   state.attachRepository(repository, namespace, stored.revision);
   await migrateLegacyTrustedKeys(stored.snapshot, state);
+  return state;
+}
+
+function createRuntimeDemoState(
+  snapshot?: DemoStateSnapshot,
+  repository?: SupabaseDemoStateRepository,
+  revision?: number,
+): DemoState {
+  if (!process.env.CIRCLE_API_KEY || !process.env.CIRCLE_ENTITY_SECRET) return new DemoState(snapshot, repository, revision);
+  let state: DemoState;
+  const adapter = new ArcCircleProviderAdapter(undefined, (idempotencyKey) =>
+    state?.getSettlementProxyByIdempotencyKey(idempotencyKey)?.preflight ?? null);
+  state = new DemoState(snapshot, repository, revision, adapter);
   return state;
 }
 
@@ -794,7 +966,7 @@ export async function getDemoState(): Promise<DemoState> {
   }
 
   if (!globalThis.__tameionDemoState) {
-    globalThis.__tameionDemoState = new DemoState();
+    globalThis.__tameionDemoState = createRuntimeDemoState();
   }
   return globalThis.__tameionDemoState;
 }

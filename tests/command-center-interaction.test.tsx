@@ -32,7 +32,7 @@ function obligation(id: string, assessed = false, currency: "USD" | "AED" = "USD
   };
 }
 
-function detail(id: string) {
+function detail(id: string): Record<string, any> {
   return {
     truth: {
       source_truth: {
@@ -93,11 +93,41 @@ function detail(id: string) {
     demo_arc_trust_simulated: false,
     pae_sealed: false,
     execution: null,
+    settlement_proxy: null,
+    source_settlement_disclosure: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+    source_payable_state: "OUTSTANDING",
+    execution_packet: null,
+    execution_gate: "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
     execution_kill_switched: false,
   };
 }
 
-function assessedDetail(id: string, decision: "PAY" | "HOLD" | "ESCALATE") {
+function proxyPrepared(value: ReturnType<typeof detail>) {
+  value.settlement_proxy = {
+    source_aggregate_version: 1,
+    mapped_aggregate_version: value.aggregate.aggregate_version,
+    preflight: {
+      profile: "GENUINE_OBLIGATION_ARC_TESTNET_PROXY",
+      organization_id: "ORG-DEMO-001",
+      obligation_id: value.record.obligation_id,
+      source_amount: value.record.amount,
+      source_currency: value.record.currency,
+      amount: value.aggregate.amount,
+      asset: "USDC",
+      network: "ARC_TESTNET",
+      source_wallet: { id: "testnet-source-id", address: "0x1111111111111111111111111111111111111111" },
+      destination_wallet: { id: "testnet-proxy-id", address: "0x2222222222222222222222222222222222222222", name: "Arc Testnet settlement proxy" },
+      captured_at: "2026-10-06T18:00:00.000Z",
+      evidence_sha256: "b".repeat(64),
+      max_network_fee: "0.002000",
+      estimated_network_fee: "0.001000",
+      max_total_debit: `${value.aggregate.amount}`,
+    },
+  };
+  return value;
+}
+
+function assessedDetail(id: string, decision: "PAY" | "HOLD" | "ESCALATE"): Record<string, any> {
   const finding = decision === "PAY" ? null : {
     code: decision === "HOLD" ? "SOURCE_EVIDENCE_MISSING" : "OTHER_REQUIRES_HUMAN_REVIEW",
     severity: decision,
@@ -468,7 +498,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: /OBL-UNSEALED/ }));
     await screen.findByRole("heading", { name: "OBL-UNSEALED" });
     expect(await screen.findByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Authorization locked — prepare the testnet proxy/ }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: /OBL-SEALED/ }));
     await screen.findByRole("heading", { name: "OBL-SEALED" });
@@ -531,7 +561,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(primary()[0]);
     await screen.findByText(/Blocker: payment-route assurance is not ready/);
     expect(primary()).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: "Authorize selected obligation" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Reassess current PAY recommendation (optional)" })).toBeTruthy();
   });
 
@@ -664,7 +694,7 @@ describe("Command Center mounted Operational Report", () => {
       "Review the current PAY assessment before authorization.",
     ]);
     expect(prerequisites.textContent).toMatch(/product-trust provenance is/i);
-    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /Authorization locked — prepare the testnet proxy/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Payment-route assurance is not ready: Destination verification is pending verification/)).toBeTruthy();
@@ -672,7 +702,7 @@ describe("Command Center mounted Operational Report", () => {
   });
 
   it("shows the current amount, destination, FX and authority boundary before an approval control can enable", async () => {
-    const pay = assessedDetail("OBL-EXACT-INTENT", "PAY");
+    const pay = proxyPrepared(assessedDetail("OBL-EXACT-INTENT", "PAY"));
     pay.aggregate.destination_verification_status = "VERIFIED";
     pay.aggregate.destination_operational_status = "ACTIVE";
     pay.aggregate.source_wallet_status = "ACTIVE";
@@ -719,7 +749,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(/Authorization remains locked/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
 
-    const authorize = screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement;
+    const authorize = screen.getByRole("button", { name: /Authorization locked — prepare the testnet proxy/ }) as HTMLButtonElement;
     expect(authorize.disabled).toBe(true);
     expect(screen.getByText(/A current PAY assessment is required/)).toBeTruthy();
     fireEvent.click(authorize);
@@ -728,7 +758,7 @@ describe("Command Center mounted Operational Report", () => {
 
   it("allows only a current reviewed PAY assessment to become authorization eligible", async () => {
     const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
-    const pay = assessedDetail("OBL-A", "PAY");
+    const pay = proxyPrepared(assessedDetail("OBL-A", "PAY"));
     pay.aggregate.destination_verification_status = "VERIFIED";
     pay.aggregate.destination_operational_status = "ACTIVE";
     pay.aggregate.source_wallet_status = "ACTIVE";

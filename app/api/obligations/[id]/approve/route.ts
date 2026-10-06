@@ -24,6 +24,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
+    const aggregateBeforeApproval = state.store.get(DEMO_ORGANIZATION_ID, id);
+    const proxy = state.getSettlementProxy(id);
+    if (!proxy || proxy.mapped_aggregate_version !== aggregateBeforeApproval.aggregate_version ||
+        proxy.preflight.organization_id !== DEMO_ORGANIZATION_ID || proxy.preflight.obligation_id !== id ||
+        proxy.preflight.amount !== aggregateBeforeApproval.amount ||
+        proxy.preflight.source_amount !== aggregateBeforeApproval.source_amount ||
+        proxy.preflight.source_currency !== aggregateBeforeApproval.source_currency ||
+        !aggregateBeforeApproval.evidence_hashes.includes(proxy.preflight.evidence_sha256) ||
+        aggregateBeforeApproval.destination_ref !== `ARC-TESTNET-SETTLEMENT-PROXY:${proxy.preflight.destination_wallet.id}` ||
+        aggregateBeforeApproval.destination_address.toLowerCase() !== proxy.preflight.destination_wallet.address.toLowerCase()) {
+      return NextResponse.json({ error: "A current selected-source Arc Testnet settlement proxy is required before authorization." }, { status: 409 });
+    }
     const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,
@@ -33,7 +45,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       actorId: body.actor_id ?? "USR-DEMO-OPERATOR",
       actorRole: "FINANCE_APPROVER",
       policyVersion: "POLICY-P0-1",
-      reasonText: body.reason_text ?? `Reviewed and approved ${id} for a testnet-fixture Arc payment.`,
+      reasonText: body.reason_text ?? `Reviewed genuine source obligation ${id} for a distinct Arc Testnet settlement proxy; the real-world payable remains outstanding.`,
     }, state.trustedKeys);
     state.recordAuthorization({
       approval_record: approvalRecord.record,

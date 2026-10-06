@@ -96,6 +96,50 @@ describe("J2A real Arc Testnet demo preflight", () => {
     });
   });
 
+  it("derives a genuine obligation proxy intent from the selected source identity and amount", async () => {
+    const api = client({
+      getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
+        amount: "30.000000",
+        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true, tokenAddress: null },
+      }] } })),
+    });
+    const result = await runJ2aReadOnlyPreflight(api, () => new Date(capturedAt), {
+      organization_id: "ORG-DEMO-001",
+      obligation_id: "OBL-J0C-002",
+      source_amount: "21.00",
+      source_currency: "USD",
+      settlement_amount: "21.000000",
+      source_evidence_ids: ["EVID-J0C-002-A"],
+      classification: "GENUINE BUSINESS OBLIGATION · ARC TESTNET SETTLEMENT PROXY",
+      invoice_reference: "INV-J0C-002",
+      invoice_date: "2026-08-14",
+      effective_due_date: "2026-08-14",
+      payment_basis: "INVOICE_DATE_CASH_TERM",
+      particulars: "Monthly AI software subscription.",
+    });
+
+    expect(result).toMatchObject({
+      readiness: "READY",
+      organization_id: "ORG-DEMO-001",
+      obligation_id: "OBL-J0C-002",
+      source_amount: "21.00",
+      source_currency: "USD",
+      amount: "21.000000",
+      classification: "GENUINE BUSINESS OBLIGATION · ARC TESTNET SETTLEMENT PROXY",
+      source_wallet: { id: J2A_DEMO_SOURCE.id },
+      destination_wallet: { id: J2A_DEMO_DESTINATION.id },
+    });
+    if (result.readiness !== "READY") throw new Error("expected ready proxy preflight");
+    expect(result.business_payment_instruction.commercial).toMatchObject({
+      obligation_id: "OBL-J0C-002",
+      source_amount: "21.00",
+      source_currency: "USD",
+      settlement_amount: "21.000000",
+      source_evidence_ids: ["EVID-J0C-002-A"],
+    });
+    expect(api.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({ amount: ["21.000000"] }));
+  });
+
   it("uses Circle's provider-reported native Arc USDC precision while retaining the fixed six-place demo amount", async () => {
     const api = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
@@ -261,7 +305,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
       asset: "USDC",
       network: "ARC_TESTNET",
       product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
-      destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+      destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${J2A_DEMO_DESTINATION.id}`,
       destination_address: J2A_DEMO_DESTINATION.address,
       source_wallet_ref: J2A_DEMO_SOURCE.id,
       evidence_hashes: [ready.evidence_sha256],
@@ -283,7 +327,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
         beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
         name: J2A_DEMO_DESTINATION.name,
         wallet_id: J2A_DEMO_DESTINATION.id,
-        destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+        destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${J2A_DEMO_DESTINATION.id}`,
         wallet_address: J2A_DEMO_DESTINATION.address,
         provider_wallet_status: "LIVE",
         verification_status: "VERIFIED",
@@ -352,10 +396,10 @@ describe("J2A real Arc Testnet demo preflight", () => {
         },
         beneficiary: {
           beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
-          display_name: "Tameion Test Counterparty",
+          display_name: "Arc Testnet settlement proxy",
           business_postal_address: {
             status: "NOT_APPLICABLE_TEST_COUNTERPARTY",
-            statement: "No real postal address applies to the synthetic non-economic test counterparty.",
+            statement: "This Arc Testnet proxy recipient is not the vendor destination in the source obligation.",
             classification: "SYNTHETIC_DEMO_METADATA",
           },
         },
@@ -400,7 +444,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
       beneficiary: {
         beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
         wallet_id: J2A_DEMO_DESTINATION.id,
-        destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+        destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${J2A_DEMO_DESTINATION.id}`,
         wallet_address: J2A_DEMO_DESTINATION.address,
         verification_status: "VERIFIED",
         operational_status: "ACTIVE",

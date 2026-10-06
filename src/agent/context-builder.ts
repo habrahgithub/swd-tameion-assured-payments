@@ -19,7 +19,7 @@ export interface LiveUsageObligationRecord {
   state_at_event_baseline: "OUTSTANDING";
   business_purpose_confirmed: boolean;
   commercial_terms: string;
-  source_evidence: Array<{ evidence_id: string }>;
+  source_evidence: Array<{ evidence_id: string; content_sha256?: string }>;
   candidate_readiness: {
     arc_product_destination_status: string;
   };

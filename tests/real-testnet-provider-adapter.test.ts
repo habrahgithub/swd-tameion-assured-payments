@@ -35,6 +35,12 @@ function createClient(overrides: Partial<J2aCircleClient> = {}): J2aCircleClient
   };
 }
 
+async function statusAdapter(api: J2aCircleClient) {
+  const authorized = await runJ2aReadOnlyPreflight(api);
+  if (authorized.readiness !== "READY") throw new Error("expected ready status identity");
+  return new ArcCircleProviderAdapter(api, () => authorized);
+}
+
 describe("Arc Circle provider adapter for J2A", () => {
   it("submits only the fixed intent when fresh token and fee match the authorized preflight", async () => {
     const api = createClient();
@@ -221,8 +227,8 @@ describe("Arc Circle provider adapter for J2A", () => {
 
   it("keeps in-flight Circle state pending and reconciles with one read-only transaction lookup", async () => {
     const api = createClient();
-    const adapter = new ArcCircleProviderAdapter(api);
-    expect(await adapter.getStatus("circle-tx-1")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
+    const adapter = await statusAdapter(api);
+    expect(await adapter.getStatus("circle-tx-1", "exact-demo-key")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
     expect(api.getTransaction).toHaveBeenCalledWith({ id: "circle-tx-1" });
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -235,7 +241,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       txHash: "0xabc123", networkFee: "0.001000", createDate: "2026-10-04T10:00:00.000Z",
       updateDate: "2026-10-04T10:01:00.000Z",
     } } })) });
-    const adapter = new ArcCircleProviderAdapter(api);
+    const adapter = await statusAdapter(api);
     const result = await adapter.getStatus("circle-tx-1", "exact-demo-key");
     expect(result).toMatchObject({
       status: "CONFIRMED", transaction_id: "circle-tx-1", transaction_state: "COMPLETE",
@@ -266,7 +272,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       } } })),
     });
 
-    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
 
     expect(result).toMatchObject({
       status: "CONFIRMED",
@@ -301,7 +307,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       amounts: ["5.000000"], tokenId: "native-arc-usdc", operation: "TRANSFER", refId: deriveJ2aCircleRefId("exact-demo-key"), networkFee: "0.001000",
       ...override,
     } } })) });
-    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
     expect(result.status).toBe("UNKNOWN");
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -314,7 +320,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       amounts: ["5.000000"], tokenId: "native-arc-usdc", refId: deriveJ2aCircleRefId("exact-demo-key"),
       txHash, networkFee: "0.001000",
     } } })) });
-    const result = await new ArcCircleProviderAdapter(api).getStatus("circle-tx-1", "exact-demo-key");
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
     expect(result.explorer_reference).toBe(`https://explorer.testnet.arc.io/tx/${txHash}`);
   });
 
@@ -322,7 +328,9 @@ describe("Arc Circle provider adapter for J2A", () => {
     const api = createClient({
       listTransactions: vi.fn(async () => ({ data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }] } })),
     });
-    expect(await new ArcCircleProviderAdapter(api).getStatusByIdempotencyKey("exact-demo-key")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
+    const adapter = await statusAdapter(api);
+    vi.mocked(api.listTransactions).mockClear();
+    expect(await adapter.getStatusByIdempotencyKey("exact-demo-key")).toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
     expect(api.createTransaction).not.toHaveBeenCalled();
     expect(api.listTransactions).toHaveBeenCalledTimes(1);
     expect(api.listTransactions).toHaveBeenCalledWith({

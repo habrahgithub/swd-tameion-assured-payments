@@ -135,7 +135,7 @@ describe("durable demo-state restart boundaries", () => {
 
     const result = await afterRestart.worker.execute(sealed);
     expect(result.status).toBe("SETTLED");
-    expect(afterRestart.adapter.getSubmissionCount()).toBe(1);
+    expect((afterRestart.adapter as FakeProviderAdapter).getSubmissionCount()).toBe(1);
     expect(afterRestart.exportSnapshot().authorization_history[0]?.sealed_pae.instruction_hash).toBe(sealed.instruction_hash);
   });
 
@@ -144,14 +144,14 @@ describe("durable demo-state restart boundaries", () => {
     assessEveryObligation(beforeRestart);
     const obligationId = beforeRestart.listObligations()[0]!.obligation_id;
     const sealed = authorize(beforeRestart, obligationId);
-    beforeRestart.adapter.queueOutcome("TIMEOUT");
+    (beforeRestart.adapter as FakeProviderAdapter).queueOutcome("TIMEOUT");
     const unknown = await beforeRestart.worker.execute(sealed);
     expect(unknown.status).toBe("UNKNOWN");
     const afterRestart = new DemoState(beforeRestart.exportSnapshot());
-    afterRestart.adapter.resolvePending(unknown.provider_ref!, "CONFIRMED");
+    (afterRestart.adapter as FakeProviderAdapter).resolvePending(unknown.provider_ref!, "CONFIRMED");
 
     const reconciled = await afterRestart.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
     expect(reconciled.status).toBe("SETTLED");
-    expect(afterRestart.adapter.getSubmissionCount()).toBe(1);
+    expect((afterRestart.adapter as FakeProviderAdapter).getSubmissionCount()).toBe(1);
   });
 });

@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import type { AuthorityAggregate } from "../authority/aggregate";
 import type { DurableAssessmentRecord, SealedPae } from "../domain/schemas";
-import { USDC_DECIMALS } from "../domain/numeric";
+import { atomicToDecimal, USDC_DECIMALS } from "../domain/numeric";
 import { decimalToAtomicAtScale, MAX_PROVIDER_NUMERIC_LENGTH } from "../j0d-spike/intent";
 import { ARC_TESTNET_BLOCKCHAIN, createCircleArcJ2aReadOnlyClient } from "../j0d-spike/circle-arc-client";
 
@@ -25,7 +25,7 @@ export const J2A_DEMO_SOURCE = {
 export const J2A_DEMO_DESTINATION = {
   id: "01769e53-cfbe-57aa-ba88-c787b8cba2d3",
   address: "0x591a1002127b1605d9dbb51348787bbe3014b2b9",
-  name: "Tameion Test Counterparty",
+  name: "Arc Testnet settlement proxy",
 } as const;
 export const J2A_TRANSFER_AMOUNT = "5.000000";
 export const J2A_MAX_NETWORK_FEE = "0.002000";
@@ -70,7 +70,23 @@ export interface BusinessPaymentInstruction {
     settlement_amount: string;
     settlement_asset: string;
     source_evidence_id: string;
+    source_evidence_ids?: string[];
   };
+}
+
+export interface GenuineSettlementProxyIntent {
+  organization_id: string;
+  obligation_id: string;
+  source_amount: string;
+  source_currency: string;
+  settlement_amount: string;
+  source_evidence_ids: string[];
+  classification: string;
+  invoice_reference: string;
+  invoice_date: string;
+  effective_due_date: string;
+  payment_basis: string;
+  particulars: string;
 }
 
 export function deriveJ2aCircleIdempotencyUuid(key: string): string {
@@ -121,7 +137,7 @@ type J2aProviderToken = { id: string; symbol: "USDC"; decimals: number; native: 
 
 const businessPaymentInstructionSchema = z.object({
   payer: z.object({
-    organization_id: z.literal(J2A_DEMO_ORGANIZATION_ID), display_name: z.literal(J2A_DEMO_ORGANIZATION_NAME),
+    organization_id: z.string().min(1), display_name: z.string().min(1),
     business_postal_address: z.object({ status: z.literal("NOT_PROVIDED_IN_SOURCE"), statement: z.string().min(1), classification: z.literal("UNVERIFIED_BUSINESS_METADATA") }).strict(),
     jurisdiction: z.object({ status: z.literal("NOT_PROVIDED_IN_SOURCE"), statement: z.string().min(1), classification: z.literal("UNVERIFIED_BUSINESS_METADATA") }).strict(),
     source_wallet_id: z.literal(J2A_DEMO_SOURCE.id), source_wallet_address: z.literal(J2A_DEMO_SOURCE.address),
@@ -131,46 +147,49 @@ const businessPaymentInstructionSchema = z.object({
     beneficiary_id: z.literal(`CP-${J2A_DEMO_DESTINATION.id}`), display_name: z.literal(J2A_DEMO_DESTINATION.name),
     business_postal_address: z.object({
       status: z.literal("NOT_APPLICABLE_TEST_COUNTERPARTY"),
-      statement: z.literal("No real postal address applies to the synthetic non-economic test counterparty."),
+      statement: z.literal("This Arc Testnet proxy recipient is not the vendor destination in the source obligation."),
       classification: z.literal("SYNTHETIC_DEMO_METADATA"),
     }).strict(),
     jurisdiction: z.object({
       status: z.literal("NOT_APPLICABLE_TEST_COUNTERPARTY"),
-      statement: z.literal("No real jurisdiction applies to the synthetic non-economic test counterparty."),
+      statement: z.literal("This Arc Testnet proxy is a settlement destination only and does not establish vendor jurisdiction."),
       classification: z.literal("SYNTHETIC_DEMO_METADATA"),
     }).strict(),
-    destination_wallet_id: z.literal(J2A_DEMO_DESTINATION.id), destination_ref: z.literal(`CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`),
+    destination_wallet_id: z.literal(J2A_DEMO_DESTINATION.id), destination_ref: z.literal(`ARC-TESTNET-SETTLEMENT-PROXY:${J2A_DEMO_DESTINATION.id}`),
     destination_wallet_address: z.literal(J2A_DEMO_DESTINATION.address), wallet_status: z.literal("LIVE"),
     verification_status: z.literal("VERIFIED"), verification_version: z.literal(1),
     operational_status: z.literal("ACTIVE"), operational_version: z.literal(1),
   }).strict(),
   commercial: z.object({
-    obligation_id: z.literal(J2A_DEMO_OBLIGATION_ID),
-    classification: z.literal("TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT"),
-    invoice_reference: z.literal(J2A_DEMO_OBLIGATION_ID), invoice_date: z.string().date(), effective_due_date: z.string().date(),
-    payment_basis: z.literal(J2A_DEMO_PAYMENT_BASIS),
-    particulars: z.literal("Non-economic Arc Testnet demonstration to the synthetic test counterparty."),
-    source_amount: z.literal("5.00"), source_currency: z.literal("USD"),
-    settlement_amount: z.literal(J2A_TRANSFER_AMOUNT), settlement_asset: z.literal("USDC"),
-    source_evidence_id: z.literal(J2A_DEMO_SYNTHETIC_EVIDENCE_ID),
+    obligation_id: z.string().min(1),
+    classification: z.string().min(1),
+    invoice_reference: z.string().min(1), invoice_date: z.string().date(), effective_due_date: z.string().date(),
+    payment_basis: z.string().min(1),
+    particulars: z.string().min(1),
+    source_amount: z.string().min(1), source_currency: z.string().regex(/^[A-Z]{3}$/),
+    settlement_amount: z.string().regex(/^(0|[1-9][0-9]*)\.[0-9]{6}$/), settlement_asset: z.literal("USDC"),
+    source_evidence_id: z.string().min(1), source_evidence_ids: z.array(z.string().min(1)).optional(),
   }).strict(),
 }).strict();
 
 export type J2aPreflightResult =
   | {
       readiness: "READY";
-      profile: "J2A_REAL_TESTNET_DEMO";
-      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT";
-      organization_id: "ORG-TAMEION-TESTNET-DEMO";
-      obligation_id: "DEMO-ARC-TESTNET-001";
-      amount: typeof J2A_TRANSFER_AMOUNT;
+      profile: string;
+      classification: string;
+      organization_id: string;
+      obligation_id: string;
+      source_amount: string;
+      source_currency: string;
+      source_evidence_ids: string[];
+      amount: string;
       asset: "USDC";
       network: "ARC_TESTNET";
       wallet_set_id: typeof J2A_DEMO_WALLET_SET_ID;
       beneficiary_id: `CP-${typeof J2A_DEMO_DESTINATION.id}`;
       business_payment_instruction: BusinessPaymentInstruction;
-      max_network_fee: typeof J2A_MAX_NETWORK_FEE;
-      max_total_debit: typeof J2A_MAX_TOTAL_DEBIT;
+      max_network_fee: string;
+      max_total_debit: string;
       source_wallet: J2aWallet;
       destination_wallet: J2aWallet;
       provider_token: J2aProviderToken;
@@ -186,11 +205,12 @@ const providerDecimalSchema = z.string().min(1).max(MAX_PROVIDER_NUMERIC_LENGTH)
 const evidenceSha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export const j2aPreflightResultSchema = z.discriminatedUnion("readiness", [
   z.object({
-    readiness: z.literal("READY"), profile: z.literal("J2A_REAL_TESTNET_DEMO"),
-    classification: z.literal("TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT"),
-    organization_id: z.literal("ORG-TAMEION-TESTNET-DEMO"), obligation_id: z.literal("DEMO-ARC-TESTNET-001"),
-    amount: z.literal(J2A_TRANSFER_AMOUNT), asset: z.literal("USDC"), network: z.literal("ARC_TESTNET"),
-    max_network_fee: z.literal(J2A_MAX_NETWORK_FEE), max_total_debit: z.literal(J2A_MAX_TOTAL_DEBIT),
+    readiness: z.literal("READY"), profile: z.string().min(1),
+    classification: z.string().min(1),
+    organization_id: z.string().min(1), obligation_id: z.string().min(1),
+    source_amount: z.string().min(1), source_currency: z.string().regex(/^[A-Z]{3}$/), source_evidence_ids: z.array(z.string().min(1)).min(1),
+    amount: z.string().regex(/^(0|[1-9][0-9]*)\.[0-9]{6}$/), asset: z.literal("USDC"), network: z.literal("ARC_TESTNET"),
+    max_network_fee: z.string().min(1), max_total_debit: z.string().min(1),
     wallet_set_id: z.literal(J2A_DEMO_WALLET_SET_ID), beneficiary_id: z.literal(`CP-${J2A_DEMO_DESTINATION.id}`),
     business_payment_instruction: businessPaymentInstructionSchema,
     source_wallet: z.object({ id: z.literal(J2A_DEMO_SOURCE.id), address: z.literal(J2A_DEMO_SOURCE.address), network: z.literal("ARC_TESTNET"), state: z.literal("LIVE"), wallet_set_id: z.literal(J2A_DEMO_WALLET_SET_ID) }).strict(),
@@ -256,7 +276,7 @@ function blocked(blocker: string, now: () => Date): J2aPreflightResult {
   return { readiness: "BLOCKED", blocker, captured_at: now().toISOString() };
 }
 
-function matchingPriorOutbound(value: unknown, tokenId: string, decimals: number): boolean {
+function matchingPriorOutbound(value: unknown, tokenId: string, decimals: number, transferAmount: string): boolean {
   const transaction = z.object({
     transactionType: z.unknown().optional(), blockchain: z.unknown().optional(), walletId: z.unknown().optional(),
     destinationAddress: z.unknown().optional(), amounts: z.array(z.unknown()).optional(),
@@ -265,7 +285,7 @@ function matchingPriorOutbound(value: unknown, tokenId: string, decimals: number
   if (!transaction.success) return false;
   const item = transaction.data;
   const priorAmount = typeof item.amounts?.[0] === "string" ? decimalToAtomicAtScale(item.amounts[0], decimals) : null;
-  const expectedAmount = decimalToAtomicAtScale(J2A_TRANSFER_AMOUNT, decimals);
+  const expectedAmount = decimalToAtomicAtScale(transferAmount, decimals);
   return expectedAmount !== null && priorAmount === expectedAmount && item.transactionType === "OUTBOUND" && item.blockchain === ARC_TESTNET_BLOCKCHAIN &&
     item.walletId === J2A_DEMO_SOURCE.id &&
     typeof item.destinationAddress === "string" && item.destinationAddress.toLowerCase() === J2A_DEMO_DESTINATION.address.toLowerCase() &&
@@ -275,7 +295,27 @@ function matchingPriorOutbound(value: unknown, tokenId: string, decimals: number
 export async function runJ2aReadOnlyPreflight(
   client?: J2aPreflightClient,
   now: () => Date = () => new Date(),
+  genuineIntent?: GenuineSettlementProxyIntent,
 ): Promise<J2aPreflightResult> {
+  const intent = genuineIntent ?? {
+    organization_id: J2A_DEMO_ORGANIZATION_ID,
+    obligation_id: J2A_DEMO_OBLIGATION_ID,
+    source_amount: "5.00",
+    source_currency: "USD",
+    settlement_amount: J2A_TRANSFER_AMOUNT,
+    source_evidence_ids: [J2A_DEMO_SYNTHETIC_EVIDENCE_ID],
+    classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+    invoice_reference: J2A_DEMO_OBLIGATION_ID,
+    invoice_date: J2A_DEMO_INVOICE_DATE,
+    effective_due_date: J2A_DEMO_INVOICE_DATE,
+    payment_basis: J2A_DEMO_PAYMENT_BASIS,
+    particulars: "Non-economic Arc Testnet demonstration to the synthetic test counterparty.",
+  };
+  const transferAmount = intent.settlement_amount;
+  const transferAtomic = decimalToAtomicAtScale(transferAmount, USDC_DECIMALS);
+  const maxTotalDebitBufferAtomic = decimalToAtomicAtScale("0.012000", USDC_DECIMALS);
+  if (transferAtomic === null || maxTotalDebitBufferAtomic === null || transferAtomic <= 0n) return blocked("INVALID_TRANSFER_AMOUNT", now);
+  const maxTotalDebit = atomicToDecimal((transferAtomic + maxTotalDebitBufferAtomic).toString(10), USDC_DECIMALS);
   const providerClient = client ?? createCircleArcJ2aReadOnlyClient() as unknown as J2aPreflightClient;
   try {
     const [sourceResponse, destinationResponse] = await Promise.all([
@@ -317,7 +357,7 @@ export async function runJ2aReadOnlyPreflight(
     const sourceBalance = sourceBalanceResult.data;
 
     const [feeResponse, transactionsResponse] = await Promise.all([
-      providerClient.estimateTransferFee({ walletId: J2A_DEMO_SOURCE.id, tokenId, amount: [J2A_TRANSFER_AMOUNT], destinationAddress: J2A_DEMO_DESTINATION.address }),
+      providerClient.estimateTransferFee({ walletId: J2A_DEMO_SOURCE.id, tokenId, amount: [transferAmount], destinationAddress: J2A_DEMO_DESTINATION.address }),
       providerClient.listTransactions({ txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" }),
     ]);
     const feeParsed = feeResponseSchema.safeParse(feeResponse);
@@ -328,22 +368,22 @@ export async function runJ2aReadOnlyPreflight(
     if (!feeResult.success || decimalToAtomicAtScale(feeResult.data, tokenDecimals) === null) return blocked("INVALID_FEE_ESTIMATE", now);
     const estimatedNetworkFee = feeResult.data;
     const sourceBalanceAtomic = atomic(sourceBalance, tokenDecimals);
-    const transferAtomic = atomic(J2A_TRANSFER_AMOUNT, tokenDecimals);
+    const providerTransferAtomic = atomic(transferAmount, tokenDecimals);
     const feeAtomic = atomic(estimatedNetworkFee, tokenDecimals);
     const maxFeeAtomic = atomic(J2A_MAX_NETWORK_FEE, tokenDecimals);
-    const maxTotalDebitAtomic = atomic(J2A_MAX_TOTAL_DEBIT, tokenDecimals);
+    const maxTotalDebitAtomic = atomic(maxTotalDebit, tokenDecimals);
     if (sourceBalanceAtomic === null) return blocked("INVALID_PROVIDER_BALANCE", now);
-    if (transferAtomic === null || feeAtomic === null || maxFeeAtomic === null || maxTotalDebitAtomic === null) return blocked("INVALID_FEE_ESTIMATE", now);
+    if (providerTransferAtomic === null || feeAtomic === null || maxFeeAtomic === null || maxTotalDebitAtomic === null) return blocked("INVALID_FEE_ESTIMATE", now);
     if (feeAtomic > maxFeeAtomic) return blocked("FEE_CAP_EXCEEDED", now);
-    if (transferAtomic + feeAtomic > maxTotalDebitAtomic) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
-    if (sourceBalanceAtomic < transferAtomic + feeAtomic) return blocked("INSUFFICIENT_BALANCE", now);
-    if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
+    if (providerTransferAtomic + feeAtomic > maxTotalDebitAtomic) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
+    if (sourceBalanceAtomic < providerTransferAtomic + feeAtomic) return blocked("INSUFFICIENT_BALANCE", now);
+    if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals, transferAmount))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
 
     const capturedAt = now().toISOString();
     const businessPaymentInstruction: BusinessPaymentInstruction = {
       payer: {
-        organization_id: J2A_DEMO_ORGANIZATION_ID,
-        display_name: J2A_DEMO_ORGANIZATION_NAME,
+        organization_id: intent.organization_id,
+        display_name: intent.organization_id === J2A_DEMO_ORGANIZATION_ID ? J2A_DEMO_ORGANIZATION_NAME : intent.organization_id,
         business_postal_address: {
           status: "NOT_PROVIDED_IN_SOURCE",
           statement: "No verified payer business or postal address is present in the admitted source data.",
@@ -365,16 +405,16 @@ export async function runJ2aReadOnlyPreflight(
         display_name: J2A_DEMO_DESTINATION.name,
         business_postal_address: {
           status: "NOT_APPLICABLE_TEST_COUNTERPARTY",
-          statement: "No real postal address applies to the synthetic non-economic test counterparty.",
+          statement: "This Arc Testnet proxy recipient is not the vendor destination in the source obligation.",
           classification: "SYNTHETIC_DEMO_METADATA",
         },
         jurisdiction: {
           status: "NOT_APPLICABLE_TEST_COUNTERPARTY",
-          statement: "No real jurisdiction applies to the synthetic non-economic test counterparty.",
+          statement: "This Arc Testnet proxy is a settlement destination only and does not establish vendor jurisdiction.",
           classification: "SYNTHETIC_DEMO_METADATA",
         },
         destination_wallet_id: destinationTruth.id,
-        destination_ref: `CIRCLE-DCW-${destinationTruth.id}`,
+        destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${destinationTruth.id}`,
         destination_wallet_address: destinationTruth.address,
         wallet_status: destinationTruth.state,
         verification_status: "VERIFIED",
@@ -383,42 +423,50 @@ export async function runJ2aReadOnlyPreflight(
         operational_version: 1,
       },
       commercial: {
-        obligation_id: J2A_DEMO_OBLIGATION_ID,
-        classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
-        invoice_reference: J2A_DEMO_OBLIGATION_ID,
-        invoice_date: J2A_DEMO_INVOICE_DATE,
-        effective_due_date: J2A_DEMO_INVOICE_DATE,
-        payment_basis: J2A_DEMO_PAYMENT_BASIS,
-        particulars: "Non-economic Arc Testnet demonstration to the synthetic test counterparty.",
-        source_amount: "5.00",
-        source_currency: "USD",
-        settlement_amount: J2A_TRANSFER_AMOUNT,
+        obligation_id: intent.obligation_id,
+        classification: intent.classification,
+        invoice_reference: intent.invoice_reference,
+        invoice_date: intent.invoice_date,
+        effective_due_date: intent.effective_due_date,
+        payment_basis: intent.payment_basis,
+        particulars: intent.particulars,
+        source_amount: intent.source_amount,
+        source_currency: intent.source_currency,
+        settlement_amount: transferAmount,
         settlement_asset: "USDC",
-        source_evidence_id: J2A_DEMO_SYNTHETIC_EVIDENCE_ID,
+        source_evidence_id: intent.source_evidence_ids[0],
+        source_evidence_ids: [...intent.source_evidence_ids],
       },
     };
     const evidence = {
-      profile: "J2A_REAL_TESTNET_DEMO",
-      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      profile: genuineIntent ? "GENUINE_OBLIGATION_ARC_TESTNET_PROXY" : "J2A_REAL_TESTNET_DEMO",
+      classification: intent.classification,
       wallet_set_id: J2A_DEMO_WALLET_SET_ID,
       beneficiary_id: `CP-${J2A_DEMO_DESTINATION.id}`,
       business_payment_instruction: businessPaymentInstruction,
       source_wallet: { id: sourceTruth.id, address: sourceTruth.address, state: sourceTruth.state, network: "ARC_TESTNET", wallet_set_id: sourceTruth.walletSetId },
       destination_wallet: { id: destinationTruth.id, address: destinationTruth.address, state: destinationTruth.state, network: "ARC_TESTNET", wallet_set_id: destinationTruth.walletSetId, name: J2A_DEMO_DESTINATION.name },
       provider_token: { id: tokenId, symbol: "USDC", decimals: tokenDecimals, native: true },
-      amount: J2A_TRANSFER_AMOUNT,
+      amount: transferAmount,
       source_balance: sourceBalance,
       estimated_network_fee: estimatedNetworkFee,
       max_network_fee: J2A_MAX_NETWORK_FEE,
-      max_total_debit: J2A_MAX_TOTAL_DEBIT,
+      max_total_debit: maxTotalDebit,
       prior_matching_outbound: false,
       captured_at: capturedAt,
     } as const;
     const resultWithoutHash = {
       readiness: "READY",
       ...evidence,
-      organization_id: J2A_DEMO_ORGANIZATION_ID,
-      obligation_id: J2A_DEMO_OBLIGATION_ID,
+      organization_id: intent.organization_id,
+      obligation_id: intent.obligation_id,
+      source_amount: intent.source_amount,
+      source_currency: intent.source_currency,
+      source_evidence_ids: [...intent.source_evidence_ids],
+      profile: genuineIntent ? "GENUINE_OBLIGATION_ARC_TESTNET_PROXY" : "J2A_REAL_TESTNET_DEMO",
+      classification: intent.classification,
+      amount: transferAmount,
+      max_total_debit: maxTotalDebit,
       asset: "USDC",
       network: "ARC_TESTNET",
       wallet_set_id: J2A_DEMO_WALLET_SET_ID,
@@ -456,7 +504,7 @@ export function buildJ2aDemoAggregate(preflight: Extract<J2aPreflightResult, { r
     source_wallet_status: "ACTIVE" as const,
     source_wallet_ref: J2A_DEMO_SOURCE.id,
     source_address: J2A_DEMO_SOURCE.address,
-    destination_ref: `CIRCLE-DCW-${J2A_DEMO_DESTINATION.id}`,
+    destination_ref: `ARC-TESTNET-SETTLEMENT-PROXY:${J2A_DEMO_DESTINATION.id}`,
     destination_address: J2A_DEMO_DESTINATION.address,
     evidence_hashes: [preflight.evidence_sha256],
     policy_version: "POLICY-P0-1",
@@ -494,8 +542,8 @@ export function buildJ2aIntentIdentity(
 ) {
   return {
     payer: {
-      organization_id: J2A_DEMO_ORGANIZATION_ID,
-      organization_name: J2A_DEMO_ORGANIZATION_NAME,
+      organization_id: preflight.organization_id,
+      organization_name: preflight.business_payment_instruction.payer.display_name,
       wallet_id: preflight.source_wallet.id,
       wallet_address: preflight.source_wallet.address,
       provider_wallet_status: preflight.source_wallet.state,
@@ -506,7 +554,7 @@ export function buildJ2aIntentIdentity(
     },
     beneficiary: {
       beneficiary_id: aggregate.counterparty_id,
-      name: preflight.destination_wallet.name,
+      name: "Arc Testnet settlement proxy",
       wallet_id: preflight.destination_wallet.id,
       destination_ref: aggregate.destination_ref,
       wallet_address: preflight.destination_wallet.address,
@@ -528,16 +576,18 @@ export function buildJ2aExecutionPacket(input: {
 }) {
   const { preflight, aggregate, assessment, assessmentHash, sealedPae } = input;
   const packet = {
-    classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
-    organization_id: J2A_DEMO_ORGANIZATION_ID,
+    classification: preflight.classification,
+    source_identity_disclosure: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+    organization_id: preflight.organization_id,
     ...buildJ2aIntentIdentity(preflight, aggregate),
     business_payment_instruction: preflight.business_payment_instruction,
     circle_arc_execution_instruction: buildJ2aCircleArcExecutionInstruction(preflight, sealedPae.payload.idempotency_key),
-    obligation_id: J2A_DEMO_OBLIGATION_ID,
+    obligation_id: preflight.obligation_id,
     demo_obligation: buildJ2aDemoObligation(preflight),
     aggregate_version: aggregate.aggregate_version,
-    source_amount: "5.00",
-    settlement_amount: J2A_TRANSFER_AMOUNT,
+    source_amount: preflight.source_amount,
+    source_currency: preflight.source_currency,
+    settlement_amount: preflight.amount,
     asset: "USDC",
     network: "ARC_TESTNET",
     source_wallet: preflight.source_wallet,
@@ -587,14 +637,14 @@ export function buildJ2aCircleArcExecutionInstruction(
     token_id: preflight.provider_token.id,
     token: "USDC",
     decimals: preflight.provider_token.decimals,
-    amount: J2A_TRANSFER_AMOUNT,
+    amount: preflight.amount,
     max_network_fee: preflight.max_network_fee,
     max_total_debit: preflight.max_total_debit,
     circle_request: {
       walletId: preflight.source_wallet.id,
       tokenId: preflight.provider_token.id,
       destinationAddress: preflight.destination_wallet.address,
-      amount: [J2A_TRANSFER_AMOUNT],
+      amount: [preflight.amount],
       fee: { type: "level" as const, config: { feeLevel: "MEDIUM" as const } },
       idempotencyKey: deriveJ2aCircleIdempotencyUuid(idempotencyKey),
       refId: deriveJ2aCircleRefId(idempotencyKey),

@@ -15,6 +15,7 @@ const obligation = {
   route_assurance_status: "Route assurance not ready",
 };
 const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" };
+const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: "125.00", due_date: "2026-10-15" };
 
 const detail = {
   truth: {
@@ -52,29 +53,44 @@ function detailFor(obligationId: string, sourceAmount: string, dueDate: string, 
   };
 }
 
+function detailWithProxy() {
+  const source = detailFor("OBL-UAT-03", "125.00", "2026-10-15", "UAT-INV-03");
+  return {
+    ...source,
+    settlement_proxy: {
+      source_aggregate_version: 1,
+      mapped_aggregate_version: 2,
+      preflight: {
+        profile: "circle-arc-testnet",
+        organization_id: "ORG-UAT",
+        obligation_id: "OBL-UAT-03",
+        source_amount: "125.00",
+        source_currency: "USD",
+        amount: "125.000000",
+        asset: "USDC",
+        network: "ARC_TESTNET",
+        source_wallet: { id: "UAT-ARC-SOURCE", address: "0x1111111111111111111111111111111111111111" },
+        destination_wallet: { id: "UAT-ARC-PROXY", address: "0x2222222222222222222222222222222222222222", name: "Arc Testnet settlement proxy" },
+        captured_at: "2026-10-06T18:00:00.000Z",
+        evidence_sha256: "c".repeat(64),
+        max_network_fee: "0.010000",
+        estimated_network_fee: "0.001000",
+        max_total_debit: "125.010000",
+      },
+    },
+    aggregate: { ...source.aggregate, aggregate_version: 2, amount: "125.000000" },
+  };
+}
+
 async function openFixture(page: Page) {
   const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
-    if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation, secondObligation], assessed_count: 2, total_count: 2 } });
+    if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation, secondObligation, proxiedObligation], assessed_count: 3, total_count: 3 } });
     if (url.pathname === "/api/obligations/OBL-UAT-01") return route.fulfill({ json: detail });
     if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02") });
-    if (url.pathname === "/api/internal/demo/real-testnet-payment/status") return route.fulfill({ json: {
-      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
-      organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001",
-      source_amount: "5.00", settlement_amount: "5.000000", asset: "USDC", network: "ARC_TESTNET",
-      demo_obligation: null, intent_identity: null,
-      lifecycle: [
-        { stage: "Obligation", status: "NOT_CREATED" },
-        { stage: "AI Assessment", status: "NOT_ASSESSED" },
-        { stage: "Assurance & Authorization", status: "NOT_AUTHORIZED" },
-        { stage: "Execution", status: "NOT_SUBMITTED" },
-        { stage: "Reconciliation & Evidence", status: "NOT_SUBMITTED" },
-      ],
-      preflight: null, aggregate_version: null, current_assessment: null,
-      authorization: null, execution: null, execution_gate: "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION", execution_packet: null,
-    } });
+    if (url.pathname === "/api/obligations/OBL-UAT-03") return route.fulfill({ json: detailWithProxy() });
     return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
   });
   await page.goto("/");
@@ -90,6 +106,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toContainText("PAY recommendation (advisory)");
   await expect(page.getByRole("button", { name: "Obligations" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
   await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
@@ -109,18 +126,27 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
   expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
   await page.getByRole("button", { name: "Hide sample playback" }).click();
-  await page.getByText("Arc Testnet", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
+  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Authorization" }).click();
+  const sourceProxy = page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" });
+  await expect(sourceProxy).toContainText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.");
+  await expect(sourceProxy).toContainText("OBL-UAT-01");
+  await expect(sourceProxy).toContainText("125.00 USD · OUTSTANDING");
+  await expect(sourceProxy).toContainText("Not prepared; no testnet destination has been mapped to this source obligation");
+  await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
   await expect(page.getByRole("heading", { name: "OBL-UAT-02" })).toBeVisible();
-  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Obligations" }).click();
-  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toContainText("UAT-INV-02");
-  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toContainText("≈ 40.000000 USDC");
-  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
+  await expect(sourceProxy).toContainText("OBL-UAT-02");
+  await expect(sourceProxy).toContainText("40.00 USD · OUTSTANDING");
+  await expect(sourceProxy).not.toContainText("OBL-UAT-01");
+  await expect(page.getByText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.")).toBeVisible();
   await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
-  await page.getByText("Arc Testnet", { exact: true }).click();
-  await page.getByText("Read-only sample", { exact: true }).click();
-  await page.getByText("Demonstrations", { exact: true }).click();
+  await page.getByRole("button", { name: /OBL-UAT-03/ }).click();
+  await expect(sourceProxy).toContainText("125.00 USD · OUTSTANDING");
+  await expect(sourceProxy).toContainText("125.000000 USDC");
+  await expect(sourceProxy).toContainText("ARC_TESTNET");
+  await expect(sourceProxy).toContainText("UAT-ARC-SOURCE · 0x1111111111111111111111111111111111111111");
+  await expect(sourceProxy).toContainText("UAT-ARC-PROXY · 0x2222222222222222222222222222222222222222");
+  await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
   const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
   expect(stageBoxes[0]).toBeGreaterThan(stageBoxes[1]);
   expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
@@ -144,6 +170,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(page.locator("main")).toHaveAttribute("dir", "rtl");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeVisible();
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
   await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
@@ -157,11 +184,9 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
   expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
   await page.getByRole("button", { name: "Hide sample playback" }).click();
-  await page.getByText("Arc Testnet", { exact: true }).click();
-  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
-  await page.getByText("Arc Testnet", { exact: true }).click();
-  await page.getByText("Read-only sample", { exact: true }).click();
-  await page.getByText("Demonstrations", { exact: true }).click();
+  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Authorization" }).click();
+  await expect(page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" })).toContainText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.");
+  await expect(page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" })).toContainText("125.00 USD · OUTSTANDING");
   const dimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
