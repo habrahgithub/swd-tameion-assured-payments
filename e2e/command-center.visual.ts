@@ -14,6 +14,7 @@ const obligation = {
   provider_mode: "NOT_LIVE_AI",
   route_assurance_status: "Route assurance not ready",
 };
+const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" };
 
 const detail = {
   truth: {
@@ -35,23 +36,56 @@ const detail = {
 };
 
 async function openFixture(page: Page) {
+  const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation], assessed_count: 1, total_count: 1 } });
+    if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
+    if (url.pathname === "/api/obligations") return route.fulfill({ json: { obligations: [obligation, secondObligation], assessed_count: 2, total_count: 2 } });
     if (url.pathname === "/api/obligations/OBL-UAT-01") return route.fulfill({ json: detail });
+    if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: { ...detail, record: { ...detail.record, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" } } });
+    if (url.pathname === "/api/internal/demo/real-testnet-payment/status") return route.fulfill({ json: {
+      classification: "TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      organization_id: "ORG-TAMEION-TESTNET-DEMO", obligation_id: "DEMO-ARC-TESTNET-001",
+      source_amount: "5.00", settlement_amount: "5.000000", asset: "USDC", network: "ARC_TESTNET",
+      demo_obligation: null, intent_identity: null,
+      lifecycle: [
+        { stage: "Obligation", status: "NOT_CREATED" },
+        { stage: "AI Assessment", status: "NOT_ASSESSED" },
+        { stage: "Assurance & Authorization", status: "NOT_AUTHORIZED" },
+        { stage: "Execution", status: "NOT_SUBMITTED" },
+        { stage: "Reconciliation & Evidence", status: "NOT_SUBMITTED" },
+      ],
+      preflight: null, aggregate_version: null, current_assessment: null,
+      authorization: null, execution: null, execution_gate: "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION", execution_packet: null,
+    } });
     return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
   });
   await page.goto("/");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  return unexpectedWrites;
 }
 
 test("Command Center desktop accessibility and review image", async ({ page }) => {
   await page.setViewportSize({ width: 1365, height: 900 });
-  await openFixture(page);
+  const unexpectedWrites = await openFixture(page);
+  await expect(page.locator("main")).toHaveAttribute("dir", "rtl");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toContainText("PAY recommendation (advisory)");
   await expect(page.getByRole("button", { name: "Obligations" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  await page.getByText("Demonstrations", { exact: true }).click();
+  await page.getByText("Simulated", { exact: true }).click();
+  await page.getByText("Arc Testnet", { exact: true }).click();
+  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
+  await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
+  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
+  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+  await expect(lifecycle.locator("li span:nth-child(2)")).toHaveText([
+    "Obligation", "AI Assessment", "Assurance & Authorization", "Execution", "Reconciliation & Evidence",
+  ]);
+  const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
+  expect(stageBoxes[0]).toBeGreaterThan(stageBoxes[1]);
+  expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
   const nav = page.getByRole("navigation", { name: "Command Center surfaces" });
   await nav.getByRole("button", { name: "Assessment" }).focus();
   await page.keyboard.press("Enter");
@@ -63,13 +97,19 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   expect(axe.violations, JSON.stringify(axe.violations, null, 2)).toEqual([]);
   await page.mouse.move(1, 1);
   await expect(page).toHaveScreenshot("command-center-desktop.png", { fullPage: true, animations: "disabled" });
+  expect(unexpectedWrites).toEqual([]);
 });
 
 test("Command Center mobile layout and review image", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await openFixture(page);
+  const unexpectedWrites = await openFixture(page);
+  await expect(page.locator("main")).toHaveAttribute("dir", "rtl");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeVisible();
   await expect(page.getByText("No payment intent created")).toBeVisible();
+  await page.getByText("Demonstrations", { exact: true }).click();
+  await page.getByText("Simulated", { exact: true }).click();
+  await page.getByText("Arc Testnet", { exact: true }).click();
+  await expect(page.getByRole("region", { name: "Arc Testnet demonstration" })).toContainText("DEMO-ARC-TESTNET-001");
   const dimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
@@ -88,4 +128,5 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await page.evaluate(() => { document.documentElement.style.zoom = ""; });
   await page.mouse.move(1, 1);
   await expect(page).toHaveScreenshot("command-center-mobile.png", { fullPage: true, animations: "disabled" });
+  expect(unexpectedWrites).toEqual([]);
 });

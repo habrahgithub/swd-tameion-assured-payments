@@ -278,6 +278,11 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("button", { name: /OBL-A/ });
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    const main = screen.getByRole("main");
+    const demonstrations = screen.getByText("Demonstrations").closest("details") as HTMLDetailsElement;
+    expect(main.getAttribute("dir")).toBe("rtl");
+    expect(workspace.compareDocumentPosition(demonstrations) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(demonstrations.open).toBe(false);
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     expect(Array.from(lifecycle.querySelectorAll("li span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
@@ -291,7 +296,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
     const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assess.disabled).toBe(false);
-    const demoSummary = screen.getByText("Demo Mode — simulated, non-economic workflow");
+    const demoSummary = screen.getByText("Demonstrations");
     expect((demoSummary.closest("details") as HTMLDetailsElement).open).toBe(false);
 
     expect(workspace.textContent).toContain("REAL BUSINESS OBLIGATION");
@@ -370,9 +375,13 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
-    fireEvent.click(screen.getByText("Demo Mode — simulated, non-economic workflow"));
+    fireEvent.click(screen.getByText("Demonstrations"));
+    fireEvent.click(screen.getByText("Simulated"));
     fireEvent.click(screen.getByRole("button", { name: "Run safe simulated demo" }));
-    const proof = await screen.findByRole("region", { name: "Isolated changed-destination attack demonstration" });
+    expect(await screen.findByText(/Sample workflow completed using a simulated provider/)).toBeTruthy();
+    expect(screen.getByText(/Destination-change security test:/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Reviewer technical proof"));
+    const proof = await screen.findByRole("region", { name: "Destination-change security test" });
     expect(proof.textContent).toContain("worker calls 1; provider submissions 0");
     fireEvent.click(screen.getByRole("button", { name: "Reconciliation & Evidence" }));
     expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
@@ -506,7 +515,9 @@ describe("Command Center mounted Operational Report", () => {
       expect.stringContaining("Payment-route assurance is not ready: Destination verification is pending verification"),
       "Review the current PAY assessment before authorization.",
     ]);
-    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(prerequisites.textContent).toMatch(/product-trust provenance is/i);
+    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/No payment intent exists at this step/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
     expect(screen.getByText(/Payment-route assurance is not ready: Destination verification is pending verification/)).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
@@ -531,7 +542,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(summary.textContent).toContain("No FX rate recorded");
     expect(summary.textContent).toContain("Pending separate Safety Kernel review and human authorization");
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(true);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
@@ -560,7 +571,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(/Authorization remains locked/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
 
-    const authorize = screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement;
+    const authorize = screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement;
     expect(authorize.disabled).toBe(true);
     expect(screen.getByText(/A current PAY assessment is required/)).toBeTruthy();
     fireEvent.click(authorize);
@@ -585,7 +596,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review this assessment for authorization" }));
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
 
-    expect((screen.getByRole("button", { name: "Authorize this exact intent" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Authorize selected obligation" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 

@@ -67,6 +67,12 @@
   box-sizing: border-box;
 }
 
+/* Keep the existing English copy and punctuation readable inside the RTL
+   layout while allowing flex/grid flow and logical spacing to follow RTL. */
+[dir="rtl"] :is(p, a, dt, dd, li) {
+  unicode-bidi: plaintext;
+}
+
 body {
   margin: 0;
   background: var(--color-bg);
@@ -80,9 +86,13 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 /* Cryptographic digests, signature envelopes, provider/tx identifiers. */
 .mono {
   font-family: var(--font-mono);
+  direction: ltr;
+  unicode-bidi: isolate;
 }

@@ -49,7 +49,7 @@ describe("J2A real-testnet Command Center surface", () => {
 
     render(<RealTestnetDemoPanel />);
 
-    const section = await screen.findByRole("region", { name: "Live Testnet Demo" });
+    const section = await screen.findByRole("region", { name: "Arc Testnet demonstration" });
     expect(within(section).getByText("TESTNET DEMONSTRATION / NON-ECONOMIC / NOT_VENDOR_PAYMENT")).toBeTruthy();
     expect(within(section).getByText("DEMO-ARC-TESTNET-001")).toBeTruthy();
     expect(within(section).getByText("5.000000 USDC · ARC_TESTNET")).toBeTruthy();
@@ -68,7 +68,7 @@ describe("J2A real-testnet Command Center surface", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RealTestnetDemoPanel />);
-    await screen.findByRole("region", { name: "Live Testnet Demo" });
+    await screen.findByRole("region", { name: "Arc Testnet demonstration" });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method ?? "GET"])).toEqual([
@@ -168,7 +168,7 @@ describe("J2A real-testnet Command Center surface", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RealTestnetDemoPanel />);
-    const section = await screen.findByRole("region", { name: "Live Testnet Demo" });
+    const section = await screen.findByRole("region", { name: "Arc Testnet demonstration" });
 
     expect(within(section).getByRole("region", { name: "Exact current testnet intent" })).toBeTruthy();
     expect(section.textContent).toContain("Aggregate version");
@@ -213,7 +213,7 @@ describe("J2A real-testnet Command Center surface", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<RealTestnetDemoPanel />);
-    const section = await screen.findByRole("region", { name: "Live Testnet Demo" });
+    const section = await screen.findByRole("region", { name: "Arc Testnet demonstration" });
 
     expect(within(section).queryByRole("button", { name: "Review exact intent and authorize" })).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);

@@ -273,6 +273,7 @@ export function authorizationBlockers(state: {
   destinationVerification?: string;
   destinationOperational?: string;
   sourceWallet?: string;
+  productTrustProvenance?: string;
   reviewed: boolean;
   killSwitchEngaged: boolean;
 }): string[] {
@@ -285,6 +286,7 @@ export function authorizationBlockers(state: {
       state.destinationVerification && `Destination verification is ${judgeReadableState(state.destinationVerification).toLowerCase()}`,
       state.destinationOperational && `destination operations are ${judgeReadableState(state.destinationOperational).toLowerCase()}`,
       state.sourceWallet && `source wallet is ${judgeReadableState(state.sourceWallet).toLowerCase()}`,
+      `product-trust provenance is ${state.productTrustProvenance ? judgeReadableState(state.productTrustProvenance).toLowerCase() : "unavailable"}`,
     ].filter(Boolean);
     blockers.push(`Payment-route assurance is not ready${facts.length ? `: ${facts.join("; ")}.` : ". Current route evidence is unavailable."} Owner: unavailable. Next action: request current route evidence through its owning workflow; no product action is available here. Expected result: current product trust, verified destination, and active destination operations and source wallet.`);
   }
@@ -344,11 +346,11 @@ async function postJson(url: string, body?: unknown, headers: Record<string, str
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
 
 const TONE_STYLE: Record<Tone, { border: string; text: string }> = {
-  neutral: { border: "border-l-[3px] border-l-[var(--color-border)]", text: "text-[var(--color-ink-muted)]" },
-  info: { border: "border-l-[3px] border-l-[var(--color-ink)]", text: "text-[var(--color-ink)]" },
-  success: { border: "border-l-[3px] border-l-[var(--color-success)]", text: "text-[var(--color-success)]" },
-  warning: { border: "border-l-[3px] border-l-[var(--color-warning)]", text: "text-[var(--color-warning)]" },
-  danger: { border: "border-l-[3px] border-l-[var(--color-danger)]", text: "text-[var(--color-danger)]" },
+  neutral: { border: "border-s-[3px] border-s-[var(--color-border)]", text: "text-[var(--color-ink-muted)]" },
+  info: { border: "border-s-[3px] border-s-[var(--color-ink)]", text: "text-[var(--color-ink)]" },
+  success: { border: "border-s-[3px] border-s-[var(--color-success)]", text: "text-[var(--color-success)]" },
+  warning: { border: "border-s-[3px] border-s-[var(--color-warning)]", text: "text-[var(--color-warning)]" },
+  danger: { border: "border-s-[3px] border-s-[var(--color-danger)]", text: "text-[var(--color-danger)]" },
 };
 
 /** Explicit workflow state, never expressed by colour alone. Authority-bearing
@@ -434,7 +436,7 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
 function StateLine({ tone, label, explanation }: { tone: Tone; label: string; explanation?: string }) {
   const style = TONE_STYLE[tone];
   return (
-    <div className={`${style.border} pl-3 py-1`}>
+    <div className={`${style.border} ps-3 py-1`}>
       <p className={`text-[13px] font-semibold uppercase tracking-wide ${style.text}`}>{label}</p>
       {explanation && <p className="mt-0.5 text-[13px] text-[var(--color-ink-muted)]">{explanation}</p>}
     </div>
@@ -445,7 +447,7 @@ function Field({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-[var(--color-border)] py-1.5 sm:gap-4">
       <dt className="min-w-0 flex-1 break-words text-[13px] text-[var(--color-ink-muted)]">{label}</dt>
-      <dd className="min-w-0 max-w-[60%] break-words text-right tabular text-[13px] font-medium text-[var(--color-ink)]">{value}</dd>
+      <dd className="min-w-0 max-w-[60%] break-words text-end tabular text-[13px] font-medium text-[var(--color-ink)]">{value}</dd>
     </div>
   );
 }
@@ -629,12 +631,12 @@ export function RealTestnetDemoPanel() {
   ];
 
   return (
-    <section aria-label="Live Testnet Demo" className="space-y-3 rounded border border-[var(--color-accent)] bg-[var(--color-surface)] p-3 md:p-4">
+    <section aria-label="Arc Testnet demonstration" className="space-y-3 rounded border border-[var(--color-accent)] bg-[var(--color-surface)] p-3 md:p-4">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div>
-          <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">Live Testnet Demo — real Arc testnet, non-economic</p>
+          <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">Arc Testnet — fixed synthetic test intent</p>
           <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">{J2A_CLASSIFICATION}</p>
-          <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Separate controlled test-counterparty lane. This does not represent or alter a genuine vendor obligation.</p>
+          <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">This fixed test intent is independent of obligation selection. It uses a synthetic counterparty on Arc Testnet and does not represent or alter a genuine vendor obligation.</p>
         </div>
         <button type="button" disabled={loading || busyAction !== null} onClick={() => void refresh()} className="text-[12px] font-semibold underline disabled:opacity-50">Refresh testnet status</button>
       </div>
@@ -651,7 +653,7 @@ export function RealTestnetDemoPanel() {
 
       <ol aria-label="Five-stage testnet lifecycle" className="grid grid-cols-1 gap-2 sm:grid-cols-5">
         {lifecycle.map(({ stage, status: stageStatus }) => (
-          <li key={stage} className="border-l-2 border-[var(--color-border)] pl-2 py-1">
+          <li key={stage} className="border-s-2 border-[var(--color-border)] ps-2 py-1">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{stage}</p>
             <p className="mt-1 text-[12px] font-medium text-[var(--color-ink)]">{stageStatus}</p>
           </li>
@@ -724,7 +726,7 @@ export function RealTestnetDemoPanel() {
       )}
 
       {assessment && (
-        <div className="space-y-1 border-l-2 border-[var(--color-border)] pl-3">
+        <div className="space-y-1 border-s-2 border-[var(--color-border)] ps-3">
           <p className="text-[12px] font-semibold">LIVE_AI {assessment.decision} recommendation — advisory only</p>
           <p className="break-all text-[11px] text-[var(--color-ink-muted)]">{assessment.provider_name} · {assessment.model_id} · aggregate version {status?.aggregate_version ?? "Unavailable"} · assessment {assessment.assessment_id} · hash {assessment.assessment_hash}</p>
           <p className="text-[11px] text-[var(--color-ink-muted)]">Validated findings: {assessment.validated_findings.length} · missing evidence: {assessment.missing_evidence.length}</p>
@@ -814,15 +816,15 @@ function RacePanel({ race }: { race?: RaceAssessment }) {
       <p className="text-[12px] font-semibold uppercase tracking-wide">RACE — {race.result.decision_summary}</p>
       <div className="text-[11px] text-[var(--color-ink-muted)]">
         <p><strong>Action taken:</strong> {race.action_taken.summary}</p>
-        <ul className="list-disc pl-5">{race.action_taken.checks.map((check, index) => <li key={index}>{check}</li>)}</ul>
+        <ul className="list-disc ps-5">{race.action_taken.checks.map((check, index) => <li key={index}>{check}</li>)}</ul>
         <p><strong>Caveats:</strong> {race.caveats.missing_context.length ? race.caveats.missing_context.join(", ") : "No typed missing context"}; uncertainty {race.caveats.uncertainty_signal ? "flagged" : "not flagged"}.</p>
         <p><strong>Validated evidence IDs:</strong> {race.evidence.evidence_ids.join(", ") || "None"}</p>
-        <p><strong>Raw source due date:</strong> {race.evidence.authoritative_facts.due_date ?? "Not captured on source"} · <strong>Effective date:</strong> {race.evidence.authoritative_facts.effective_due_date ?? "Not derived"} · <strong>Basis:</strong> {race.evidence.authoritative_facts.effective_due_date_basis ?? "None recorded"} · <strong>Assessment as of:</strong> {race.evidence.authoritative_facts.as_of_date}.</p>
+        <p><strong>Raw source due date:</strong> <bdi dir="ltr">{race.evidence.authoritative_facts.due_date ?? "Not captured on source"}</bdi> · <strong>Effective date:</strong> <bdi dir="ltr">{race.evidence.authoritative_facts.effective_due_date ?? "Not derived"}</bdi> · <strong>Basis:</strong> <bdi dir="ltr">{race.evidence.authoritative_facts.effective_due_date_basis ?? "None recorded"}</bdi> · <strong>Assessment as of:</strong> <bdi dir="ltr">{race.evidence.authoritative_facts.as_of_date}</bdi>.</p>
       </div>
       {race.result.validated_findings.length > 0 && (
         <ul className="space-y-2 text-[12px]">
           {race.remediation.map((item) => (
-            <li key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2">
+            <li key={item.finding_code} className="border-s-2 border-[var(--color-warning)] ps-2">
               <p><strong>{item.finding_code}:</strong> {item.reason}</p>
               <p><strong>Required action:</strong> {item.required_action}</p>
               <p><strong>Required evidence/context:</strong> {item.required_evidence.join("; ") || "None specified"}</p>
@@ -902,12 +904,12 @@ function AssessmentTraceView({ race }: { race: RaceAssessment }) {
       </summary>
       <ol className="mt-2 space-y-2">
         {steps.map((step) => (
-          <li key={step.step} className="border-l-2 border-[var(--color-border)] pl-2">
+          <li key={step.step} className="border-s-2 border-[var(--color-border)] ps-2">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
               {step.label} · {step.authority.replaceAll("_", " ").toLowerCase()}
             </p>
             {step.items.length > 0 ? (
-              <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink)]">
+              <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink)]">
                 {step.items.map((item, index) => <li key={index}>{item}</li>)}
               </ul>
             ) : (
@@ -953,7 +955,7 @@ function AdvisoryAssessmentCard({
 
   return (
     <div
-      className={`space-y-2 border-l-2 pl-3 ${stale ? "border-[var(--color-danger)] bg-[var(--color-warning-bg)]" : border}`}
+      className={`space-y-2 border-s-2 ps-3 ${stale ? "border-[var(--color-danger)] bg-[var(--color-warning-bg)]" : border}`}
       data-testid={stale ? "superseded-assessment-snapshot" : "reviewed-assessment-snapshot"}
     >
       <div className="flex items-baseline justify-between gap-2">
@@ -974,18 +976,18 @@ function AdvisoryAssessmentCard({
       )}
 
       {/* Reasons (application-owned summaries) */}
-      <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+      <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink-muted)]">
         {assessment.reasons.map((reason, index) => (
           <li key={index}>{reason}</li>
         ))}
       </ul>
-      <p className="border-l-2 border-[var(--color-accent)] pl-2 text-[12px] font-medium text-[var(--color-ink)]">
+      <p className="border-s-2 border-[var(--color-accent)] ps-2 text-[12px] font-medium text-[var(--color-ink)]">
         {assessmentNextAction(assessment.decision, allAssessed ?? false)}
       </p>
 
       {/* Deterministic findings — the application-owned blockers */}
       {findings.length > 0 && (
-        <div className="space-y-1 border-l-[3px] border-l-[var(--color-warning)] pl-2">
+        <div className="space-y-1 border-s-[3px] border-s-[var(--color-warning)] ps-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Deterministic findings ({findings.length})
           </p>
@@ -1014,7 +1016,7 @@ function AdvisoryAssessmentCard({
             Remediation
           </p>
           {race.remediation.map((item) => (
-            <div key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2">
+            <div key={item.finding_code} className="border-s-2 border-[var(--color-warning)] ps-2">
               <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
               <p className="text-[11px] text-[var(--color-ink-muted)]">
                 <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess {item.reassess_after_resolution ? "permitted" : "not permitted"}
@@ -1090,7 +1092,7 @@ function actionErrorMessage(data: unknown): string {
 function ActionResultBanner({ result }: { result: ActionResult }) {
   if (result.ok) return null;
   return (
-    <div role="alert" aria-live="assertive" className="border-l-[3px] border-l-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
+    <div role="alert" aria-live="assertive" className="border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
       <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
         Refused (HTTP {result.status})
       </p>
@@ -1206,31 +1208,36 @@ function SimulatedDemoStages({ value }: { value: Record<string, unknown> }) {
   } | undefined;
   return (
     <div className="space-y-3 border-t border-[var(--color-border)] pt-3" data-testid="simulated-demo-result">
-      <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
-        {happyPath.label} / {happyPath.provider_label} / {happyPath.vendor_notice}
+      <p className="text-[12px] font-semibold text-[var(--color-warning)]">
+        Sample workflow completed using a simulated provider. No vendor payment was sent.
       </p>
-      <p className="mono break-all text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation: {happyPath.obligation_id}</p>
       <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        <DemoStage title="Obligation" value={`${happyPath.obligation.obligation_id} · ${happyPath.obligation.state}`} />
-        <DemoStage title="Assessment" value={`${happyPath.assessment.decision} · ${happyPath.assessment.provider_mode}`} />
-        <DemoStage title="Human Authorization" value={happyPath.human_authorization.state} />
-        <DemoStage title="Assurance & Execution" value={`Safety Kernel ${happyPath.assurance.safety_kernel_overall} · PAE ${happyPath.assurance.pae_state} · ${happyPath.execution.provider_label} ${happyPath.execution.status}`} />
-        <DemoStage title="Reconciliation / Evidence" value={`${happyPath.reconciliation.aggregate_state} · execution ${happyPath.reconciliation.execution_status}`} />
+        <DemoStage title="Obligation" value={happyPath.obligation.state.toLowerCase().replaceAll("_", " ")} />
+        <DemoStage title="Assessment" value={`${happyPath.assessment.decision} advisory recommendation`} />
+        <DemoStage title="Human Authorization" value={happyPath.human_authorization.state.toLowerCase().replaceAll("_", " ")} />
+        <DemoStage title="Assurance & Execution" value={`Safety review ${happyPath.assurance.safety_kernel_overall.toLowerCase()} · authorization envelope ${happyPath.assurance.pae_state.toLowerCase().replaceAll("_", " ")} · simulated execution ${happyPath.execution.status.toLowerCase().replaceAll("_", " ")}`} />
+        <DemoStage title="Reconciliation / Evidence" value={`${happyPath.reconciliation.aggregate_state.toLowerCase().replaceAll("_", " ")} · execution ${happyPath.reconciliation.execution_status.toLowerCase().replaceAll("_", " ")}`} />
       </ol>
-      {attack && (
-        <section aria-label="Isolated changed-destination attack demonstration" className="rounded border border-[var(--color-warning)] p-3">
-          <p className="text-[12px] font-semibold">{attack.label.replaceAll("_", " ")}</p>
-          <p className="text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation {attack.obligation_id}: worker calls {attack.worker_calls}; provider submissions {attack.provider_submissions}. {attack.blocked ? `Blocked before provider submission: ${attack.reason}` : "Unexpectedly not blocked."}</p>
-        </section>
-      )}
-      <p className="text-[11px] text-[var(--color-ink-muted)]">Server-derived pipeline result only. It remains separate from genuine obligations, real payment authority, and vendor settlement.</p>
+      <p className="text-[11px] text-[var(--color-ink-muted)]">This sample result is separate from genuine obligations and their payment authority.</p>
+      <details className="rounded border border-[var(--color-border)] px-3 py-2 text-[12px]">
+        <summary className="cursor-pointer font-semibold text-[var(--color-ink-muted)]">Reviewer technical proof</summary>
+        <div className="mt-2 space-y-2 border-t border-[var(--color-border)] pt-2">
+          <p>Scenario: <bdi dir="ltr">{happyPath.label}</bdi>; provider adapter: <bdi dir="ltr">{happyPath.provider_label}</bdi>; assessment provider mode: <bdi dir="ltr">{happyPath.assessment.provider_mode}</bdi>; payment classification: <bdi dir="ltr">{happyPath.vendor_notice}</bdi>; synthetic obligation: <bdi dir="ltr" className="mono">{happyPath.obligation_id}</bdi>.</p>
+          {attack && (
+            <section aria-label="Destination-change security test" className="rounded border border-[var(--color-warning)] p-3">
+              <p className="text-[12px] font-semibold">Security test outcome: {attack.blocked ? "blocked before submission" : "not blocked"}</p>
+              <p className="text-[12px] text-[var(--color-ink-muted)]">Synthetic obligation <bdi dir="ltr" className="mono">{attack.obligation_id}</bdi>: worker calls {attack.worker_calls}; provider submissions {attack.provider_submissions}. {attack.blocked ? `Technical reason: ${attack.reason}` : "Unexpectedly not blocked."}</p>
+            </section>
+          )}
+        </div>
+      </details>
     </div>
   );
 }
 
 function DemoStage({ title, value }: { title: string; value: string }) {
   return (
-    <li className="min-w-0 border-l-2 border-[var(--color-warning)] pl-2">
+    <li className="min-w-0 border-s-2 border-[var(--color-warning)] ps-2">
       <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">{title}</p>
       <p className="mt-1 break-words text-[12px] font-medium text-[var(--color-ink)]">{value}</p>
     </li>
@@ -1550,6 +1557,7 @@ export function CommandCenter() {
     destinationVerification: detail?.aggregate.destination_verification_status,
     destinationOperational: detail?.aggregate.destination_operational_status,
     sourceWallet: detail?.aggregate.source_wallet_status,
+    productTrustProvenance: detail?.aggregate.product_trust_provenance,
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
@@ -1557,7 +1565,7 @@ export function CommandCenter() {
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
+    <main dir="rtl" className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
       <header className="flex flex-col items-start justify-between gap-3 border-b border-[var(--color-border)] pb-4 sm:flex-row sm:items-baseline">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
@@ -1565,46 +1573,13 @@ export function CommandCenter() {
           </p>
           <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
         </div>
-        <p className="max-w-none text-left text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-right">
-          AI recommendations are advisory. The simulated demo, real Arc Testnet demo, and genuine obligations are
-          separate lanes; testnet execution remains locked behind independent review and Prime packet authorization.
+        <p className="max-w-none text-start text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-end">
+          AI recommendations are advisory. Genuine obligation review is the primary workflow; demonstrations are separate and testnet execution remains locked behind independent review and Prime packet authorization.
         </p>
       </header>
 
-      <details className="rounded border border-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-2">
-        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-warning)]">Demo Mode — simulated, non-economic workflow</summary>
-        <section aria-label="Simulated demo" className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
-          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-            <div>
-              <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
-              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Runs a synthetic, isolated in-memory workflow with a fake adapter. It is separate from genuine obligations and cannot represent a vendor payment.</p>
-            </div>
-            <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
-              {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
-            </PrimaryButton>
-          </div>
-          {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
-          {demoStatus === "error" && (
-            <div role="alert" className="flex flex-col items-start gap-2 border-l-[3px] border-l-[var(--color-danger)] pl-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
-              <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
-            </div>
-          )}
-          {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
-          <p className="border-l-2 border-[var(--color-warning)] pl-2 text-[12px] text-[var(--color-ink-muted)]">The changed-destination attack demonstration runs only on a synthetic in-memory obligation with a fake adapter. The genuine obligation workflow has no attack-mutation control.</p>
-        </section>
-      </details>
-
-      <details
-        className="rounded border border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-2"
-        onToggle={(event) => setTestnetDemoExpanded(event.currentTarget.open)}
-      >
-        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Live Testnet Demo — real Arc testnet, non-economic</summary>
-        {testnetDemoExpanded && <div className="mt-3 border-t border-[var(--color-border)] pt-3"><RealTestnetDemoPanel /></div>}
-      </details>
-
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr] md:gap-5">
-        <aside className="md:border-r md:pr-4">
+        <aside className="md:border-e md:pe-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Genuine obligations
           </p>
@@ -1612,8 +1587,8 @@ export function CommandCenter() {
           {/* Ledger header row — columnar alignment for operator scan */}
           {obligationListState(obligationsStatus, obligationsError, obligations.length) === "ready" && <div className="grid grid-cols-2 gap-1 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)] sm:grid-cols-[1fr_auto_auto]">
             <span>Id</span>
-            <span className="tabular text-right">Amount</span>
-            <span className="tabular text-right">Status</span>
+            <span className="tabular text-end">Amount</span>
+            <span className="tabular text-end">Status</span>
           </div>}
           <ul className="border-y border-[var(--color-border)]">
             {obligations.map((o) => {
@@ -1634,9 +1609,9 @@ export function CommandCenter() {
                       setLastResult(null);
                       setDisplayedAssessment(null);
                     }}
-                    className={`grid w-full grid-cols-2 items-center gap-x-2 gap-y-0.5 px-2 py-1.5 text-left transition sm:grid-cols-[1fr_auto_auto] ${
+                    className={`grid w-full grid-cols-2 items-center gap-x-2 gap-y-0.5 px-2 py-1.5 text-start transition sm:grid-cols-[1fr_auto_auto] ${
                       o.obligation_id === selectedId
-                        ? "border-l-2 border-l-[var(--color-accent)] bg-[var(--color-surface)]"
+                        ? "border-s-2 border-s-[var(--color-accent)] bg-[var(--color-surface)]"
                         : "hover:bg-[var(--color-surface)]"
                     }`}
                   >
@@ -1649,10 +1624,10 @@ export function CommandCenter() {
                       />{" "}
                       {o.obligation_id}
                     </span>
-                    <span className="tabular text-right text-[12px] text-[var(--color-ink-muted)]">
+                    <span className="tabular text-end text-[12px] text-[var(--color-ink-muted)]">
                       {o.amount} {o.currency}
                     </span>
-                    <span className="col-span-2 tabular text-left text-[12px] font-medium sm:col-span-1 sm:text-right" style={{ color: statusColor }}>
+                    <span className="col-span-2 tabular text-start text-[12px] font-medium sm:col-span-1 sm:text-end" style={{ color: statusColor }}>
                       {o.assessed
                         ? o.decision === "PAY" ? "PAY recommendation (advisory)" : `${o.decision ?? "—"} assessment`
                         : "Assessment required"}
@@ -1720,7 +1695,7 @@ export function CommandCenter() {
           )}
 
           {selected && detail && detailState === "stale" && (
-            <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded border-l-[3px] border-l-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
+            <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded border-s-[3px] border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <div>
                 <p className="text-[13px] font-semibold text-[var(--color-warning)]">Last-known obligation details are stale.</p>
                 <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Retained control, kill-switch, assessment, and execution fields are not freshly verified. Actions are unavailable until detail refresh succeeds.</p>
@@ -1735,7 +1710,7 @@ export function CommandCenter() {
             <details className="border-b border-[var(--color-border)] pb-3">
               <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and control evidence{detailState === "stale" ? " — last-known / stale" : ""} (technical details)</summary>
               <section aria-label="Payment authority boundary" className="mt-3 grid gap-3 md:grid-cols-3">
-              <article className="min-w-0 space-y-1 border-l-2 border-[var(--color-border)] pl-3" data-testid="source-truth">
+              <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-border)] ps-3" data-testid="source-truth">
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide">Source-system truth</h3>
                 <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.source_truth.role}</p>
                 <p className="mono break-words text-[11px] text-[var(--color-ink-muted)]">
@@ -1748,14 +1723,14 @@ export function CommandCenter() {
                 <p className="text-[11px] text-[var(--color-ink-muted)]">Simulated source-wallet and destination-trust fixtures are excluded from the genuine obligation view.</p>
               ) : (
                 <>
-                  <article className="min-w-0 space-y-1 border-l-2 border-[var(--color-ink)] pl-3" data-testid="tameion-control-truth">
+                  <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-ink)] ps-3" data-testid="tameion-control-truth">
                     <h3 className="text-[11px] font-semibold uppercase tracking-wide">Tameion control truth</h3>
                     <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.tameion_control_truth.role}</p>
                     <p className="text-[11px] text-[var(--color-ink-muted)]">Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
                     <p className="text-[11px] text-[var(--color-ink-muted)]">Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
                     <p className="text-[11px] text-[var(--color-ink-muted)]">Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
                   </article>
-                  <article className="min-w-0 space-y-1 border-l-2 border-[var(--color-warning)] pl-3" data-testid="settlement-truth">
+                  <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-warning)] ps-3" data-testid="settlement-truth">
                     <h3 className="text-[11px] font-semibold uppercase tracking-wide">Settlement truth</h3>
                     <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
                     <p className="text-[11px] text-[var(--color-ink-muted)]">Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
@@ -1774,7 +1749,7 @@ export function CommandCenter() {
             </div>
             <ol aria-label="Payment lifecycle" className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-3 lg:grid-cols-5">
               {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
-                <li key={stage} className="grid min-w-0 grid-cols-[auto_1fr] gap-x-1 gap-y-1 border-l-2 border-[var(--color-border)] pl-2 py-1 text-[12px] text-[var(--color-ink-muted)]">
+                <li key={stage} className="grid min-w-0 grid-cols-[auto_1fr] gap-x-1 gap-y-1 border-s-2 border-[var(--color-border)] ps-2 py-1 text-[12px] text-[var(--color-ink-muted)]">
                   <span className="mono text-[11px] font-semibold">{index + 1}.</span>
                   <span className="min-w-0 break-words text-[12px] font-semibold leading-5">{stage}</span>
                   <span className="col-span-2 min-w-0 break-words leading-5">{lifecycleStatus(stage)}</span>
@@ -1789,7 +1764,7 @@ export function CommandCenter() {
                 key={p.key}
                 onClick={() => setPanel(p.key)}
                 aria-pressed={panel === p.key}
-                className={`min-w-0 whitespace-normal break-words border-b-2 px-2 py-2 text-left text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${
+                className={`min-w-0 whitespace-normal break-words border-b-2 px-2 py-2 text-start text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${
                   panel === p.key
                     ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                     : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
@@ -1890,7 +1865,7 @@ export function CommandCenter() {
                   recommendation is advisory only — it still requires human authorization and a
                   Safety Kernel PASS before any release authority.
                 </p>
-                <div className="flex items-center justify-between gap-3 border-l-[3px] border-l-[var(--color-border)] px-3 py-2">
+                <div className="flex items-center justify-between gap-3 border-s-[3px] border-s-[var(--color-border)] px-3 py-2">
                   <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                     {assessmentCoverageLabel(listPresentation, assessedCount, obligations.length)}
                   </p>
@@ -1996,17 +1971,15 @@ export function CommandCenter() {
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  Authorizing this exact intent (aggregate version: {aggregateVersionLabel(aggregateVersion, Boolean(selectedId))}) atomically advances
-                  reviewed → authorized state, runs the deterministic Safety Kernel, and — only if every
-                  control PASSes — seals a signed Payment Authorization Envelope.
+                  Authorization review applies to the selected obligation and its current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, Boolean(selectedId))}). No payment intent exists at this step. If every deterministic Safety Kernel control passes, the system seals a signed Payment Authorization Envelope; no provider submission occurs here.
                 </p>
                 {authorizationAssessment && (
-                  <dl className="space-y-1 border-l-2 border-[var(--color-border)] pl-3 text-[12px] text-[var(--color-ink-muted)]">
+                  <dl className="space-y-1 border-s-2 border-[var(--color-border)] ps-3 text-[12px] text-[var(--color-ink-muted)]">
                     <Field label="Reviewed assessment" value={authorizationAssessment.assessment_id} />
                     <Field label="Assessment hash" value={authorizationAssessment.assessment_hash} />
                     <Field label="Assessment aggregate version" value={authorizationAssessment.aggregate_version} />
                     <Field label="Decision reviewed" value={authorizationAssessment.decision} />
-                    <ul className="list-disc pl-5">{authorizationAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                    <ul className="list-disc ps-5">{authorizationAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
                     <RacePanel race={authorizationAssessment.race} />
                   </dl>
                 )}
@@ -2019,11 +1992,12 @@ export function CommandCenter() {
                     destinationVerification: detail?.aggregate.destination_verification_status,
                     destinationOperational: detail?.aggregate.destination_operational_status,
                     sourceWallet: detail?.aggregate.source_wallet_status,
+                    productTrustProvenance: detail?.aggregate.product_trust_provenance,
                     reviewed: Boolean(authorizationAssessment),
                     killSwitchEngaged: killSwitchView === "engaged",
                   });
                   return blockers.length ? (
-                    <ul className="list-disc space-y-1 pl-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
+                    <ul className="list-disc space-y-1 ps-5 text-[12px] text-[var(--color-warning)]" aria-label="Unmet authorization prerequisites">
                       {blockers.map((b) => <li key={b}>{b}</li>)}
                     </ul>
                   ) : null;
@@ -2042,7 +2016,7 @@ export function CommandCenter() {
                       );
                     }}
                   >
-                    Authorize this exact intent
+                    Authorize selected obligation
                   </PrimaryButton>
                 </div>
                 {currentResult?.label === "approve" && <ActionResultBanner result={currentResult} />}
@@ -2066,10 +2040,10 @@ export function CommandCenter() {
                 </p>
 
                 <div
-                  className={`flex flex-wrap items-center justify-between gap-3 border-l-[3px] px-3 py-2 ${
+                  className={`flex flex-wrap items-center justify-between gap-3 border-s-[3px] px-3 py-2 ${
                     killSwitchView === "engaged"
-                      ? "border-l-[var(--color-danger)] bg-[var(--color-surface)]"
-                      : "border-l-[var(--color-border)]"
+                      ? "border-s-[var(--color-danger)] bg-[var(--color-surface)]"
+                      : "border-s-[var(--color-border)]"
                   }`}
                 >
                   <div>
@@ -2143,7 +2117,7 @@ export function CommandCenter() {
                 {currentResult?.label === "execute" && <EvidencePanel value={currentResult.data} />}
                 {currentResult?.label === "prime-packet" && <ActionResultBanner result={currentResult} />}
                 {currentResult?.label === "prime-packet" && currentResult.ok && (
-                  <div className="max-w-xl border-l-[3px] border-l-[var(--color-warning)] pl-3">
+                  <div className="max-w-xl border-s-[3px] border-s-[var(--color-warning)] ps-3">
                     <p className="mb-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">
                       Retained Prime gate — not submitted
                     </p>
@@ -2191,7 +2165,7 @@ export function CommandCenter() {
                 )}
 
                 {report && report.fail_closed && report.fail_closed_reason && (
-                  <div className="rounded border-l-[3px] border-l-[var(--color-danger)] bg-[var(--color-danger-bg)] px-3 py-2">
+                  <div className="rounded border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-danger-bg)] px-3 py-2">
                     <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
                       Fail-closed — default HOLD
                     </p>
@@ -2202,7 +2176,7 @@ export function CommandCenter() {
                 {report && (
                   <section aria-label={`Operational report for ${report.obligation_id}`} className="space-y-3">
                     {/* Supplier / source reference */}
-                    <div className="space-y-1 border-l-2 border-[var(--color-ink)] pl-3">
+                    <div className="space-y-1 border-s-2 border-[var(--color-ink)] ps-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                         Supplier / source reference
                       </h3>
@@ -2214,7 +2188,7 @@ export function CommandCenter() {
                     </div>
 
                     {/* Amount */}
-                    <div className="space-y-1 border-l-2 border-[var(--color-ink-muted)] pl-3">
+                    <div className="space-y-1 border-s-2 border-[var(--color-ink-muted)] ps-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                         Amount
                       </h3>
@@ -2223,9 +2197,9 @@ export function CommandCenter() {
 
                     {/* Decision banner — never color-only */}
                     <div
-                      className="border-l-[3px] pl-3 py-2"
+                      className="border-s-[3px] ps-3 py-2"
                       style={{
-                        borderLeftColor: report.decision === "ESCALATE"
+                        borderInlineStartColor: report.decision === "ESCALATE"
                           ? "var(--status-blocked-border)"
                           : report.decision === "PAY" ? "var(--color-border)" : "var(--status-hold-border)",
                       }}
@@ -2256,7 +2230,7 @@ export function CommandCenter() {
                                         </div>
 
                     {/* Assessment truth */}
-                    <div className="space-y-1 border-l-2 border-[var(--color-border)] pl-3">
+                    <div className="space-y-1 border-s-2 border-[var(--color-border)] ps-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                         Assessment truth
                       </h3>
@@ -2290,7 +2264,7 @@ export function CommandCenter() {
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                           Reasons
                         </p>
-                        <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+                        <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink-muted)]">
                           {report.reasons.map((reason, index) => (
                             <li key={index}>{reason}</li>
                           ))}
@@ -2304,7 +2278,7 @@ export function CommandCenter() {
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                           Evidence gap
                         </p>
-                        <ul className="list-disc pl-5 text-[12px] text-[var(--color-ink-muted)]">
+                        <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink-muted)]">
                           {report.evidence_gap.map((gap, index) => (
                             <li key={index}>{gap}</li>
                           ))}
@@ -2319,7 +2293,7 @@ export function CommandCenter() {
                           Remediation
                         </p>
                         {report.remediation.map((item) => (
-                          <div key={item.finding_code} className="border-l-2 border-[var(--color-warning)] pl-2 space-y-1">
+                          <div key={item.finding_code} className="border-s-2 border-[var(--color-warning)] ps-2 space-y-1">
                             <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
                             <p className="text-[11px] text-[var(--color-ink-muted)]">
                               <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess{" "}
@@ -2342,6 +2316,43 @@ export function CommandCenter() {
           </div>
         </section>
       </div>
+
+      <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Demonstrations</summary>
+        <div className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
+          <details className="rounded border border-[var(--color-warning)] px-3 py-2">
+            <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-warning)]">Simulated</summary>
+            <section aria-label="Simulated demonstration" className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
+              <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+                <div>
+                  <p className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-warning)]">SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT</p>
+                  <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">This sample workflow uses a simulated provider. No Circle or Arc transfer is sent, and genuine obligations remain unchanged.</p>
+                </div>
+                <PrimaryButton disabled={demoStatus === "loading"} onClick={() => void runSimulatedDemo()}>
+                  {demoStatus === "loading" ? "Running simulated demo…" : "Run safe simulated demo"}
+                </PrimaryButton>
+              </div>
+              {demoStatus === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Running the isolated simulated workflow…</p>}
+              {demoStatus === "error" && (
+                <div role="alert" className="flex flex-col items-start gap-2 border-s-[3px] border-s-[var(--color-danger)] ps-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-[13px] text-[var(--color-danger)]">Simulated demo unavailable: {demoError}</p>
+                  <button type="button" onClick={() => void runSimulatedDemo()} className="text-[13px] font-semibold underline">Retry simulated demo</button>
+                </div>
+              )}
+              {demoStatus === "result" && demoResult && <SimulatedDemoStages value={demoResult} />}
+              <p className="border-s-2 border-[var(--color-warning)] ps-2 text-[12px] text-[var(--color-ink-muted)]"><strong>Destination-change security test:</strong> uses sample data only and sends no transfer. It cannot mutate a genuine obligation.</p>
+            </section>
+          </details>
+
+          <details
+            className="rounded border border-[var(--color-accent)] px-3 py-2"
+            onToggle={(event) => setTestnetDemoExpanded(event.currentTarget.open)}
+          >
+            <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Arc Testnet</summary>
+            {testnetDemoExpanded && <div className="mt-3 border-t border-[var(--color-border)] pt-3"><RealTestnetDemoPanel /></div>}
+          </details>
+        </div>
+      </details>
     </main>
   );
 }
