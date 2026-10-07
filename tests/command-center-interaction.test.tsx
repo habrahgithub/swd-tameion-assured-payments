@@ -361,20 +361,23 @@ describe("Command Center mounted Operational Report", () => {
     expect((demoSummary.closest("details") as HTMLDetailsElement).open).toBe(false);
 
     expect(workspace.textContent).toContain("REAL BUSINESS OBLIGATION");
-    expect(workspace.textContent).toContain("indicative only");
-    expect(workspace.textContent).toContain("1 USD = AED 3.6725");
-    expect(workspace.textContent).toContain("No payment intent exists");
-    expect(workspace.textContent).toContain("No payment intent created");
-    expect(workspace.textContent).toContain("Execution authorityNot Granted");
+    expect(workspace.textContent).not.toContain("indicative only");
+    expect(workspace.textContent).not.toContain("1 USD = AED 3.6725");
+    expect(workspace.textContent).not.toContain("Execution authority");
     expect(workspace.textContent).not.toContain("SIMULATED");
     expect(workspace.textContent).not.toContain("TEST-WALLET");
-    const technicalSummary = screen.getByText("Source and control evidence (technical details)");
+    const developerSummary = screen.getByText("Developer & audit evidence");
+    expect((developerSummary.closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect(workspace.textContent).not.toContain("Execution authority");
+    fireEvent.click(developerSummary);
+    const technicalSummary = screen.getByText("Source and current payment records");
     fireEvent.click(technicalSummary);
     const technicalDetails = technicalSummary.closest("details") as HTMLDetailsElement;
     expect(technicalDetails.open).toBe(true);
-    expect(technicalDetails.textContent).toContain("Simulated source-wallet and destination-trust fixtures are excluded");
-    expect(technicalDetails.textContent).not.toContain("TEST-WALLET");
-    expect(technicalDetails.textContent).not.toContain("UNVERIFIED");
+    expect(technicalDetails.textContent).toContain("Source record / reference");
+    expect(technicalDetails.textContent).toContain("Execution authority");
+    expect(technicalDetails.textContent).toContain("No payment intent created");
+    expect(technicalDetails.textContent).toContain("indicative only");
     expect(screen.getByRole("button", { name: /Operational Report.*secondary/i })).toBeTruthy();
 
     fireEvent.click(assess);
@@ -472,7 +475,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
 
     expect(await screen.findByText("Advisory — HOLD")).toBeTruthy();
-    expect(screen.getByText("Destination trust evidence is not verified.")).toBeTruthy();
+    expect(screen.getAllByText("Destination trust evidence is not verified.").length).toBeGreaterThan(0);
     expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
   });
 
@@ -549,7 +552,8 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("button", { name: "Authorization status unavailable" })).toBeNull();
 
     selectedDetail.resolve(response(null, 503));
-    expect(await screen.findByText(/Selected obligation status is unavailable; retry before taking action/)).toBeTruthy();
+    const recovery = await screen.findByRole("region", { name: "Exception recovery" });
+    expect(recovery.textContent).toContain("Selected obligation status is unavailable; retry before taking action.");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/No payment intent exists/)).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
@@ -648,7 +652,7 @@ describe("Command Center mounted Operational Report", () => {
       releaseAuthority: "BLOCKED",
       paeState: "REVOKED",
       currentStage: "Reconciliation",
-      expected: /blocked before provider submission/i,
+      expected: /No provider reference is recorded.*external provider status is not established/i,
     },
     {
       name: "PAE-011/REVOKED without an execution record",
@@ -794,7 +798,7 @@ describe("Command Center mounted Operational Report", () => {
 
     expect(workspace.textContent).toContain("Advisory — HOLD");
     expect(workspace.textContent).toContain("Current destination and source-wallet readiness are not verified.");
-    expect(workspace.textContent).toContain("DESTINATION_NOT_READY");
+    expect(workspace.textContent).not.toContain("DESTINATION_NOT_READY");
     expect(workspace.textContent).toContain("Resolve the current destination or source-wallet readiness blocker.");
     expect(workspace.textContent).toContain("Treasury Operations");
     expect(workspace.textContent).toContain("Verified destination readiness and source-wallet trust-seed record");
@@ -809,6 +813,9 @@ describe("Command Center mounted Operational Report", () => {
     expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
+    const developer = screen.getByText("Developer & audit evidence");
+    fireEvent.click(developer);
+    expect(developer.closest("details")?.textContent).toContain("DESTINATION_NOT_READY");
   });
 
   it("renders attested effective due date and readiness fixture provenance in the assessment trace", async () => {
@@ -893,17 +900,21 @@ describe("Command Center mounted Operational Report", () => {
     expect(sourceSummary.textContent).toContain("125.00 USD");
     expect(sourceSummary.textContent).toContain("125.000000 USDC");
     expect(sourceSummary.textContent).toContain("ARC_TESTNET");
-    expect(sourceSummary.textContent).toContain("testnet-source-id · 0x1111111111111111111111111111111111111111");
-    expect(sourceSummary.textContent).toContain("testnet-proxy-id · 0x2222222222222222222222222222222222222222");
-    const sourceDetails = screen.getByText("Source records and payment details").closest("details") as HTMLDetailsElement;
+    const developer = screen.getByText("Developer & audit evidence");
+    fireEvent.click(developer);
+    const sourceDetails = screen.getByText("Source and current payment records").closest("details") as HTMLDetailsElement;
     expect(sourceDetails.open).toBe(false);
-    fireEvent.click(screen.getByText("Source records and payment details"));
+    fireEvent.click(screen.getByText("Source and current payment records"));
     const intentDetails = await screen.findByRole("region", { name: "Exact payment intent summary" });
     expect(intentDetails.textContent).toContain("No FX rate recorded");
     expect(intentDetails.textContent).toContain("Pending separate Safety Kernel review and human authorization");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
+    fireEvent.click(screen.getByText("Execution / provider"));
+    const executionEvidence = screen.getByText("Execution / provider").closest("details");
+    expect(executionEvidence?.textContent).toContain("Source wallet reference");
+    expect(executionEvidence?.textContent).toContain("Destination address");
   });
 
   it("uses the server winner projection when five current PAY candidates exist", async () => {
@@ -1245,6 +1256,8 @@ describe("guided lifecycle navigation", () => {
     expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
     await act(async () => { delayedDetail.resolve(response(refreshed)); });
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Assessment · Current position: Assessment"));
+    expect(screen.getByRole("heading", { name: "Current stage: Assessment" })).toBe(document.activeElement);
+    expect(screen.getByRole("status", { name: "Stage completion receipt" }).textContent).toContain("Assessment is now available from refreshed obligation detail.");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
   });
 

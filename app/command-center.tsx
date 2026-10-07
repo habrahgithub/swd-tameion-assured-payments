@@ -75,7 +75,22 @@ interface ObligationDetail {
   } | null;
   demo_arc_trust_simulated: boolean;
   pae_sealed: boolean;
-  execution: { status: string; provider_ref: string | null } | null;
+  execution: {
+    status: string;
+    provider_ref: string | null;
+    idempotency_key?: string;
+    atomic_amount?: string;
+    destination_address?: string;
+    provider_evidence?: {
+      status?: string;
+      atomic_amount?: string;
+      atomicAmount?: string;
+      destination_address?: string;
+      destinationAddress?: string;
+      reconciled_at?: string;
+      [key: string]: unknown;
+    } | null;
+  } | null;
   settlement_proxy?: {
     source_aggregate_version: number;
     mapped_aggregate_version: number;
@@ -389,12 +404,69 @@ export function reconciliationLeadLine(state: DetailState, execution: unknown, h
     if (hasSettlementProxy && status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION · source payable remains ${sourceState}.`;
     if (hasSettlementProxy && (status === "UNKNOWN" || status === "SUBMITTING")) return "TESTNET outcome is UNKNOWN — perform read-only reconciliation for this same intent; resubmission is blocked.";
     if (hasSettlementProxy && status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourceState}.`;
-    if (hasSettlementProxy && status === "BLOCKED" && !record.provider_ref && !record.provider_evidence) return `Arc Testnet execution was blocked before provider submission; source payable remains ${sourceState}.`;
-    if (hasSettlementProxy && status === "BLOCKED") return `Arc Testnet execution is blocked with provider evidence present; outcome requires review. Source payable remains ${sourceState}.`;
+    if (hasSettlementProxy && status === "BLOCKED" && !record.provider_ref && !record.provider_evidence) return `Arc Testnet execution is blocked. No provider reference is recorded for this instruction; external provider status is not established by this record. Source payable remains ${sourceState}.`;
+    if (hasSettlementProxy && status === "BLOCKED") return `Arc Testnet execution is blocked and provider evidence is recorded; review the recorded provider outcome. Source payable remains ${sourceState}.`;
     if (hasSettlementProxy) return `Arc Testnet proxy execution ${status}; source payable remains ${sourceState}.`;
     return `Simulated execution ${status}; no Arc settlement to reconcile.`;
   }
   return "Submission state unknown — authoritative execution field is absent.";
+}
+
+type AvailableEvidenceItem = { occurredAt: string; label: string; result: string };
+
+function validStoredTimestamp(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    Number.isFinite(Date.parse(value));
+}
+
+/** The user-facing evidence chronology includes only durable fields that
+ * actually carry a stored timestamp. Other lifecycle artifacts are shown as
+ * current state below, never ordered as invented events. */
+export function availableEvidenceItems(detail: ObligationDetail): AvailableEvidenceItem[] {
+  const items: AvailableEvidenceItem[] = [];
+  const preflightTime = detail.settlement_proxy?.preflight.captured_at;
+  if (validStoredTimestamp(preflightTime)) {
+    items.push({ occurredAt: preflightTime, label: "Read-only Arc Testnet preflight evidence", result: "Captured for the controlled settlement proxy." });
+  }
+  const assurance = detail.assurance_evidence;
+  if (assurance && (assurance.state === "AVAILABLE_CURRENT_BINDING" || assurance.state === "AVAILABLE_HISTORICAL") && validStoredTimestamp(assurance.recorded_at)) {
+    items.push({
+      occurredAt: assurance.recorded_at,
+      label: "Stored assurance evidence",
+      result: assurance.state === "AVAILABLE_CURRENT_BINDING" ? "Stored PASS evidence · current binding" : "Stored PASS evidence · historical binding",
+    });
+  }
+  const reconciledAt = detail.execution?.provider_evidence?.reconciled_at;
+  if (validStoredTimestamp(reconciledAt)) {
+    items.push({
+      occurredAt: reconciledAt,
+      label: "Provider status evidence",
+      result: typeof detail.execution?.provider_evidence?.status === "string"
+        ? detail.execution.provider_evidence.status
+        : "Status recorded",
+    });
+  }
+  return items.sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+}
+
+export function submissionEvidenceCopy(detail: ObligationDetail): string {
+  const execution = detail.execution;
+  if (execution?.provider_ref) return "A provider reference is recorded for this instruction.";
+  if (execution) return "No provider reference is recorded for this instruction. External provider status is not established by this record.";
+  return "No Tameion execution record is recorded for this instruction. This does not establish external provider status.";
+}
+
+export function currentAuthorityGuidance(detail: ObligationDetail): string | null {
+  const authority = detail.truth.tameion_control_truth.execution_release_authority;
+  const paeState = detail.truth.tameion_control_truth.pae_state;
+  if (["BLOCKED", "REVOKED", "EXPIRED"].includes(authority) || ["REVOKED", "EXPIRED"].includes(paeState)) {
+    return "The previous instruction is not available for submission. Re-establish current payment authority before any new execution packet.";
+  }
+  if (detail.pae_sealed && (!detail.execution_packet || !detail.sealed_pae_instruction_hash || detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION")) {
+    return "Current payment authority is not available for submission. Re-establish the current assessment and authorization path before any new execution packet.";
+  }
+  return null;
 }
 
 export function queueHeaderLabel(presentation: ObligationListPresentation, summary: HoldEscalateSummary): string {
@@ -699,7 +771,7 @@ function AssessmentTraceView({ race }: { race: RaceAssessment }) {
   const steps = buildAssessmentTrace(race);
   return (
     <details className="rounded border border-[var(--color-border)] px-3 py-2 text-xs" data-testid="assessment-trace">
-      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">
+      <summary className="min-h-11 cursor-pointer select-none py-2 text-[var(--color-ink-muted)]">
         Assessment trace — evidence, facts, model proposal, validated findings, remediation
       </summary>
       <ol className="mt-2 space-y-2">
@@ -722,11 +794,8 @@ function AssessmentTraceView({ race }: { race: RaceAssessment }) {
   );
 }
 
-/** Unified advisory assessment display — the dominant status for the
- * Assessment panel. Renders the Finance Agent's PAY/HOLD/ESCALATE proposal
- * with rationale, deterministic findings, catalog-derived remediation,
- * provider/runtime truth, and progressive disclosure for hash/evidence/
- * runtime detail. Always explicit about current vs superseded state. */
+/** Finance-facing advisory summary. Technical traces and provider metadata
+ * live in the single Developer & audit evidence disclosure. */
 function AdvisoryAssessmentCard({
   assessment,
   label,
@@ -788,13 +857,13 @@ function AdvisoryAssessmentCard({
       {/* Deterministic findings — the application-owned blockers */}
       {findings.length > 0 && (
         <div className="space-y-1 border-s-[3px] border-s-[var(--color-warning)] ps-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-            Deterministic findings ({findings.length})
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+            Review findings ({findings.length})
           </p>
           <ul className="space-y-0.5">
             {findings.map((finding) => (
               <li key={finding.code} className="flex items-baseline justify-between gap-2">
-                <span className="text-[12px]">{finding.code} — {finding.reason}</span>
+                <span className="text-[12px]">{finding.reason}</span>
                 <span
                   className={`text-[11px] font-semibold ${
                     finding.severity === "ESCALATE" ? "text-[var(--status-blocked-text)]" : "text-[var(--status-hold-text)]"
@@ -817,7 +886,7 @@ function AdvisoryAssessmentCard({
           </p>
           {race.remediation.map((item) => (
             <div key={item.finding_code} className="border-s-2 border-[var(--color-warning)] ps-2">
-              <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
+              <p className="text-[12px]">{item.reason}</p>
               <p className="text-[11px] text-[var(--color-ink-muted)]">
                 <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess {item.reassess_after_resolution ? "permitted" : "not permitted"}
               </p>
@@ -832,19 +901,10 @@ function AdvisoryAssessmentCard({
         </div>
       )}
 
-      {/* Provider/runtime truth — advisory-only */}
-      <ProviderTruthRow truth={assessment.provider_truth} />
-
-      {race && <AssessmentTraceView race={race} />}
-
-      {/* Progressive disclosure for hash/evidence/runtime */}
-      <EvidenceAndRuntimeDetail assessment={assessment} />
-
       {/* Stale state explanation */}
       {stale && (
         <p className="text-[12px] text-[var(--color-danger)]">
-          This assessment is bound to aggregate v{assessment.aggregate_version}, which is no longer current.
-          Review the current sealed assessment before authorization.
+          This assessment is no longer current. Review the latest assessment before authorization.
         </p>
       )}
 
@@ -879,6 +939,7 @@ function PrimaryButton({
 }
 
 type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null };
+type StageCompletionReceipt = { obligationId: string; message: string };
 
 function actionErrorMessage(data: unknown): string {
   if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
@@ -1043,6 +1104,7 @@ export function CommandCenter() {
   const [detailIsStale, setDetailIsStale] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
+  const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const activeRunCount = useRef(0);
@@ -1050,6 +1112,8 @@ export function CommandCenter() {
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
   const selectionGeneration = useRef(0);
+  const stageHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusConfirmedStageRef = useRef(false);
 
   const showStage = (stage: LifecycleStage) => {
     setViewedStage(stage);
@@ -1058,8 +1122,15 @@ export function CommandCenter() {
 
   const showCurrentStageAfterRefresh = (refreshed: ObligationDetail) => {
     const confirmedPosition = authoritativeLifecyclePosition(selectedRef.current, "loaded", refreshed);
+    focusConfirmedStageRef.current = true;
     showStage(confirmedPosition);
   };
+
+  useLayoutEffect(() => {
+    if (!focusConfirmedStageRef.current) return;
+    focusConfirmedStageRef.current = false;
+    stageHeadingRef.current?.focus();
+  }, [viewedStage, panel]);
 
   const refreshObligations = async (showLoading = false, preserveLastKnown = false) => {
     if (showLoading) setObligationsStatus("loading");
@@ -1147,6 +1218,7 @@ export function CommandCenter() {
     setDetail(null);
     setDetailIsStale(false);
     setDetailError(null);
+    setStageCompletionReceipt(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -1166,6 +1238,7 @@ export function CommandCenter() {
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     activeRunCount.current += 1;
     setBusy(true);
+    setStageCompletionReceipt(null);
     let actionSucceeded = false;
     try {
       const result = await action();
@@ -1185,8 +1258,20 @@ export function CommandCenter() {
     } finally {
       if (stillCurrent()) {
         const refreshed = await refreshDetail(targetId, true);
-        if (actionSucceeded && stillCurrent() && refreshed && authoritativeLifecyclePosition(targetId, "loaded", refreshed) !== priorPosition) {
-          showCurrentStageAfterRefresh(refreshed);
+        if (actionSucceeded && stillCurrent() && refreshed) {
+          const confirmedPosition = authoritativeLifecyclePosition(targetId, "loaded", refreshed);
+          if (confirmedPosition !== priorPosition) showCurrentStageAfterRefresh(refreshed);
+          const receiptMessage = label === "assess" && refreshed.current_assessment?.obligation_id === targetId &&
+              refreshed.current_assessment.aggregate_version === String(refreshed.aggregate.aggregate_version)
+            ? "Assessment is now available from refreshed obligation detail."
+            : label === "proxy preflight" && refreshed.settlement_proxy?.preflight.obligation_id === targetId
+              ? "Arc Testnet settlement proxy preparation is recorded. A fresh assessment is required before authorization."
+              : label === "approve" && refreshed.aggregate.state === "AUTHORIZED"
+                ? "Authorization is recorded. Assurance remains a separate release control."
+                : label === "execute" && refreshed.execution
+                  ? "An execution record is available. Continue with read-only reconciliation for this same instruction."
+                  : null;
+          if (receiptMessage) setStageCompletionReceipt({ obligationId: targetId, message: receiptMessage });
         }
       }
       await refreshObligations(false, true);
@@ -1557,6 +1642,27 @@ export function CommandCenter() {
   ));
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
+  const currentException = Boolean(selectedId && (
+    detailState === "failed" || detailState === "stale" ||
+    detail?.execution?.status === "BLOCKED" || detail?.execution?.status === "FAILED" || detail?.execution?.status === "UNKNOWN" ||
+    ["HOLD", "ESCALATE"].includes(currentAssessment?.decision ?? "") ||
+    detail?.execution_kill_switched === true ||
+    ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "") ||
+    noCurrentExactExecutionPacket ||
+    (detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) ||
+    (detail?.settlement_proxy && !routeAssuranceReady && !detail.pae_sealed && !detail.execution)
+  ));
+  const activityItems = detail && detailState === "loaded" ? availableEvidenceItems(detail) : [];
+  const assessmentCurrentState = !detail || detailState !== "loaded"
+    ? "Assessment state is not currently verified."
+    : currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(detail.aggregate.aggregate_version)
+      ? `${currentAssessment.decision} advisory assessment is current for the selected obligation.`
+      : "No current assessment is recorded for the selected obligation.";
+  const authorizationCurrentState = detail?.aggregate.state === "AUTHORIZED"
+    ? detail.pae_sealed ? "Authorization is recorded; a sealed instruction is present." : "Authorization is recorded; no usable sealed instruction is available."
+    : "No current authorization is recorded for this obligation.";
+  const paeCurrentState = detail?.pae_sealed ? "A sealed payment instruction is present; current release checks still apply." : "No sealed payment instruction is recorded.";
+  const executionCurrentState = detail ? submissionEvidenceCopy(detail) : "Execution state is unavailable.";
 
   type WorkspaceAction = { label: string; actor: string; run: () => void };
   let workspaceAction: WorkspaceAction | null = null;
@@ -1603,6 +1709,16 @@ export function CommandCenter() {
       }));
     } };
   }
+  const recoveryOwner = workspaceAction?.actor ?? (detail?.execution?.status === "UNKNOWN"
+    ? "Unassigned · read-only reconciliation"
+    : firstUnmetPrerequisite?.startsWith("Payment-route assurance")
+      ? "External-evidence owner unavailable"
+      : "No user action");
+  const recoveryNextAction = workspaceAction?.label ?? (detail?.execution?.status === "FAILED"
+    ? "No retry action is available here. Review current provider evidence and payment authority before any new instruction."
+    : detail?.execution?.status === "BLOCKED" || noCurrentExactExecutionPacket
+      ? "No submission action is available. Re-establish current payment authority before any new execution packet."
+      : "No product action is available from the currently recorded state.");
 
   const previousViewedStage = viewedStageIndex > 0 ? PAYMENT_LIFECYCLE_STAGES[viewedStageIndex - 1] : null;
   const canGoBack = Boolean(previousViewedStage && stageState(previousViewedStage) !== "LOCKED");
@@ -1764,7 +1880,7 @@ export function CommandCenter() {
 
         <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
           {selected && (
-            <section aria-label="Selected source obligation" className="grid gap-2 border-b border-[var(--color-border)] pb-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+            <section aria-label="Selected source obligation" className="grid gap-4 border-b border-[var(--color-border)] pb-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected genuine obligation</p>
                 <h2 className="mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]">
@@ -1774,32 +1890,30 @@ export function CommandCenter() {
                 </h2>
                 <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
                   {detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") === "Not captured" ? "Business name not captured · " : ""}
-                  Source record <bdi dir="ltr" className="mono">{selected.obligation_id}</bdi>
-                  {selected.commercial_terms ? ` · ${selected.commercial_terms}` : ""}
+                  {selected.commercial_terms ? `${selected.commercial_terms} · ` : ""}
+                  Record <bdi dir="ltr" className="mono">{selected.obligation_id}</bdi>
                 </p>
               </div>
               <div className="sm:text-end">
-                <p className="tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"><bdi dir="ltr">{selected.amount} {selected.currency}</bdi></p>
-                <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Source obligation amount</p>
-              </div>
+                  <p className="tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
+                  <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Source obligation amount</p>
+                </div>
               <div className="sm:col-span-2">
                 <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
                 {detailState === "loaded" && detail && (
-                  <div className="mt-3 grid gap-2 text-[12px] sm:grid-cols-2">
-                    <p><span className="text-[var(--color-ink-muted)]">Source payable: </span><strong>{sourcePayableState(detail)}</strong></p>
-                    <p className="text-[var(--color-warning)]">
-                      {detail.settlement_proxy
-                        ? "Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable."
-                        : `No Arc payment binding for this genuine obligation; the source payable remains ${sourcePayableState(detail)}.`}
+                  <>
+                    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px]">
+                      <p><span className="text-[var(--color-ink-muted)]">Source payable: </span><strong>{sourcePayableState(detail)}</strong></p>
+                      <p><span className="text-[var(--color-ink-muted)]">Effective due date: </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
+                    </div>
+                    <p className="mt-2 text-[12px] text-[var(--color-warning)]">
+                      ARC TESTNET · {detail.settlement_proxy ? "Controlled settlement proxy" : "No controlled settlement proxy bound"} · Real-world payable remains {sourcePayableState(detail)}.
                     </p>
-                    {detail.settlement_proxy && <p className="sm:col-span-2">
-                      <span className="text-[var(--color-ink-muted)]">Separate testnet intent: </span>
-                      <bdi dir="ltr" className="tabular font-semibold">{detail.settlement_proxy.preflight.amount} {detail.settlement_proxy.preflight.asset}</bdi>
-                      {" · "}{detail.settlement_proxy.preflight.network}
-                      {" · source wallet "}<bdi dir="ltr" className="mono break-all">{detail.settlement_proxy.preflight.source_wallet.id} · {detail.settlement_proxy.preflight.source_wallet.address}</bdi>
-                      {" · proxy recipient "}<bdi dir="ltr" className="mono break-all">{detail.settlement_proxy.preflight.destination_wallet.id} · {detail.settlement_proxy.preflight.destination_wallet.address}</bdi>
+                    {detail.settlement_proxy && <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
+                      Testnet intent: <bdi dir="ltr" className="tabular font-semibold">{detail.settlement_proxy.preflight.amount} {detail.settlement_proxy.preflight.asset}</bdi>
+                      {" · "}{detail.settlement_proxy.preflight.network}. Testnet execution does not discharge the real-world payable.
                     </p>}
-                  </div>
+                  </>
                 )}
                 {(detailState === "loading" || detailState === "failed" || detailState === "stale") && (
                   <p className="mt-2 text-[12px] text-[var(--color-warning)]">Source and control details are {detailState === "loading" ? "loading" : detailState === "stale" ? "stale" : "unavailable"}; no current action is inferred.</p>
@@ -1837,42 +1951,6 @@ export function CommandCenter() {
             </div>
           )}
 
-          {detail && (
-            <details className="border-b border-[var(--color-border)] pb-3">
-              <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and control evidence{detailState === "stale" ? " — last-known / stale" : ""} (technical details)</summary>
-              <section aria-label="Payment authority boundary" className="mt-3 grid gap-3 md:grid-cols-3">
-              <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-border)] ps-3" data-testid="source-truth">
-                <h3 className="text-[11px] font-semibold uppercase tracking-wide">Source-system truth</h3>
-                <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.source_truth.role}</p>
-                <p className="mono break-words text-[11px] text-[var(--color-ink-muted)]">
-                  {detail.truth.source_truth.source.source_kind} · {detail.truth.source_truth.source.source_system_id}
-                </p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Record {detail.truth.source_truth.source.record_id} · state {detail.truth.source_truth.obligation_state}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Source approval {detail.truth.source_truth.source.approval_state} · execution authority {detail.truth.source_truth.source.execution_authority}</p>
-              </article>
-              {simulatedTrustFixture ? (
-                <p className="text-[11px] text-[var(--color-ink-muted)]">Simulated source-wallet and destination-trust fixtures are excluded from the genuine obligation view.</p>
-              ) : (
-                <>
-                  <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-ink)] ps-3" data-testid="tameion-control-truth">
-                    <h3 className="text-[11px] font-semibold uppercase tracking-wide">Tameion control truth</h3>
-                    <p className="break-words text-[12px] text-[var(--color-ink)]">{detail.truth.tameion_control_truth.role}</p>
-                    <p className="text-[11px] text-[var(--color-ink-muted)]">Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
-                    <p className="text-[11px] text-[var(--color-ink-muted)]">Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
-                    <p className="text-[11px] text-[var(--color-ink-muted)]">Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
-                  </article>
-                  <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-warning)] ps-3" data-testid="settlement-truth">
-                    <h3 className="text-[11px] font-semibold uppercase tracking-wide">Settlement truth</h3>
-                    <p className="text-[12px] text-[var(--color-ink)]">{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
-                    <p className="text-[11px] text-[var(--color-ink-muted)]">Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
-                    <p className="mono break-all text-[11px] text-[var(--color-ink-muted)]">Provider reference {detail.truth.settlement_truth.provider_ref ?? "None"}</p>
-                  </article>
-                </>
-              )}
-              </section>
-            </details>
-          )}
-
           <section aria-label="Guided lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Payment journey</p>
@@ -1888,7 +1966,7 @@ export function CommandCenter() {
               </div>
             </nav>
             <div className="rounded border border-[var(--color-border)] px-3 py-2 md:hidden">
-              <p className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
+              <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
               <div className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Payment journey progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
                 <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
               </div>
@@ -1907,13 +1985,11 @@ export function CommandCenter() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Viewing {viewedStage} · Current position: {currentLifecycleStage}</p>
-                <h3 className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
-                <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">
-                  {selectedWorkspaceGuidance}
-                </p>
-                {workspaceAction && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next actor: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
+                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={`Current stage: ${viewedStage}`} className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
+                {!currentException && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
+                {workspaceAction && !currentException && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
                 {!workspaceAction && selectedId && detailState === "loaded" && (
-                  <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next actor: <strong className="text-[var(--color-ink)]">
+                  <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
                     {detail?.execution?.status === "FAILED" || detail?.execution?.status === "BLOCKED" ||
                     ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "")
                       ? "Unassigned · no permitted product action is available"
@@ -1944,6 +2020,16 @@ export function CommandCenter() {
                   </label>
                 )}
               </div>
+              {currentException && (
+                <section aria-label="Exception recovery" className="mt-3 space-y-2 rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
+                  <h4 className="text-[13px] font-semibold text-[var(--color-ink)]">Recovery guidance</h4>
+                  <p className="text-[12px] leading-5 text-[var(--color-ink)]"><strong>Current issue:</strong> {selectedWorkspaceGuidance}</p>
+                  <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Submission evidence:</strong> {detail ? submissionEvidenceCopy(detail) : "Submission and provider status are unavailable until current detail is refreshed."}</p>
+                  {detail && currentAuthorityGuidance(detail) && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">{currentAuthorityGuidance(detail)}</p>}
+                  <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Next action:</strong> {recoveryNextAction}</p>
+                  <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Next owner:</strong> {recoveryOwner}</p>
+                </section>
+              )}
               {workspaceAction && (
                 <PrimaryButton
                   disabled={busy || (workspaceAction.label === "Submit this exact Arc Testnet proxy intent" && !executionConfirmation.matchesExact)}
@@ -1952,6 +2038,11 @@ export function CommandCenter() {
                 >
                   {workspaceAction.label}
                 </PrimaryButton>
+              )}
+              {stageCompletionReceipt?.obligationId === selectedId && (
+                <p role="status" aria-label="Stage completion receipt" aria-live="polite" className="mt-3 rounded border border-[var(--color-success)] px-3 py-2 text-[12px] text-[var(--color-success)]">
+                  {stageCompletionReceipt.message}
+                </p>
               )}
             </div>
             {selectedId && detailState === "loaded" && !terminalExecutionNoAction && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
@@ -1977,60 +2068,7 @@ export function CommandCenter() {
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">REAL BUSINESS OBLIGATION</p>
                   <p className="mt-1 text-[13px] text-[var(--color-ink)]">Source: genuine business record · {selected?.service_category.replaceAll("_", " ").toLowerCase()}</p>
                 </div>
-                <details className="rounded border border-[var(--color-border)] px-3 py-2">
-                  <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Source records and payment details</summary>
-                <dl className="mt-2">
-                  <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
-                  <Field label="Source record / reference" value={String(detail.truth.source_truth.source.record_id || "Not captured")} />
-                  <Field label="Beneficiary captured in source" value={sourceText(detail.record, "beneficiary_name")} />
-                  <Field label="Source reference / invoice" value={sourceText(detail.record, "invoice_reference")} />
-                  <Field label="Particulars / service period" value={sourceText(detail.record, "particulars")} />
-                  <Field label="Source issue/invoice date" value={sourceText(detail.record, "issue_date")} />
-                  <Field label="Raw source due date" value={sourceText(detail.record, "due_date")} />
-                  <Field label="Effective due date / basis / authority" value={currentAssessment?.race
-                    ? buildAssessmentTrace(currentAssessment.race).find((step) => step.step === "SUPPLIED_FACTS")?.items
-                      .filter((item) => item.startsWith("Effective due date:") || item.startsWith("Effective date basis:") || item.startsWith("Effective date authority:"))
-                      .join(" · ") ?? "Not captured"
-                    : `${sourceText(detail.record, "effective_due_date")} · ${sourceText(detail.record, "effective_due_date_basis")} · ${sourceDateProvenance(detail.record)}`} />
-                  <Field label="Assessment as of" value={currentAssessment?.race?.evidence.authoritative_facts.as_of_date ?? "Not captured"} />
-                  <Field label="Source evidence identity" value={currentAssessment?.race?.evidence.evidence_ids.join(", ") || "Not captured"} />
-                  <Field
-                    label={detail.pae_sealed ? "Settlement amount in authorized intent" : "Indicative settlement equivalent"}
-                    value={settlementDisplay(
-                      { currency: detail.record.currency, amount: detail.record.amount },
-                      detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
-                      detail.pae_sealed,
-                    )}
-                  />
-                  <Field label="AI assessment" value={hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} — sealed advisory result` : "Not run"} />
-                  <Field label="Payment intent" value={detail.pae_sealed ? "Sealed intent exists; human authorization retained" : "No payment intent created"} />
-                  <Field
-                    label="Product destination trust"
-                    value={simulatedTrustFixture
-                      ? "Not established for this genuine obligation"
-                      : `${judgeReadableState(detail.aggregate.destination_verification_status)} · ${judgeReadableState(detail.aggregate.destination_operational_status)}`}
-                  />
-                  <Field label="Execution authority" value={judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority)} />
-                </dl>
-                {(detail.pae_sealed || (hasCurrentPayAssessment && routeAssuranceReady)) && (
-                  <section aria-label="Exact payment intent summary" className="space-y-1 rounded border border-[var(--color-border)] p-3">
-                    <h3 className="text-[12px] font-semibold">{detail.pae_sealed ? "Exact sealed intent summary" : "Exact current intent summary — before authorization"}</h3>
-                    <dl>
-                      <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
-                      <Field label="Settlement amount / asset / network" value={`${detail.aggregate.amount} ${detail.aggregate.asset} · ${detail.aggregate.network}`} />
-                      <Field label="FX rate" value={detail.truth.settlement_truth.settlement_conversion_rate ?? "No FX rate recorded"} />
-                      <Field label="Arc Testnet proxy recipient" value={`${detail.aggregate.counterparty_id ?? "Unavailable"} · ${detail.aggregate.destination_address}`} />
-                      <Field label="Source vendor destination reference" value={sourceText(detail.record, "source_destination_reference_token")} />
-                      <Field label="Source reference" value={String(detail.truth.source_truth.source.record_id || "Not captured")} />
-                      <Field label="Assessment" value={currentAssessment ? `${currentAssessment.decision} · ${currentAssessment.assessment_id} · ${currentAssessment.assessment_hash}` : "Not captured"} />
-                      <Field label="Assurance / authorization" value={detail.pae_sealed ? judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority) : "Pending separate Safety Kernel review and human authorization"} />
-                      <Field label="Fee / total debit cap" value={detail.settlement_proxy
-                        ? `${detail.settlement_proxy.preflight.max_network_fee} / ${detail.settlement_proxy.preflight.max_total_debit} USDC`
-                        : "Read-only provider preflight not prepared"} />
-                    </dl>
-                  </section>
-                )}
-                </details>
+
                 {hasCurrentAssessment && currentAssessment && currentAssessment.decision !== "PAY" && (
                   <section aria-label="Current assessment and resolution" className="space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
                     <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
@@ -2165,7 +2203,6 @@ export function CommandCenter() {
                 )}
 
                 {currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
-                {currentResult?.label === "assess" && <EvidencePanel value={currentResult.data} />}
               </div>
             )}
 
@@ -2182,54 +2219,32 @@ export function CommandCenter() {
                   {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && hasCurrentPayAssessment && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
                 </p>
                 {detailState === "loaded" && selectedId && detail && (
-                  <section aria-label="Genuine obligation and Arc Testnet settlement proxy" className="space-y-2 rounded border border-[var(--color-border)] p-3">
-                    <p className="text-[12px] font-semibold">Source obligation and settlement proxy are separate identities</p>
-                    <p className="text-[12px] font-semibold text-[var(--color-warning)]">{detail.source_settlement_disclosure ?? "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable."}</p>
-                    <dl className="grid grid-cols-1 gap-x-5 sm:grid-cols-2">
-                      <Field label="Genuine source obligation" value={selectedId} />
-                      <Field label="Source payable" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
-                      <Field label="Source vendor destination reference" value={sourceText(detail.record, "source_destination_reference_token")} />
-                      <Field label="Source record status" value={`${sourcePayableState(detail)}; source record is not changed by testnet settlement`} />
-                      {detail.settlement_proxy ? <>
-                        <Field label="Settlement proxy amount" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset}`} />
-                        <Field label="Settlement network" value={detail.settlement_proxy.preflight.network} />
-                        <Field label="Testnet source wallet" value={`${detail.settlement_proxy.preflight.source_wallet.id} · ${detail.settlement_proxy.preflight.source_wallet.address}`} />
-                        <Field label="Testnet proxy recipient" value={`${detail.settlement_proxy.preflight.destination_wallet.id} · ${detail.settlement_proxy.preflight.destination_wallet.address}`} />
-                      <details className="sm:col-span-2">
-                        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink-muted)]">Evidence and technical details</summary>
-                        <dl className="mt-2">
-                          <Field label="Proxy aggregate version" value={String(detail.settlement_proxy.mapped_aggregate_version)} />
-                          <Field label="Preflight evidence hash" value={detail.settlement_proxy.preflight.evidence_sha256} />
-                          <Field label="Maximum network fee / total debit" value={`${detail.settlement_proxy.preflight.max_network_fee} / ${detail.settlement_proxy.preflight.max_total_debit} USDC`} />
-                        </dl>
-                      </details>
-                      </> : <Field label="Testnet settlement proxy" value="Not prepared; no testnet destination has been mapped to this source obligation" />}
+                  <section aria-label="Approver decision packet" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                    <h3 className="text-[14px] font-semibold text-[var(--color-ink)]">Approver decision packet</h3>
+                    <p className="text-[12px] text-[var(--color-warning)]">Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.</p>
+                    <dl className="grid gap-x-5 sm:grid-cols-2">
+                      <Field label="Source amount and payable" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
+                      <Field label="Business status" value={judgeReadableState(detail.truth.source_truth.obligation_state)} />
+                      <Field label="Advisory recommendation" value={hasCurrentAssessment && currentAssessment ? currentAssessment.decision : "No current assessment is available in this detail"} />
+                      <Field label="Payment readiness" value={detail.aggregate.state === "AUTHORIZED"
+                        ? detail.pae_sealed ? "Authorization recorded · sealed instruction present" : "Authorization recorded · assurance failed or blocked"
+                        : proxyPreparationReady ? "Current candidate is eligible for proxy preparation" : routeAssuranceReady ? "Current route evidence is available" : "Payment route or current assessment is not ready"} />
                     </dl>
-                    {proxyPreparationReady && (
-                      <div className="space-y-1">
-                        <p className="text-[12px] text-[var(--color-ink-muted)]">Current LIVE_AI PAY and sole-candidate checks pass. Circle wallet, balance, fee, and duplicate checks are read-only. Preparing the proxy changes the settlement aggregate, so a fresh assessment is required before authorization.</p>
-                      </div>
-                    )}
-                    {!detail.settlement_proxy && hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" &&
-                      allAssessed && solePayCandidateId && solePayCandidateId !== selectedId && (
-                        <p role="status" className="text-[12px] text-[var(--color-warning)]">
-                          The existing deterministic gate selected {solePayCandidateId}; select that obligation before preparing a testnet proxy.
-                        </p>
-                      )}
+                    {currentAssessment && hasCurrentAssessment && <div>
+                      <p className="text-[12px] font-semibold text-[var(--color-ink)]">Concise assessment reasons</p>
+                      <ul className="mt-1 list-disc space-y-1 ps-5 text-[12px] text-[var(--color-ink-muted)]">
+                        {(currentAssessment.race?.result.decision_summary ? [currentAssessment.race.result.decision_summary] : currentAssessment.reasons).slice(0, 3).map((reason, index) => <li key={index}>{reason}</li>)}
+                      </ul>
+                    </div>}
+                    {detail.settlement_proxy ? (
+                      <dl className="grid gap-x-5 sm:grid-cols-2">
+                        <Field label="Controlled testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
+                        <Field label="Proxy recipient" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
+                      </dl>
+                    ) : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
+                    <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Authorization records approval for the reviewed obligation. Assurance and execution remain separately gated; authorization alone does not submit a payment.</p>
+                    {!detail.settlement_proxy && proxyPreparationReady && <p className="text-[12px] text-[var(--color-ink-muted)]">Proxy preparation uses read-only provider checks. After preparation, a fresh assessment is required before authorization.</p>}
                   </section>
-                )}
-                {authorizationAssessment && (
-                  <details className="border-s-2 border-[var(--color-border)] ps-3 text-[12px] text-[var(--color-ink-muted)]">
-                    <summary className="cursor-pointer font-semibold">Reviewed assessment evidence</summary>
-                    <dl className="mt-2 space-y-1">
-                      <Field label="Reviewed assessment" value={authorizationAssessment.assessment_id} />
-                      <Field label="Assessment hash" value={authorizationAssessment.assessment_hash} />
-                      <Field label="Assessment aggregate version" value={authorizationAssessment.aggregate_version} />
-                      <Field label="Decision reviewed" value={authorizationAssessment.decision} />
-                      <ul className="list-disc ps-5">{authorizationAssessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
-                      <RacePanel race={authorizationAssessment.race} />
-                    </dl>
-                  </details>
                 )}
                 {authorizationPrerequisitesVisible(detailState, Boolean(selectedId), Boolean(detail?.pae_sealed), Boolean(detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution)) && (() => {
                   const blockers = authorizationBlockers({
@@ -2265,23 +2280,23 @@ export function CommandCenter() {
                     ? `This selected genuine obligation is bound to a distinct Arc Testnet settlement proxy. The source payable remains ${sourcePayableState(detail)}.`
                     : "No Arc Testnet proxy is bound to this selected obligation. A testnet destination is never inferred from or substituted for the source vendor route."}
                 </p>
+                {detail?.execution_kill_switched === true && (
+                  <p role="alert" className="rounded border-s-4 border-s-[var(--color-danger)] bg-[var(--color-danger-bg)] px-3 py-3 text-[14px] font-semibold text-[var(--color-danger)]">
+                    Execution disabled by the active kill switch. This block takes priority over any exact-packet gate.
+                  </p>
+                )}
 
                 {detail?.settlement_proxy && (
                   <section aria-label="Arc Testnet assurance and payment gate" className="space-y-2 rounded border border-[var(--color-border)] p-3">
-                    <p className="text-[12px] font-semibold">{detail.source_settlement_disclosure}</p>
+                    <p className="text-[12px] font-semibold">ARC TESTNET · Controlled settlement proxy · the real-world payable remains {sourcePayableState(detail)}.</p>
                     <dl>
-                      <Field label="Genuine obligation / source payable" value={`${selectedId} · ${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
+                      <Field label="Source amount and payable" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
                       <Field label="Arc Testnet proxy intent" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
-                      <Field label="Testnet source wallet" value={`${detail.settlement_proxy.preflight.source_wallet.id} · ${detail.settlement_proxy.preflight.source_wallet.address}`} />
-                      <Field label="Testnet proxy recipient" value={`${detail.settlement_proxy.preflight.destination_wallet.id} · ${detail.settlement_proxy.preflight.destination_wallet.address}`} />
-                      <Field label="Current exact packet gate" value={detail.execution_gate ?? "Locked until assurance and PAE are current"} />
-                      {detail.execution_packet && <Field label="Prime reviewed exact packet SHA-256" value={detail.execution_packet.packet_sha256} />}
+                      <Field label="Testnet proxy recipient" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
+                      <Field label="Current payment status" value={detail.pae_sealed ? "Approved instruction sealed; execution remains separately gated" : detail.aggregate.state === "AUTHORIZED" ? "Authorization recorded · assurance failed or blocked" : "No sealed payment instruction is available"} />
                     </dl>
                     {detail.execution?.status === "UNKNOWN" && <p role="status" className="text-[12px] text-[var(--color-warning)]">Provider outcome is UNKNOWN. Reconciliation is read-only and resubmission is blocked.</p>}
                     {detail.execution?.status === "SETTLED" && <p role="status" className="text-[12px] font-semibold">TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION · the source payable remains {sourcePayableState(detail)}.</p>}
-                    {detail.execution_packet && !detail.execution && (
-                      <EvidencePanel value={detail.execution_packet.packet} />
-                    )}
                     {detail.execution_packet && !detail.execution && !exactPacketGateOpen && (
                       <p className="text-[11px] text-[var(--color-warning)]">
                         {detail.execution_kill_switched === true
@@ -2295,26 +2310,6 @@ export function CommandCenter() {
                     {noCurrentExactExecutionPacket && <p className="text-[11px] text-[var(--color-warning)]">No current exact execution packet is available. Payment authority must be re-established before submission.</p>}
                   </section>
                 )}
-
-                <details className="rounded border border-[var(--color-border)] p-3">
-                  <summary className="cursor-pointer text-[13px] font-semibold text-[var(--color-ink)]">View assurance evidence</summary>
-                  <div className="mt-3 space-y-2">
-                    <p role="status" className="text-[12px] text-[var(--color-ink-muted)]">
-                      {detail?.assurance_evidence?.message ?? "Assurance evidence is expected but unavailable."}
-                    </p>
-                    {detail?.assurance_evidence && (detail.assurance_evidence.state === "AVAILABLE_CURRENT_BINDING" || detail.assurance_evidence.state === "AVAILABLE_HISTORICAL") && (
-                      <>
-                        <dl className="space-y-1">
-                          <Field label="Assurance record" value={detail.assurance_evidence.assurance_id} />
-                          <Field label="Recorded at" value={detail.assurance_evidence.recorded_at} />
-                          <Field label="Recorded aggregate version" value={detail.assurance_evidence.aggregate_version} />
-                          <Field label="Recorded policy" value={detail.assurance_evidence.policy_version} />
-                        </dl>
-                        <SafetyKernelBreakdown overall={detail.assurance_evidence.overall} controlResults={detail.assurance_evidence.control_results} />
-                      </>
-                    )}
-                  </div>
-                </details>
 
                 <div
                   className={`flex flex-wrap items-center justify-between gap-3 border-s-[3px] px-3 py-2 ${
@@ -2348,7 +2343,7 @@ export function CommandCenter() {
                           }),
                         )
                       }
-                      className="rounded border border-[var(--color-danger)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-danger)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                      className="min-h-11 rounded border border-[var(--color-danger)] px-3 py-2 text-[12px] font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-danger)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Disable this obligation
                     </button>
@@ -2362,7 +2357,7 @@ export function CommandCenter() {
                           }),
                         )
                       }
-                      className="rounded border border-[var(--color-border)] px-3 py-1.5 text-[12px] font-medium text-[var(--color-ink)] transition hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
+                      className="min-h-11 rounded border border-[var(--color-border)] px-3 py-2 text-[12px] font-medium text-[var(--color-ink)] transition hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Re-enable
                     </button>
@@ -2383,17 +2378,46 @@ export function CommandCenter() {
 
             {panel === "reconciliation" && (
               <div className="max-w-xl space-y-3">
-                <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detailState, detail?.execution, Boolean(detail?.settlement_proxy), detail ? sourcePayableState(detail) : "OUTSTANDING")}</p>
-                {detail?.settlement_proxy && detailState === "loaded" && (
-                  <dl className="rounded border border-[var(--color-border)] p-3">
-                    <Field label="Source obligation" value={`${selectedId} · ${detail.record.amount} ${detail.record.currency}`} />
-                    <Field label="Source payable state" value={`${sourcePayableState(detail)} · unchanged by testnet execution`} />
-                    <Field label="Arc Testnet settlement proxy" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
-                    <Field label="Proxy recipient" value={`${detail.settlement_proxy.preflight.destination_wallet.id} · ${detail.settlement_proxy.preflight.destination_wallet.address}`} />
-                    <p className="pt-2 text-[12px] text-[var(--color-warning)]">{detail.source_settlement_disclosure}</p>
-                  </dl>
+                {detail && detailState === "loaded" && detail.settlement_proxy ? (() => {
+                  const evidence = detail.execution?.provider_evidence;
+                  const observedAmount = evidence?.atomic_amount ?? evidence?.atomicAmount;
+                  const observedDestination = evidence?.destination_address ?? evidence?.destinationAddress;
+                  const amountMatch = evidence?.status === "CONFIRMED" && observedAmount && detail.execution?.atomic_amount
+                    ? observedAmount === detail.execution.atomic_amount ? "confirmed" : "mismatch recorded"
+                    : "not established from stored provider evidence";
+                  const destinationMatch = evidence?.status === "CONFIRMED" && observedDestination && detail.execution?.destination_address
+                    ? observedDestination.toLowerCase() === detail.execution.destination_address.toLowerCase() ? "confirmed" : "mismatch recorded"
+                    : "not established from stored provider evidence";
+                  const providerState = evidence?.status ?? (detail.execution?.provider_ref ? "Provider status not included in current detail" : "No provider reference is recorded for this instruction");
+                  const result = detail.execution?.status === "SETTLED"
+                    ? "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION"
+                    : detail.execution?.status === "UNKNOWN"
+                      ? "Outcome unknown · read-only reconciliation only; do not resubmit"
+                      : detail.execution?.status === "FAILED"
+                        ? "Provider attempt failed · successful reconciliation is not recorded"
+                        : detail.execution?.status === "BLOCKED"
+                          ? "Execution is blocked · external provider outcome is not established by this record"
+                          : "No Tameion execution record is recorded for this instruction";
+                  return (
+                    <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                      <h3 className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
+                      <p className="text-[13px] font-semibold text-[var(--color-ink)]">{result}</p>
+                      <dl>
+                        <Field label="Source obligation" value={`${sourceText(detail.record, "beneficiary_name")} · ${detail.record.amount} ${detail.record.currency}`} />
+                        <Field label="Source payable" value={`${sourcePayableState(detail)} · remains outstanding in the source record`} />
+                        <Field label="Testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
+                        <Field label="Testnet proxy destination" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
+                        <Field label="Provider status" value={providerState} />
+                        <Field label="Amount match" value={amountMatch} />
+                        <Field label="Destination match" value={destinationMatch} />
+                        <Field label="Reconciliation result" value={detail.execution?.status === "SETTLED" ? "Testnet execution reconciled to source obligation; real-world payable is unchanged." : result} />
+                      </dl>
+                      <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">{detail.source_settlement_disclosure ?? "ARC TESTNET · Controlled settlement proxy · the real-world payable remains outstanding."}</p>
+                    </section>
+                  );
+                })() : (
+                  <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detailState, detail?.execution, Boolean(detail?.settlement_proxy), detail ? sourcePayableState(detail) : "OUTSTANDING")}</p>
                 )}
-                {detail && detailState === "loaded" && <EvidencePanel value={detail} />}
               </div>
             )}
 
@@ -2441,9 +2465,7 @@ export function CommandCenter() {
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                         Supplier / source reference
                       </h3>
-                      <Field label="Source system" value={report.supplier_reference.source_system_id} />
                       <Field label="Record ID" value={report.supplier_reference.record_id} />
-                      <Field label="Record type" value={report.supplier_reference.record_type} />
                       <Field label="Source approval" value={report.supplier_reference.approval_state} />
                       <Field label="Execution authority" value={report.supplier_reference.execution_authority} />
                     </div>
@@ -2496,27 +2518,6 @@ export function CommandCenter() {
                         Assessment truth
                       </h3>
                       <Field label="Status" value={report.status} />
-                      {report.assessment_id && <Field label="Assessment ID" value={report.assessment_id} />}
-                      {report.assessment_hash && (
-                        <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5">
-                          <dt className="text-[13px] text-[var(--color-ink-muted)]">Assessment hash</dt>
-                          <dd className="mono text-[13px] font-medium break-all text-[var(--color-ink)]">
-                            {report.assessment_hash}
-                          </dd>
-                        </div>
-                      )}
-                      {report.assessment_time && <Field label="Assessment time" value={report.assessment_time} />}
-                      {report.provider_mode && (
-                        <div className="flex items-center gap-2 border-b border-[var(--color-border)] py-1.5">
-                          <span className="text-[11px] font-semibold uppercase text-[var(--color-ink-muted)]">Provider mode</span>
-                          <RuntimeBadge mode={report.provider_mode} />
-                        </div>
-                      )}
-                      {report.provider_used && (
-                        <p className="text-[11px] text-[var(--color-ink-muted)] border-b border-[var(--color-border)] py-1.5">
-                            Provider: {report.provider_used} (advisory only, non-authoritative)
-                        </p>
-                      )}
                     </div>
 
                     {/* Reasons */}
@@ -2555,7 +2556,7 @@ export function CommandCenter() {
                         </p>
                         {report.remediation.map((item) => (
                           <div key={item.finding_code} className="border-s-2 border-[var(--color-warning)] ps-2 space-y-1">
-                            <p className="text-[12px]"><strong>{item.finding_code}:</strong> {item.reason}</p>
+                            <p className="text-[12px]">{item.reason}</p>
                             <p className="text-[11px] text-[var(--color-ink-muted)]">
                               <strong>Action:</strong> {item.required_action} · <strong>Owner:</strong> {item.owner_role} · reassess{" "}
                               {item.reassess_after_resolution ? "permitted" : "not permitted"}
@@ -2575,6 +2576,201 @@ export function CommandCenter() {
               </div>
             )}
           </div>
+
+          {panel !== "report" && detailState === "loaded" && detail && (
+            <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]">Activity &amp; evidence · {activityItems.length} timestamped records</summary>
+              <section aria-label="Activity and evidence" className="space-y-4 border-t border-[var(--color-border)] pt-3">
+                <div>
+                  <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Available evidence history</h4>
+                  {activityItems.length ? (
+                    <ol className="mt-2 space-y-2">
+                      {activityItems.map((item, index) => (
+                        <li key={`${item.occurredAt}-${item.label}-${index}`} className="border-s-2 border-[var(--color-border-strong)] ps-3">
+                          <p className="text-[12px] font-semibold text-[var(--color-ink)]">{item.label}</p>
+                          <time dateTime={item.occurredAt} className="text-[11px] text-[var(--color-ink-muted)]">{item.occurredAt} · stored time</time>
+                          <p className="text-[12px] text-[var(--color-ink-muted)]">{item.result}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">No timestamped durable evidence is available in this detail.</p>}
+                </div>
+                <div>
+                  <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Current state · not an event history</h4>
+                  <ul className="mt-2 space-y-1 text-[12px] text-[var(--color-ink-muted)]">
+                    <li>{assessmentCurrentState}</li>
+                    <li>Current authorization state: {authorizationCurrentState}</li>
+                    <li>{paeCurrentState}</li>
+                    <li>{executionCurrentState}</li>
+                    <li>Source payable: {sourcePayableState(detail)} · unchanged by Arc Testnet activity.</li>
+                  </ul>
+                </div>
+                {currentAuthorityGuidance(detail) && (
+                  <p className="border-s-2 border-[var(--color-warning)] ps-3 text-[12px] text-[var(--color-warning)]">{currentAuthorityGuidance(detail)}</p>
+                )}
+              </section>
+            </details>
+          )}
+
+          {panel !== "report" && detail && (
+            <details className="rounded border border-[var(--color-border)] px-3 py-2">
+              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]">Developer &amp; audit evidence</summary>
+              <div className="space-y-2 border-t border-[var(--color-border)] pt-3 text-[12px]">
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Assessment evidence</summary>
+                  <div className="space-y-2 pt-2">
+                    {detail.current_assessment ? <>
+                      <dl>
+                        <Field label="Assessment ID" value={detail.current_assessment.assessment_id} />
+                        <Field label="Assessment hash" value={detail.current_assessment.assessment_hash} />
+                        <Field label="Aggregate version" value={detail.current_assessment.aggregate_version} />
+                        <Field label="Provider mode" value={detail.current_assessment.provider_mode ?? "Not available"} />
+                      </dl>
+                      <ul className="list-disc ps-5">{detail.current_assessment.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul>
+                      {detail.current_assessment.race && <AssessmentTraceView race={detail.current_assessment.race} />}
+                      {currentAssessment?.provider_truth && <ProviderTruthRow truth={currentAssessment.provider_truth} />}
+                      {currentAssessment && <EvidenceAndRuntimeDetail assessment={currentAssessment} />}
+                    </> : <p>No current assessment artifact is present in this detail.</p>}
+                    {currentResult?.label === "assess" && <EvidencePanel value={currentResult.data} />}
+                  </div>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Authorization evidence</summary>
+                  <dl className="pt-2">
+                    <Field label="Authorization state" value={detail.truth.tameion_control_truth.aggregate_state} />
+                    <Field label="Release authority" value={detail.truth.tameion_control_truth.execution_release_authority} />
+                    <Field label="Approval record details" value="Not included in the current obligation detail response." />
+                    <Field label="Approval timestamp / actor" value="Not available in the current detail; no event is inferred." />
+                  </dl>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Assurance evidence</summary>
+                  <div className="space-y-2 pt-2">
+                    <p role="status" className="text-[12px] text-[var(--color-ink-muted)]">{detail.assurance_evidence?.message ?? "Assurance evidence is expected but unavailable."}</p>
+                    {detail.assurance_evidence && (detail.assurance_evidence.state === "AVAILABLE_CURRENT_BINDING" || detail.assurance_evidence.state === "AVAILABLE_HISTORICAL") && <>
+                      <dl>
+                        <Field label="Assurance record" value={detail.assurance_evidence.assurance_id} />
+                        <Field label="Recorded at" value={detail.assurance_evidence.recorded_at} />
+                        <Field label="Recorded aggregate version" value={detail.assurance_evidence.aggregate_version} />
+                        <Field label="Recorded policy" value={detail.assurance_evidence.policy_version} />
+                      </dl>
+                      <SafetyKernelBreakdown overall={detail.assurance_evidence.overall} controlResults={detail.assurance_evidence.control_results} />
+                    </>}
+                  </div>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">PAE / instruction</summary>
+                  <dl className="pt-2">
+                    <Field label="Sealed instruction" value={detail.pae_sealed ? "Present" : "Not present"} />
+                    <Field label="Instruction hash" value={detail.sealed_pae_instruction_hash ?? "Not available"} />
+                    <Field label="Execution gate" value={detail.execution_gate ?? "Not available"} />
+                    {detail.execution_packet?.packet_sha256 && <Field label="Exact packet SHA-256" value={detail.execution_packet.packet_sha256} />}
+                  </dl>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Execution / provider</summary>
+                  <dl className="pt-2">
+                    <Field label="Execution state" value={detail.execution?.status ?? "No Tameion execution record"} />
+                    <Field label="Provider reference" value={detail.execution?.provider_ref ?? "Not recorded"} />
+                    <Field label="Instruction idempotency key" value={detail.execution?.idempotency_key ?? "Not available"} />
+                    <Field label="Source wallet reference" value={detail.aggregate.source_wallet_ref} />
+                    <Field label="Destination address" value={detail.execution?.destination_address ?? detail.aggregate.destination_address} />
+                    <Field label="Provider status evidence" value={detail.execution?.provider_evidence?.status ?? "Not available"} />
+                  </dl>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Reconciliation evidence</summary>
+                  <div className="space-y-2 pt-2">
+                    <dl>
+                      <Field label="Settlement status" value={detail.truth.settlement_truth.status} />
+                      <Field label="Provider reconciliation time" value={detail.execution?.provider_evidence?.reconciled_at ?? "Not recorded"} />
+                      <Field label="Provider evidence status" value={detail.execution?.provider_evidence?.status ?? "Not available"} />
+                    </dl>
+                    <EvidencePanel value={detail.execution?.provider_evidence ?? detail.truth.settlement_truth} />
+                  </div>
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and current payment records</summary>
+                <dl className="mt-2">
+                  <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
+                  <Field label="Source record / reference" value={String(detail.truth.source_truth.source.record_id || "Not captured")} />
+                  <Field label="Beneficiary captured in source" value={sourceText(detail.record, "beneficiary_name")} />
+                  <Field label="Source reference / invoice" value={sourceText(detail.record, "invoice_reference")} />
+                  <Field label="Particulars / service period" value={sourceText(detail.record, "particulars")} />
+                  <Field label="Source issue/invoice date" value={sourceText(detail.record, "issue_date")} />
+                  <Field label="Raw source due date" value={sourceText(detail.record, "due_date")} />
+                  <Field label="Effective due date / basis / authority" value={currentAssessment?.race
+                    ? buildAssessmentTrace(currentAssessment.race).find((step) => step.step === "SUPPLIED_FACTS")?.items
+                      .filter((item) => item.startsWith("Effective due date:") || item.startsWith("Effective date basis:") || item.startsWith("Effective date authority:"))
+                      .join(" · ") ?? "Not captured"
+                    : `${sourceText(detail.record, "effective_due_date")} · ${sourceText(detail.record, "effective_due_date_basis")} · ${sourceDateProvenance(detail.record)}`} />
+                  <Field label="Assessment as of" value={currentAssessment?.race?.evidence.authoritative_facts.as_of_date ?? "Not captured"} />
+                  <Field label="Source evidence identity" value={currentAssessment?.race?.evidence.evidence_ids.join(", ") || "Not captured"} />
+                  <Field
+                    label={detail.pae_sealed ? "Settlement amount in authorized intent" : "Indicative settlement equivalent"}
+                    value={settlementDisplay(
+                      { currency: detail.record.currency, amount: detail.record.amount },
+                      detail.aggregate ? { amount: detail.aggregate.amount, asset: detail.aggregate.asset } : undefined,
+                      detail.pae_sealed,
+                    )}
+                  />
+                  <Field label="AI assessment" value={hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} — sealed advisory result` : "Not run"} />
+                  <Field label="Payment intent" value={detail.pae_sealed ? "Sealed intent exists; human authorization retained" : "No payment intent created"} />
+                  <Field
+                    label="Product destination trust"
+                    value={simulatedTrustFixture
+                      ? "Not established for this genuine obligation"
+                      : `${judgeReadableState(detail.aggregate.destination_verification_status)} · ${judgeReadableState(detail.aggregate.destination_operational_status)}`}
+                  />
+                  <Field label="Execution authority" value={judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority)} />
+                </dl>
+                {(detail.pae_sealed || (hasCurrentPayAssessment && routeAssuranceReady)) && (
+                  <section aria-label="Exact payment intent summary" className="space-y-1 rounded border border-[var(--color-border)] p-3">
+                    <h3 className="text-[12px] font-semibold">{detail.pae_sealed ? "Exact sealed intent summary" : "Exact current intent summary — before authorization"}</h3>
+                    <dl>
+                      <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
+                      <Field label="Settlement amount / asset / network" value={`${detail.aggregate.amount} ${detail.aggregate.asset} · ${detail.aggregate.network}`} />
+                      <Field label="FX rate" value={detail.truth.settlement_truth.settlement_conversion_rate ?? "No FX rate recorded"} />
+                      <Field label="Arc Testnet proxy recipient" value={`${detail.aggregate.counterparty_id ?? "Unavailable"} · ${detail.aggregate.destination_address}`} />
+                      <Field label="Source vendor destination reference" value={sourceText(detail.record, "source_destination_reference_token")} />
+                      <Field label="Source reference" value={String(detail.truth.source_truth.source.record_id || "Not captured")} />
+                      <Field label="Assessment" value={currentAssessment ? `${currentAssessment.decision} · ${currentAssessment.assessment_id} · ${currentAssessment.assessment_hash}` : "Not captured"} />
+                      <Field label="Assurance / authorization" value={detail.pae_sealed ? judgeReadableState(detail.truth.tameion_control_truth.execution_release_authority) : "Pending separate Safety Kernel review and human authorization"} />
+                      <Field label="Fee / total debit cap" value={detail.settlement_proxy
+                        ? `${detail.settlement_proxy.preflight.max_network_fee} / ${detail.settlement_proxy.preflight.max_total_debit} USDC`
+                        : "Read-only provider preflight not prepared"} />
+                    </dl>
+                  </section>
+                )}
+                </details>
+                <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                  <summary className="min-h-11 cursor-pointer py-2 font-semibold">Source and control records</summary>
+                  <section aria-label="Payment authority boundary" className="mt-2 grid gap-3 md:grid-cols-3">
+                    <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-border)] ps-3" data-testid="source-truth">
+                      <h4 className="font-semibold">Source-system truth</h4>
+                      <p>{detail.truth.source_truth.role}</p>
+                      <p className="mono break-words">{detail.truth.source_truth.source.source_kind} · {detail.truth.source_truth.source.source_system_id}</p>
+                      <p>Record {detail.truth.source_truth.source.record_id} · state {detail.truth.source_truth.obligation_state}</p>
+                      <p>Source approval {detail.truth.source_truth.source.approval_state} · execution authority {detail.truth.source_truth.source.execution_authority}</p>
+                    </article>
+                    <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-ink)] ps-3" data-testid="tameion-control-truth">
+                      <h4 className="font-semibold">Tameion control truth</h4>
+                      <p>{detail.truth.tameion_control_truth.role}</p>
+                      <p>Aggregate {detail.truth.tameion_control_truth.aggregate_state} · v{detail.truth.tameion_control_truth.aggregate_version}</p>
+                      <p>Assessment {detail.truth.tameion_control_truth.assessment_state} · PAE {detail.truth.tameion_control_truth.pae_state}</p>
+                      <p>Release authority {detail.truth.tameion_control_truth.execution_release_authority}</p>
+                    </article>
+                    <article className="min-w-0 space-y-1 border-s-2 border-[var(--color-warning)] ps-3" data-testid="settlement-truth">
+                      <h4 className="font-semibold">Settlement truth</h4>
+                      <p>{detail.truth.settlement_truth.provider_target} · {detail.truth.settlement_truth.network}</p>
+                      <p>Runtime {detail.truth.settlement_truth.runtime} · status {detail.truth.settlement_truth.status}</p>
+                      <p className="mono break-all">Provider reference {detail.truth.settlement_truth.provider_ref ?? "None"}</p>
+                    </article>
+                  </section>
+                </details>
+              </div>
+            </details>
+          )}
         </section>
       </div>
 

@@ -206,7 +206,19 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toContainText("PAY recommendation (advisory)");
   await expect(page.getByRole("button", { name: "Obligation" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("No payment intent created")).toBeHidden();
-  await expect(page.getByText("Source records and payment details")).toBeVisible();
+  const developerEvidence = page.getByText("Developer & audit evidence");
+  await expect(developerEvidence.locator("xpath=..")).not.toHaveAttribute("open");
+  await expect(page.getByText("Source and current payment records")).toBeHidden();
+  await developerEvidence.focus();
+  await page.keyboard.press("Enter");
+  await expect(developerEvidence.locator("xpath=..")).toHaveAttribute("open", "");
+  await expect(developerEvidence.locator("xpath=..").locator("details[open]")).toHaveCount(0);
+  const sourceEvidence = page.getByText("Source and current payment records");
+  await expect(sourceEvidence.locator("xpath=..")).not.toHaveAttribute("open");
+  await sourceEvidence.click();
+  await expect(page.getByText("Source amount").last()).toBeVisible();
+  await sourceEvidence.click();
+  await developerEvidence.click();
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
   await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
@@ -313,12 +325,12 @@ test("the permitted proxy-preparation step and its reason fit the first desktop 
   await expect(page.getByTestId("current-next-step")).toContainText("Prepare the Arc Testnet proxy");
   await expect(page.getByTestId("current-next-step")).toContainText("fresh assessment");
   await expect(page.getByTestId("current-next-step")).toContainText("then review");
-  await expect(page.getByTestId("current-next-step")).toContainText("Next actor: Authorized operator");
+  await expect(page.getByTestId("current-next-step")).toContainText("Next owner: Authorized operator");
   const firstViewport = await page.evaluate(() => {
     const step = document.querySelector('[data-testid="current-next-step"]');
     const reason = step?.querySelector("h3") ?? null;
     const guidance = Array.from(step?.querySelectorAll("p") ?? []).find((element) => element.textContent?.includes("Prepare the Arc Testnet proxy")) ?? null;
-    const actor = Array.from(step?.querySelectorAll("p") ?? []).find((element) => element.textContent?.includes("Next actor:")) ?? null;
+    const actor = Array.from(step?.querySelectorAll("p") ?? []).find((element) => element.textContent?.includes("Next owner:")) ?? null;
     const elements = [
       { name: "selected source identity", element: document.querySelector('[aria-label="Selected source obligation"] h2') },
       { name: "current lifecycle stage", element: document.querySelector('[aria-label="Payment lifecycle"] [aria-current="step"]') },
@@ -354,13 +366,13 @@ test("sealed, submitted, unknown and reconciled proxy states preserve source tru
     const summary = page.getByRole("region", { name: "Selected source obligation" });
     await expect(summary).toContainText("125.00 USD");
     await expect(summary).toContainText("OUTSTANDING");
-    await expect(summary).toContainText("Arc Testnet settlement proxy");
+    await expect(summary).toContainText("Controlled settlement proxy");
     await expect(summary).toContainText("125.000000 USDC");
     await expect(summary).toContainText("ARC_TESTNET");
     const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
     await expect(page.getByTestId("current-next-step")).toContainText(scenario.lifecycle);
     await expect(page.getByTestId("current-next-step")).toContainText(`Current position: ${scenario.position}`);
-    await expect(page.getByTestId("current-next-step")).toContainText(scenario.actor);
+    await expect(page.getByTestId("current-next-step")).toContainText(`Next owner: ${scenario.actor}`);
     if (scenario.action) {
       await expect(page.getByRole("button", { name: scenario.action })).toBeVisible();
     } else {
@@ -428,6 +440,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(page.getByText("No payment intent created")).toBeHidden();
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+  await expect(page.getByText("Step 1 of 6 · Obligation")).toHaveAttribute("aria-live", "polite");
   const mobileBack = page.getByRole("button", { name: "Back" });
   await expect(mobileBack).toBeVisible();
   expect(await mobileBack.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);

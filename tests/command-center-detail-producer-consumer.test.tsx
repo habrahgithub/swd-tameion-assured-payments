@@ -268,7 +268,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
     expect(body.execution).toBeNull();
     const { main } = await renderProducerJson(body);
-    expect(screen.getByRole("heading", { name: "PAE sealed · no current exact packet" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Current stage: Obligation" })).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Payment lifecycle" }).querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");
     expect(screen.getByTestId("current-next-step").textContent).toContain(
       "No current exact execution packet is available. Payment authority must be re-established before submission.",
     );
@@ -458,7 +459,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const actionBeforeEvidence = screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent ?? null;
     const lifecycleBeforeEvidence = screen.getByRole("list", { name: "Payment lifecycle" }).textContent;
     const paymentStateBeforeEvidence = screen.getByRole("button", { name: "Payment" }).getAttribute("data-stage-state");
-    fireEvent.click(screen.getByText("View assurance evidence"));
+    fireEvent.click(screen.getByText("Developer & audit evidence"));
+    fireEvent.click(screen.getByText("Assurance evidence"));
     const renderedOrder = Array.from(screen.getByText(/Stored assurance evidence — PASS/).parentElement!.querySelectorAll("li span:first-child"))
       .map((entry) => entry.textContent);
     expect(renderedOrder).toEqual(expectedStoredOrder);
@@ -696,7 +698,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByRole("button", { name: new RegExp(prepared.selectedId) }).textContent).not.toContain("Assessment required");
     expect(authorizedMain.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
-    expect(screen.getByText("View assurance evidence").closest("details")?.open).toBe(false);
+    expect((screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement).open).toBe(false);
     cleanup();
 
     const postProxy = await proxyPreparedWithoutCurrentAssessment();
@@ -712,7 +714,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByTestId("current-next-step").textContent).not.toMatch(/PAE.*revoked|sealed.*revoked/i);
     expect(postProxyMain.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
     expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByText("View assurance evidence")).toBeNull();
+    expect((screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect(screen.queryByText(/Stored assurance evidence/)).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -749,5 +752,115 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByRole("button", { name: new RegExp(fixture.selectedId) }).textContent).not.toContain("Assessment required");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
     expect(fixture.api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("renders only timestamped durable artifacts as history and labels untimestamped authority as current state", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    const { main } = await renderProducerJson(body);
+
+    const activity = screen.getByRole("region", { name: "Activity and evidence" });
+    expect(activity.textContent).toContain("Available evidence history");
+    expect(activity.textContent).toContain(body.settlement_proxy.preflight.captured_at);
+    expect(activity.textContent).toContain(body.assurance_evidence.recorded_at);
+    expect(activity.textContent).not.toMatch(/approved at|authorization event|execution event/i);
+    expect(activity.textContent).toContain("Current authorization state");
+    expect(activity.textContent).toContain("No Tameion execution record is recorded for this instruction.");
+    expect(activity.textContent).not.toMatch(/provider submissions\s*[:=]\s*0|zero provider submissions|not submitted to provider/i);
+
+    const developerEvidence = screen.getByText("Developer & audit evidence").closest("details");
+    expect(developerEvidence?.open).toBe(false);
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+    const postsBefore = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    fireEvent.click(screen.getByText("Developer & audit evidence"));
+    expect(screen.getByText("Assessment evidence").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Authorization evidence").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Assurance evidence").closest("details")?.open).toBe(false);
+    expect(screen.getByText("PAE / instruction").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Execution / provider").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Reconciliation evidence").closest("details")?.open).toBe(false);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBefore);
+
+    cleanup();
+    const malformedTimes = structuredClone(body);
+    malformedTimes.settlement_proxy.preflight.captured_at = "yesterday";
+    malformedTimes.assurance_evidence.recorded_at = "October 7, 2026";
+    await renderProducerJson(malformedTimes);
+    fireEvent.click(screen.getByText(/Activity & evidence/));
+    const unavailableHistory = screen.getByRole("region", { name: "Activity and evidence" });
+    expect(unavailableHistory.textContent).toContain("No timestamped durable evidence is available in this detail.");
+    expect(unavailableHistory.textContent).not.toContain("yesterday");
+    expect(unavailableHistory.textContent).not.toContain("October 7, 2026");
+  });
+
+  it("shows a compact approver decision packet with the source payable and proxy as separate identities", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    await renderProducerJson(body);
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+
+    const packet = screen.getByText("Approver decision packet").closest("section");
+    if (!packet) throw new Error("Approver decision packet section was not rendered.");
+    expect(packet.textContent).toContain(`${body.record.amount} ${body.record.currency}`);
+    expect(packet.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset}`);
+    expect(packet.textContent).toContain("ARC_TESTNET");
+    expect(packet.textContent).toContain("OUTSTANDING");
+    expect(packet.textContent).toContain("No current assessment is available in this detail");
+    expect(packet.textContent).toContain("Authorization records approval for the reviewed obligation. Assurance and execution remain separately gated; authorization alone does not submit a payment.");
+    expect(packet.textContent).not.toContain(body.settlement_proxy.preflight.destination_wallet.address);
+  });
+
+  it("uses a single recovery card with record-scoped submission evidence and a human-readable reconciliation receipt", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.execution = {
+      status: "BLOCKED",
+      provider_ref: null,
+      idempotency_key: "instruction-replay-key",
+      atomic_amount: "125000000",
+      destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+      provider_evidence: null,
+    };
+    body.aggregate.execution_state = "BLOCKED";
+    body.truth.tameion_control_truth.execution_state = "BLOCKED";
+    const { main } = await renderProducerJson(body);
+    const recovery = screen.getByRole("region", { name: "Exception recovery" });
+    expect(recovery.textContent).toContain("Arc Testnet execution is blocked");
+    expect(recovery.textContent).toContain("No provider reference is recorded for this instruction.");
+    expect(recovery.textContent).toContain("External provider status is not established by this record.");
+    expect(recovery.textContent).not.toMatch(/before provider submission|provider submissions\s*[:=]\s*0|zero provider submissions/i);
+    expect(main.querySelectorAll('[aria-label="Exception recovery"]')).toHaveLength(1);
+
+    cleanup();
+    const reconciled = {
+      ...body,
+      aggregate: { ...body.aggregate, state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
+      truth: {
+        ...body.truth,
+        tameion_control_truth: { ...body.truth.tameion_control_truth, aggregate_state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
+      },
+      execution: {
+        status: "SETTLED",
+        provider_ref: "mock-provider-reference",
+        idempotency_key: "instruction-replay-key",
+        atomic_amount: "125000000",
+        destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+        provider_evidence: {
+          status: "CONFIRMED",
+          atomic_amount: "125000000",
+          destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+          reconciled_at: "2026-10-07T12:00:00.000Z",
+        },
+      },
+    };
+    await renderProducerJson(reconciled);
+    fireEvent.click(screen.getByRole("button", { name: "Reconciliation" }));
+    const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+    expect(receipt.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset}`);
+    expect(receipt.textContent).toContain("ARC_TESTNET");
+    expect(receipt.textContent).toContain("Amount matchconfirmed");
+    expect(receipt.textContent).toContain("Destination matchconfirmed");
+    expect(receipt.textContent).toContain("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
+    expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
   });
 });
