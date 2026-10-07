@@ -983,39 +983,27 @@ describe("real detail GET producer-consumer packet controls", () => {
     }
   });
 
-  it("documents that the actual fresh-PAY producer still exposes a sealed superseded PAE pointer", async () => {
-    const fixture = await preparedAuthorizedState();
-    const oldSealed = fixture.state.getSealedPae(fixture.selectedId);
-    expect(oldSealed).toBeTruthy();
-    const before = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
-    fixture.state.store.applyMaterialChange(
-      DEMO_ORGANIZATION_ID,
-      fixture.selectedId,
-      before.aggregate_version,
-      { destination_version: before.destination_version + 1 },
-    );
-    const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
-    sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, fixture.selectedId, current.aggregate_version, {
-      decision: "PAY",
-      provider_mode: "LIVE_AI",
-    });
+  it("does not frame the fresh PAY authorization path as recovery when proxy preparation leaves no PAE", async () => {
+    const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const body = await detailJson(fixture.state, fixture.selectedId);
     expect(body.aggregate.pae_state).toBe("REVOKED");
     expect(body.truth.tameion_control_truth.execution_release_authority).toBe("REVOKED");
+    expect(body.pae_sealed).toBe(false);
+    expect(body.execution).toBeNull();
     expect(body.current_assessment).toMatchObject({
       obligation_id: fixture.selectedId,
-      aggregate_version: String(current.aggregate_version),
       decision: "PAY",
       provider_mode: "LIVE_AI",
     });
-    expect(body.pae_sealed).toBe(true);
-    expect(body.execution).toBeNull();
 
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Authorization" }));
     fireEvent.click(screen.getByRole("button", { name: /^Authorization$/ }));
-    expect(screen.getByRole("region", { name: "Exception recovery" }).textContent).toMatch(/payment authority is revoked/i);
-    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(screen.getByText("Eligible for human authorization review")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Exception recovery" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Authorize payment" })).toBeTruthy();
     expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });

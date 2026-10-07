@@ -1893,12 +1893,16 @@ export function CommandCenter() {
   ));
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
+  const authorizationActionAvailable = Boolean(detailState === "loaded" && detail?.settlement_proxy &&
+    authorizationAssessment?.decision === "PAY" && routeAssuranceReady && !detail.pae_sealed && !detail.execution);
+  const preauthorizationRevocationIsNotCurrentException = Boolean(detail && authorizationActionAvailable &&
+    detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" && !detail.pae_sealed && !detail.execution);
   const currentException = Boolean(selectedId && (
     detailState === "failed" || detailState === "stale" ||
     detail?.execution?.status === "BLOCKED" || detail?.execution?.status === "FAILED" || detail?.execution?.status === "UNKNOWN" ||
     ["HOLD", "ESCALATE"].includes(currentAssessment?.decision ?? "") ||
     detail?.execution_kill_switched === true ||
-    ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "") ||
+    (["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "") && !preauthorizationRevocationIsNotCurrentException) ||
     noCurrentExactExecutionPacket ||
     (detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) ||
     (detail?.settlement_proxy && !routeAssuranceReady && !detail.pae_sealed && !detail.execution)

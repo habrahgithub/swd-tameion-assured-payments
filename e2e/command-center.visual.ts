@@ -282,6 +282,38 @@ function liveWinnerForPreparation(): Record<string, any> {
   return candidate;
 }
 
+function postProxyFreshPayWithAggregateRevoked(): Record<string, any> {
+  const candidate = liveWinnerForPreparation();
+  const proxy = detailWithProxy();
+  candidate.settlement_proxy = proxy.settlement_proxy;
+  candidate.aggregate = {
+    ...proxy.aggregate,
+    aggregate_version: 2,
+    state: "APPROVAL_PENDING",
+    pae_state: "REVOKED",
+    destination_verification_status: "VERIFIED",
+    destination_operational_status: "ACTIVE",
+    source_wallet_status: "ACTIVE",
+    product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+  };
+  candidate.current_assessment.aggregate_version = "2";
+  candidate.current_assessment.race.evidence.authoritative_facts.aggregate_version = "2";
+  candidate.truth.tameion_control_truth = {
+    ...candidate.truth.tameion_control_truth,
+    aggregate_version: 2,
+    aggregate_state: "APPROVAL_PENDING",
+    pae_state: "REVOKED",
+    execution_state: "NONE",
+    execution_release_authority: "REVOKED",
+  };
+  candidate.pae_sealed = false;
+  candidate.execution = null;
+  candidate.execution_packet = null;
+  candidate.sealed_pae_instruction_hash = null;
+  candidate.execution_gate = "LOCKED_AFTER_ASSURANCE_HOLD";
+  return candidate;
+}
+
 async function openFixture(
   page: Page,
   selectedDetail: Record<string, any> = detail,
@@ -421,6 +453,27 @@ test("Screens 2–6 render as truthful, read-only producer-shaped stages on desk
       expect(unexpectedWrites).toEqual([]);
       await page.close();
     }
+  }
+});
+
+test("fresh PAY after proxy preparation does not show stale PAE recovery on desktop or mobile", async ({ browser }, testInfo) => {
+  const freshPay = postProxyFreshPayWithAggregateRevoked();
+
+  for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+    const page = await browser.newPage({ viewport });
+    const unexpectedWrites = await openFixture(page, freshPay);
+    if (viewport.label === "mobile") await page.getByText("View all stages").click();
+    await page.getByRole("button", { name: "Assessment", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Advisory — PAY");
+    await page.getByRole("button", { name: "Review current PAY assessment" }).click();
+    await page.getByRole("button", { name: "Continue to Authorization" }).click();
+    await expect(page.getByText("Eligible for human authorization review")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Authorize payment" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    expect(unexpectedWrites).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-authorization-${viewport.label}.png`), fullPage: true });
+    await page.close();
   }
 });
 
