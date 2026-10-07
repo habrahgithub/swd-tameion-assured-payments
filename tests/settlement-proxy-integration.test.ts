@@ -114,7 +114,20 @@ async function authorizedSnapshot() {
 function restoredWithCircle(snapshot: ReturnType<DemoState["exportSnapshot"]>, provider: ReturnType<typeof circleClient>) {
   let state: DemoState;
   const adapter = new ArcCircleProviderAdapter(provider.client, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
-  state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter);
+  state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter, {
+    resolveActorAuthority: (actorId, organizationId) => {
+      const approval = snapshot.authorization_history.find((item) =>
+        item.approval_record.actor_id === actorId && item.approval_record.organization_id === organizationId,
+      )?.approval_record;
+      return approval ? {
+        actor_id: approval.actor_id,
+        actor_role: approval.actor_role,
+        authority_version: approval.authority_version,
+        status: "ACTIVE",
+        revoked: false,
+      } : undefined;
+    },
+  });
   return state;
 }
 

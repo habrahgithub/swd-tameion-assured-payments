@@ -223,7 +223,7 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     throw new SimulatedDemoGuardError("Failed to seal the synthetic happy-path assessment fixture", "DEMO-002");
   }
 
-  const { aggregate, sealed, safetyKernel, approvalRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+  const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
     organizationId: SIMULATED_ORGANIZATION_ID,
     obligationId,
     expectedVersion: 1,
@@ -237,7 +237,19 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
 
   const adapter = new FakeProviderAdapter();
   adapter.queueOutcome("CONFIRMED");
-  const worker = new ExecutionWorker(store, adapter);
+  const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+    loadAuthorizationArtifacts: () => ({
+      approval_record: approvalRecord.record,
+      approval_record_hash: approvalRecord.approval_record_hash,
+      assurance_record: assuranceRecord.record,
+      assurance_hash: assuranceRecord.assurance_hash,
+      sealed_pae: sealed,
+    }),
+    resolveActorAuthority: (actorId, organizationId) =>
+      actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
+        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
+        : undefined,
+  });
   const execution = await worker.execute(sealed);
 
   return {
@@ -298,7 +310,7 @@ export async function runSimulatedAttackVariant(): Promise<SimulatedAttackVarian
   store.sealAssessment(buildAssessmentRecord(obligationId, 1));
   const current = store.getCurrentAssessment(SIMULATED_ORGANIZATION_ID, obligationId);
   if (!current) throw new SimulatedDemoGuardError("Failed to seal the synthetic attack assessment fixture", "DEMO-002");
-  const { sealed } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+  const { sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
     organizationId: SIMULATED_ORGANIZATION_ID,
     obligationId,
     expectedVersion: 1,
@@ -317,7 +329,19 @@ export async function runSimulatedAttackVariant(): Promise<SimulatedAttackVarian
     destination_verification_status: "PENDING_VERIFICATION",
   });
   const adapter = new FakeProviderAdapter();
-  const worker = new ExecutionWorker(store, adapter);
+  const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+    loadAuthorizationArtifacts: () => ({
+      approval_record: approvalRecord.record,
+      approval_record_hash: approvalRecord.approval_record_hash,
+      assurance_record: assuranceRecord.record,
+      assurance_hash: assuranceRecord.assurance_hash,
+      sealed_pae: sealed,
+    }),
+    resolveActorAuthority: (actorId, organizationId) =>
+      actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
+        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
+        : undefined,
+  });
   try {
     await worker.execute(sealed);
   } catch (error) {

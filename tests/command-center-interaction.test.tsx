@@ -592,6 +592,46 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
 
+  it("labels a sealed authorization as an Arc Testnet proxy subject to exact-packet and pre-send gates", async () => {
+    const authorized = proxyPrepared(sealedDetail("OBL-SEALED-PROXY"));
+    authorized.aggregate.destination_verification_status = "VERIFIED";
+    authorized.aggregate.destination_operational_status = "ACTIVE";
+    authorized.aggregate.source_wallet_status = "ACTIVE";
+    authorized.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-SEALED-PROXY", true)] }))
+      : Promise.resolve(response(authorized)));
+
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(screen.getByText(/Approved instruction is sealed for the Arc Testnet settlement proxy/)).toBeTruthy();
+    expect(screen.getByText(/subject to the exact-packet gate and final pre-send checks/)).toBeTruthy();
+    expect(screen.queryByText(/has no Arc payment binding/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(screen.getAllByText(/Approved instruction is sealed for the Arc Testnet settlement proxy/)).toHaveLength(2);
+    expect(screen.queryByText(/payment remains blocked without an Arc binding/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.queryByText(/payment remains blocked without an Arc binding/)).toBeNull();
+  });
+
+  it("labels AUTHORIZED N+1 without a sealed PAE as assurance failed or blocked", async () => {
+    const authorized = proxyPrepared(assessedDetail("OBL-ASSURANCE-BLOCKED-AFTER-APPROVAL", "PAY"));
+    authorized.aggregate.state = "AUTHORIZED";
+    authorized.aggregate.pae_state = "UNUSED";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-ASSURANCE-BLOCKED-AFTER-APPROVAL", true)] }))
+      : Promise.resolve(response(authorized)));
+
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(screen.getByText(/Authorization recorded · Assurance failed\/blocked/)).toBeTruthy();
+    expect(screen.getByText(/No PASS assurance, usable PAE, or execution is available/)).toBeTruthy();
+    const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
+    expect(lifecycle.textContent).toContain("AuthorizationAuthorization recorded — assurance failed or blocked");
+    expect(lifecycle.textContent).toContain("AssuranceAssurance failed or blocked; no PASS assurance is available");
+    expect(lifecycle.textContent).toContain("PaymentAuthorization recorded; assurance failed or blocked; no usable PAE or execution");
+  });
+
   it("shows the current OBL-J0C-003 HOLD remediation and truthful lifecycle in the primary obligation workspace", async () => {
     const assessed = assessedDetail("OBL-J0C-003", "HOLD");
     assessed.current_assessment!.reasons = ["Current destination and source-wallet readiness are not verified."];

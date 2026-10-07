@@ -201,11 +201,12 @@ export type DetailState = "none" | "loading" | "failed" | "loaded" | "stale";
 
 export type AssessmentPrimaryAction = "none" | "assess" | "review" | "continue";
 
-export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false): string {
+export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false, hasSettlementProxy = false): string {
   if (!hasSelection || state === "none") return "Select an obligation to review its authorization and payment-intent status.";
   if (state === "loading") return "Loading current obligation detail; authorization status is not yet available.";
   if (state === "failed") return "Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.";
   if (state === "stale") return "Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status.";
+  if (paeSealed && hasSettlementProxy) return "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks.";
   if (paeSealed) return "An authorization envelope is already sealed for this obligation. No further authorization action is available here; provider submission remains separate.";
   return "Current detail confirms no payment intent exists. If every deterministic Safety Kernel control passes, the system can seal a signed Payment Authorization Envelope; no provider submission occurs here.";
 }
@@ -1217,6 +1218,7 @@ export function CommandCenter() {
         return "PAY — advisory";
       case "Authorization":
         if (detail.pae_sealed) return "Authorized — sealed PAE exists";
+        if (detail.aggregate.state === "AUTHORIZED") return "Authorization recorded — assurance failed or blocked";
         if (currentAssessment?.decision === "HOLD") return "Locked — assessment requires attention";
         if (currentAssessment?.decision === "ESCALATE") return "Locked — escalation required";
         if (!hasCurrentPayAssessment) return "Locked — current PAY assessment required";
@@ -1224,11 +1226,13 @@ export function CommandCenter() {
         return authorizationAssessment ? "Awaiting human approval" : "Review the current PAY assessment";
       case "Assurance":
         if (detail.pae_sealed) return "PAE is sealed; detailed assurance unavailable in this view";
+        if (detail.aggregate.state === "AUTHORIZED") return "Assurance failed or blocked; no PASS assurance is available";
         if (hasCurrentPayAssessment && routeAssuranceReady) return "Final assurance runs after human approval";
         return "Final assurance not run";
       case "Payment":
         if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return "Arc Testnet proxy execution reconciled; real-world payable remains outstanding";
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Outcome unknown — reconcile this same intent; resubmission blocked";
+        if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Authorization recorded; assurance failed or blocked; no usable PAE or execution";
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet proxy prepared; execution awaits separate exact-packet gate";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
         if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
@@ -1262,10 +1266,14 @@ export function CommandCenter() {
       ? "Loading current obligation status."
       : detailState === "failed"
         ? "Selected obligation status is unavailable; retry before taking action."
-        : detailState === "stale"
-          ? "Selected obligation status is stale; refresh before taking action."
-          : detail?.pae_sealed
-            ? "Blocker: this genuine obligation has no Arc payment binding; the separate fixed testnet intent does not represent it."
+      : detailState === "stale"
+        ? "Selected obligation status is stale; refresh before taking action."
+        : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
+          ? "Authorization recorded · Assurance failed/blocked. No PASS assurance, usable PAE, or execution is available."
+        : detail?.pae_sealed
+          ? detail.settlement_proxy
+            ? "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks."
+            : "Blocker: this genuine obligation has no Arc payment binding; the separate fixed testnet intent does not represent it."
             : !allAssessed
               ? "Next step: assess the remaining obligations before authorization review."
               : !hasCurrentAssessment || !currentAssessment
@@ -1289,7 +1297,9 @@ export function CommandCenter() {
         : detailState === "stale"
           ? "Current obligation detail is stale; refresh before taking an assessment action."
           : detail?.pae_sealed
-            ? "A payment authorization envelope is already sealed. Reassessment is unavailable here; payment remains blocked without an Arc binding."
+            ? detail.settlement_proxy
+              ? "The approved instruction is sealed for the Arc Testnet settlement proxy. Reassessment is unavailable; execution remains subject to exact-packet and pre-send gates."
+              : "A payment authorization envelope is already sealed. Reassessment is unavailable here; payment remains blocked without an Arc binding."
             : currentAssessment?.decision === "PAY" && !currentAssessment.race
               ? "The current PAY recommendation has no review evidence in this detail; authorization remains locked."
               : currentAssessment?.decision === "PAY" && authorizationAssessment && !routeAssuranceReady
@@ -1797,7 +1807,7 @@ export function CommandCenter() {
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  {authorizationPanelCopy(detailState, Boolean(selectedId), Boolean(detailState === "loaded" && detail?.pae_sealed))}
+                  {authorizationPanelCopy(detailState, Boolean(selectedId), Boolean(detailState === "loaded" && detail?.pae_sealed), Boolean(detailState === "loaded" && detail?.settlement_proxy))}
                   {detailState === "loaded" && !detail?.pae_sealed && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
                 </p>
                 {detailState === "loaded" && selectedId && detail && (

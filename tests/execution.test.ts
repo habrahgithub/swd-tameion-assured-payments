@@ -2,12 +2,36 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
-import { ExecutionWorker, ExecutionBlockedError } from "../src/execution/worker";
+import { ExecutionWorker as BaseExecutionWorker, ExecutionBlockedError, type ExecutionWorkerOptions, type WorkerAuthorizationArtifacts } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
 import { ProviderPreSubmitBlockedError } from "../src/execution/provider-adapter";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
+const authorizationByIdentity = new Map<string, WorkerAuthorizationArtifacts>();
+
+class ExecutionWorker extends BaseExecutionWorker {
+  constructor(
+    store: AuthorityStore,
+    adapter: ConstructorParameters<typeof BaseExecutionWorker>[1],
+    onDurableStateChange?: () => Promise<void>,
+  ) {
+    const options: ExecutionWorkerOptions = {
+      loadAuthorizationArtifacts: (organizationId, obligationId) => authorizationByIdentity.get(`${organizationId}/${obligationId}`),
+      resolveActorAuthority: (actorId, organizationId) => {
+        const approval = authorizationByIdentity.get(`${organizationId}/OBL-J0C-002`)?.approval_record;
+        return approval?.actor_id === actorId ? {
+          actor_id: approval.actor_id,
+          actor_role: approval.actor_role,
+          authority_version: approval.authority_version,
+          status: "ACTIVE",
+          revoked: false,
+        } : undefined;
+      },
+    };
+    super(store, adapter, onDurableStateChange, undefined, options);
+  }
+}
 
 function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAggregate {
   return {
@@ -50,7 +74,7 @@ function setupAuthorizedFixture(paeState: AuthorityAggregate["pae_state"] = "UNU
   const store = new AuthorityStore();
   store.seed(baseAggregate({ pae_state: paeState }));
   sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
-  const { aggregate, sealed } = approveAndSealPae(store, SIGNING_KEY_ID, {
+  const { aggregate, sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIGNING_KEY_ID, {
     organizationId: "ORG-DEMO-001",
     obligationId: "OBL-J0C-002",
     expectedVersion: 3,
@@ -60,6 +84,14 @@ function setupAuthorizedFixture(paeState: AuthorityAggregate["pae_state"] = "UNU
     policyVersion: "POLICY-P0-1",
     reasonText: "Reviewed and approved for testnet product payment.",
   });
+  const artifacts: WorkerAuthorizationArtifacts = {
+    approval_record: approvalRecord.record,
+    approval_record_hash: approvalRecord.approval_record_hash,
+    assurance_record: assuranceRecord.record,
+    assurance_hash: assuranceRecord.assurance_hash,
+    sealed_pae: sealed,
+  };
+  authorizationByIdentity.set("ORG-DEMO-001/OBL-J0C-002", artifacts);
   return { store, aggregate, sealed };
 }
 

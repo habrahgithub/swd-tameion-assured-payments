@@ -1,10 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, J2aRealTestnetDemoState } from "../src/server/demo-state";
+import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
 import { DemoStateConflictError, type SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
+
+function actorAuthorityFromSnapshot(snapshot: ReturnType<DemoState["exportSnapshot"]>) {
+  return {
+    resolveActorAuthority: (actorId: string, organizationId: string) => {
+      const approval = snapshot.authorization_history.find((item) =>
+        item.approval_record.actor_id === actorId && item.approval_record.organization_id === organizationId,
+      )?.approval_record;
+      return approval ? {
+        actor_id: approval.actor_id,
+        actor_role: approval.actor_role,
+        authority_version: approval.authority_version,
+        status: "ACTIVE" as const,
+        revoked: false,
+      } : undefined;
+    },
+  };
+}
 
 function assessEveryObligation(state: DemoState): void {
   for (const obligation of state.listObligations()) {
@@ -61,8 +78,8 @@ describe("durable demo-state restart boundaries", () => {
     const provider = new FakeProviderAdapter();
     provider.queueOutcome("CONFIRMED");
     const submit = vi.spyOn(provider, "submitTransfer");
-    const staleExecution = new J2aRealTestnetDemoState(activeSnapshot, repository, 1, provider);
-    const revoker = new J2aRealTestnetDemoState(activeSnapshot, repository, 1);
+    const staleExecution = new DemoState(activeSnapshot, repository, 1, provider, actorAuthorityFromSnapshot(activeSnapshot));
+    const revoker = new DemoState(activeSnapshot, repository, 1, undefined, actorAuthorityFromSnapshot(activeSnapshot));
     staleExecution.attachRepository(repository, "j2a-shared", 1);
     revoker.attachRepository(repository, "j2a-shared", 1);
 
@@ -131,7 +148,8 @@ describe("durable demo-state restart boundaries", () => {
     assessEveryObligation(beforeRestart);
     const obligationId = beforeRestart.listObligations()[0]!.obligation_id;
     const sealed = authorize(beforeRestart, obligationId);
-    const afterRestart = new DemoState(beforeRestart.exportSnapshot());
+    const snapshot = beforeRestart.exportSnapshot();
+    const afterRestart = new DemoState(snapshot, undefined, undefined, undefined, actorAuthorityFromSnapshot(snapshot));
 
     const result = await afterRestart.worker.execute(sealed);
     expect(result.status).toBe("SETTLED");
@@ -145,9 +163,12 @@ describe("durable demo-state restart boundaries", () => {
     const obligationId = beforeRestart.listObligations()[0]!.obligation_id;
     const sealed = authorize(beforeRestart, obligationId);
     (beforeRestart.adapter as FakeProviderAdapter).queueOutcome("TIMEOUT");
-    const unknown = await beforeRestart.worker.execute(sealed);
+    const snapshotBeforeRestart = beforeRestart.exportSnapshot();
+    const reloadedBeforeRestart = new DemoState(snapshotBeforeRestart, undefined, undefined, undefined, actorAuthorityFromSnapshot(snapshotBeforeRestart));
+    const unknown = await reloadedBeforeRestart.worker.execute(sealed);
     expect(unknown.status).toBe("UNKNOWN");
-    const afterRestart = new DemoState(beforeRestart.exportSnapshot());
+    const snapshotAfterUnknown = reloadedBeforeRestart.exportSnapshot();
+    const afterRestart = new DemoState(snapshotAfterUnknown, undefined, undefined, undefined, actorAuthorityFromSnapshot(snapshotAfterUnknown));
     (afterRestart.adapter as FakeProviderAdapter).resolvePending(unknown.provider_ref!, "CONFIRMED");
 
     const reconciled = await afterRestart.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);

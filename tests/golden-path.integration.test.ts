@@ -104,7 +104,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     // continue exercising a valid approval/PAE/worker path.
     sealTestAssessment(store, "ORG-DEMO-001", candidateRecord.obligation_id, 1);
 
-    const { sealed } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
+    const { sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
       organizationId: "ORG-DEMO-001",
       obligationId: candidateRecord.obligation_id,
       expectedVersion: 1,
@@ -117,7 +117,22 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
 
     const adapter = new FakeProviderAdapter();
     adapter.queueOutcome("CONFIRMED");
-    const worker = new ExecutionWorker(store, adapter);
+    const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+      loadAuthorizationArtifacts: () => ({
+        approval_record: approvalRecord.record,
+        approval_record_hash: approvalRecord.approval_record_hash,
+        assurance_record: assuranceRecord.record,
+        assurance_hash: assuranceRecord.assurance_hash,
+        sealed_pae: sealed,
+      }),
+      resolveActorAuthority: (actorId) => actorId === approvalRecord.record.actor_id ? {
+        actor_id: approvalRecord.record.actor_id,
+        actor_role: approvalRecord.record.actor_role,
+        authority_version: approvalRecord.record.authority_version,
+        status: "ACTIVE",
+        revoked: false,
+      } : undefined,
+    });
     const record = await worker.execute(sealed);
 
     expect(record.status).toBe("SETTLED");

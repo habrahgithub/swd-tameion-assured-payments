@@ -1,8 +1,9 @@
-import type { AuthorityStore } from "../authority/aggregate";
+import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
 import { AuthorityError } from "../authority/aggregate";
-import type { SealedPae } from "../domain/schemas";
+import type { DurableApprovalRecord, DurableAssuranceRecord, SealedPae } from "../domain/schemas";
 import { verifySealedPae } from "../pae/sign-verify";
-import { processTrustedKeyRegistry, type TrustedKeyRegistry } from "../pae/keys";
+import { verifyDurableApprovalRecordHash, verifyDurableAssuranceRecordHash } from "../pae/durable-records";
+import { processTrustedKeyRegistry, TrustedKeyRegistry, type TrustedKeyEntry } from "../pae/keys";
 import { ProviderPreSubmitBlockedError, type ProviderAdapter, type StatusResult } from "./provider-adapter";
 
 export class ExecutionBlockedError extends Error {
@@ -23,6 +24,41 @@ export interface ExecutionRecord {
   atomic_amount: string;
   destination_address: string;
   provider_evidence?: StatusResult | null;
+}
+
+export interface WorkerAuthorizationArtifacts {
+  approval_record: DurableApprovalRecord;
+  approval_record_hash: string;
+  assurance_record: DurableAssuranceRecord;
+  assurance_hash: string;
+  sealed_pae: SealedPae;
+}
+
+export interface CurrentActorAuthority {
+  actor_id: string;
+  actor_role: string;
+  authority_version: string;
+  status: "ACTIVE" | "SUSPENDED" | "REVOKED";
+  revoked: boolean;
+}
+
+export interface ExecutionWorkerOptions {
+  /** Read the current durable authorization snapshot for the exact PAE identity. */
+  loadAuthorizationArtifacts?: (
+    organizationId: string,
+    obligationId: string,
+  ) => WorkerAuthorizationArtifacts | null | undefined;
+  /** Re-read durable approval, assurance, and aggregate authority at the final pre-send boundary. */
+  reloadDurableExecutionContext?: (
+    organizationId: string,
+    obligationId: string,
+  ) => Promise<{ authorization?: WorkerAuthorizationArtifacts | null; aggregate: AuthorityAggregate; trustedKeys: TrustedKeyEntry[] }>;
+  /** Resolve the approver against a current authority source; request fields are never a substitute. */
+  resolveActorAuthority?: (
+    actorId: string,
+    organizationId: string,
+  ) => CurrentActorAuthority | null | undefined;
+  now?: () => Date;
 }
 
 /**
@@ -46,6 +82,7 @@ export class ExecutionWorker {
     private readonly adapter: ProviderAdapter,
     private readonly onDurableStateChange?: () => Promise<void>,
     private readonly trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry,
+    private readonly options: ExecutionWorkerOptions = {},
   ) {}
 
   restoreSnapshot(records: ExecutionRecord[]): void {
@@ -106,6 +143,14 @@ export class ExecutionWorker {
       }
       return existing;
     }
+
+    const expiry = Date.parse(payload.expiry);
+    const now = (this.options.now?.() ?? new Date()).getTime();
+    if (!Number.isFinite(expiry) || expiry <= now) {
+      throw new ExecutionBlockedError("PAE expiry has been reached; no execution claim or provider submission was made", "EXP-001");
+    }
+
+    this.validateCurrentExecutionAuthority(sealed, aggregate);
 
     // (10) Kill switch prevents execution — checked at the exact org/
     // obligation scope, not just the unscoped global switch, so an
@@ -187,6 +232,54 @@ export class ExecutionWorker {
     // submission into a fresh submission.
     await this.onDurableStateChange?.();
 
+    // Re-resolve the durable human authority and business prerequisites at
+    // the last worker-owned boundary after the reservation write. A stale
+    // or unavailable authority source blocks before submitTransfer.
+    try {
+      const durableContext = await this.options.reloadDurableExecutionContext?.(payload.organization_id, obligationId);
+      const latestAggregate = durableContext?.aggregate ?? this.store.get(payload.organization_id, obligationId);
+      if (durableContext) {
+        const currentTrustedKeys = new TrustedKeyRegistry();
+        currentTrustedKeys.restore(durableContext.trustedKeys);
+        verifySealedPae(sealed, currentTrustedKeys);
+      }
+      this.validateCurrentExecutionAuthority(
+        sealed,
+        latestAggregate,
+        durableContext ? durableContext.authorization ?? null : undefined,
+      );
+      if (latestAggregate.aggregate_version !== Number(payload.aggregate_version)) {
+        throw new ExecutionBlockedError("Aggregate version changed at the final pre-submit gate", "PAE-011");
+      }
+      if (this.store.isExecutionKillSwitched(payload.organization_id, obligationId)) {
+        throw new ExecutionBlockedError("Kill switch became active at the final pre-submit gate", "WDG-001");
+      }
+      const latestDestinationCurrent = payload.destination_ref === latestAggregate.destination_ref &&
+        Number(payload.destination_version) === latestAggregate.destination_version &&
+        payload.destination_address === latestAggregate.destination_address &&
+        latestAggregate.destination_verification_status === "VERIFIED" &&
+        latestAggregate.destination_operational_status === "ACTIVE";
+      if (!latestDestinationCurrent ||
+          payload.source_wallet_ref !== latestAggregate.source_wallet_ref ||
+          Number(payload.source_wallet_version) !== latestAggregate.source_wallet_version ||
+          latestAggregate.source_wallet_status !== "ACTIVE") {
+        throw new ExecutionBlockedError("Destination or source wallet changed at the final pre-submit gate", "PAE-011");
+      }
+    } catch (error) {
+      this.store.markBlocked(payload.organization_id, obligationId, "final execution authority check failed");
+      const blocked: ExecutionRecord = {
+        obligation_id: obligationId,
+        idempotency_key: payload.idempotency_key,
+        provider_ref: null,
+        status: "BLOCKED",
+        atomic_amount: payload.atomic_amount,
+        destination_address: payload.destination_address,
+      };
+      this.executionLedger.set(payload.idempotency_key, blocked);
+      await this.onDurableStateChange?.();
+      throw error;
+    }
+
     let submission;
     try {
       submission = await this.adapter.submitTransfer({
@@ -264,6 +357,98 @@ export class ExecutionWorker {
     this.executionLedger.set(payload.idempotency_key, finalRecord);
     await this.onDurableStateChange?.();
     return finalRecord;
+  }
+
+  private validateCurrentExecutionAuthority(
+    sealed: SealedPae,
+    aggregate: AuthorityAggregate,
+    reloadedAuthorization?: WorkerAuthorizationArtifacts | null,
+  ): void {
+    const { payload } = sealed;
+    const obligationId = payload.obligation_ids[0];
+    if (!this.options.loadAuthorizationArtifacts) {
+      throw new ExecutionBlockedError("Current durable approval and assurance source is unavailable; no provider submission was made", "AUTH-001");
+    }
+    let authorization = reloadedAuthorization;
+    if (authorization === undefined) {
+      try {
+        authorization = this.options.loadAuthorizationArtifacts(payload.organization_id, obligationId);
+      } catch {
+        throw new ExecutionBlockedError("Current durable approval and assurance could not be reloaded", "AUTH-001");
+      }
+    }
+    if (!authorization) {
+      throw new ExecutionBlockedError("Current durable approval is missing or revoked", "AUTH-001");
+    }
+
+    const approval = authorization.approval_record;
+    const evidence = payload.approval_evidence[0];
+    let approvalHashValid = false;
+    try {
+      approvalHashValid = verifyDurableApprovalRecordHash(approval, authorization.approval_record_hash);
+    } catch {
+      approvalHashValid = false;
+    }
+    if (!approvalHashValid || !evidence || payload.approval_evidence.length !== 1 ||
+        authorization.approval_record_hash !== evidence.approval_record_hash ||
+        approval.approval_id !== evidence.approval_id ||
+        approval.organization_id !== payload.organization_id || evidence.organization_id !== payload.organization_id ||
+        approval.obligation_id !== obligationId || evidence.obligation_id !== obligationId ||
+        approval.actor_id !== evidence.actor_id || approval.actor_role !== evidence.actor_role ||
+        approval.authority_version !== evidence.authority_version || approval.policy_version !== evidence.policy_version ||
+        approval.reviewed_aggregate_version !== evidence.reviewed_aggregate_version ||
+        approval.authorized_aggregate_version !== evidence.authorized_aggregate_version ||
+        approval.approved_at !== evidence.approved_at ||
+        approval.assessment_id !== evidence.assessment_id || approval.assessment_hash !== evidence.assessment_hash ||
+        approval.action !== "APPROVE" || approval.authorized_aggregate_version !== payload.aggregate_version ||
+        authorization.sealed_pae.instruction_hash !== sealed.instruction_hash ||
+        authorization.sealed_pae.signature !== sealed.signature) {
+      throw new ExecutionBlockedError("Durable approval hash or signed PAE approval evidence does not match", "AUTH-002");
+    }
+
+    let assuranceHashValid = false;
+    try {
+      assuranceHashValid = verifyDurableAssuranceRecordHash(authorization.assurance_record, authorization.assurance_hash);
+    } catch {
+      assuranceHashValid = false;
+    }
+    const assurance = authorization.assurance_record;
+    if (!assuranceHashValid || assurance.result !== "PASS" ||
+        authorization.assurance_hash !== payload.assurance_hash ||
+        assurance.organization_id !== payload.organization_id || assurance.obligation_id !== obligationId ||
+        assurance.aggregate_version !== payload.aggregate_version ||
+        assurance.policy_version !== payload.policy_version || assurance.policy_version !== aggregate.policy_version) {
+      throw new ExecutionBlockedError("Durable Safety Kernel assurance is invalid, stale, or not PASS", "ASR-001");
+    }
+
+    if (!this.options.resolveActorAuthority) {
+      throw new ExecutionBlockedError("Current actor authority source is unavailable; approver status cannot be independently confirmed", "ACT-002");
+    }
+    let actor: CurrentActorAuthority | null | undefined;
+    try {
+      actor = this.options.resolveActorAuthority(approval.actor_id, payload.organization_id);
+    } catch {
+      throw new ExecutionBlockedError("Current actor authority source could not resolve the recorded approver", "ACT-002");
+    }
+    if (!actor || actor.actor_id !== approval.actor_id || actor.actor_role !== approval.actor_role ||
+        actor.authority_version !== approval.authority_version || actor.status !== "ACTIVE" || actor.revoked) {
+      throw new ExecutionBlockedError("Recorded approver is missing, inactive, revoked, or no longer holds the approved authority", "ACT-001");
+    }
+
+    if (payload.counterparty_id !== aggregate.counterparty_id ||
+        Number(payload.counterparty_version) !== aggregate.counterparty_version ||
+        aggregate.counterparty_status !== "VERIFIED") {
+      throw new ExecutionBlockedError("Current counterparty version/status is not payment eligible", "CPY-001");
+    }
+    if (aggregate.business_hold) {
+      throw new ExecutionBlockedError("Current business hold blocks execution", "OPS-001");
+    }
+    if (aggregate.security_freeze) {
+      throw new ExecutionBlockedError("Current security freeze blocks execution", "SEC-001");
+    }
+    if (aggregate.external_settlement_state !== "NONE") {
+      throw new ExecutionBlockedError("A current external settlement record blocks execution", "OPS-005");
+    }
   }
 
   /**

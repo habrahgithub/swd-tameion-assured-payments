@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
-import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import { ExecutionWorker, type ExecutionRecord, type ExecutionWorkerOptions } from "../execution/worker";
 import type { ProviderAdapter } from "../execution/provider-adapter";
 import type { StatusResult } from "../execution/provider-adapter";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
@@ -389,7 +389,13 @@ export class DemoState {
   private repository?: SupabaseDemoStateRepository;
   private revision?: number;
 
-  constructor(snapshot?: DemoStateSnapshot, repository?: SupabaseDemoStateRepository, revision?: number, adapter?: ProviderAdapter) {
+  constructor(
+    snapshot?: DemoStateSnapshot,
+    repository?: SupabaseDemoStateRepository,
+    revision?: number,
+    adapter?: ProviderAdapter,
+    workerOptions: ExecutionWorkerOptions = {},
+  ) {
     this.liveUsageRecords = loadLiveUsageSet();
     this.repository = repository;
     this.revision = revision;
@@ -403,7 +409,28 @@ export class DemoState {
     );
     this.settlementProxies = new Map((snapshot?.settlement_proxies ?? []).map((item) => [item.preflight.obligation_id, structuredClone(item)]));
     this.providerAdapter = adapter ?? this.adapter;
-    this.worker = new ExecutionWorker(this.store, this.providerAdapter, () => this.flush(), this.trustedKeys);
+    this.worker = new ExecutionWorker(this.store, this.providerAdapter, () => this.flush(), this.trustedKeys, {
+      ...workerOptions,
+      loadAuthorizationArtifacts: workerOptions.loadAuthorizationArtifacts ?? ((organizationId, obligationId) =>
+        organizationId === DEMO_ORGANIZATION_ID ? this.getAuthorizationArtifacts(obligationId) : undefined),
+      reloadDurableExecutionContext: workerOptions.reloadDurableExecutionContext ?? (async (organizationId, obligationId) => {
+        if (!this.repository || !this.namespace) {
+          return {
+            authorization: this.getAuthorizationArtifacts(obligationId) ?? null,
+            aggregate: this.store.get(organizationId, obligationId),
+            trustedKeys: this.trustedKeys.export(),
+          };
+        }
+        const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
+        const current = parseDemoStateSnapshot(stored.snapshot);
+        const currentStore = AuthorityStore.fromSnapshot(current.authority);
+        const authorization = current.authorization_history.map(authorizationArtifactsParser).reverse().find((entry) =>
+          entry.sealed_pae.payload.organization_id === organizationId &&
+          entry.sealed_pae.payload.obligation_ids[0] === obligationId,
+        ) ?? null;
+        return { authorization, aggregate: currentStore.get(organizationId, obligationId), trustedKeys: current.trusted_keys };
+      }),
+    });
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
 
     if (!snapshot) for (const record of this.liveUsageRecords) {
@@ -748,6 +775,7 @@ export class J2aRealTestnetDemoState {
     repository?: SupabaseDemoStateRepository,
     revision?: number,
     providerAdapter?: ProviderAdapter,
+    workerOptions: ExecutionWorkerOptions = {},
   ) {
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
     this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
@@ -761,6 +789,28 @@ export class J2aRealTestnetDemoState {
       providerAdapter ?? new ArcCircleProviderAdapter(undefined, () => this.lastPreflight),
       () => this.flush(),
       this.trustedKeys,
+      {
+        ...workerOptions,
+        loadAuthorizationArtifacts: workerOptions.loadAuthorizationArtifacts ?? ((organizationId, obligationId) =>
+          organizationId === "ORG-TAMEION-TESTNET-DEMO" ? this.getAuthorizationArtifacts(obligationId) : undefined),
+        reloadDurableExecutionContext: workerOptions.reloadDurableExecutionContext ?? (async (organizationId, obligationId) => {
+          if (!this.repository || !this.namespace) {
+            return {
+              authorization: this.getAuthorizationArtifacts(obligationId) ?? null,
+              aggregate: this.store.get(organizationId, obligationId),
+              trustedKeys: this.trustedKeys.export(),
+            };
+          }
+          const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
+          const current = parseJ2aSnapshot(stored.snapshot);
+          const currentStore = AuthorityStore.fromSnapshot(current.authority);
+          const authorization = current.authorization_history.map(authorizationArtifactsParser).reverse().find((entry) =>
+            entry.sealed_pae.payload.organization_id === organizationId &&
+            entry.sealed_pae.payload.obligation_ids[0] === obligationId,
+          ) ?? null;
+          return { authorization, aggregate: currentStore.get(organizationId, obligationId), trustedKeys: current.trusted_keys };
+        }),
+      },
     );
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
   }

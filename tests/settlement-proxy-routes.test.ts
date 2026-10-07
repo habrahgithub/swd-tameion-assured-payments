@@ -60,7 +60,12 @@ async function preparedState(selectedIndex = 0) {
   const api = circleClient();
   let state: DemoState;
   const provider = new ArcCircleProviderAdapter(api, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
-  state = new DemoState(undefined, undefined, undefined, provider);
+  state = new DemoState(undefined, undefined, undefined, provider, {
+    resolveActorAuthority: (actorId, organizationId) =>
+      organizationId === DEMO_ORGANIZATION_ID && ["USR-DEMO-OPERATOR", "USR-ROUTE-TEST"].includes(actorId)
+        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
+        : undefined,
+  });
   const records = eligibleSources(state);
   const selected = selectedIndex < 0 ? records.at(selectedIndex) : records[selectedIndex];
   if (!selected) throw new Error("Frozen genuine set has too few complete USD sources for this route proof.");
