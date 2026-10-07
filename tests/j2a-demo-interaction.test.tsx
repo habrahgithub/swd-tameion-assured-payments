@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 
 import { CommandCenter } from "../app/command-center";
 
@@ -10,7 +10,7 @@ describe("retired fixed-ID Arc Testnet demo surface", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps operator playback API-free and removes the independent synthetic payment lane", async () => {
+  it("keeps sample playback and demo tools out of the initial obligation screen", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ obligations: [] }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -18,11 +18,10 @@ describe("retired fixed-ID Arc Testnet demo surface", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<CommandCenter />);
-    const demos = screen.getByText("Demo tools");
-    fireEvent.click(demos);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(within(demos.closest("details")!).queryByText("Arc Testnet")).toBeNull();
-    expect(within(demos.closest("details")!).getByText("Read-only sample")).toBeTruthy();
+    expect(screen.queryByText("Demo tools")).toBeNull();
+    expect(screen.queryByText("Read-only sample")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show sample playback" })).toBeNull();
     expect(fetchMock.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET"]);
   });
 });

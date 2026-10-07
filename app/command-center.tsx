@@ -1018,6 +1018,11 @@ function AssessmentResultCard({
         )}
       </section>
 
+      <section aria-label="Assessment capability boundary" className="space-y-1 border-t border-[var(--color-border)] pt-3">
+        <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Capability boundary</h4>
+        <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">This assessment does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.</p>
+      </section>
+
       {canReassess && (
         <div className="border-t border-[var(--color-border)] pt-3">
           {reassessmentIsPrimary ? (
@@ -1169,6 +1174,93 @@ function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; c
       </ul>
     </div>
   );
+}
+
+const ASSURANCE_CONTROL_LABELS: Record<ControlResultView["control_id"], string> = {
+  "SK-IDENTITY-ORG": "Organization identity is bound",
+  "SK-FINANCIAL-AUTHORITY": "Human financial authorization is recorded",
+  "SK-COUNTERPARTY-TRUST": "Payee status is current and eligible",
+  "SK-DESTINATION-TRUST": "Payment destination is verified and active",
+  "SK-SOURCE-WALLET-AUTHORITY": "Settlement source wallet is active",
+  "SK-AMOUNT-ATOMIC-EXACT": "Payment amount matches the approved instruction",
+  "SK-ASSET-NETWORK": "Settlement asset and network are allowed",
+  "SK-STATE-CURRENTNESS": "No business or security hold blocks payment",
+  "SK-DUPLICATE-EXTERNAL-SETTLEMENT": "No prior settlement is recorded",
+  "SK-KILL-SWITCH": "No payment stop is active",
+};
+
+function plainPaeState(state: string): string {
+  const labels: Record<string, string> = {
+    UNUSED: "No instruction is sealed",
+    SEALED: "Sealed · single use",
+    REVOKED: "Revoked",
+    EXPIRED: "Expired",
+    CONSUMED: "Used",
+    SUBMITTED: "Submitted · reconcile only",
+  };
+  return labels[state] ?? state.toLowerCase().replaceAll("_", " ");
+}
+
+function currentPaeDisplay(detail: ObligationDetail): string {
+  const state = detail.truth.tameion_control_truth.pae_state;
+  if (detail.pae_sealed && state === "UNUSED") return "Sealed · single use";
+  return plainPaeState(state);
+}
+
+function DeterministicAssuranceSummary({ detail }: { detail: ObligationDetail }) {
+  const evidence = detail.assurance_evidence;
+  const available = evidence?.state === "AVAILABLE_CURRENT_BINDING" || evidence?.state === "AVAILABLE_HISTORICAL";
+  const current = evidence?.state === "AVAILABLE_CURRENT_BINDING";
+  const controls = available ? evidence.control_results : [];
+  const allPass = available && controls.length > 0 && controls.every((control) => control.result === "PASS");
+  const status = current && allPass
+    ? `ASSURANCE PASSED · ${controls.filter((control) => control.result === "PASS").length}/${controls.length} controls passed for the current binding.`
+    : evidence?.state === "AVAILABLE_HISTORICAL" && allPass
+      ? `Historical assurance PASS · ${controls.filter((control) => control.result === "PASS").length}/${controls.length} controls passed then; this is not current execution authority.`
+      : evidence?.state === "INVALID"
+        ? "Assurance evidence could not be integrity-verified. No PASS is shown and execution remains blocked."
+        : evidence?.state === "UNAVAILABLE"
+          ? "Assurance evidence is unavailable. No current PASS is established."
+          : "No PASS assurance is recorded. Execution remains blocked until current assurance succeeds.";
+
+  return (
+    <section aria-label="Deterministic assurance result" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="assurance-result-card">
+      <div>
+        <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Deterministic assurance</h3>
+        <p className="mt-1 text-[14px] font-semibold text-[var(--color-ink)]">{status}</p>
+      </div>
+      <p className="text-[13px] text-[var(--color-ink-muted)]">Payment instruction state: {currentPaeDisplay(detail)}{detail.pae_sealed ? ". Current release checks still apply." : "."}</p>
+      {available && controls.length > 0 && (
+        <ul aria-label="Recorded assurance controls" className="grid gap-2 sm:grid-cols-2">
+          {controls.map((control) => (
+            <li key={control.control_id} className="flex min-h-11 items-center justify-between gap-3 rounded border border-[var(--color-border)] px-3 py-2 text-[12px]">
+              <span>{ASSURANCE_CONTROL_LABELS[control.control_id]}</span>
+              <strong className="shrink-0">{control.result === "NOT_ASSESSED" ? "Not assessed" : control.result === "BLOCK" ? "Blocked" : control.result}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+      {detail.execution_kill_switched && <p role="alert" className="rounded border-s-4 border-s-[var(--color-danger)] px-3 py-2 text-[13px] font-semibold text-[var(--color-danger)]">A payment stop is active. Execution is unavailable.</p>}
+    </section>
+  );
+}
+
+function compactProxyDestination(name: string | undefined, address: string): string {
+  const compact = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
+  return `${name || "Arc Testnet settlement proxy"} · ${compact}`;
+}
+
+function paymentStageStatus(detail: ObligationDetail): string {
+  if (detail.execution?.status === "UNKNOWN") return "Outcome unknown. Reconcile this same instruction read-only; do not retry or resubmit.";
+  if (detail.execution?.status === "SUBMITTING") return "Submission is in progress. Wait for read-only reconciliation; do not resubmit.";
+  if (detail.execution?.status === "SUBMITTED") return "Submission is recorded and awaiting reconciliation. Do not resubmit.";
+  if (detail.execution?.status === "SETTLED") return "Testnet execution is reconciled. The real-world payable remains outstanding in the source record.";
+  if (detail.execution?.status === "FAILED") return "The provider attempt failed. Review current evidence; no retry is available from this instruction.";
+  if (detail.execution?.status === "BLOCKED") return "Execution is blocked. No successful settlement is established by this record.";
+  if (detail.execution_kill_switched) return "A payment stop is active. No execution is permitted.";
+  if (detail.pae_sealed && detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET") return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
+  if (detail.pae_sealed) return "The instruction is sealed, but current execution authority is not available.";
+  return "No execution has been recorded for this instruction.";
 }
 
 function SimulatedDemoStages() {
@@ -1599,6 +1691,9 @@ export function CommandCenter() {
 
   const currentLifecycleStage = authoritativeLifecyclePosition(selectedId, detailState, detail);
 
+  const isInitialObligationScreen = !selectedId || (viewedStage === "Obligation" && currentLifecycleStage === "Obligation" &&
+    !hasCurrentAssessment && !detail?.settlement_proxy && !detail?.pae_sealed && !detail?.execution && detail?.aggregate.state !== "AUTHORIZED");
+
   const currentStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(currentLifecycleStage);
   const viewedStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(viewedStage);
   const stageAccessibilityLabel = viewedStage === currentLifecycleStage
@@ -1619,6 +1714,7 @@ export function CommandCenter() {
   const canContinueToAuthorization = currentLifecycleStage === "Assessment" && detailState === "loaded" && !detailIsStale &&
     hasCurrentPayAssessment && Boolean(authorizationAssessment) && allAssessed && solePayCandidateId === selectedId &&
     routeAssuranceReady && Boolean(detail?.settlement_proxy) && assessmentAction === "continue";
+  const showContinueToAuthorization = viewedStage === "Assessment" && canContinueToAuthorization;
   const canContinueToPayment = currentLifecycleStage === "Assurance" && detailState === "loaded" && Boolean(detail?.pae_sealed) &&
     Boolean(detail?.execution_packet?.packet && detail?.sealed_pae_instruction_hash) &&
     detail?.execution_gate !== "LOCKED_UNTIL_CURRENT_AUTHORIZATION" &&
@@ -1799,7 +1895,7 @@ export function CommandCenter() {
   const paeCurrentState = detail?.pae_sealed ? "A sealed payment instruction is present; current release checks still apply." : "No sealed payment instruction is recorded.";
   const executionCurrentState = detail ? submissionEvidenceCopy(detail) : "Execution state is unavailable.";
 
-  type WorkspaceAction = { label: string; actor: string; run: () => void };
+  type WorkspaceAction = { label: string; actor: string; run: () => void; exactConfirmation?: boolean };
   let workspaceAction: WorkspaceAction | null = null;
   if (!selectedId && obligations.length > 0) {
     workspaceAction = { label: "Choose an obligation", actor: "You", run: () => setMobileQueueOpen(true) };
@@ -1812,7 +1908,7 @@ export function CommandCenter() {
   } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
   } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
-    workspaceAction = { label: "Submit this exact Arc Testnet proxy intent", actor: "Authorized operator · exact packet gate passed", run: () => {
+    workspaceAction = { label: "Execute Test Payment", actor: "Authorized operator · exact packet gate passed", exactConfirmation: true, run: () => {
       if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
           !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
@@ -1835,7 +1931,7 @@ export function CommandCenter() {
   } else if (assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
   } else if (detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && !detail.pae_sealed && !detail.execution) {
-    workspaceAction = { label: "Authorize this exact obligation", actor: "Authorized approver · identity not shown", run: () => {
+    workspaceAction = { label: "Authorize payment", actor: "Authorized approver · identity not shown", run: () => {
       if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady) return;
       void run("approve", () => postJson(`/api/obligations/${selectedId}/approve`, {
         expected_version: Number(authorizationAssessment.aggregate_version),
@@ -1848,7 +1944,7 @@ export function CommandCenter() {
     ? "Unassigned · read-only reconciliation"
     : firstUnmetPrerequisite?.startsWith("Payment-route assurance")
       ? "External-evidence owner unavailable"
-      : "No user action");
+      : "Unassigned · no permitted product action is available");
   const recoveryNextAction = workspaceAction?.label ?? (detail?.execution?.status === "FAILED"
     ? "No retry action is available here. Review current provider evidence and payment authority before any new instruction."
     : detail?.execution?.status === "BLOCKED" || noCurrentExactExecutionPacket
@@ -1856,14 +1952,16 @@ export function CommandCenter() {
       : "No product action is available from the currently recorded state.");
   const assessmentResult = detailState === "loaded" && hasCurrentAssessment ? currentAssessment : null;
   const assessmentRemediation = assessmentResult?.race?.remediation ?? [];
-  const assessmentNextStep = assessmentResult?.decision === "PAY"
+  const assessmentNextStep = showContinueToAuthorization
+    ? "Continue to Authorization to review this exact instruction; navigation does not approve or submit it."
+    : assessmentResult?.decision === "PAY"
     ? !assessmentResult.race
       ? "This recorded PAY recommendation has no review evidence in this detail; authorization remains locked."
       : proxyPreparationReady
       ? "Prepare the Arc Testnet proxy; a fresh assessment is required afterward, before authorization review."
       : workspaceAction?.label === "Review current PAY assessment"
         ? "Review this advisory recommendation before any separate human authorization decision."
-        : workspaceAction?.label === "Authorize this exact obligation"
+        : workspaceAction?.label === "Authorize payment"
           ? "An authorized approver may review this exact obligation."
           : !allAssessed
             ? "Assess the remaining genuine obligations before authorization review."
@@ -1885,7 +1983,8 @@ export function CommandCenter() {
 
   const previousViewedStage = viewedStageIndex > 0 ? PAYMENT_LIFECYCLE_STAGES[viewedStageIndex - 1] : null;
   const canGoBack = Boolean(previousViewedStage && stageState(previousViewedStage) !== "LOCKED");
-  const continueTarget = panel !== "report" && viewedStage === currentLifecycleStage ? nextAvailableStage : null;
+  const continueTarget = panel !== "report" && viewedStage === currentLifecycleStage && !showContinueToAuthorization ? nextAvailableStage : null;
+  const visibleWorkspaceAction = showContinueToAuthorization ? null : workspaceAction;
   const stageButton = (stage: LifecycleStage, mobile = false) => {
     const status = stageState(stage);
     const locked = status === "LOCKED";
@@ -2022,7 +2121,6 @@ export function CommandCenter() {
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "error" && <>
                 <p role="alert" className="text-[13px] text-[var(--color-danger)]">Genuine obligations are unavailable. No synthetic demo data has been added to this list. {obligationsError}</p>
                 <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry genuine obligations</button>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">Open Demo Mode above to view a clearly labeled synthetic workflow.</p>
               </>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
                 <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
@@ -2056,10 +2154,10 @@ export function CommandCenter() {
                       <p><span className="text-[var(--color-ink-muted)]">Due </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
                     </div>
                     {sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
-                    <p className="mt-1 text-[11px] leading-4 text-[var(--color-warning)]">
+                    {!isInitialObligationScreen && <p className="mt-1 text-[11px] leading-4 text-[var(--color-warning)]">
                       ARC TESTNET · {detail.settlement_proxy ? "controlled settlement proxy" : "no controlled proxy"} · real-world payable remains {sourcePayableState(detail)}.
-                    </p>
-                    {detail.settlement_proxy && <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
+                    </p>}
+                    {!isInitialObligationScreen && detail.settlement_proxy && <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
                       Testnet intent: <bdi dir="ltr" className="tabular font-semibold">{detail.settlement_proxy.preflight.amount} {detail.settlement_proxy.preflight.asset}</bdi>
                       {" · "}{detail.settlement_proxy.preflight.network}. Testnet execution does not discharge the real-world payable.
                     </p>}
@@ -2103,7 +2201,7 @@ export function CommandCenter() {
             </div>
           )}
 
-          <section aria-label="Guided lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-2">
+          {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Payment journey</p>
             </div>
@@ -2130,16 +2228,17 @@ export function CommandCenter() {
                 <nav aria-label="All lifecycle stages" hidden={!mobileStagesOpen}><ol className="grid gap-1">{PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage, true))}</ol></nav>
               </details>
             </div>
-          </section>
+          </section>}
 
-          <section aria-label="Current next step" data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
+          <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>
+                {!isInitialObligationScreen && <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>}
                 <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : state.label}</h3>
-                {!currentException && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
-                {workspaceAction && !currentException && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
-                {!workspaceAction && selectedId && detailState === "loaded" && (
+                {!currentException && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
+                {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.</p>}
+                {visibleWorkspaceAction && !currentException && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
+                {!visibleWorkspaceAction && !showContinueToAuthorization && selectedId && detailState === "loaded" && !currentException && !isInitialObligationScreen && (
                   <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
                     {detail?.execution?.status === "FAILED" || detail?.execution?.status === "BLOCKED" ||
                     ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "")
@@ -2157,7 +2256,7 @@ export function CommandCenter() {
                           : "Unassigned · no permitted product action is available"}
                   </strong></p>
                 )}
-                {exactPacketSubmissionReady && workspaceAction?.label === "Submit this exact Arc Testnet proxy intent" && (
+                {visibleWorkspaceAction?.exactConfirmation && (
                   <label className="mt-3 grid max-w-lg gap-1 text-[12px] font-medium text-[var(--color-ink)]">
                     Confirm exact testnet intent
                     <input
@@ -2181,13 +2280,16 @@ export function CommandCenter() {
                   <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Next owner:</strong> {recoveryOwner}</p>
                 </section>
               )}
-              {workspaceAction && (
+              {showContinueToAuthorization && (
+                <PrimaryButton onClick={() => showStage("Authorization")} disabled={busy}>Continue to Authorization</PrimaryButton>
+              )}
+              {visibleWorkspaceAction && (
                 <PrimaryButton
-                  disabled={busy || (workspaceAction.label === "Submit this exact Arc Testnet proxy intent" && !executionConfirmation.matchesExact)}
-                  danger={workspaceAction.label === "Submit this exact Arc Testnet proxy intent"}
-                  onClick={workspaceAction.run}
+                  disabled={busy || (visibleWorkspaceAction.exactConfirmation && !executionConfirmation.matchesExact)}
+                  danger={visibleWorkspaceAction.exactConfirmation}
+                  onClick={visibleWorkspaceAction.run}
                 >
-                  {workspaceAction.label}
+                  {visibleWorkspaceAction.label}
                 </PrimaryButton>
               )}
               {stageCompletionReceipt?.obligationId === selectedId && (
@@ -2197,8 +2299,9 @@ export function CommandCenter() {
               )}
             </div>
           </section>
+          {isInitialObligationScreen && currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
 
-          <details className="rounded border border-[var(--color-border)] px-3 py-2">
+          {!isInitialObligationScreen && <details className="rounded border border-[var(--color-border)] px-3 py-2">
             <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Additional tools</summary>
             <nav aria-label="Secondary tools" className="border-t border-[var(--color-border)] pt-2">
               <button
@@ -2207,7 +2310,7 @@ export function CommandCenter() {
                 className={`min-h-11 rounded border px-3 py-2 text-start text-[12px] font-medium transition sm:text-[13px] ${panel === "report" ? "border-[var(--color-accent)] text-[var(--color-ink)]" : "border-[var(--color-border-strong)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"}`}
               >Operational Report (secondary)</button>
             </nav>
-          </details>
+          </details>}
 
           <div>
             {panel === "assessment" && (
@@ -2218,7 +2321,7 @@ export function CommandCenter() {
                     nextAction={assessmentNextStep}
                     nextOwner={assessmentNextOwner}
                     canReassess={optionalReassessmentAvailable}
-                    reassessmentIsPrimary={!workspaceAction}
+                    reassessmentIsPrimary={!workspaceAction && !showContinueToAuthorization}
                     onReassess={() => void runAssessment()}
                     busy={busy}
                   />
@@ -2230,6 +2333,7 @@ export function CommandCenter() {
                         ? "Run AI Assessment from the current-stage action above. The result is advisory and cannot authorize or execute payment."
                         : assessmentActionStatus}
                     </p>
+                    <p className="border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Capability boundary:</strong> this product does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.</p>
                     {detailState !== "loaded" && <RuntimeBadge mode={selected?.provider_mode ?? null} />}
                   </section>
                 )}
@@ -2253,8 +2357,9 @@ export function CommandCenter() {
                   <section aria-label="Approver decision packet" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
                     <h3 className="text-[14px] font-semibold text-[var(--color-ink)]">Approver decision packet</h3>
                     <p className="text-[12px] text-[var(--color-warning)]">Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.</p>
+                    <p className="text-[13px] font-semibold text-[var(--color-ink)]">AI did not authorize this payment. You are approving this exact instruction.</p>
                     <dl className="grid gap-x-5 sm:grid-cols-2">
-                      <Field label="Source amount and payable" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
+                      <Field label="Source obligation amount" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
                       <Field label="Business status" value={judgeReadableState(detail.truth.source_truth.obligation_state)} />
                       <Field label="Advisory recommendation" value={hasCurrentAssessment && currentAssessment ? currentAssessment.decision : "No current assessment is available in this detail"} />
                       <Field label="Payment readiness" value={detail.aggregate.state === "AUTHORIZED"
@@ -2269,8 +2374,9 @@ export function CommandCenter() {
                     </div>}
                     {detail.settlement_proxy ? (
                       <dl className="grid gap-x-5 sm:grid-cols-2">
-                        <Field label="Controlled testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
-                        <Field label="Proxy recipient" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
+                        <Field label="Exact testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
+                        <Field label="Testnet source wallet" value={compactProxyDestination("Arc Testnet controlled source", detail.settlement_proxy.preflight.source_wallet.address)} />
+                        <Field label="Testnet proxy destination" value={compactProxyDestination(detail.settlement_proxy.preflight.destination_wallet.name, detail.settlement_proxy.preflight.destination_wallet.address)} />
                       </dl>
                     ) : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
                     <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Authorization records approval for the reviewed obligation. Assurance and execution remain separately gated; authorization alone does not submit a payment.</p>
@@ -2304,13 +2410,36 @@ export function CommandCenter() {
               </div>
             )}
 
-            {panel === "assurance" && (
+            {panel === "assurance" && viewedStage === "Payment" && detail && (
+              <section aria-label="Payment status" className="max-w-xl space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="payment-status-card">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payment · Arc Testnet</p>
+                  <h3 className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail)}</h3>
+                </div>
+                <dl>
+                  <Field label="Testnet settlement" value={detail.settlement_proxy
+                    ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`
+                    : `${detail.aggregate.amount} ${detail.aggregate.asset} · ${detail.aggregate.network}`} />
+                  <Field label="Instruction state" value={currentPaeDisplay(detail)} />
+                  <Field label="Execution record" value={detail.execution?.status ?? "No execution has been recorded for this instruction."} />
+                  <Field label="Source payable" value={`${sourcePayableState(detail)} · unchanged by testnet execution`} />
+                  {detail.execution?.provider_ref && <Field label="Provider reference" value={detail.execution.provider_ref} />}
+                </dl>
+                {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
+                {detail.execution?.status === "SETTLED" && <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">The Arc Testnet transaction does not discharge the real-world payable.</p>}
+                {detail.execution === null && detail.pae_sealed && <p className="text-[12px] text-[var(--color-ink-muted)]">Confirm the exact instruction only if the current gate is open. Release and pre-send checks remain authoritative.</p>}
+              </section>
+            )}
+
+            {panel === "assurance" && viewedStage !== "Payment" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
                   {detail?.settlement_proxy
                     ? `This selected genuine obligation is bound to a distinct Arc Testnet settlement proxy. The source payable remains ${sourcePayableState(detail)}.`
                     : "No Arc Testnet proxy is bound to this selected obligation. A testnet destination is never inferred from or substituted for the source vendor route."}
                 </p>
+                {detailState === "loaded" && detail && <DeterministicAssuranceSummary detail={detail} />}
+                {detailState !== "loaded" && <section aria-label="Deterministic assurance result" className="rounded border border-[var(--color-border)] p-4"><h3 className="text-[16px] font-semibold">Deterministic assurance</h3><p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Current assurance is unavailable until the obligation detail is refreshed.</p></section>}
                 {detail?.execution_kill_switched === true && (
                   <p role="alert" className="rounded border-s-4 border-s-[var(--color-danger)] bg-[var(--color-danger-bg)] px-3 py-3 text-[14px] font-semibold text-[var(--color-danger)]">
                     Execution disabled by the active kill switch. This block takes priority over any exact-packet gate.
@@ -2409,6 +2538,10 @@ export function CommandCenter() {
 
             {panel === "reconciliation" && (
               <div className="max-w-xl space-y-3">
+                <header className="space-y-1">
+                  <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Reconciliation &amp; evidence</h3>
+                  <p className="text-[13px] text-[var(--color-ink-muted)]">Compare the recorded testnet outcome with the source obligation. The source payable remains separate and unchanged.</p>
+                </header>
                 {detail && detailState === "loaded" && detail.settlement_proxy ? (() => {
                   const evidence = detail.execution?.provider_evidence;
                   const observedAmount = evidence?.atomic_amount ?? evidence?.atomicAmount;
@@ -2614,7 +2747,7 @@ export function CommandCenter() {
             )}
           </div>
 
-          {panel !== "report" && detailState === "loaded" && detail && (
+          {!isInitialObligationScreen && panel !== "report" && detailState === "loaded" && detail && (
             <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
               <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]" title={`Activity & evidence · ${activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no timestamped history · current state available on open"}`}>
                 <span className="inline-block w-[calc(100%-1.5rem)] truncate align-top">Activity &amp; evidence · {activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no timestamped history · current state available on open"}</span>
@@ -2651,7 +2784,7 @@ export function CommandCenter() {
             </details>
           )}
 
-          {panel !== "report" && detail && (
+          {!isInitialObligationScreen && panel !== "report" && detail && (
             <details className="rounded border border-[var(--color-border)] px-3 py-2">
               <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]">Developer &amp; audit evidence</summary>
               <div className="space-y-2 border-t border-[var(--color-border)] pt-3 text-[12px]">
@@ -2813,7 +2946,7 @@ export function CommandCenter() {
         </section>
       </div>
 
-      <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+      {!isInitialObligationScreen && <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
         <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink)]">Demo tools</summary>
         <div className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
           <details className="rounded border border-[var(--color-warning)] px-3 py-2">
@@ -2833,7 +2966,7 @@ export function CommandCenter() {
           </details>
 
         </div>
-      </details>
+      </details>}
     </main>
   );
 }

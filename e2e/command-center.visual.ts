@@ -39,22 +39,19 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   const assertGenuineFirstView = async (viewportHeight: number, mobile = false) => {
     await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText(`${expected.record.amount} ${expected.record.currency}`);
     await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
-    const currentStage = mobile
-      ? page.locator("p[aria-live='polite']").filter({ hasText: "Step 1 of 6 · Obligation" })
-      : page.getByRole("list", { name: "Payment lifecycle" }).locator('[aria-current="step"]');
-    await expect(currentStage).toContainText("Obligation");
+    await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" })).toHaveCount(0);
+    await expect(page.getByText("Payment journey")).toHaveCount(0);
+    await expect(page.getByText(/Activity & evidence/)).toHaveCount(0);
+    await expect(page.getByText("Developer & audit evidence")).toHaveCount(0);
+    await expect(page.getByText("Demo tools", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/Operational Report/)).toHaveCount(0);
+    await expect(page.getByText(/ARC TESTNET|Safety Kernel|PAE|USDC|provider|reconciliation/i)).toHaveCount(0);
     await expect(page.getByTestId("current-next-step")).toContainText("Run AI Assessment");
+    await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
+    await expect(page.getByTestId("current-next-step")).toContainText("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
     await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
     await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(1);
 
-    const activity = page.getByText(/Activity & evidence/).locator("xpath=../..");
-    const developer = page.getByText("Developer & audit evidence").locator("xpath=..");
-    await expect(activity).not.toHaveAttribute("open");
-    await expect(page.getByText(/Activity & evidence/)).toHaveClass(/truncate/);
-    await expect(developer).not.toHaveAttribute("open");
-    await expect(developer.locator("details[open]")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /Operational Report/ })).toBeHidden();
-    await expect(page.getByText("Demo tools", { exact: true })).toBeVisible();
     await expect(page.getByText("Demonstrations", { exact: true })).toHaveCount(0);
 
     const selectedCard = page.getByRole("region", { name: "Selected source obligation" });
@@ -67,11 +64,10 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(selectedCard.locator("h2")).toHaveText(expectedBusinessName);
     await expect(selectedCard).not.toContainText(expected.record.obligation_id);
     await expect(sourceContext).toContainText(expected.record.commercial_terms);
-    await expect(stageCard.locator("p").nth(1)).toContainText("no current advisory assessment");
+    await expect(stageCard.locator("p").first()).toContainText("This obligation needs an assessment before it can proceed.");
     const firstViewport = await Promise.all([
       selectedCard.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
       sourceContext.evaluate((element) => element.getBoundingClientRect().bottom),
-      currentStage.evaluate((element) => element.getBoundingClientRect().bottom),
       stageCard.locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
       stageCard.locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
       primary.evaluate((element) => element.getBoundingClientRect().bottom),
@@ -95,10 +91,12 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await expect(fifthSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
   await expect(fifthSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
   await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
   const fifthDesktopBounds = await Promise.all([
     fifthSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
-    page.getByRole("list", { name: "Payment lifecycle" }).locator('[aria-current="step"]').evaluate((element) => element.getBoundingClientRect().bottom),
-    page.getByTestId("current-next-step").locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
+    fifthSource.getByTestId("source-service-context").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").first().evaluate((element) => element.getBoundingClientRect().bottom),
     page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
   ]);
   expect(fifthDesktopBounds.every((bottom) => bottom <= 760), JSON.stringify(fifthDesktopBounds)).toBe(true);
@@ -115,10 +113,12 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
   await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
   await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
   const fifthMobileBounds = await Promise.all([
     fifthMobileSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
-    page.locator("p[aria-live='polite']").filter({ hasText: "Step 1 of 6 · Obligation" }).evaluate((element) => element.getBoundingClientRect().bottom),
-    page.getByTestId("current-next-step").locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
+    fifthMobileSource.getByTestId("source-service-context").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").first().evaluate((element) => element.getBoundingClientRect().bottom),
     page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
   ]);
   expect(fifthMobileBounds.every((bottom) => bottom <= 844), JSON.stringify(fifthMobileBounds)).toBe(true);
@@ -354,6 +354,72 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
   await page.screenshot({ path: testInfo.outputPath("clerk-assessment-mobile.png"), fullPage: true });
   expect(unexpectedWrites).toEqual([]);
+});
+
+test("Screens 2–6 render as truthful, read-only producer-shaped stages on desktop and mobile", async ({ browser }, testInfo) => {
+  const authorized = proxyLifecycleDetail("AUTHORIZED");
+  authorized.assurance_evidence = {
+    state: "AVAILABLE_CURRENT_BINDING",
+    assurance_id: "ASSURANCE-UAT",
+    recorded_at: "2026-10-07T12:00:00.000Z",
+    organization_id: "ORG-UAT",
+    obligation_id: "OBL-UAT-01",
+    aggregate_version: 2,
+    policy_version: "policy-u1",
+    approval_record_hash: "f".repeat(64),
+    pae_instruction_hash: "d".repeat(64),
+    assurance_hash: "a".repeat(64),
+    overall: "PASS",
+    control_results: ["approval", "amount", "destination", "expiry", "kill-switch", "organization", "obligation", "policy", "source-wallet", "currentness"].map((control_id) => ({ control_id, result: "PASS" })),
+  };
+  const settled = proxyLifecycleDetail("SETTLED");
+  const scenarios = [
+    { stage: "Assessment", detail: liveWinnerForPreparation(), file: "screen-2-assessment" },
+    { stage: "Authorization", detail: authorized, file: "screen-3-authorization" },
+    { stage: "Assurance", detail: authorized, file: "screen-4-assurance" },
+    { stage: "Payment", detail: authorized, file: "screen-5-payment" },
+    { stage: "Reconciliation", detail: settled, file: "screen-6-reconciliation" },
+  ] as const;
+
+  for (const viewport of [{ width: 1280, height: 1000, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+    for (const scenario of scenarios) {
+      const page = await browser.newPage({ viewport });
+      const unexpectedWrites = await openFixture(page, scenario.detail);
+      const stageButton = page.getByRole("button", { name: scenario.stage, exact: true });
+      if (viewport.label === "mobile") await page.getByText("View all stages").click();
+      await expect(stageButton).toBeVisible();
+      await expect(stageButton).not.toBeDisabled();
+      await stageButton.click();
+
+      const main = page.getByRole("main");
+      const primaryActions = main.locator('button[data-primary-action="true"]');
+      expect(await primaryActions.count()).toBeLessThanOrEqual(1);
+      if (await primaryActions.count()) {
+        expect(await primaryActions.first().evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      }
+      const dimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+      expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+
+      if (scenario.stage === "Assessment") {
+        await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Capability boundary");
+      } else if (scenario.stage === "Authorization") {
+        await expect(page.getByRole("region", { name: "Approver decision packet" })).toContainText("AI did not authorize this payment");
+        await expect(page.getByRole("region", { name: "Approver decision packet" })).toContainText("OUTSTANDING");
+      } else if (scenario.stage === "Assurance") {
+        await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("ASSURANCE PASSED");
+      } else if (scenario.stage === "Payment") {
+        await expect(page.getByRole("region", { name: "Payment status" })).toContainText("No execution has been recorded for this instruction.");
+        await expect(page.getByRole("region", { name: "Payment status" })).toContainText("Sealed");
+      } else {
+        await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toContainText("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
+        await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toContainText("remains outstanding");
+      }
+
+      await page.screenshot({ path: testInfo.outputPath(`${scenario.file}-${viewport.label}.png`), fullPage: true });
+      expect(unexpectedWrites).toEqual([]);
+      await page.close();
+    }
+  }
 });
 
 test("Command Center desktop accessibility and review image", async ({ page }) => {
@@ -672,7 +738,7 @@ test("mobile Continue is a 44px read-only navigation control when Assurance is c
   await continueButton.click();
   await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
   expect(writes.slice(before)).toEqual([]);
-  expect(page.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toHaveCount(0);
+  expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
 });
 
 test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {
@@ -682,9 +748,9 @@ test("active kill switch takes precedence over a waiting exact-packet gate", asy
   const writes = await openFixture(page, suspended);
   await expect(page.getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "BLOCKED");
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment" }).click();
-  await expect(page.getByText("Execution is suspended while a kill switch is active; packet display does not enable submission.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Payment status" })).toContainText("A payment stop is active. No execution is permitted.");
   await expect(page.getByTestId("current-next-step")).toContainText("Execution is suspended while a kill switch is active");
   await expect(page.getByTestId("current-next-step")).not.toContainText("Prime · exact-packet authorization");
-  await expect(page.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
   expect(writes).toEqual([]);
 });

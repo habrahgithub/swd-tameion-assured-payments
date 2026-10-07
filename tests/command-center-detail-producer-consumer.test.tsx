@@ -324,7 +324,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const otherBody = await detailJson(fixture.state, otherId);
     const { main, setDetailBody } = await renderProducerJson(validOpenGate, [otherBody]);
     fireEvent.change(screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }), { target: { value: exactConfirmation } });
-    expect(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Execute Test Payment" })).toBeTruthy();
 
     fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
     await expect(fixture.state.worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "WDG-001" });
@@ -347,7 +347,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByTestId("current-next-step").textContent).not.toContain("exact packet gate passed");
     expect(main.querySelector('button[data-primary-action="true"]')).toBeNull();
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -361,7 +361,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     if (!otherId) throw new Error("A second frozen obligation is required to exercise selection identity refresh.");
     const otherBody = await detailJson(fixture.state, otherId);
     const { setDetailBody } = await renderProducerJson(openGate, [otherBody]);
-    const submit = () => screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" });
+    const submit = () => screen.getByRole("button", { name: "Execute Test Payment" });
     const confirm = () => screen.getByRole("textbox", { name: /Confirm exact testnet intent/ });
 
     fireEvent.change(confirm(), { target: { value: exactConfirmation } });
@@ -376,7 +376,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     fireEvent.click(obligationRow(fixture.selectedId));
     await waitFor(() => expect(obligationRow(fixture.selectedId).getAttribute("aria-current")).toBe("true"));
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
     fixture.state.store.deactivateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
@@ -436,7 +436,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(awaitingPrime.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
     await renderProducerJson(awaitingPrime);
     expect(screen.getByTestId("current-next-step").textContent).toContain("Prime · exact-packet authorization");
-    expect(screen.queryByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     cleanup();
     fetchMock.mockReset();
     process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
@@ -447,16 +447,16 @@ describe("real detail GET producer-consumer packet controls", () => {
       ...openGate,
       assurance_evidence: { state: "UNAVAILABLE", message: "Assurance evidence is expected but unavailable.", control_results: [] },
     });
-    const submit = screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" });
+    const submit = screen.getByRole("button", { name: "Execute Test Payment" });
     const confirmation = screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement;
     fireEvent.change(confirmation, { target: { value: exactConfirmation } });
     expect(submit.hasAttribute("disabled")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     fireEvent.click(screen.getByRole("button", { name: "Obligation" }));
     expect((screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement).value).toBe(exactConfirmation);
-    expect(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Execute Test Payment" }).hasAttribute("disabled")).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Execute Test Payment" }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1));
     const [postUrl, postInit] = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
     expect(String(postUrl)).toBe(`/api/obligations/${fixture.selectedId}/execute`);
@@ -748,7 +748,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps the genuine initial obligation view concise and its secondary evidence closed", async () => {
+  it("shows a minimal obligation screen with no downstream lifecycle or technical material", async () => {
     const state = new DemoState();
     const queue = await listJson(state);
     const first = queue.obligations[0];
@@ -763,20 +763,18 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(source.textContent).not.toContain(body.record.obligation_id);
     expect(source.querySelector('[data-testid="source-service-context"]')?.textContent).toContain(body.record.commercial_terms);
 
-    const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Obligation");
+    expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
+    expect(screen.queryByText("Payment journey")).toBeNull();
+    expect(screen.queryByText(/Activity & evidence/)).toBeNull();
+    expect(screen.queryByText("Developer & audit evidence")).toBeNull();
+    expect(screen.queryByText("Demo tools", { exact: true })).toBeNull();
+    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(source.textContent).not.toMatch(/ARC TESTNET|USDC|PAE|Safety Kernel|provider|reconciliation/i);
+    expect(main.textContent).toContain("This obligation needs an assessment before it can proceed.");
+    expect(main.textContent).toContain("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
 
-    const activity = screen.getByText(/Activity & evidence/).closest("details") as HTMLDetailsElement;
-    const developer = screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement;
-    expect(activity.open).toBe(false);
-    expect(developer.open).toBe(false);
-    expect(developer.querySelectorAll("details[open]")).toHaveLength(0);
-    const additionalTools = screen.getByText("Additional tools").closest("details") as HTMLDetailsElement;
-    expect(additionalTools.open).toBe(false);
-    expect(additionalTools.querySelector("button")?.textContent).toContain("Operational Report");
-    expect(screen.queryByText("Demo tools", { exact: true })).toBeTruthy();
     expect(screen.queryByText("Demonstrations", { exact: true })).toBeNull();
 
     const queueRow = document.querySelector(`button[data-obligation-id="${first.obligation_id}"]`) as HTMLButtonElement;
@@ -785,6 +783,18 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(queueRow.textContent).not.toContain(first.obligation_id);
     expect(queueRow.textContent).not.toContain(first.commercial_terms);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps Screen 2 capability boundaries explicit without inventing assessment results", async () => {
+    const fixture = await assessedProducerState("PAY");
+    const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    const card = screen.getByRole("region", { name: "Assessment result" });
+    expect(card.textContent).toContain("Capability boundary");
+    expect(card.textContent).toContain("This assessment does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.");
+    expect(card.textContent).toContain(fixture.body.current_assessment.race.result.decision_summary);
+    expect(card.textContent).not.toContain("PO match passed");
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
   });
 
   it("renders concise source provenance and service period from producer-shaped obligation records", async () => {
@@ -818,15 +828,15 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps assessment coverage advisory and aggregate version in collapsed technical evidence", async () => {
+  it("keeps initial obligation guidance advisory and aggregate version in technical evidence", async () => {
     const unassessed = new DemoState();
     const firstSource = unassessed.liveUsageRecords[0];
     if (!firstSource) throw new Error("Frozen source set is empty.");
     const unassessedBody = await detailJson(unassessed, firstSource.obligation_id);
     const unassessedQueue = await listJson(unassessed);
     const { main: unassessedMain } = await renderProducerJson(unassessedBody, [], unassessedQueue);
-    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    expect(unassessedMain.textContent).toContain("The result is advisory and cannot authorize or execute payment.");
+    expect(unassessedMain.textContent).toContain("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
+    expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(unassessedMain.textContent).not.toMatch(/no provider submission/i);
     cleanup();
 
@@ -1015,7 +1025,47 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(packet.textContent).toContain("OUTSTANDING");
     expect(packet.textContent).toContain("No current assessment is available in this detail");
     expect(packet.textContent).toContain("Authorization records approval for the reviewed obligation. Assurance and execution remain separately gated; authorization alone does not submit a payment.");
+    expect(packet.textContent).toContain("AI did not authorize this payment. You are approving this exact instruction.");
+    expect(packet.textContent).toContain("Source obligation amount");
+    expect(packet.textContent).toContain("Exact testnet settlement");
+    expect(packet.textContent).toMatch(/Arc Testnet settlement proxy · 0x[0-9a-f]{4}…[0-9a-f]{4}/i);
     expect(packet.textContent).not.toContain(body.settlement_proxy.preflight.destination_wallet.address);
+    expect(packet.closest("main")?.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+  });
+
+  it("shows persisted assurance controls and plain PAE state on Screen 4", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    await renderProducerJson(body);
+    fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
+
+    const assurance = screen.getByRole("region", { name: "Deterministic assurance result" });
+    expect(assurance.textContent).toMatch(/ASSURANCE PASSED|Historical assurance evidence/);
+    expect(assurance.textContent).toContain("Human financial authorization is recorded");
+    expect(assurance.textContent).toContain("Payment amount matches the approved instruction");
+    expect(assurance.textContent).toContain("Payment instruction state: Sealed · single use");
+    expect(assurance.textContent).not.toContain("SK-");
+    expect(assurance.textContent).not.toContain(body.assurance_evidence.assurance_id);
+    expect(screen.getByText("Developer & audit evidence").closest("details")?.open).toBe(false);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("gives Screen 5 a concise execution status while retaining the exact single submission path", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+    body.execution_packet = { packet_sha256: "e".repeat(64), packet: { obligation_id: fixture.selectedId } };
+    body.sealed_pae_instruction_hash = "d".repeat(64);
+    await renderProducerJson(body);
+    fireEvent.click(screen.getByRole("button", { name: "Payment" }));
+
+    const payment = screen.getByRole("region", { name: "Payment status" });
+    expect(payment.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset} · ${body.settlement_proxy.preflight.network}`);
+    expect(payment.textContent).toContain("No execution has been recorded for this instruction.");
+    expect(screen.getByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Execute Test Payment" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("uses a single recovery card with record-scoped submission evidence and a human-readable reconciliation receipt", async () => {
