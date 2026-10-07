@@ -343,7 +343,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(demonstrations.open).toBe(false);
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(Array.from(lifecycle.querySelectorAll("li div span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
+    expect(Array.from(lifecycle.querySelectorAll("li")).map((item) => item.querySelector("button > span:nth-child(2)")?.textContent?.trim())).toEqual([
       "Obligation",
       "Assessment",
       "Authorization",
@@ -352,7 +352,8 @@ describe("Command Center mounted Operational Report", () => {
       "Reconciliation",
     ]);
     expect(screen.getByText("AI recommends · human authorizes · assurance controls release")).toBeTruthy();
-    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assessment");
+    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Obligation");
+    expect(within(screen.getByRole("navigation", { name: "Payment lifecycle navigation" })).getByRole("button", { name: "Assessment" }).getAttribute("data-stage-state")).toBe("AVAILABLE");
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
     const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assess.disabled).toBe(false);
@@ -389,11 +390,11 @@ describe("Command Center mounted Operational Report", () => {
     });
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
-    const nav = screen.getByRole("navigation", { name: "Command Center surfaces" });
-    expect(within(nav).getByRole("button", { name: "Obligations" }).getAttribute("aria-pressed")).toBe("true");
+    const nav = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
+    expect(within(nav).getByRole("button", { name: "Obligation" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(within(nav).getByRole("button", { name: "Assessment" }));
     expect(within(nav).getByRole("button", { name: "Assessment" }).getAttribute("aria-pressed")).toBe("true");
-    expect(within(nav).getByRole("button", { name: "Obligations" }).getAttribute("aria-pressed")).toBe("false");
+    expect(within(nav).getByRole("button", { name: "Obligation" }).getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain("Assessment unavailable.");
@@ -414,14 +415,13 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("button", { name: /OBL-ASSURANCE-NOT-READY/ }).textContent).toContain("PAY recommendation (advisory)");
     expect(screen.getByRole("list", { name: "Payment lifecycle" }).textContent).toContain("Approval locked — route assurance not ready");
     expect(screen.getByTestId("current-next-step").textContent).toContain("External-evidence step");
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
-    expect(prerequisites.textContent).toContain("Owner: unavailable");
+    const authorizationStage = screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement;
+    expect(authorizationStage.disabled).toBe(true);
+    expect(screen.getByRole("list", { name: "Payment lifecycle" }).textContent).toContain("Approval locked — route assurance not ready");
     expect(screen.getAllByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toHaveLength(1);
-    expect(prerequisites.textContent).toContain("External-evidence step");
-    expect(prerequisites.textContent).toContain("fresh assessment after preparation");
-    expect(prerequisites.textContent).not.toContain("no product action is available here");
-    expect(prerequisites.textContent).not.toContain("satisfy the existing readiness gate");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("External-evidence step");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("fresh assessment after preparation");
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
   });
 
   it("plays a deterministic same-identity sample without invoking payment routes", async () => {
@@ -523,11 +523,13 @@ describe("Command Center mounted Operational Report", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /OBL-UNSEALED/ }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("OBL-UNSEALED"));
-    expect(await screen.findByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("assess the remaining obligations");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/An authorization envelope is already sealed/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /OBL-SEALED/ }));
     await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("OBL-SEALED"));
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
     expect(await screen.findByText(/An authorization envelope is already sealed for this obligation/)).toBeTruthy();
     expect(sealedReads).toBe(2);
     expect(screen.queryByRole("button", { name: "Authorization already sealed" })).toBeNull();
@@ -541,21 +543,16 @@ describe("Command Center mounted Operational Report", () => {
 
     render(<CommandCenter />);
     await screen.findByRole("button", { name: /OBL-A/ });
-    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect(await screen.findByText("Loading current obligation detail; authorization status is not yet available.")).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status.");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
-    expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
+    expect(screen.queryByText(/No payment intent exists/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Authorization status unavailable" })).toBeNull();
 
     selectedDetail.resolve(response(null, 503));
-    expect(await screen.findByText("Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.")).toBeTruthy();
+    expect(await screen.findByText(/Selected obligation status is unavailable; retry before taking action/)).toBeTruthy();
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
-    expect(screen.queryByText(/Current detail confirms no payment intent exists/)).toBeNull();
+    expect(screen.queryByText(/No payment intent exists/)).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
   });
 
@@ -566,8 +563,8 @@ describe("Command Center mounted Operational Report", () => {
 
     render(<CommandCenter />);
     await screen.findByText("Genuine obligations are not selected.");
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect(screen.getByText("Select an obligation to review its authorization and payment-intent status.")).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the queue.");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
   });
 
@@ -604,10 +601,10 @@ describe("Command Center mounted Operational Report", () => {
       : Promise.resolve(response(authorized)));
     render(<CommandCenter />);
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
-    await waitFor(() => expect(lifecycle.textContent).toContain("Authorized — sealed PAE exists"));
-    expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
-    expect(lifecycle.textContent).toContain("AssurancePAE is sealed; detailed assurance unavailable in this view");
-    expect(lifecycle.textContent).toContain("PaymentArc Testnet proxy not prepared for this obligation");
+    await waitFor(() => expect(lifecycle.textContent).toContain("PaymentCURRENT"));
+    expect(lifecycle.textContent).toContain("PaymentCURRENT");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("separate fixed testnet intent does not represent it");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
 
@@ -695,6 +692,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.textContent).toMatch(expected);
     expect(lifecycle.textContent).not.toMatch(/Not submitted/i);
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /^Continue to / })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -711,9 +709,9 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByTestId("current-next-step").textContent).toContain("Authorization recorded · Assurance failed/blocked");
     expect(screen.getByTestId("current-next-step").textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(lifecycle.textContent).toContain("AuthorizationAuthorization recorded — assurance failed or blocked");
-    expect(lifecycle.textContent).toContain("AssuranceAssurance failed or blocked; no PASS assurance is available");
-    expect(lifecycle.textContent).toContain("PaymentAuthorization recorded; assurance failed or blocked; no usable PAE or execution");
+    expect(lifecycle.textContent).toContain("AssuranceBLOCKEDAssurance failed or blocked; no PASS assurance is available");
+    expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
   });
 
   it("keeps an actual post-approval AUTHORIZED N+1 response at Assurance with no unsupported reassessment", async () => {
@@ -727,8 +725,9 @@ describe("Command Center mounted Operational Report", () => {
     const nextStep = await screen.findByTestId("current-next-step");
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assurance"));
-    expect(lifecycle.textContent).toContain("AssessmentNot current for this version");
-    expect(lifecycle.textContent).toContain("AssuranceAssurance failed or blocked; no PASS assurance is available");
+    expect(lifecycle.textContent).toContain("AssuranceBLOCKEDAssurance failed or blocked; no PASS assurance is available");
+    expect((screen.getByRole("button", { name: "Assessment" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
     expect(nextStep.textContent).toContain("Authorization recorded · Assurance failed/blocked");
     expect(nextStep.textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
@@ -744,7 +743,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps an actual sealed post-approval N+1 response at Payment without offering assessment", async () => {
+  it("keeps an actual sealed post-approval N+1 response at Assurance while the release gate is unavailable", async () => {
     const id = "OBL-SEALED-NPLUS1-NO-ASSESSMENT";
     const sealed = approvedNPlusOneDetail(id, true);
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
@@ -753,9 +752,13 @@ describe("Command Center mounted Operational Report", () => {
 
     render(<CommandCenter />);
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
-    await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment"));
-    expect(lifecycle.textContent).toContain("AssessmentNot current for this version");
-    expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
+    await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assurance"));
+    expect((screen.getByRole("button", { name: "Assessment" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
+    expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("LOCKED");
+    expect(screen.queryByRole("button", { name: "Continue to Payment" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
+    expect(screen.queryByRole("button", { name: "Continue to Payment" })).toBeNull();
     expect(screen.getByTestId("current-next-step").textContent).toContain("No current exact execution packet is available. Payment authority must be re-established before submission.");
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
@@ -800,11 +803,11 @@ describe("Command Center mounted Operational Report", () => {
     expect(within(workspace).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
-    expect(lifecycle.textContent).toContain("AssessmentRequires attention");
-    expect(lifecycle.textContent).toContain("AuthorizationLocked — assessment requires attention");
-    expect(lifecycle.textContent).toContain("AssuranceFinal assurance not run");
-    expect(lifecycle.textContent).toContain("PaymentArc Testnet proxy not prepared for this obligation");
-    expect(lifecycle.textContent).toContain("ReconciliationNo Arc settlement to reconcile");
+    expect(lifecycle.textContent).toContain("AssessmentBLOCKEDRequires attention");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
   });
 
@@ -852,7 +855,7 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
-    expect(Array.from(lifecycle.querySelectorAll("li div span:nth-child(2)")).map((step) => step.textContent?.trim())).toEqual([
+    expect(Array.from(lifecycle.querySelectorAll("li")).map((item) => item.querySelector("button > span:nth-child(2)")?.textContent?.trim())).toEqual([
       "Obligation",
       "Assessment",
       "Authorization",
@@ -862,23 +865,15 @@ describe("Command Center mounted Operational Report", () => {
     ]);
     expect(lifecycle.textContent).toContain("PAY — advisory");
     expect(lifecycle.textContent).toContain("Approval locked — route assurance not ready");
-    expect(lifecycle.textContent).toContain("Final assurance not run");
-    expect(lifecycle.textContent).toContain("Arc Testnet proxy not prepared for this obligation");
-    expect(lifecycle.textContent).toContain("No Arc settlement to reconcile");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("payment-route assurance is not ready");
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     const selectedHeader = screen.getByRole("region", { name: "Selected source obligation" });
     expect(within(selectedHeader as HTMLElement).getByText("PAY recommended — assurance not ready; authorization locked")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    const prerequisites = screen.getByRole("list", { name: "Unmet authorization prerequisites" });
-    expect(within(prerequisites).getAllByRole("listitem").map((item) => item.textContent?.trim())).toEqual([
-      expect.stringContaining("Payment-route assurance is not ready: Destination verification is pending verification"),
-      "Review the current PAY assessment before authorization.",
-    ]);
-    expect(prerequisites.textContent).toMatch(/product-trust provenance is/i);
-    expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
-    expect(screen.getByText(/Current detail confirms no payment intent exists/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
-    expect(screen.getAllByText(/Payment-route assurance is not ready: Destination verification is pending verification/).length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("current-next-step").textContent).toContain("payment-route assurance is not ready");
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
@@ -906,14 +901,8 @@ describe("Command Center mounted Operational Report", () => {
     const intentDetails = await screen.findByRole("region", { name: "Exact payment intent summary" });
     expect(intentDetails.textContent).toContain("No FX rate recorded");
     expect(intentDetails.textContent).toContain("Pending separate Safety Kernel review and human authorization");
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    const summary = screen.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" });
-    expect(summary.textContent).toContain("125.00 USD · OUTSTANDING");
-    expect(summary.textContent).toContain("125.000000 USDC");
-    expect(summary.textContent).toContain("ARC_TESTNET");
-    expect(summary.textContent).toContain("testnet-source-id · 0x1111111111111111111111111111111111111111");
-    expect(summary.textContent).toContain("testnet-proxy-id · 0x2222222222222222222222222222222222222222");
-    expect(screen.queryByRole("button", { name: "Authorize selected obligation" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
@@ -945,12 +934,11 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("button", { name: new RegExp(winner.obligation_id) });
     expect(screen.getByText(/Assessment complete — 5 PAY recommendations/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect(await screen.findByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
 
     const nonwinner = fivePay.find((item) => item.obligation_id !== winner.obligation_id)!;
     fireEvent.click(screen.getByRole("button", { name: new RegExp(nonwinner.obligation_id) }));
-    await waitFor(() => expect(screen.getByText(new RegExp(`The existing deterministic gate selected ${winner.obligation_id}`))).toBeTruthy());
+    await waitFor(() => expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true));
     expect(screen.queryByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeNull();
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/preflight") && init?.method === "POST")).toBe(false);
   });
@@ -978,11 +966,8 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Review assessment evidence" }));
     expect(await screen.findByText(/Authorization remains locked/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-
-    const authorize = screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ });
-    expect(authorize).toBeNull();
-    expect(screen.getByText(/A current PAY assessment is required/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("current-next-step").textContent).toContain(`assessment is ${decision}`);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
@@ -1043,16 +1028,14 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    expect(screen.getByText(/Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected obligation status is stale");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
-    expect(screen.getByText(/Kill switch: selected obligation detail is stale/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Disable this obligation" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Submit for execution (simulated)" })).toBeNull();
-    expect(screen.getByText(/Payment is blocked while current obligation and settlement details are unavailable/)).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected obligation status is stale");
     fireEvent.click(screen.getByRole("button", { name: "Refresh current status" }));
     await waitFor(() => expect(screen.queryByText(/Last-known obligation details are stale/)).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: /Operational Report.*secondary/i }));
@@ -1178,5 +1161,112 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(screen.getByRole("region", { name: "Operational report for OBL-B" }).textContent).toContain("RECORD-OBL-B"));
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
     expect(screen.getByRole("region", { name: "Operational report for OBL-B" }).textContent).not.toContain("RECORD-OBL-A");
+  });
+});
+
+describe("guided lifecycle navigation", () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("uses one primary rail, makes locked stages unavailable, and keeps Back/Continue read-only", async () => {
+    const source = detail("OBL-GUIDED-01");
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-01")] }))
+      : Promise.resolve(response(source)));
+    render(<CommandCenter />);
+    const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    const rail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
+    expect(screen.queryByRole("navigation", { name: "Command Center surfaces" })).toBeNull();
+    expect(within(rail).getByRole("button", { name: "Obligation" }).getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(within(rail).getByRole("button", { name: "Assessment" }).getAttribute("data-stage-state")).toBe("AVAILABLE");
+    expect((within(rail).getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(rail).getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
+
+    const before = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    fireEvent.click(within(rail).getByRole("button", { name: "Authorization" }));
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
+    expect((within(rail).getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Continue to Assessment" })[0]);
+    expect(screen.getByText(/Finance Agent reads this obligation/)).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Assessment · Current position: Obligation");
+    fireEvent.click(screen.getAllByRole("button", { name: "Back to Obligation" })[0]);
+    expect(workspace).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(before);
+  });
+
+  it("exposes Continue to Authorization only after current PAY review and route prerequisites, without merging the action", async () => {
+    const pay = proxyPrepared(assessedDetail("OBL-GUIDED-PAY", "PAY"));
+    pay.current_assessment.provider_mode = "LIVE_AI";
+    pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    pay.aggregate.destination_verification_status = "VERIFIED";
+    pay.aggregate.destination_operational_status = "ACTIVE";
+    pay.aggregate.source_wallet_status = "ACTIVE";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-GUIDED-PAY", true), decision: "PAY", provider_mode: "LIVE_AI" }], sole_pay_candidate_id: "OBL-GUIDED-PAY" }))
+      : Promise.resolve(response(pay)));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    const continueButtons = screen.getAllByRole("button", { name: "Continue to Authorization" });
+    expect(continueButtons.length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Authorize this exact obligation" })).toBeTruthy();
+    const before = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    fireEvent.click(continueButtons[0]);
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Authorization · Current position: Assessment");
+    expect(screen.getByRole("button", { name: "Authorize this exact obligation" })).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(before);
+  });
+
+  it("auto-opens Assessment only after a successful action and refreshed detail confirm it", async () => {
+    const refreshed = detail("OBL-GUIDED-REFRESH");
+    refreshed.current_assessment = assessedDetail("OBL-GUIDED-REFRESH", "HOLD").current_assessment;
+    const delayedDetail = deferred<Response>();
+    let detailReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-REFRESH", true)] }));
+      if (url.endsWith("/assess") && init?.method === "POST") return Promise.resolve(response({ accepted: true }));
+      if (url === "/api/obligations/OBL-GUIDED-REFRESH") {
+        detailReads += 1;
+        return detailReads === 1 ? Promise.resolve(response(detail("OBL-GUIDED-REFRESH"))) : delayedDetail.promise;
+      }
+      return Promise.resolve(response({ error: "Unexpected mutation." }, 404));
+    });
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: "Run AI Assessment" });
+    fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
+    await waitFor(() => expect(detailReads).toBe(2));
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
+    await act(async () => { delayedDetail.resolve(response(refreshed)); });
+    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Assessment · Current position: Assessment"));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
+  });
+
+  it("stays on the viewed stage when a successful action cannot be confirmed by the refreshed server read", async () => {
+    let detailReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-STALE")] }));
+      if (url.endsWith("/assess") && init?.method === "POST") return Promise.resolve(response({ accepted: true }));
+      if (url === "/api/obligations/OBL-GUIDED-STALE") {
+        detailReads += 1;
+        return detailReads === 1 ? Promise.resolve(response(detail("OBL-GUIDED-STALE"))) : Promise.resolve(response(null, 503));
+      }
+      return Promise.resolve(response({ error: "Unexpected mutation." }, 404));
+    });
+    render(<CommandCenter />);
+    await screen.findByRole("button", { name: "Run AI Assessment" });
+    fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
+    await waitFor(() => expect(detailReads).toBe(2));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("stale"));
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
+    expect(screen.queryByRole("button", { name: "Back to Assessment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
   });
 });

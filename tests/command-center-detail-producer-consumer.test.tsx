@@ -12,7 +12,7 @@ import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
 import { CommandCenter, useExecutionConfirmation } from "../app/command-center";
-import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
+import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
 import { J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
@@ -20,6 +20,7 @@ import { getCurrentSettlementProxyPacket } from "../src/server/settlement-proxy-
 import { projectAssuranceEvidence } from "../src/server/assurance-evidence-projection";
 import { sealDurableAssuranceRecord } from "../src/pae/durable-records";
 import { sealPae } from "../src/pae/sign-verify";
+import { canonicalBytes, sha256Hex } from "../src/pae/canonicalize";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const originalPrimePacketHash = process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
@@ -268,7 +269,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.execution).toBeNull();
     const { main } = await renderProducerJson(body);
     expect(screen.getByRole("heading", { name: "PAE sealed · no current exact packet" })).toBeTruthy();
-    expect(screen.getByRole("list", { name: "Payment lifecycle" }).textContent).toContain(
+    expect(screen.getByTestId("current-next-step").textContent).toContain(
       "No current exact execution packet is available. Payment authority must be re-established before submission.",
     );
     expect(screen.getByTestId("current-next-step").textContent).toContain(
@@ -421,7 +422,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     fireEvent.change(confirmation, { target: { value: exactConfirmation } });
     expect(submit.hasAttribute("disabled")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
-    fireEvent.click(screen.getByRole("button", { name: "Obligations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Obligation" }));
     expect((screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement).value).toBe(exactConfirmation);
     expect(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" }).hasAttribute("disabled")).toBe(false);
 
@@ -451,6 +452,21 @@ describe("real detail GET producer-consumer packet controls", () => {
     );
     const coldGet = await detailJson(cold, fixture.selectedId);
     expect(coldGet.assurance_evidence).toMatchObject({ state: "AVAILABLE_CURRENT_BINDING", overall: "PASS" });
+    const expectedStoredOrder = cold.getAuthorizationArtifacts(fixture.selectedId)!.assurance_record.control_results.map((control) => control.control_id);
+    await renderProducerJson(coldGet);
+    fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
+    const actionBeforeEvidence = screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent ?? null;
+    const lifecycleBeforeEvidence = screen.getByRole("list", { name: "Payment lifecycle" }).textContent;
+    const paymentStateBeforeEvidence = screen.getByRole("button", { name: "Payment" }).getAttribute("data-stage-state");
+    fireEvent.click(screen.getByText("View assurance evidence"));
+    const renderedOrder = Array.from(screen.getByText(/Stored assurance evidence — PASS/).parentElement!.querySelectorAll("li span:first-child"))
+      .map((entry) => entry.textContent);
+    expect(renderedOrder).toEqual(expectedStoredOrder);
+    expect(screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent ?? null).toBe(actionBeforeEvidence);
+    expect(screen.getByRole("list", { name: "Payment lifecycle" }).textContent).toBe(lifecycleBeforeEvidence);
+    expect(screen.getByRole("button", { name: "Payment" }).getAttribute("data-stage-state")).toBe(paymentStateBeforeEvidence);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    cleanup();
 
     const aggregate = cold.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     const notCreated = projectAssuranceEvidence(assuranceProjectionInput(cold, fixture.selectedId, {
@@ -466,6 +482,14 @@ describe("real detail GET producer-consumer packet controls", () => {
     }));
     expect(unavailable.state).toBe("UNAVAILABLE");
 
+    const terminalAbsence = projectAssuranceEvidence(assuranceProjectionInput(cold, fixture.selectedId, {
+      aggregate: { ...aggregate, state: "RECONCILED", pae_state: "CONSUMED", execution_state: "SETTLED" },
+      sealedPae: null,
+      authorizationArtifacts: null,
+      execution: null,
+    }));
+    expect(terminalAbsence.state).toBe("UNAVAILABLE");
+
     const validArtifacts = cold.getAuthorizationArtifacts(fixture.selectedId)!;
     const invalid = projectAssuranceEvidence(assuranceProjectionInput(cold, fixture.selectedId, {
       authorizationArtifacts: { ...validArtifacts, assurance_hash: "0".repeat(64) },
@@ -477,6 +501,48 @@ describe("real detail GET producer-consumer packet controls", () => {
     }));
     expect(historical.state).toBe("AVAILABLE_HISTORICAL");
     expect(historical.control_results).toEqual(current.control_results);
+  });
+
+  it("rejects a current PAE pointer whose canonical payload differs from its signed history", async () => {
+    const fixture = await preparedAuthorizedState();
+    const snapshot = fixture.state.exportSnapshot();
+    const pointer = snapshot.sealed_paes.find(([id]) => id === fixture.selectedId)?.[1];
+    expect(pointer).toBeTruthy();
+    const originalInstructionHash = pointer!.instruction_hash;
+    const originalSignature = pointer!.signature;
+    pointer!.payload.amount = "0.000001";
+    expect(pointer!.instruction_hash).toBe(originalInstructionHash);
+    expect(pointer!.signature).toBe(originalSignature);
+
+    const restored = new DemoState(parseDemoStateSnapshot(snapshot));
+    const body = await detailJson(restored, fixture.selectedId);
+
+    expect(body.assurance_evidence).toMatchObject({ state: "INVALID", control_results: [] });
+    expect(body.assurance_evidence).not.toHaveProperty("overall");
+  });
+
+  it("keeps genuine durable-loader failures outside presentation projection errors", async () => {
+    stateMocks.getDemoState.mockRejectedValue(new Error("Persisted demo-state integrity failure."));
+    await expect(getObligationDetail(
+      new Request("http://localhost/api/obligations/OBL-LOADER-FAILURE"),
+      { params: Promise.resolve({ id: "OBL-LOADER-FAILURE" }) },
+    )).rejects.toThrow("Persisted demo-state integrity failure.");
+  });
+
+  it("rebuilds the assurance producer from a cold module registry and durable snapshot", async () => {
+    const fixture = await preparedAuthorizedState();
+    const snapshot = fixture.state.exportSnapshot();
+    await vi.resetModules();
+    const runtime = await import("../src/server/demo-state");
+    const restored = new runtime.DemoState(runtime.parseDemoStateSnapshot(snapshot));
+    stateMocks.getDemoState.mockResolvedValue(restored);
+    const route = await import("../app/api/obligations/[id]/route");
+    const response = await route.GET(
+      new Request(`http://localhost/api/obligations/${fixture.selectedId}`),
+      { params: Promise.resolve({ id: fixture.selectedId }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ assurance_evidence: { state: "AVAILABLE_CURRENT_BINDING", overall: "PASS" } });
   });
 
   it("rejects malformed and cross-bound assurance chains and treats stale or revoked evidence as historical", async () => {
@@ -525,20 +591,39 @@ describe("real detail GET producer-consumer packet controls", () => {
     const changedControls = artifacts.assurance_record.control_results.map((control, index) =>
       index === 0 ? { ...control, result: "BLOCK" as const, finding_code: "TEST-BLOCK" } : control,
     );
-    const changedAssurance = sealDurableAssuranceRecord({ ...artifacts.assurance_record, control_results: changedControls });
-    const signingKey = signer;
-    const changedPae = sealPae({ ...artifacts.sealed_pae.payload, assurance_hash: changedAssurance.assurance_hash }, signingKey.privateKey);
-    const passWithBlockedControl = projectAssuranceEvidence({
-      ...base,
-      sealedPae: changedPae,
-      authorizationArtifacts: {
-        ...artifacts,
-        assurance_record: changedAssurance.record,
-        assurance_hash: changedAssurance.assurance_hash,
-        sealed_pae: changedPae,
-      },
-    });
-    expect(passWithBlockedControl.state).toBe("INVALID");
+    for (const result of ["HOLD", "BLOCK", "NOT_ASSESSED"] as const) {
+      const controls = artifacts.assurance_record.control_results.map((control, index) =>
+        index === 0 ? { ...control, result, finding_code: `TEST-${result}` } : control,
+      );
+      const changedAssurance = sealDurableAssuranceRecord({ ...artifacts.assurance_record, control_results: controls });
+      const changedPae = sealPae({ ...artifacts.sealed_pae.payload, assurance_hash: changedAssurance.assurance_hash }, signer.privateKey);
+      const projection = projectAssuranceEvidence({
+        ...base,
+        sealedPae: changedPae,
+        authorizationArtifacts: {
+          ...artifacts,
+          assurance_record: changedAssurance.record,
+          assurance_hash: changedAssurance.assurance_hash,
+          sealed_pae: changedPae,
+        },
+      });
+      expect(projection.state, result).toBe("INVALID");
+      expect("overall" in projection, result).toBe(false);
+    }
+
+    for (const controls of [
+      artifacts.assurance_record.control_results.slice(1),
+      [...artifacts.assurance_record.control_results, artifacts.assurance_record.control_results[0]],
+    ]) {
+      const malformedRecord = { ...artifacts.assurance_record, control_results: controls };
+      const malformedHash = sha256Hex(canonicalBytes(malformedRecord));
+      const malformedPae = sealPae({ ...artifacts.sealed_pae.payload, assurance_hash: malformedHash }, signer.privateKey);
+      expect(projectAssuranceEvidence({
+        ...base,
+        sealedPae: malformedPae,
+        authorizationArtifacts: { ...artifacts, assurance_record: malformedRecord, assurance_hash: malformedHash, sealed_pae: malformedPae },
+      }).state).toBe("INVALID");
+    }
   });
 
   it("keeps evidence projection independent of execution status, gate and kill-switch eligibility", async () => {
@@ -552,7 +637,8 @@ describe("real detail GET producer-consumer packet controls", () => {
       { label: "unknown", aggregate: { ...base.aggregate, pae_state: "UNKNOWN", execution_state: "UNKNOWN" }, executionReleaseAuthority: "IN_DOUBT_PROVIDER_SUBMISSION", execution: { status: "UNKNOWN" }, executionKillSwitched: false },
       { label: "consumed", aggregate: { ...base.aggregate, pae_state: "CONSUMED", execution_state: "SETTLED" }, executionReleaseAuthority: "CONSUMED", execution: { status: "SETTLED" }, executionKillSwitched: false },
       { label: "reconciled", aggregate: { ...base.aggregate, state: "RECONCILED", pae_state: "CONSUMED", execution_state: "SETTLED" }, executionReleaseAuthority: "CONSUMED", execution: { status: "SETTLED" }, executionKillSwitched: false },
-      { label: "failed", aggregate: { ...base.aggregate, pae_state: "REVOKED", execution_state: "BLOCKED" }, executionReleaseAuthority: "BLOCKED", execution: { status: "BLOCKED" }, executionKillSwitched: false },
+      { label: "failed provider attempt", aggregate: { ...base.aggregate, pae_state: "REVOKED", execution_state: "FAILED" }, executionReleaseAuthority: "BLOCKED", execution: { status: "FAILED" }, executionKillSwitched: false },
+      { label: "pre-submit blocked", aggregate: { ...base.aggregate, pae_state: "REVOKED", execution_state: "BLOCKED" }, executionReleaseAuthority: "BLOCKED", execution: { status: "BLOCKED" }, executionKillSwitched: false },
       { label: "same-version kill refusal", aggregate: base.aggregate, executionReleaseAuthority: "BLOCKED", execution: null, executionKillSwitched: true },
       { label: "expired", aggregate: base.aggregate, executionReleaseAuthority: "EXPIRED", execution: null, executionKillSwitched: false, now: new Date("2999-01-01T00:00:00.000Z") },
     ];
@@ -609,7 +695,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByRole("button", { name: new RegExp(prepared.selectedId) }).textContent).toContain("Authorized · sealed PAE");
     expect(screen.getByRole("button", { name: new RegExp(prepared.selectedId) }).textContent).not.toContain("Assessment required");
     expect(authorizedMain.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
     expect(screen.getByText("View assurance evidence").closest("details")?.open).toBe(false);
     cleanup();
 
@@ -621,13 +707,12 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(postProxyDetail.assurance_evidence.state).toBe("NOT_CREATED");
     const postProxyQueue = await listJson(postProxy.state);
     const { main: postProxyMain } = await renderProducerJson(postProxyDetail, [], postProxyQueue);
-    expect(screen.getByText("Current position · Assessment")).toBeTruthy();
+    expect(screen.getByText(/Current position: Assessment/)).toBeTruthy();
     expect(screen.getByTestId("current-next-step").textContent).toContain("fresh assessment for the prepared Arc Testnet proxy");
     expect(screen.getByTestId("current-next-step").textContent).not.toMatch(/PAE.*revoked|sealed.*revoked/i);
     expect(postProxyMain.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
-    fireEvent.click(screen.getByRole("button", { name: "Assurance & Execution" }));
-    expect(screen.getByText("No assurance PASS evidence exists for this state.")).toBeTruthy();
-    expect(screen.getByText("View assurance evidence").closest("details")?.open).toBe(false);
+    expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("View assurance evidence")).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -659,7 +744,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     });
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
-    expect(screen.getByText("Current position · Assurance")).toBeTruthy();
+    expect(screen.getByText(/Current position: Assurance/)).toBeTruthy();
     expect(screen.getByRole("button", { name: new RegExp(fixture.selectedId) }).textContent).toContain("Authorization recorded · no sealed PAE");
     expect(screen.getByRole("button", { name: new RegExp(fixture.selectedId) }).textContent).not.toContain("Assessment required");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);

@@ -204,19 +204,19 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   const unexpectedWrites = await openFixture(page);
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toContainText("PAY recommendation (advisory)");
-  await expect(page.getByRole("button", { name: "Obligations" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Obligation" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("No payment intent created")).toBeHidden();
   await expect(page.getByText("Source records and payment details")).toBeVisible();
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
-  await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
+  await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
   ]);
-  await expect(lifecycle).toContainText("Arc Testnet proxy not prepared for this obligation");
-  await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Authorization");
-  await expect(page.getByTestId("current-next-step")).toContainText("Current position · Authorization");
-  await expect(page.getByTestId("current-next-step")).toContainText("Next step: review the current PAY assessment; payment-route assurance is not ready and authorization remains locked.");
-  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();
+  await expect(lifecycle).toContainText("Payment-route evidence is not ready; authorization remains locked.");
+  await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Assessment");
+  await expect(page.getByTestId("current-next-step")).toContainText("Current position: Assessment");
+  await expect(page.getByTestId("current-next-step")).toContainText("payment-route assurance is not ready and authorization remains locked");
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
   await expect(page.getByText("The current PAY recommendation has no review evidence in this detail; authorization remains locked.")).toBeVisible();
   await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await page.getByText("Demonstrations", { exact: true }).click();
@@ -228,36 +228,34 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
   expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
   await page.getByRole("button", { name: "Hide sample playback" }).click();
-  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Authorization" }).click();
-  const sourceProxy = page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" });
-  await expect(sourceProxy).toContainText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.");
+  await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
+  await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+  const sourceProxy = page.getByRole("region", { name: "Selected source obligation" });
   await expect(sourceProxy).toContainText("OBL-UAT-01");
-  await expect(sourceProxy).toContainText("125.00 USD · OUTSTANDING");
-  await expect(sourceProxy).toContainText("Not prepared; no testnet destination has been mapped to this source obligation");
+  await expect(sourceProxy).toContainText("125.00 USD");
+  await expect(sourceProxy).toContainText("Source payable: OUTSTANDING");
   await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
   await expect(page.getByRole("heading", { name: "software services" })).toBeVisible();
   await expect(sourceProxy).toContainText("OBL-UAT-02");
-  await expect(sourceProxy).toContainText("40.00 USD · OUTSTANDING");
+  await expect(sourceProxy).toContainText("40.00 USD");
+  await expect(sourceProxy).toContainText("Source payable: OUTSTANDING");
   await expect(sourceProxy).not.toContainText("OBL-UAT-01");
-  await expect(page.getByText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.")).toBeVisible();
-  await expect(lifecycle).toContainText("Arc Testnet proxy not prepared for this obligation");
+  await expect(page.getByText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.")).toBeHidden();
+  await expect(lifecycle).toContainText("Payment-route evidence is not ready; authorization remains locked.");
   await page.getByRole("button", { name: /OBL-UAT-03/ }).click();
-  await expect(sourceProxy).toContainText("125.00 USD · OUTSTANDING");
-  await expect(sourceProxy).toContainText("125.000000 USDC");
-  await expect(sourceProxy).toContainText("ARC_TESTNET");
-  await expect(sourceProxy).toContainText("UAT-ARC-SOURCE · 0x1111111111111111111111111111111111111111");
-  await expect(sourceProxy).toContainText("UAT-ARC-PROXY · 0x2222222222222222222222222222222222222222");
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("125.000000 USDC");
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("Source payable: OUTSTANDING");
   await page.getByRole("button", { name: /OBL-UAT-02/ }).click();
   const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
   expect(stageBoxes[0]).toBeLessThan(stageBoxes[1]);
   expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
-  const nav = page.getByRole("navigation", { name: "Command Center surfaces" });
+  const nav = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
   await nav.getByRole("button", { name: "Assessment" }).focus();
   await page.keyboard.press("Enter");
   await expect(nav.getByRole("button", { name: "Assessment" })).toHaveAttribute("aria-pressed", "true");
-  expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toBe("Assessment");
-  await nav.getByRole("button", { name: "Obligations" }).focus();
+  expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toContain("Assessment");
+  await nav.getByRole("list", { name: "Payment lifecycle" }).getByRole("button", { name: "Obligation" }).focus();
   await page.keyboard.press("Enter");
   await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
   const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
@@ -288,22 +286,21 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
 test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }, testInfo: TestInfo) => {
   for (const scenario of [
     { paeSealed: false, expectedStage: "Assurance", expectedStatus: "Assurance failed or blocked; no PASS assurance is available", expectedGuidance: "Authorization recorded · Assurance failed/blocked" },
-    { paeSealed: true, expectedStage: "Payment", expectedStatus: "No current exact execution packet is available. Payment authority must be re-established before submission.", expectedGuidance: "No current exact execution packet is available. Payment authority must be re-established before submission." },
+    { paeSealed: true, expectedStage: "Assurance", expectedStatus: "No current exact execution packet is available. Payment authority must be re-established before submission.", expectedGuidance: "No current exact execution packet is available. Payment authority must be re-established before submission." },
   ]) {
     const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
     const writes = await openFixture(page, postApprovalNPlusOneDetail(scenario.paeSealed), queue);
     const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
     await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
     await expect(lifecycle.locator('[aria-current="step"]')).toContainText(scenario.expectedStage);
-    await expect(lifecycle).toContainText(scenario.expectedStatus);
+    await expect(lifecycle).toContainText(scenario.paeSealed ? "PaymentLOCKED" : "AssuranceBLOCKED");
     await expect(page.getByTestId("current-next-step")).toContainText(scenario.expectedGuidance);
     if (scenario.paeSealed) {
       await page.screenshot({ path: testInfo.outputPath("sealed-no-current-packet.png") });
     }
     await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
     await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
-    await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();
-    await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Payment" })).toBeDisabled();
     expect(writes).toEqual([]);
     await page.unrouteAll();
   }
@@ -345,10 +342,10 @@ test("the permitted proxy-preparation step and its reason fit the first desktop 
 
 test("sealed, submitted, unknown and reconciled proxy states preserve source truth", async ({ page }) => {
   const scenarios = [
-    { state: "AUTHORIZED" as const, lifecycle: "Arc Testnet proxy prepared; execution awaits separate exact-packet gate", position: "Payment", actor: "Prime · exact-packet authorization", action: null },
-    { state: "SUBMITTED" as const, lifecycle: "Submitted to Arc Testnet provider; reconciliation is pending", position: "Reconciliation", actor: "Unassigned · read-only reconciliation", action: "Reconcile this same intent" },
-    { state: "UNKNOWN" as const, lifecycle: "Outcome unknown — reconcile this same intent; resubmission blocked", position: "Reconciliation", actor: "Unassigned · read-only reconciliation", action: "Reconcile this same intent" },
-    { state: "SETTLED" as const, lifecycle: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION; source payable remains OUTSTANDING", position: "Reconciliation", actor: "Reconciliation record", action: "View reconciliation receipt" },
+    { state: "AUTHORIZED" as const, lifecycle: "Approved instruction is sealed for the Arc Testnet settlement proxy", position: "Assurance", actor: "Prime · exact-packet authorization", action: null },
+    { state: "SUBMITTED" as const, lifecycle: "The Arc Testnet submission is recorded. Reconcile this same intent; do not resubmit.", position: "Reconciliation", actor: "Unassigned · read-only reconciliation", action: "Reconcile this same intent" },
+    { state: "UNKNOWN" as const, lifecycle: "The Arc Testnet outcome is unknown. Reconcile this same intent read-only; do not resubmit.", position: "Reconciliation", actor: "Unassigned · read-only reconciliation", action: "Reconcile this same intent" },
+    { state: "SETTLED" as const, lifecycle: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION. The source payable remains OUTSTANDING.", position: "Reconciliation", actor: "Reconciliation record", action: "View reconciliation receipt" },
   ];
 
   for (const scenario of scenarios) {
@@ -361,13 +358,21 @@ test("sealed, submitted, unknown and reconciled proxy states preserve source tru
     await expect(summary).toContainText("125.000000 USDC");
     await expect(summary).toContainText("ARC_TESTNET");
     const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
-    await expect(lifecycle).toContainText(scenario.lifecycle);
-    await expect(page.getByTestId("current-next-step")).toContainText(`Current position · ${scenario.position}`);
+    await expect(page.getByTestId("current-next-step")).toContainText(scenario.lifecycle);
+    await expect(page.getByTestId("current-next-step")).toContainText(`Current position: ${scenario.position}`);
     await expect(page.getByTestId("current-next-step")).toContainText(scenario.actor);
     if (scenario.action) {
       await expect(page.getByRole("button", { name: scenario.action })).toBeVisible();
     } else {
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+    }
+    if (scenario.state !== "AUTHORIZED") {
+      await expect(page.getByRole("button", { name: /^Continue to / })).toHaveCount(0);
+    }
+    if (scenario.state === "AUTHORIZED") {
+      await expect(page.getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "AVAILABLE");
+      await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+      await expect(page.getByRole("button", { name: "Continue to Payment" }).first()).toBeVisible();
     }
     await expect(page.getByText(/real-world payable settled/i)).toHaveCount(0);
     expect(writes).toEqual([]);
@@ -422,8 +427,13 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   expect(await mobilePrimary.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
   await expect(page.getByText("No payment intent created")).toBeHidden();
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
-  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
-  await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
+  await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+  const mobileBack = page.getByRole("button", { name: "Back" });
+  await expect(mobileBack).toBeVisible();
+  expect(await mobileBack.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.getByText("View all stages").click();
+  const lifecycle = page.getByRole("navigation", { name: "All lifecycle stages" });
+  await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
   ]);
   await page.getByText("Demonstrations", { exact: true }).click();
@@ -435,9 +445,10 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");
   expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
   await page.getByRole("button", { name: "Hide sample playback" }).click();
-  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Authorization" }).click();
-  await expect(page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" })).toContainText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.");
-  await expect(page.getByRole("region", { name: "Genuine obligation and Arc Testnet settlement proxy" })).toContainText("125.00 USD · OUTSTANDING");
+  await expect(page.getByRole("navigation", { name: "All lifecycle stages" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("125.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("Source payable: OUTSTANDING");
+  await page.getByText("View all stages").click();
   const dimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
@@ -459,12 +470,30 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   expect(unexpectedWrites).toEqual([]);
 });
 
+test("mobile Continue is a 44px read-only navigation control when Assurance is current", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const writes = await openFixture(page, proxyLifecycleDetail("AUTHORIZED"));
+  await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+  await page.getByText("View all stages").click();
+  await page.getByRole("navigation", { name: "All lifecycle stages" }).getByRole("button", { name: "Assurance" }).click();
+  await expect(page.getByText("Step 4 of 6 · Assurance")).toBeVisible();
+  const continueButton = page.getByRole("button", { name: "Continue to Payment" }).last();
+  await expect(continueButton).toBeVisible();
+  expect(await continueButton.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  const before = writes.length;
+  await continueButton.click();
+  await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
+  expect(writes.slice(before)).toEqual([]);
+  expect(page.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toHaveCount(0);
+});
+
 test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const suspended = proxyLifecycleDetail("AUTHORIZED");
   suspended.execution_kill_switched = true;
   const writes = await openFixture(page, suspended);
-  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assurance & Execution" }).click();
+  await expect(page.getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "BLOCKED");
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment" }).click();
   await expect(page.getByText("Execution is suspended while a kill switch is active; packet display does not enable submission.")).toBeVisible();
   await expect(page.getByTestId("current-next-step")).toContainText("Execution is suspended while a kill switch is active");
   await expect(page.getByTestId("current-next-step")).not.toContainText("Prime · exact-packet authorization");

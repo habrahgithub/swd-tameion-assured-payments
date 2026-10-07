@@ -101,6 +101,10 @@ export function projectAssuranceEvidence(input: AssuranceEvidenceProjectionInput
   // The aggregate may reflect a refusal after proxy preparation even when no
   // approval ever produced a signed assurance record. That is not revoked PAE.
   if (!artifactValue && !input.sealedPae && !input.execution) {
+    if (input.aggregate.state === "RECONCILED" || input.aggregate.pae_state === "CONSUMED" ||
+        input.aggregate.execution_state === "SETTLED" || input.aggregate.execution_state === "RECONCILED") {
+      return { state: "UNAVAILABLE", message: MESSAGES.UNAVAILABLE, control_results: [] };
+    }
     return { state: "NOT_CREATED", message: MESSAGES.NOT_CREATED, control_results: [] };
   }
   if (!artifactValue) return { state: "UNAVAILABLE", message: MESSAGES.UNAVAILABLE, control_results: [] };
@@ -155,6 +159,17 @@ export function projectAssuranceEvidence(input: AssuranceEvidenceProjectionInput
     const verificationKeys = new TrustedKeyRegistry();
     verificationKeys.register({ ...trustedKey, status: "ACTIVE" });
     verifySealedPae(sealed, verificationKeys);
+
+    // The durable pointer is independently mutable in a snapshot. Recompute its
+    // signed content binding and signature, then require the same canonical
+    // instruction and signature as the history record before calling it current.
+    if (sha256Hex(canonicalBytes(currentSealed.payload)) !== currentSealed.instruction_hash ||
+        currentSealed.instruction_hash !== sealed.instruction_hash ||
+        currentSealed.signature !== sealed.signature ||
+        !Buffer.from(canonicalBytes(currentSealed.payload)).equals(Buffer.from(canonicalBytes(payload)))) {
+      return invalid();
+    }
+    verifySealedPae(currentSealed, verificationKeys);
 
     const current =
       input.aggregate.state === "AUTHORIZED" &&

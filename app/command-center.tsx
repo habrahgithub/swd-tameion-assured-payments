@@ -143,6 +143,8 @@ function sourceDateProvenance(record: Record<string, unknown>): string {
 }
 
 type PanelKey = "obligations" | "assessment" | "authorization" | "assurance" | "reconciliation" | "report";
+type LifecycleStage = (typeof PAYMENT_LIFECYCLE_STAGES)[number];
+type LifecycleStageState = "COMPLETED" | "CURRENT" | "AVAILABLE" | "LOCKED" | "BLOCKED";
 type ObligationListStatus = "loading" | "error" | "ready";
 type ObligationListPresentation = "loading" | "error" | "empty" | "ready";
 
@@ -402,15 +404,6 @@ export function queueHeaderLabel(presentation: ObligationListPresentation, summa
   return queueCompletionLabel(summary);
 }
 
-const PANELS: Array<{ key: PanelKey; label: string }> = [
-  { key: "obligations", label: "Obligations" },
-  { key: "assessment", label: "Assessment" },
-  { key: "authorization", label: "Authorization" },
-  { key: "assurance", label: "Assurance & Execution" },
-  { key: "reconciliation", label: "Reconciliation & Evidence" },
-  { key: "report", label: "Operational Report (secondary)" },
-];
-
 const PAYMENT_LIFECYCLE_STAGES = [
   "Obligation",
   "Assessment",
@@ -419,6 +412,28 @@ const PAYMENT_LIFECYCLE_STAGES = [
   "Payment",
   "Reconciliation",
 ] as const;
+
+const STAGE_PANEL: Record<LifecycleStage, PanelKey> = {
+  Obligation: "obligations",
+  Assessment: "assessment",
+  Authorization: "authorization",
+  Assurance: "assurance",
+  Payment: "assurance",
+  Reconciliation: "reconciliation",
+};
+
+function authoritativeLifecyclePosition(selectedId: string, detailState: DetailState, detail: ObligationDetail | null): LifecycleStage {
+  if (!selectedId || detailState !== "loaded" || !detail || !hasExpectedObligationIdentity(detail, selectedId)) return "Obligation";
+  if (detail.execution) return "Reconciliation";
+  if (detail.aggregate.state === "AUTHORIZED" && detail.pae_sealed &&
+      (detail.execution_kill_switched === true || ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority))) {
+    return "Payment";
+  }
+  if (detail.aggregate.state === "AUTHORIZED") return "Assurance";
+  if (detail.pae_sealed) return "Payment";
+  if (detail.settlement_proxy || detail.current_assessment) return "Assessment";
+  return "Obligation";
+}
 
 const SAMPLE_PLAYBACK_IDENTITY = {
   organizationId: "ORG-SAMPLE-PLAYBACK-001",
@@ -1022,6 +1037,8 @@ export function CommandCenter() {
   const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string>("");
   const [panel, setPanel] = useState<PanelKey>("obligations");
+  const [viewedStage, setViewedStage] = useState<LifecycleStage>("Obligation");
+  const [mobileStagesOpen, setMobileStagesOpen] = useState(false);
   const [detail, setDetail] = useState<ObligationDetail | null>(null);
   const [detailIsStale, setDetailIsStale] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -1033,6 +1050,16 @@ export function CommandCenter() {
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
   const selectionGeneration = useRef(0);
+
+  const showStage = (stage: LifecycleStage) => {
+    setViewedStage(stage);
+    setPanel(STAGE_PANEL[stage]);
+  };
+
+  const showCurrentStageAfterRefresh = (refreshed: ObligationDetail) => {
+    const confirmedPosition = authoritativeLifecyclePosition(selectedRef.current, "loaded", refreshed);
+    showStage(confirmedPosition);
+  };
 
   const refreshObligations = async (showLoading = false, preserveLastKnown = false) => {
     if (showLoading) setObligationsStatus("loading");
@@ -1115,6 +1142,7 @@ export function CommandCenter() {
     selectedRef.current = selectedId;
     selectionGeneration.current += 1;
     detailGeneration.current += 1;
+    setViewedStage("Obligation");
     setDisplayedAssessment(null);
     setDetail(null);
     setDetailIsStale(false);
@@ -1133,13 +1161,16 @@ export function CommandCenter() {
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
+    const priorPosition = authoritativeLifecyclePosition(targetId, detailState, detail);
     const generation = selectionGeneration.current;
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     activeRunCount.current += 1;
     setBusy(true);
+    let actionSucceeded = false;
     try {
       const result = await action();
       if (!stillCurrent()) return;
+      actionSucceeded = result.ok;
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
     } catch {
@@ -1152,7 +1183,12 @@ export function CommandCenter() {
         obligationId: targetId,
       });
     } finally {
-      if (stillCurrent()) await refreshDetail(targetId, true);
+      if (stillCurrent()) {
+        const refreshed = await refreshDetail(targetId, true);
+        if (actionSucceeded && stillCurrent() && refreshed && authoritativeLifecyclePosition(targetId, "loaded", refreshed) !== priorPosition) {
+          showCurrentStageAfterRefresh(refreshed);
+        }
+      }
       await refreshObligations(false, true);
       activeRunCount.current = Math.max(0, activeRunCount.current - 1);
       setBusy(activeRunCount.current > 0);
@@ -1344,25 +1380,53 @@ export function CommandCenter() {
     }
   };
 
-  const currentLifecycleStage = !selectedId
-    ? "Obligation"
-    : detailState !== "loaded" || !detail
-      ? "Obligation"
-      : detail.execution && ["SUBMITTING", "SUBMITTED", "UNKNOWN", "SETTLED", "FAILED", "BLOCKED"].includes(detail.execution.status)
-        ? "Reconciliation"
-      : detail.pae_sealed
-        ? "Payment"
-      : (detail.pae_sealed || detail.execution) && (detail.truth.tameion_control_truth.execution_release_authority === "BLOCKED" ||
-        detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" ||
-        detail.truth.tameion_control_truth.execution_release_authority === "EXPIRED")
-        ? "Payment"
-      : detail.aggregate.state === "AUTHORIZED"
-        ? "Assurance"
-      : detail.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)
-        ? "Assessment"
-      : !allAssessed || !hasCurrentAssessment || !currentAssessment || currentAssessment.decision !== "PAY"
-        ? "Assessment"
-        : "Authorization";
+  const currentLifecycleStage = authoritativeLifecyclePosition(selectedId, detailState, detail);
+
+  const currentStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(currentLifecycleStage);
+  const viewedStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(viewedStage);
+  const currentPositionBlocked = detailState !== "loaded" || detailIsStale || !detail ||
+    (currentLifecycleStage === "Assessment" && Boolean(currentAssessment && currentAssessment.decision !== "PAY")) ||
+    (currentLifecycleStage === "Assessment" && currentAssessment?.decision === "PAY" &&
+      (!allAssessed || solePayCandidateId !== selectedId || !routeAssuranceReady)) ||
+    (currentLifecycleStage === "Assurance" && !detail.pae_sealed) ||
+    (currentLifecycleStage === "Payment" && (
+      detail.execution_kill_switched === true ||
+      ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
+    )) ||
+    (currentLifecycleStage === "Reconciliation" && ["FAILED", "BLOCKED"].includes(detail?.execution?.status ?? ""));
+  const canContinueToAssessment = currentLifecycleStage === "Obligation" && detailState === "loaded" &&
+    Boolean(detail && hasExpectedObligationIdentity(detail, selectedId));
+  const canContinueToAuthorization = currentLifecycleStage === "Assessment" && detailState === "loaded" && !detailIsStale &&
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && allAssessed && solePayCandidateId === selectedId &&
+    routeAssuranceReady && Boolean(detail?.settlement_proxy) && assessmentAction === "continue";
+  const canContinueToPayment = currentLifecycleStage === "Assurance" && detailState === "loaded" && Boolean(detail?.pae_sealed) &&
+    Boolean(detail?.execution_packet?.packet && detail?.sealed_pae_instruction_hash) &&
+    detail?.execution_gate !== "LOCKED_UNTIL_CURRENT_AUTHORIZATION" &&
+    detail?.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
+    detail?.execution_kill_switched === false && !detail.execution;
+  const nextAvailableStage: LifecycleStage | null = canContinueToAssessment ? "Assessment"
+    : canContinueToAuthorization ? "Authorization"
+    : canContinueToPayment ? "Payment"
+    : null;
+  const stageState = (stage: LifecycleStage): LifecycleStageState => {
+    const index = PAYMENT_LIFECYCLE_STAGES.indexOf(stage);
+    if (index < currentStageIndex) return "COMPLETED";
+    if (index === currentStageIndex) return currentPositionBlocked ? "BLOCKED" : "CURRENT";
+    if (index === currentStageIndex + 1 && nextAvailableStage === stage) return "AVAILABLE";
+    return "LOCKED";
+  };
+  const stageLockReason = (stage: LifecycleStage): string => {
+    if (stage === "Authorization") return detailState === "loaded" ? lifecycleStatus(stage) : "Requires a current PAY review, sole-winner, proxy and route checks.";
+    if (stage === "Assurance") return "Requires exact human authorization.";
+    if (stage === "Payment") return "Requires current PASS assurance and a usable sealed PAE.";
+    if (stage === "Reconciliation") return "Requires an actual provider attempt or execution record.";
+    return "Requires the selected source obligation to be current.";
+  };
+  const currentBlockedReason = currentLifecycleStage === "Assessment"
+    ? currentAssessment?.decision === "PAY"
+      ? `${lifecycleStatus("Assessment")} · ${!routeAssuranceReady ? "Payment-route evidence is not ready; authorization remains locked." : "Current PAY, review, sole-winner and proxy prerequisites are incomplete."}`
+      : lifecycleStatus("Assessment")
+    : lifecycleStatus(currentLifecycleStage);
 
   const selectedWorkspaceGuidance = !selectedId
     ? "Choose one obligation from the queue."
@@ -1501,9 +1565,9 @@ export function CommandCenter() {
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (detailState === "loaded" && detail?.settlement_proxy && ["UNKNOWN", "SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) {
-    workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { setPanel("reconciliation"); void refreshDetail(selectedId, true); } };
+    workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); } };
   } else if (detailState === "loaded" && detail?.execution?.status === "SETTLED") {
-    workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => setPanel("reconciliation") };
+    workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
   } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
   } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
@@ -1526,9 +1590,9 @@ export function CommandCenter() {
       }));
     } };
   } else if (assessmentAction === "assess") {
-    workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { setPanel("assessment"); void runAssessment(); } };
+    workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
   } else if (assessmentAction === "review") {
-    workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); setPanel("assessment"); } };
+    workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
   } else if (detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && !detail.pae_sealed && !detail.execution) {
     workspaceAction = { label: "Authorize this exact obligation", actor: "Authorized approver · identity not shown", run: () => {
       if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady) return;
@@ -1538,9 +1602,57 @@ export function CommandCenter() {
         reviewed_assessment_hash: authorizationAssessment.assessment_hash,
       }));
     } };
-  } else if (assessmentAction === "continue" && detailState === "loaded" && detail?.settlement_proxy) {
-    workspaceAction = { label: "Continue to authorization review", actor: "Authorized approver · unassigned", run: () => setPanel("authorization") };
   }
+
+  const previousViewedStage = viewedStageIndex > 0 ? PAYMENT_LIFECYCLE_STAGES[viewedStageIndex - 1] : null;
+  const canGoBack = Boolean(previousViewedStage && stageState(previousViewedStage) !== "LOCKED");
+  const continueTarget = panel !== "report" && viewedStage === currentLifecycleStage ? nextAvailableStage : null;
+  const stageButton = (stage: LifecycleStage, mobile = false) => {
+    const status = stageState(stage);
+    const locked = status === "LOCKED";
+    const reason = locked ? stageLockReason(stage) : status === "BLOCKED" ? currentBlockedReason : null;
+    const statusId = `${mobile ? "mobile-" : ""}lifecycle-${stage.toLowerCase()}`;
+    const reasonId = `${mobile ? "mobile-" : ""}lifecycle-reason-${stage.toLowerCase()}`;
+    const selectedView = viewedStage === stage && panel !== "report";
+    const content = (
+      <>
+        <span className="mono me-1 text-[11px] font-semibold text-[var(--color-ink-muted)]">{PAYMENT_LIFECYCLE_STAGES.indexOf(stage) + 1}.</span>
+        <span className="min-w-0 break-words font-semibold">{stage}</span>
+        <span id={statusId} className="mt-0.5 block text-[11px] font-semibold uppercase tracking-wide">{status}</span>
+        {reason && (
+          <span id={reasonId} title={reason} className="mt-0.5 block line-clamp-1 text-[10px] leading-3 text-[var(--color-ink-muted)]">
+            {reason}
+          </span>
+        )}
+      </>
+    );
+    return (
+      <li key={`${mobile ? "mobile-" : ""}${stage}`} className="min-w-0">
+        {locked ? (
+          <button type="button" disabled aria-label={stage} aria-describedby={reason ? `${statusId} ${reasonId}` : statusId} data-stage-state={status} className="min-h-11 w-full cursor-not-allowed rounded-sm border border-[var(--color-border)] px-2 py-2 text-start text-[12px] text-[var(--color-ink-muted)] opacity-75" title={stageLockReason(stage)}>
+            {content}
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label={stage}
+            aria-current={!mobile && currentLifecycleStage === stage ? "step" : undefined}
+            aria-pressed={selectedView}
+            aria-describedby={reason ? `${statusId} ${reasonId}` : statusId}
+            data-stage-state={status}
+            onClick={() => showStage(stage)}
+            className={`min-h-11 w-full rounded-sm border px-2 py-2 text-start text-[12px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] ${
+              selectedView ? "border-[var(--color-accent)] bg-[var(--color-surface)] text-[var(--color-ink)]" :
+                currentLifecycleStage === stage ? "border-[var(--color-accent)] text-[var(--color-ink)]" :
+                  status === "AVAILABLE" ? "border-[var(--color-border-strong)] text-[var(--color-ink)]" : "border-[var(--color-border)] text-[var(--color-ink)]"
+            }`}
+          >
+            {content}
+          </button>
+        )}
+      </li>
+    );
+  };
 
   return (
     <main dir="ltr" className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
@@ -1588,6 +1700,8 @@ export function CommandCenter() {
                   <button
                     onClick={() => {
                       setSelectedId(o.obligation_id);
+                      if (panel === "report") setViewedStage("Obligation");
+                      else showStage("Obligation");
                       setLastResult(null);
                       setDisplayedAssessment(null);
                       setMobileQueueOpen(false);
@@ -1759,28 +1873,40 @@ export function CommandCenter() {
             </details>
           )}
 
-          <section aria-label="Payment lifecycle" className="space-y-1 border-b border-[var(--color-border)] pb-2">
+          <section aria-label="Guided lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Selected obligation lifecycle</p>
+              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Payment journey</p>
               <p className="text-[12px] font-semibold tracking-wide text-[var(--color-ink-muted)]">AI recommends · human authorizes · assurance controls release</p>
             </div>
-            <ol aria-label="Payment lifecycle" className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-              {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
-                <li key={stage} aria-current={currentLifecycleStage === stage ? "step" : undefined} className={`min-w-0 rounded-sm px-2 py-1 ${currentLifecycleStage === stage ? "border-s-2 border-[var(--color-accent)] bg-[var(--color-surface)]" : "border-s border-[var(--color-border)]"}`}>
-                  <div className="flex items-baseline gap-2">
-                    <span className="mono text-[12px] font-semibold text-[var(--color-ink-muted)]">{index + 1}.</span>
-                    <span className="min-w-0 break-words text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{stage}</span>
-                  </div>
-                  <span className="mt-1 block min-w-0 break-words text-[13px] leading-5 text-[var(--color-ink-muted)]">{lifecycleStatus(stage)}</span>
-                </li>
-              ))}
-            </ol>
+            <nav aria-label="Payment lifecycle navigation" className="hidden md:block">
+              <ol aria-label="Payment lifecycle" className="grid grid-cols-3 gap-1 lg:grid-cols-6">
+                {PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage))}
+              </ol>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+              </div>
+            </nav>
+            <div className="rounded border border-[var(--color-border)] px-3 py-2 md:hidden">
+              <p className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
+              <div className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Payment journey progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
+                <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+              </div>
+              <details className="mt-2" open={mobileStagesOpen} onToggle={(event) => setMobileStagesOpen(event.currentTarget.open)}>
+                <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">View all stages</summary>
+                <nav aria-label="All lifecycle stages" hidden={!mobileStagesOpen}><ol className="grid gap-1">{PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage, true))}</ol></nav>
+              </details>
+            </div>
           </section>
 
           <section aria-label="Current next step" data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Current position · {currentLifecycleStage}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Viewing {viewedStage} · Current position: {currentLifecycleStage}</p>
                 <h3 className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
                 <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">
                   {selectedWorkspaceGuidance}
@@ -1836,21 +1962,12 @@ export function CommandCenter() {
             )}
           </section>
 
-          <nav aria-label="Command Center surfaces" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
-            {PANELS.map((p) => (
-              <button
-                key={p.key}
-                onClick={() => setPanel(p.key)}
-                aria-pressed={panel === p.key}
-                className={`min-w-0 whitespace-normal break-words border-b-2 px-2 py-2 text-start text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${
-                  panel === p.key
-                    ? "border-[var(--color-accent)] text-[var(--color-ink)]"
-                    : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+          <nav aria-label="Secondary tools" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
+            <button
+              onClick={() => setPanel("report")}
+              aria-pressed={panel === "report"}
+              className={`min-h-11 min-w-0 whitespace-normal break-words border-b-2 px-2 py-2 text-start text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${panel === "report" ? "border-[var(--color-accent)] text-[var(--color-ink)]" : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"}`}
+            >Operational Report (secondary)</button>
           </nav>
 
           <div className="min-h-[120px]">
