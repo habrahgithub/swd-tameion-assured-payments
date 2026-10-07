@@ -1469,6 +1469,9 @@ export function CommandCenter() {
 
   const currentStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(currentLifecycleStage);
   const viewedStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(viewedStage);
+  const stageAccessibilityLabel = viewedStage === currentLifecycleStage
+    ? `Current stage: ${viewedStage}. Step ${viewedStageIndex + 1} of 6.`
+    : `Viewed stage: ${viewedStage}. Current lifecycle position: ${currentLifecycleStage}. Step ${viewedStageIndex + 1} of 6.`;
   const currentPositionBlocked = detailState !== "loaded" || detailIsStale || !detail ||
     (currentLifecycleStage === "Assessment" && Boolean(currentAssessment && currentAssessment.decision !== "PAY")) ||
     (currentLifecycleStage === "Assessment" && currentAssessment?.decision === "PAY" &&
@@ -1985,7 +1988,7 @@ export function CommandCenter() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Viewing {viewedStage} · Current position: {currentLifecycleStage}</p>
-                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={`Current stage: ${viewedStage}`} className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
+                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
                 {!currentException && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
                 {workspaceAction && !currentException && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
                 {!workspaceAction && selectedId && detailState === "loaded" && (

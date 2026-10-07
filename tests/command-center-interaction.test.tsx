@@ -1183,6 +1183,37 @@ describe("guided lifecycle navigation", () => {
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+  it("labels the viewed stage as current when it matches authoritative position", async () => {
+    const source = detail("OBL-GUIDED-A11Y-EQUAL");
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-A11Y-EQUAL")] }))
+      : Promise.resolve(response(source)));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+
+    expect(screen.getByRole("heading", { name: "Current stage: Obligation. Step 1 of 6." })).toBeTruthy();
+  });
+
+  it("labels a back-viewed stage separately from the authoritative current position", async () => {
+    const source = detail("OBL-GUIDED-A11Y-DIFFERENT");
+    source.execution = { status: "SUBMITTED" };
+    source.aggregate.execution_state = "SUBMITTED";
+    source.truth.tameion_control_truth.execution_state = "SUBMITTED";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-A11Y-DIFFERENT", true)] }))
+      : Promise.resolve(response(source)));
+    render(<CommandCenter />);
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    const rail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
+    fireEvent.click(within(rail).getByRole("button", { name: "Reconciliation" }));
+    expect(screen.getByRole("heading", { name: "Current stage: Reconciliation. Step 6 of 6." })).toBeTruthy();
+    fireEvent.click(within(rail).getByRole("button", { name: "Obligation" }));
+
+    expect(screen.getByRole("heading", {
+      name: "Viewed stage: Obligation. Current lifecycle position: Reconciliation. Step 1 of 6.",
+    })).toBeTruthy();
+  });
+
   it("uses one primary rail, makes locked stages unavailable, and keeps Back/Continue read-only", async () => {
     const source = detail("OBL-GUIDED-01");
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
@@ -1256,7 +1287,7 @@ describe("guided lifecycle navigation", () => {
     expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Obligation · Current position: Obligation");
     await act(async () => { delayedDetail.resolve(response(refreshed)); });
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Assessment · Current position: Assessment"));
-    expect(screen.getByRole("heading", { name: "Current stage: Assessment" })).toBe(document.activeElement);
+    expect(screen.getByRole("heading", { name: "Current stage: Assessment. Step 2 of 6." })).toBe(document.activeElement);
     expect(screen.getByRole("status", { name: "Stage completion receipt" }).textContent).toContain("Assessment is now available from refreshed obligation detail.");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
   });

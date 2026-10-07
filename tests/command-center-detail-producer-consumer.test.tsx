@@ -268,7 +268,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
     expect(body.execution).toBeNull();
     const { main } = await renderProducerJson(body);
-    expect(screen.getByRole("heading", { name: "Current stage: Obligation" })).toBeTruthy();
+    expect(screen.getByRole("heading", {
+      name: "Viewed stage: Obligation. Current lifecycle position: Assurance. Step 1 of 6.",
+    })).toBeTruthy();
     expect(screen.getByRole("list", { name: "Payment lifecycle" }).querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");
     expect(screen.getByTestId("current-next-step").textContent).toContain(
       "No current exact execution packet is available. Payment authority must be re-established before submission.",
