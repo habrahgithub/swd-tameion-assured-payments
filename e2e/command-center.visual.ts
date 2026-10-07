@@ -318,6 +318,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
     await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
     const card = page.getByRole("region", { name: "Assessment result" });
     await expect(card.getByRole("heading", { name: "Advisory — PAY" })).toBeVisible();
+    await expect(card.getByTestId("assessment-provenance")).toContainText("deterministic fallback, not live AI");
     await expect(card).toContainText(result.current_assessment.race.result.decision_summary);
     await expect(card).toContainText("What this means");
     await expect(card).toContainText("What to do next");
@@ -345,6 +346,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   await page.getByRole("navigation", { name: "All lifecycle stages" }).getByRole("button", { name: "Assessment" }).click();
   const mobileCard = page.getByRole("region", { name: "Assessment result" });
   await expect(mobileCard.getByRole("heading", { name: "Advisory — PAY" })).toBeVisible();
+  await expect(mobileCard.getByTestId("assessment-provenance")).toContainText("deterministic fallback, not live AI");
   await expect(mobileCard).toContainText(result.current_assessment.race.result.decision_summary);
   await page.getByRole("button", { name: "Review current PAY assessment" }).click();
   const mobileRerun = mobileCard.getByRole("button", { name: "Run AI Assessment again" });

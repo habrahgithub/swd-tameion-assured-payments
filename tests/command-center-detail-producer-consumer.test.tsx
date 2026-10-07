@@ -11,6 +11,7 @@ vi.mock("../src/server/demo-state", async (importOriginal) => {
 import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
+import { POST as postAssessment } from "../app/api/obligations/[id]/assess/route";
 import { CommandCenter, useExecutionConfirmation } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
@@ -904,11 +905,119 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     const card = screen.getByRole("region", { name: "Assessment result" });
+    expect(screen.getByTestId("assessment-provenance").textContent).toMatch(/produced using live AI/i);
     expect(card.textContent).toContain("Capability boundary");
     expect(card.textContent).toContain("This assessment does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.");
     expect(card.textContent).toContain(fixture.body.current_assessment.race.result.decision_summary);
     expect(card.textContent).not.toContain("PO match passed");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+  });
+
+  it("shows provider provenance from an actual deterministic assess-route fallback result", async () => {
+    const state = new DemoState();
+    const queue = await listJson(state);
+    const selectedId = queue.obligations[0]?.obligation_id;
+    if (!selectedId) throw new Error("Frozen source set is empty.");
+    stateMocks.getDemoState.mockResolvedValue(state);
+    vi.stubEnv("NVIDIA_API_KEY", "");
+    try {
+      const response = await postAssessment(new Request(`http://localhost/api/obligations/${selectedId}/assess`, {
+        method: "POST",
+        headers: { "Idempotency-Key": "f47ac10b-58cc-4372-a567-0e02b2c3d479" },
+      }), { params: Promise.resolve({ id: selectedId }) });
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.provider_mode).toBe("NOT_LIVE_AI");
+
+      const body = await detailJson(state, selectedId);
+      const currentQueue = await listJson(state);
+      expect(body.current_assessment.provider_mode).toBe("NOT_LIVE_AI");
+      await renderProducerJson(body, [], currentQueue);
+      fireEvent.click(screen.getByRole("button", { name: /^Assessment$/ }));
+
+      const card = screen.getByRole("region", { name: "Assessment result" });
+      expect(screen.getByTestId("assessment-provenance").textContent)
+        .toMatch(/deterministic fallback.*not live AI/i);
+      expect(card.textContent).not.toMatch(/NOT_LIVE_AI|runtime_config_sha256|Model:/);
+      const developerEvidence = screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement;
+      expect(developerEvidence.open).toBe(false);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("states uncertainty for missing or unknown provider details and distinguishes blocked external status", async () => {
+    const fixture = await assessedProducerState("PAY");
+    const cases = [
+      {
+        label: "missing provider fields",
+        edit: (assessment: Record<string, any>) => {
+          delete assessment.provider_mode;
+          delete assessment.provider_used;
+        },
+        expected: /provider source is unavailable.*whether this assessment used live AI is unknown/i,
+      },
+      {
+        label: "unknown provider mode",
+        edit: (assessment: Record<string, any>) => { assessment.provider_mode = "UNKNOWN"; },
+        expected: /provider source is unavailable.*whether this assessment used live AI is unknown/i,
+      },
+      {
+        label: "blocked external provider",
+        edit: (assessment: Record<string, any>) => { assessment.provider_mode = "BLOCKED_EXTERNAL"; },
+        expected: /blocked external.*not confirmed as a live AI response/i,
+      },
+    ];
+
+    for (const scenario of cases) {
+      cleanup();
+      fetchMock.mockClear();
+      const body = structuredClone(fixture.body);
+      scenario.edit(body.current_assessment);
+      await renderProducerJson(body, [], fixture.queue);
+      fireEvent.click(screen.getByRole("button", { name: /^Assessment$/ }));
+      expect(screen.getByTestId("assessment-provenance").textContent, scenario.label).toMatch(scenario.expected);
+      expect(screen.getByText("Developer & audit evidence").closest("details")?.getAttribute("open")).toBeNull();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.label).toHaveLength(0);
+    }
+  });
+
+  it("documents that the actual fresh-PAY producer still exposes a sealed superseded PAE pointer", async () => {
+    const fixture = await preparedAuthorizedState();
+    const oldSealed = fixture.state.getSealedPae(fixture.selectedId);
+    expect(oldSealed).toBeTruthy();
+    const before = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    fixture.state.store.applyMaterialChange(
+      DEMO_ORGANIZATION_ID,
+      fixture.selectedId,
+      before.aggregate_version,
+      { destination_version: before.destination_version + 1 },
+    );
+    const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, fixture.selectedId, current.aggregate_version, {
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+    });
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    expect(body.aggregate.pae_state).toBe("REVOKED");
+    expect(body.truth.tameion_control_truth.execution_release_authority).toBe("REVOKED");
+    expect(body.current_assessment).toMatchObject({
+      obligation_id: fixture.selectedId,
+      aggregate_version: String(current.aggregate_version),
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+    });
+    expect(body.pae_sealed).toBe(true);
+    expect(body.execution).toBeNull();
+
+    const queue = await listJson(fixture.state);
+    const { main } = await renderProducerJson(body, [], queue);
+    fireEvent.click(screen.getByRole("button", { name: /^Authorization$/ }));
+    expect(screen.getByRole("region", { name: "Exception recovery" }).textContent).toMatch(/payment authority is revoked/i);
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("renders concise source provenance and service period from producer-shaped obligation records", async () => {

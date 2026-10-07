@@ -931,6 +931,14 @@ function AdvisoryAssessmentCard({
   );
 }
 
+function assessmentProvenanceCopy(assessment: AssessmentReviewSnapshot): string {
+  const mode = assessment.provider_truth?.provider_mode;
+  if (mode === "LIVE_AI") return "Produced using live AI. This recommendation remains advisory.";
+  if (mode === "NOT_LIVE_AI") return "Produced by a deterministic fallback, not live AI. This recommendation remains advisory.";
+  if (mode === "BLOCKED_EXTERNAL") return "The recorded provider mode is blocked external; this result is not confirmed as a live AI response.";
+  return "Provider source is unavailable; whether this assessment used live AI is unknown.";
+}
+
 function AssessmentResultCard({
   assessment,
   nextAction,
@@ -970,6 +978,9 @@ function AssessmentResultCard({
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Finance Agent · advisory result</p>
           <h3 className={`mt-1 text-[21px] font-semibold ${decisionToneClass}`}>Advisory — {assessment.decision}</h3>
+          <p aria-label="Assessment provenance" className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]" data-testid="assessment-provenance">
+            {assessmentProvenanceCopy(assessment)}
+          </p>
         </div>
       </header>
 
