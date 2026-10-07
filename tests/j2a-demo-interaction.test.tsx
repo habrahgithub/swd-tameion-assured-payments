@@ -18,7 +18,7 @@ describe("retired fixed-ID Arc Testnet demo surface", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<CommandCenter />);
-    const demos = screen.getByText("Demonstrations");
+    const demos = screen.getByText("Demo tools");
     fireEvent.click(demos);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(within(demos.closest("details")!).queryByText("Arc Testnet")).toBeNull();

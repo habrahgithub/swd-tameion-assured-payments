@@ -1338,7 +1338,15 @@ export function CommandCenter() {
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
-    const assessedCount = obligations.filter((o) => o.assessed).length;
+  const queueDueDate = (obligation: ObligationSummary) => {
+    if (obligation.obligation_id === selectedId && detail?.record.obligation_id === selectedId) {
+      return sourceText(detail.record, "effective_due_date") !== "Not captured"
+        ? sourceText(detail.record, "effective_due_date")
+        : sourceText(detail.record, "due_date");
+    }
+    return obligation.due_date ?? "Due date unavailable";
+  };
+  const assessedCount = obligations.filter((o) => o.assessed).length;
   const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
   const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
   const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
@@ -1549,11 +1557,11 @@ export function CommandCenter() {
           : detail?.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)
             ? "Next step: run a fresh assessment for the prepared Arc Testnet proxy; a PAY recommendation is advisory."
           : proxyPreparationReady
-            ? "Prepare the Arc Testnet proxy using read-only provider checks. Preparation changes the aggregate, so run a fresh assessment next, then review it. Payment-route assurance remains a separate authorization gate."
-            : !allAssessed
-              ? "Next step: assess the remaining obligations before authorization review."
-              : !hasCurrentAssessment || !currentAssessment
-                ? "Next step: assess this obligation; a PAY recommendation is advisory."
+            ? "Current PAY is eligible for read-only proxy preparation; fresh assessment and review follow, with route assurance still required."
+            : !hasCurrentAssessment || !currentAssessment
+              ? "This obligation has no current advisory assessment."
+              : !allAssessed
+                ? "Other obligations still need assessment before authorization review."
                 : currentAssessment.decision !== "PAY"
                   ? `Blocked: current assessment is ${currentAssessment.decision}; resolve its findings before reassessment.`
                   : !authorizationAssessment
@@ -1733,16 +1741,14 @@ export function CommandCenter() {
     const statusId = `${mobile ? "mobile-" : ""}lifecycle-${stage.toLowerCase()}`;
     const reasonId = `${mobile ? "mobile-" : ""}lifecycle-reason-${stage.toLowerCase()}`;
     const selectedView = viewedStage === stage && panel !== "report";
+    const shortStatus = status === "CURRENT" ? "Current" : status === "COMPLETED" ? "Done" :
+      status === "AVAILABLE" ? "Next" : status === "BLOCKED" ? "Blocked" : "Locked";
     const content = (
       <>
-        <span className="mono me-1 text-[11px] font-semibold text-[var(--color-ink-muted)]">{PAYMENT_LIFECYCLE_STAGES.indexOf(stage) + 1}.</span>
+        <span className="mono me-1 text-[10px] font-semibold text-[var(--color-ink-muted)]">{PAYMENT_LIFECYCLE_STAGES.indexOf(stage) + 1}.</span>
         <span className="min-w-0 break-words font-semibold">{stage}</span>
-        <span id={statusId} className="mt-0.5 block text-[11px] font-semibold uppercase tracking-wide">{status}</span>
-        {reason && (
-          <span id={reasonId} title={reason} className="mt-0.5 block line-clamp-1 text-[10px] leading-3 text-[var(--color-ink-muted)]">
-            {reason}
-          </span>
-        )}
+        <span id={statusId} className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wide">{shortStatus}</span>
+        {reason && <span id={reasonId} className="sr-only">{reason}</span>}
       </>
     );
     return (
@@ -1780,11 +1786,8 @@ export function CommandCenter() {
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
-          <h1 className="text-xl font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</h1>
+          <h1 className="text-lg font-semibold text-[var(--color-ink)] sm:text-xl">Assured Payment — Command Center</h1>
         </div>
-        <p className="max-w-none text-start text-[12px] leading-5 text-[var(--color-ink-muted)] sm:max-w-sm sm:text-end">
-          AI recommendations are advisory. Genuine obligation review is the primary workflow; demonstrations are separate and testnet execution remains locked behind independent review and Prime packet authorization.
-        </p>
       </header>
 
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
@@ -1802,7 +1805,7 @@ export function CommandCenter() {
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
             Genuine obligations
           </p>
-          <p className="mb-2 text-[12px] text-[var(--color-ink)]">{queueHeaderLabel(listPresentation, reportSummary)}</p>
+          <p className="mb-2 text-[12px] text-[var(--color-ink)]">{listPresentation === "ready" ? `${obligations.length} obligations` : queueHeaderLabel(listPresentation, reportSummary)}</p>
           <ul className="border-y border-[var(--color-border)]">
             {obligations.map((o) => {
               const statusColor = o.assessed
@@ -1817,6 +1820,7 @@ export function CommandCenter() {
               return (
                 <li key={o.obligation_id}>
                   <button
+                    data-obligation-id={o.obligation_id}
                     onClick={() => {
                       setSelectedId(o.obligation_id);
                       if (panel === "report") setViewedStage("Obligation");
@@ -1841,10 +1845,10 @@ export function CommandCenter() {
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
                       {solePayCandidateId === o.obligation_id && <span className="ms-2 rounded border border-[var(--color-border-strong)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Sole PAY candidate</span>}
                     </span>
-                    <span className="col-span-1 tabular text-start text-[16px] font-semibold text-[var(--color-ink)]">
-                      {o.amount} {o.currency}
+                    <span className="col-span-1 tabular text-start text-[15px] font-semibold text-[var(--color-ink)]">
+                      {o.amount} {o.currency}<span className="font-normal text-[12px] text-[var(--color-ink-muted)]"> · {queueDueDate(o)}</span>
                     </span>
-                    <span className="col-span-1 text-end text-[12px] font-semibold" style={{ color: statusColor }}>
+                    <span className="col-span-1 text-end text-[11px] font-semibold" style={{ color: statusColor }}>
                       {o.execution_status
                         ? o.execution_status === "SETTLED" ? "Testnet execution reconciled" : `${o.execution_status} · read current detail`
                         : o.pae_sealed
@@ -1854,10 +1858,6 @@ export function CommandCenter() {
                             : o.assessed
                         ? o.decision === "PAY" ? "PAY recommendation (advisory)" : `${o.decision ?? "—"} assessment`
                         : "Assessment required"}
-                    </span>
-                    <span className="col-span-2 text-[12px] text-[var(--color-ink-muted)]">
-                      <bdi dir="ltr" className="mono">{o.obligation_id}</bdi>
-                      {o.commercial_terms ? ` · ${o.commercial_terms}` : ""}
                     </span>
                 </button>
               </li>
@@ -1883,34 +1883,28 @@ export function CommandCenter() {
 
         <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
           {selected && (
-            <section aria-label="Selected source obligation" className="grid gap-4 border-b border-[var(--color-border)] pb-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+          <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
+            <section aria-label="Selected source obligation" className="grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected genuine obligation</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected obligation</p>
                 <h2 className="mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]">
                   {detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured"
                     ? sourceText(detail.record, "beneficiary_name")
                     : selected.service_category.replaceAll("_", " ").toLowerCase()}
                 </h2>
-                <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
-                  {detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") === "Not captured" ? "Business name not captured · " : ""}
-                  {selected.commercial_terms ? `${selected.commercial_terms} · ` : ""}
-                  Record <bdi dir="ltr" className="mono">{selected.obligation_id}</bdi>
-                </p>
               </div>
               <div className="sm:text-end">
                   <p className="tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
-                  <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Source obligation amount</p>
                 </div>
               <div className="sm:col-span-2">
-                <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />
                 {detailState === "loaded" && detail && (
                   <>
-                    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px]">
-                      <p><span className="text-[var(--color-ink-muted)]">Source payable: </span><strong>{sourcePayableState(detail)}</strong></p>
-                      <p><span className="text-[var(--color-ink-muted)]">Effective due date: </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+                      <p><strong>{sourcePayableState(detail)}</strong></p>
+                      <p><span className="text-[var(--color-ink-muted)]">Due </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
                     </div>
-                    <p className="mt-2 text-[12px] text-[var(--color-warning)]">
-                      ARC TESTNET · {detail.settlement_proxy ? "Controlled settlement proxy" : "No controlled settlement proxy bound"} · Real-world payable remains {sourcePayableState(detail)}.
+                    <p className="mt-1 text-[11px] leading-4 text-[var(--color-warning)]">
+                      ARC TESTNET · {detail.settlement_proxy ? "controlled settlement proxy" : "no controlled proxy"} · real-world payable remains {sourcePayableState(detail)}.
                     </p>
                     {detail.settlement_proxy && <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
                       Testnet intent: <bdi dir="ltr" className="tabular font-semibold">{detail.settlement_proxy.preflight.amount} {detail.settlement_proxy.preflight.asset}</bdi>
@@ -1918,11 +1912,13 @@ export function CommandCenter() {
                     </p>}
                   </>
                 )}
+                {detailState !== "loaded" && <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />}
                 {(detailState === "loading" || detailState === "failed" || detailState === "stale") && (
                   <p className="mt-2 text-[12px] text-[var(--color-warning)]">Source and control details are {detailState === "loading" ? "loading" : detailState === "stale" ? "stale" : "unavailable"}; no current action is inferred.</p>
                 )}
               </div>
             </section>
+          </section>
           )}
 
           {!selected && (
@@ -1957,7 +1953,6 @@ export function CommandCenter() {
           <section aria-label="Guided lifecycle" className="space-y-2 border-b border-[var(--color-border)] pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Payment journey</p>
-              <p className="text-[12px] font-semibold tracking-wide text-[var(--color-ink-muted)]">AI recommends · human authorizes · assurance controls release</p>
             </div>
             <nav aria-label="Payment lifecycle navigation" className="hidden md:block">
               <ol aria-label="Payment lifecycle" className="grid grid-cols-3 gap-1 lg:grid-cols-6">
@@ -1965,7 +1960,7 @@ export function CommandCenter() {
               </ol>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
-                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
               </div>
             </nav>
             <div className="rounded border border-[var(--color-border)] px-3 py-2 md:hidden">
@@ -1975,7 +1970,7 @@ export function CommandCenter() {
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
-                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
               </div>
               <details className="mt-2" open={mobileStagesOpen} onToggle={(event) => setMobileStagesOpen(event.currentTarget.open)}>
                 <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">View all stages</summary>
@@ -1987,8 +1982,8 @@ export function CommandCenter() {
           <section aria-label="Current next step" data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Viewing {viewedStage} · Current position: {currentLifecycleStage}</p>
-                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>
+                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : state.label}</h3>
                 {!currentException && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
                 {workspaceAction && !currentException && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
                 {!workspaceAction && selectedId && detailState === "loaded" && (
@@ -2048,54 +2043,20 @@ export function CommandCenter() {
                 </p>
               )}
             </div>
-            {selectedId && detailState === "loaded" && !terminalExecutionNoAction && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
-              <details className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-warning)]">
-                <summary className="min-h-11 cursor-pointer py-2 font-semibold">Separate external-evidence blocker: payment-route assurance is not ready.</summary>
-                <p className="mt-1">{firstUnmetPrerequisite}</p>
-              </details>
-            )}
           </section>
 
-          <nav aria-label="Secondary tools" className="flex flex-wrap gap-1 border-b border-[var(--color-border)]">
-            <button
-              onClick={() => setPanel("report")}
-              aria-pressed={panel === "report"}
-              className={`min-h-11 min-w-0 whitespace-normal break-words border-b-2 px-2 py-2 text-start text-[12px] font-medium transition sm:px-3 sm:text-[13px] ${panel === "report" ? "border-[var(--color-accent)] text-[var(--color-ink)]" : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"}`}
-            >Operational Report (secondary)</button>
-          </nav>
+          <details className="rounded border border-[var(--color-border)] px-3 py-2">
+            <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Additional tools</summary>
+            <nav aria-label="Secondary tools" className="border-t border-[var(--color-border)] pt-2">
+              <button
+                onClick={() => setPanel("report")}
+                aria-pressed={panel === "report"}
+                className={`min-h-11 rounded border px-3 py-2 text-start text-[12px] font-medium transition sm:text-[13px] ${panel === "report" ? "border-[var(--color-accent)] text-[var(--color-ink)]" : "border-[var(--color-border-strong)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"}`}
+              >Operational Report (secondary)</button>
+            </nav>
+          </details>
 
-          <div className="min-h-[120px]">
-            {panel === "obligations" && detail && (
-              <section aria-label="Genuine obligation workspace" className="max-w-xl space-y-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">REAL BUSINESS OBLIGATION</p>
-                  <p className="mt-1 text-[13px] text-[var(--color-ink)]">Source: genuine business record · {selected?.service_category.replaceAll("_", " ").toLowerCase()}</p>
-                </div>
-
-                {hasCurrentAssessment && currentAssessment && currentAssessment.decision !== "PAY" && (
-                  <section aria-label="Current assessment and resolution" className="space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-                    <h3 className="text-[12px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
-                      {currentAssessment.decision === "HOLD" ? "Current assessment — Requires attention" : "Current assessment — Escalation required"}
-                    </h3>
-                    <AdvisoryAssessmentCard
-                      assessment={currentAssessment}
-                      label="Sealed assessment"
-                      allAssessed={allAssessed}
-                    />
-                    <p className="text-[12px] text-[var(--color-ink-muted)]">
-                      Resolution action is not yet available in this build; provide/verify current payment-route evidence, then reassess.
-                    </p>
-                  </section>
-                )}
-                {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
-                {optionalReassessmentAvailable && (
-                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="min-h-11 text-start text-[12px] font-medium underline disabled:opacity-50">
-                    Reassess current PAY recommendation (optional)
-                  </button>
-                )}
-              </section>
-                        )}
-
+          <div>
             {panel === "assessment" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
@@ -2588,7 +2549,9 @@ export function CommandCenter() {
 
           {panel !== "report" && detailState === "loaded" && detail && (
             <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]">Activity &amp; evidence · {activityItems.length} timestamped records</summary>
+              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]" title={`Activity & evidence · ${activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no timestamped history · current state available on open"}`}>
+                <span className="inline-block w-[calc(100%-1.5rem)] truncate align-top">Activity &amp; evidence · {activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no timestamped history · current state available on open"}</span>
+              </summary>
               <section aria-label="Activity and evidence" className="space-y-4 border-t border-[var(--color-border)] pt-3">
                 <div>
                   <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Available evidence history</h4>
@@ -2784,7 +2747,7 @@ export function CommandCenter() {
       </div>
 
       <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-        <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink)]">Demonstrations</summary>
+        <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink)]">Demo tools</summary>
         <div className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
           <details className="rounded border border-[var(--color-warning)] px-3 py-2">
             <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-warning)]">Read-only sample</summary>
