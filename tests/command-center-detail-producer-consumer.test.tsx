@@ -761,7 +761,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     await waitFor(() => expect(source.textContent).toContain("OUTSTANDING"));
     expect(source.textContent).toContain(`${body.record.amount} ${body.record.currency}`);
     expect(source.textContent).not.toContain(body.record.obligation_id);
-    expect(source.textContent).not.toContain(body.record.commercial_terms);
+    expect(source.querySelector('[data-testid="source-service-context"]')?.textContent).toContain(body.record.commercial_terms);
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Obligation");
@@ -784,6 +784,37 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(queueRow.textContent).toContain(`${first.amount} ${first.currency}`);
     expect(queueRow.textContent).not.toContain(first.obligation_id);
     expect(queueRow.textContent).not.toContain(first.commercial_terms);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("renders concise source provenance and service period from producer-shaped obligation records", async () => {
+    const state = new DemoState();
+    const queue = await listJson(state);
+    const expectedById = new Map([
+      ["OBL-J0C-001", /One-year business-license\/flexi-desk package.*proforma invoice/i],
+      ["OBL-J0C-005", /One-year productivity-suite commitment covering 2026-03-29 through 2027-03-28.*email invoice excerpt/i],
+    ]);
+    const bodies = await Promise.all([...expectedById.keys()].map((id) => detailJson(state, id)));
+    const [first, fifth] = bodies;
+    if (!first || !fifth) throw new Error("Expected producer details for source obligations 001 and 005.");
+    const { main } = await renderProducerJson(first, [fifth], queue);
+    const source = screen.getByRole("region", { name: "Selected source obligation" });
+    const firstContext = source.querySelector('[data-testid="source-service-context"]');
+
+    expect(firstContext?.textContent).toMatch(expectedById.get("OBL-J0C-001")!);
+    expect(source.textContent).not.toContain("OBL-J0C-001");
+    expect(source.textContent).not.toMatch(/EVID-|sha256|content_hash|PDF_PROFORMA_INVOICE/);
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
+
+    fireEvent.click(obligationRow("OBL-J0C-005"));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: "Selected source obligation" }).querySelector('[data-testid="source-service-context"]')?.textContent)
+        .toMatch(expectedById.get("OBL-J0C-005")!);
+    });
+    const selectedSource = screen.getByRole("region", { name: "Selected source obligation" });
+    expect(selectedSource.textContent).not.toContain("OBL-J0C-005");
+    expect(selectedSource.textContent).not.toMatch(/EVID-|sha256|content_hash|USER_SUPPLIED_EMAIL_INVOICE_EXCERPT/);
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 

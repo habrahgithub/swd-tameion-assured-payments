@@ -139,6 +139,24 @@ function sourceText(record: Record<string, unknown>, field: string): string {
   return typeof value === "string" && value.trim() ? value : "Not captured";
 }
 
+function sourceServiceContext(record: Record<string, unknown>): string | null {
+  const commercialTerms = typeof record.commercial_terms === "string" ? record.commercial_terms.trim() : "";
+  const evidence = Array.isArray(record.source_evidence) ? record.source_evidence : [];
+  const sourceType = evidence.find((item) => item && typeof item === "object" && !Array.isArray(item)) as Record<string, unknown> | undefined;
+  const sourceLabels: Record<string, string> = {
+    PDF_PROFORMA_INVOICE: "proforma invoice",
+    PDF_INVOICE: "invoice",
+    PDF_TAX_INVOICE: "tax invoice",
+    USER_SUPPLIED_EMAIL_INVOICE_EXCERPT: "user-supplied email invoice excerpt",
+    AUTHORIZED_OPERATOR_ATTESTATION: "operator attestation",
+  };
+  const sourceLabel = typeof sourceType?.source_type === "string" ? sourceLabels[sourceType.source_type] : undefined;
+  const includesSource = sourceLabel && commercialTerms.toLocaleLowerCase().includes(sourceLabel.toLocaleLowerCase());
+  const sourceContext = sourceLabel && !includesSource ? `Source: ${sourceLabel}` : "";
+  const line = [commercialTerms, sourceContext].filter(Boolean).join(" · ");
+  return line || null;
+}
+
 function sourcePayableState(detail: ObligationDetail): string {
   const state = detail.source_payable_state ?? detail.truth.source_truth.obligation_state;
   return typeof state === "string" && state.trim() ? state : "Not reported";
@@ -2037,6 +2055,7 @@ export function CommandCenter() {
                       <p><strong>{sourcePayableState(detail)}</strong></p>
                       <p><span className="text-[var(--color-ink-muted)]">Due </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
                     </div>
+                    {sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
                     <p className="mt-1 text-[11px] leading-4 text-[var(--color-warning)]">
                       ARC TESTNET · {detail.settlement_proxy ? "controlled settlement proxy" : "no controlled proxy"} · real-world payable remains {sourcePayableState(detail)}.
                     </p>

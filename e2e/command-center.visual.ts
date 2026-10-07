@@ -60,15 +60,17 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     const selectedCard = page.getByRole("region", { name: "Selected source obligation" });
     const stageCard = page.getByTestId("current-next-step");
     const primary = page.getByRole("button", { name: "Run AI Assessment" });
+    const sourceContext = selectedCard.getByTestId("source-service-context");
     const expectedBusinessName = expected.record.beneficiary_name && expected.record.beneficiary_name !== "Not captured"
       ? expected.record.beneficiary_name
       : String(first.service_category).replaceAll("_", " ").toLowerCase();
     await expect(selectedCard.locator("h2")).toHaveText(expectedBusinessName);
     await expect(selectedCard).not.toContainText(expected.record.obligation_id);
-    await expect(selectedCard).not.toContainText(expected.record.commercial_terms);
+    await expect(sourceContext).toContainText(expected.record.commercial_terms);
     await expect(stageCard.locator("p").nth(1)).toContainText("no current advisory assessment");
     const firstViewport = await Promise.all([
       selectedCard.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+      sourceContext.evaluate((element) => element.getBoundingClientRect().bottom),
       currentStage.evaluate((element) => element.getBoundingClientRect().bottom),
       stageCard.locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
       stageCard.locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
@@ -85,11 +87,42 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await assertGenuineFirstView(760);
   await page.screenshot({ path: testInfo.outputPath("genuine-desktop-first-view.png") });
 
+  const fifthResponse = await page.request.get("/api/obligations/OBL-J0C-005");
+  expect(fifthResponse.ok()).toBe(true);
+  const fifth = await fifthResponse.json() as Record<string, any>;
+  await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
+  const fifthSource = page.getByRole("region", { name: "Selected source obligation" });
+  await expect(fifthSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
+  await expect(fifthSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  const fifthDesktopBounds = await Promise.all([
+    fifthSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByRole("list", { name: "Payment lifecycle" }).locator('[aria-current="step"]').evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
+  ]);
+  expect(fifthDesktopBounds.every((bottom) => bottom <= 760), JSON.stringify(fifthDesktopBounds)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("genuine-desktop-source-context-005.png") });
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await assertGenuineFirstView(844, true);
   await page.screenshot({ path: testInfo.outputPath("genuine-mobile-first-view.png") });
+  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
+  const fifthMobileSource = page.getByRole("region", { name: "Selected source obligation" });
+  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
+  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  const fifthMobileBounds = await Promise.all([
+    fifthMobileSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.locator("p[aria-live='polite']").filter({ hasText: "Step 1 of 6 · Obligation" }).evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
+  ]);
+  expect(fifthMobileBounds.every((bottom) => bottom <= 844), JSON.stringify(fifthMobileBounds)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("genuine-mobile-source-context-005.png") });
   expect(writes).toEqual([]);
 });
 
