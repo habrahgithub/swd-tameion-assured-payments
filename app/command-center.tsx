@@ -913,6 +913,112 @@ function AdvisoryAssessmentCard({
   );
 }
 
+function AssessmentResultCard({
+  assessment,
+  nextAction,
+  nextOwner,
+  canReassess,
+  reassessmentIsPrimary,
+  onReassess,
+  busy,
+}: {
+  assessment: AssessmentReviewSnapshot;
+  nextAction: string;
+  nextOwner: string | null;
+  canReassess: boolean;
+  reassessmentIsPrimary: boolean;
+  onReassess: () => void;
+  busy: boolean;
+}) {
+  const race = assessment.race;
+  const findings = race?.result.validated_findings ?? [];
+  const checks = race?.action_taken.checks ?? [];
+  const summary = race?.result.decision_summary ?? assessment.reasons[0];
+  const additionalReasons = assessment.reasons.filter((reason) => reason !== summary && !findings.some((finding) => finding.reason === reason));
+  const meaning = assessment.decision === "PAY"
+    ? "This advisory recommendation does not authorize or execute payment."
+    : assessment.decision === "HOLD"
+      ? "Authorization review remains locked until the reported findings are addressed."
+      : "The returned escalation finding requires human review; authorization remains locked.";
+  const decisionToneClass = assessment.decision === "HOLD"
+    ? "text-[var(--status-hold-text)]"
+    : assessment.decision === "ESCALATE"
+      ? "text-[var(--status-blocked-text)]"
+      : "text-[var(--color-ink)]";
+
+  return (
+    <section aria-label="Assessment result" className="space-y-4 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="assessment-result-card">
+      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--color-border)] pb-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Finance Agent · advisory result</p>
+          <h3 className={`mt-1 text-[21px] font-semibold ${decisionToneClass}`}>Advisory — {assessment.decision}</h3>
+        </div>
+      </header>
+
+      <p className="text-[15px] leading-6 text-[var(--color-ink)]">{summary}</p>
+
+      {additionalReasons.length > 0 && (
+        <section aria-label="Assessment reasons" className="space-y-1">
+          <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Assessment reasons</h4>
+          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+            {additionalReasons.map((reason, index) => <li key={`${index}-${reason}`}>{reason}</li>)}
+          </ul>
+        </section>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <section className="space-y-1">
+          <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">What this means</h4>
+          <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{meaning}</p>
+        </section>
+        <section className="space-y-1">
+          <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">What to do next</h4>
+          <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{nextAction}</p>
+          {nextOwner && <p className="text-[12px] text-[var(--color-ink-muted)]">Next owner/role: <strong className="text-[var(--color-ink)]">{nextOwner}</strong></p>}
+        </section>
+      </div>
+
+      {findings.length > 0 ? (
+        <section aria-label="Assessment findings" className="space-y-1 border-t border-[var(--color-border)] pt-3">
+          <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Returned findings</h4>
+          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+            {findings.map((finding) => <li key={finding.code}>{finding.reason}</li>)}
+          </ul>
+        </section>
+      ) : (
+        <p className="border-t border-[var(--color-border)] pt-3 text-[13px] text-[var(--color-ink-muted)]">No validated findings are recorded in this assessment.</p>
+      )}
+
+      <section aria-label="Assessment checks recorded" className="space-y-1 border-t border-[var(--color-border)] pt-3">
+        <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Checks recorded by the assessment</h4>
+        {checks.length > 0 ? (
+          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+            {checks.map((check, index) => <li key={`${index}-${check}`}>{check}</li>)}
+          </ul>
+        ) : (
+          <p className="text-[13px] text-[var(--color-ink-muted)]">No structured check list is present in this assessment record.</p>
+        )}
+      </section>
+
+      {canReassess && (
+        <div className="border-t border-[var(--color-border)] pt-3">
+          {reassessmentIsPrimary ? (
+            <div data-testid="assessment-rerun">
+              <PrimaryButton onClick={onReassess} disabled={busy}>Run AI Assessment again</PrimaryButton>
+            </div>
+          ) : (
+            <button type="button" data-testid="assessment-rerun" disabled={busy} onClick={onReassess}
+              className="min-h-11 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 text-[13px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:opacity-50">
+              Run AI Assessment again
+            </button>
+          )}
+          <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">A rerun is advisory only and cannot authorize or execute payment.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PrimaryButton({
   onClick,
   disabled,
@@ -1730,6 +1836,34 @@ export function CommandCenter() {
     : detail?.execution?.status === "BLOCKED" || noCurrentExactExecutionPacket
       ? "No submission action is available. Re-establish current payment authority before any new execution packet."
       : "No product action is available from the currently recorded state.");
+  const assessmentResult = detailState === "loaded" && hasCurrentAssessment ? currentAssessment : null;
+  const assessmentRemediation = assessmentResult?.race?.remediation ?? [];
+  const assessmentNextStep = assessmentResult?.decision === "PAY"
+    ? !assessmentResult.race
+      ? "This recorded PAY recommendation has no review evidence in this detail; authorization remains locked."
+      : proxyPreparationReady
+      ? "Prepare the Arc Testnet proxy; a fresh assessment is required afterward, before authorization review."
+      : workspaceAction?.label === "Review current PAY assessment"
+        ? "Review this advisory recommendation before any separate human authorization decision."
+        : workspaceAction?.label === "Authorize this exact obligation"
+          ? "An authorized approver may review this exact obligation."
+          : !allAssessed
+            ? "Assess the remaining genuine obligations before authorization review."
+            : !routeAssuranceReady
+              ? "Complete current payment-route assurance before authorization review."
+              : assessmentNextAction("PAY", allAssessed).replace(/^Next action:\s*/, "")
+    : assessmentRemediation.length > 0
+      ? [...new Set(assessmentRemediation.map((item) => item.required_action))].join(" ")
+      : assessmentResult
+        ? assessmentNextAction(assessmentResult.decision, allAssessed).replace(/^Next action:\s*/, "")
+        : "Run AI Assessment from the current-stage action above.";
+  const assessmentOwnerRoles = assessmentResult?.decision === "ESCALATE"
+    ? assessmentRemediation.map((item) => item.escalation_target).filter((role): role is string => Boolean(role))
+    : assessmentResult?.decision === "HOLD"
+      ? assessmentRemediation.map((item) => item.owner_role)
+      : workspaceAction ? [workspaceAction.actor] : [];
+  const uniqueAssessmentOwnerRoles = [...new Set(assessmentOwnerRoles)];
+  const assessmentNextOwner = uniqueAssessmentOwnerRoles.length === 1 ? uniqueAssessmentOwnerRoles[0] : null;
 
   const previousViewedStage = viewedStageIndex > 0 ? PAYMENT_LIFECYCLE_STAGES[viewedStageIndex - 1] : null;
   const canGoBack = Boolean(previousViewedStage && stageState(previousViewedStage) !== "LOCKED");
@@ -2058,114 +2192,28 @@ export function CommandCenter() {
 
           <div>
             {panel === "assessment" && (
-              <div className="max-w-xl space-y-3">
-                <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  The Finance Agent reads this obligation and returns exactly one PAY / HOLD / ESCALATE
-                  recommendation with reasons. It cannot approve, sign, or execute anything. A PAY
-                  recommendation is advisory only — it still requires human authorization and a
-                  Safety Kernel PASS before any release authority.
-                </p>
-                <div className="flex items-center justify-between gap-3 border-s-[3px] border-s-[var(--color-border)] px-3 py-2">
-                  <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-                    {assessmentCoverageLabel(listPresentation, assessedCount, obligations.length)}
-                  </p>
-                  <RuntimeBadge mode={selected?.provider_mode ?? null} />
-                </div>
-                {displayedAssessment && displayedAssessment.decision === "PAY" && authorizationAssessment && (
-                  <AdvisoryAssessmentCard
-                    assessment={displayedAssessment}
-                    label="Displayed assessment under review"
-                    allAssessed={allAssessed}
-                    action={
-                      <button
-                        type="button"
-                        className="min-h-11 text-start text-[12px] font-semibold underline text-[var(--color-warning)]"
-                        disabled={detailState !== "loaded" || !displayedAssessment.race}
-                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
-                      >
-                        Discard review selection
-                      </button>
-                    }
+              <div className="max-w-2xl">
+                {assessmentResult ? (
+                  <AssessmentResultCard
+                    assessment={assessmentResult}
+                    nextAction={assessmentNextStep}
+                    nextOwner={assessmentNextOwner}
+                    canReassess={optionalReassessmentAvailable}
+                    reassessmentIsPrimary={!workspaceAction}
+                    onReassess={() => void runAssessment()}
+                    busy={busy}
                   />
-                )}
-                {displayedAssessment && displayedAssessment.decision !== "PAY" && (
-                  <AdvisoryAssessmentCard
-                    assessment={displayedAssessment}
-                    label="Assessment evidence under review — authorization locked"
-                    allAssessed={allAssessed}
-                    action={
-                      <button type="button" className="min-h-11 text-start text-[12px] font-semibold underline" onClick={() => setDisplayedAssessment(null)}>
-                        Close evidence review
-                      </button>
-                    }
-                  />
-                )}
-                {!displayedAssessment && currentAssessment && detailState === "loaded" && (
-                  <AdvisoryAssessmentCard
-                    assessment={currentAssessment}
-                    label="Current sealed assessment"
-                    allAssessed={allAssessed}
-                    action={
-                      <button
-                        type="button"
-                        className="min-h-11 text-start text-[12px] font-semibold underline"
-                        disabled={detailState !== "loaded" || !currentAssessment.race}
-                        onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
-                      >
-                        {currentAssessment.decision === "PAY" ? "Review this assessment for authorization" : "Review assessment evidence"}
-                      </button>
-                    }
-                  />
-                )}
-                {displayedAssessment && displayedAssessment.decision === "PAY" && !authorizationAssessment && displayedAssessment !== currentAssessment && (
-                  <p className="text-[12px] text-[var(--color-danger)]">
-                    The displayed assessment is no longer current. Review the current sealed assessment before authorization.
-                  </p>
-                )}
-                {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
-                {optionalReassessmentAvailable && (
-                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="min-h-11 text-start text-[12px] font-medium underline disabled:opacity-50">
-                    Reassess current PAY recommendation (optional)
-                  </button>
-                )}
-
-                {assessmentGateCopy(listPresentation, allAssessed, obligations.length) && (
-                  <p className="text-[12px] text-[var(--color-warning)]">
-                    {assessmentGateCopy(listPresentation, allAssessed, obligations.length)}
-                  </p>
-                )}
-
-                {payCandidateCount > 0 && (
-                  <p className="text-[12px] text-[var(--color-ink-muted)]">
-                    {payCandidateCount} obligation{payCandidateCount !== 1 ? "s" : ""} carry a PAY recommendation,
-                    {payCandidateCount === obligations.length && allAssessed ? " but all must still authorize." : " but none are authorized yet."}
-                  </p>
-                )}
-
-                {/* Genuine-lane explanation: HOLD / no candidate → no authorization → no PAE → no release */}
-                {!allAssessed || payCandidateCount === 0 ? (
-                  <div className="rounded border border-[var(--status-hold-border)] bg-[var(--status-hold-surface)] px-3 py-2 text-[12px] text-[var(--status-hold-text)]">
-                    <p className="font-semibold">Genuine payment lane: no execution release</p>
-                    <p>
-                      {allAssessed
-                        ? "All obligations are assessed, but no PAY candidate exists. The sealed HOLD assessments provide no execution-release authority."
-                        : "Not all obligations have been assessed. Every obligation requires a sealed assessment before the Safety Kernel or PAE can run."}
-                    </p>
-                    <p className="mt-1 text-[var(--color-ink-muted)]">
-                      {lifecycleStopLabel({ presentation: listPresentation, total: obligations.length, assessed: assessedCount, pay: payCandidateCount })} Assessment coverage is advisory; check each selected obligation's current detail for its recorded execution and provider status.
-                    </p>
-                  </div>
                 ) : (
-                  <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[12px] text-[var(--color-ink-muted)]">
-                    <p className="font-semibold">Genuine payment lane status</p>
-                    <p>
-                      PAY recommendation detected — this is advisory only. A signed Payment Authorization
-                      Envelope and Safety Kernel PASS are still required before any execution authority is
-                      granted. The genuine lane remains STOP until authorization and PAE sealing complete.
+                  <section aria-label="Assessment result" className="max-w-xl space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                    <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Assessment</h3>
+                    <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
+                      {assessmentAction === "assess"
+                        ? "Run AI Assessment from the current-stage action above. The result is advisory and cannot authorize or execute payment."
+                        : assessmentActionStatus}
                     </p>
-                  </div>
+                    {detailState !== "loaded" && <RuntimeBadge mode={selected?.provider_mode ?? null} />}
+                  </section>
                 )}
-
                 {currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
               </div>
             )}

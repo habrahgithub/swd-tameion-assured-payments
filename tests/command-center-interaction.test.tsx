@@ -485,7 +485,7 @@ describe("Command Center mounted Operational Report", () => {
 
     expect(await screen.findByText("Advisory — HOLD")).toBeTruthy();
     expect(screen.getAllByText("Destination trust evidence is not verified.").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Next action: resolve the findings before reassessing/)).toBeTruthy();
+    expect(screen.getByText("Review the finding.")).toBeTruthy();
   });
 
   it("offers no more than one enabled primary action in the selected workspace", async () => {
@@ -530,7 +530,8 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("button", { name: "Authorization already sealed" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
-    expect(screen.getByText(/A payment authorization envelope is already sealed/)).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Assessment result" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
 
     fireEvent.click(obligationRow("OBL-UNSEALED"));
@@ -597,9 +598,9 @@ describe("Command Center mounted Operational Report", () => {
 
     fireEvent.click(primary()[0]);
     await screen.findByText(/Blocker: payment-route assurance is not ready/);
-    expect(primary()).toHaveLength(0);
+    expect(primary()).toHaveLength(1);
     expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "Reassess current PAY recommendation (optional)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run AI Assessment again" })).toBeTruthy();
   });
 
   it("shows final assurance only as unavailable detail after a sealed PAE and keeps Arc payment blocked", async () => {
@@ -806,15 +807,15 @@ describe("Command Center mounted Operational Report", () => {
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(workspace.textContent).not.toContain("Advisory — HOLD");
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    const assessment = await screen.findByText("Advisory — HOLD");
-    const assessmentStage = assessment.closest("div.max-w-xl") as HTMLElement;
+    const assessmentStage = await screen.findByRole("region", { name: "Assessment result" });
 
-    expect(assessmentStage.textContent).toContain("Current destination and source-wallet readiness are not verified.");
+    expect(assessmentStage.textContent).toContain("Current Arc product destination or source-wallet readiness is not verified and active.");
     expect(assessmentStage.textContent).not.toContain("DESTINATION_NOT_READY");
     expect(assessmentStage.textContent).toContain("Resolve the current destination or source-wallet readiness blocker.");
     expect(assessmentStage.textContent).toContain("Treasury Operations");
-    expect(assessmentStage.textContent).toContain("Verified destination readiness and source-wallet trust-seed record");
-    expect(assessmentStage.textContent).toContain("reassess permitted");
+    expect(assessmentStage.textContent).toContain("What this means");
+    expect(assessmentStage.textContent).toContain("Returned findings");
+    expect(assessmentStage.textContent).not.toContain("Verified destination readiness and source-wallet trust-seed record");
     expect(within(assessmentStage).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
@@ -848,7 +849,7 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Review assessment evidence" }));
+    fireEvent.click(screen.getByText("Developer & audit evidence"));
     const traceSummary = await screen.findByText("Assessment trace — evidence, facts, model proposal, validated findings, remediation");
     fireEvent.click(traceSummary);
     const trace = screen.getByTestId("assessment-trace");
@@ -981,14 +982,13 @@ describe("Command Center mounted Operational Report", () => {
     expect(workspace.textContent).not.toContain(`Advisory — ${decision}`);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
-    const assessmentStage = screen.getByText(`Advisory — ${decision}`).closest("div.max-w-xl") as HTMLElement;
+    const assessmentStage = screen.getByRole("region", { name: "Assessment result" });
     expect(assessmentStage.textContent).toContain(decision === "HOLD" ? "Source evidence is incomplete." : "Controller review is required.");
     expect(assessmentStage.textContent).toContain("Review the finding.");
-    expect(assessmentStage.textContent).toContain("Accounts Payable");
-    expect(assessmentStage.textContent).toContain("Supporting document");
+    expect(assessmentStage.textContent).toContain(decision === "HOLD" ? "Accounts Payable" : "Finance controller");
     expect(within(assessmentStage).queryByRole("button", { name: /resolve/i })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Review assessment evidence" }));
-    expect(await screen.findByText(/Authorization remains locked/)).toBeTruthy();
+    expect(within(assessmentStage).queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
+    expect(assessmentStage.textContent).toContain("remains locked");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("current-next-step").textContent).toContain(`assessment is ${decision}`);
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
@@ -1009,7 +1009,7 @@ describe("Command Center mounted Operational Report", () => {
     expect((await screen.findAllByText("Eligible for human authorization review")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(await screen.findByText("Advisory — PAY")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Review this assessment for authorization" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
 
     expect(screen.getByRole("button", { name: "Authorize this exact obligation" })).toBeTruthy();
@@ -1043,6 +1043,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(/Genuine obligations are unavailable\. No synthetic demo data has been added to this list/)).toBeTruthy();
     expect(await screen.findByText(/Last-known obligation details are stale/)).toBeTruthy();
     expect(screen.getAllByText("Last-known state — stale").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
     selectReport();
     expect(await screen.findByText(/Selected obligation detail is stale/)).toBeTruthy();
@@ -1245,7 +1246,7 @@ describe("guided lifecycle navigation", () => {
     expect(screen.getByTestId("current-next-step").textContent).toContain("Current stage · Obligation");
     expect((within(rail).getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getAllByRole("button", { name: "Continue to Assessment" })[0]);
-    expect(screen.getByText(/Finance Agent reads this obligation/)).toBeTruthy();
+    expect(screen.getByText(/Run AI Assessment from the current-stage action above/)).toBeTruthy();
     expect(screen.getByTestId("current-next-step").textContent).toContain("Viewing Assessment · Current position: Obligation");
     fireEvent.click(screen.getAllByRole("button", { name: "Back to Obligation" })[0]);
     expect(workspace).toBeTruthy();

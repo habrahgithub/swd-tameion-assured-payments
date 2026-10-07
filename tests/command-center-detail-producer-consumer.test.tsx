@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 
 const stateMocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
 vi.mock("../src/server/demo-state", async (importOriginal) => {
@@ -172,6 +172,27 @@ async function listJson(state: DemoState) {
   const response = await getObligationList();
   expect(response.status).toBe(200);
   return response.json();
+}
+
+async function assessedProducerState(decision: "PAY" | "HOLD" | "ESCALATE") {
+  const state = new DemoState();
+  const initialQueue = await listJson(state);
+  const selectedId = initialQueue.obligations[0]?.obligation_id;
+  if (!selectedId) throw new Error("Frozen source set is empty.");
+  for (const record of state.liveUsageRecords) {
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, record.obligation_id);
+    if (!aggregate) throw new Error(`No aggregate exists for ${record.obligation_id}.`);
+    const isSelected = record.obligation_id === selectedId;
+    sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, record.obligation_id, aggregate.aggregate_version, {
+      decision: isSelected ? decision : "HOLD",
+      provider_mode: isSelected && decision === "PAY" ? "LIVE_AI" : "NOT_LIVE_AI",
+      reasons: [isSelected ? `Persisted ${decision} reason from the assessment fixture.` : "Other obligation assessed for coverage."],
+    });
+  }
+  const queue = await listJson(state);
+  const body = await detailJson(state, selectedId);
+  if (!body.current_assessment) throw new Error("Detail GET did not return the current assessment.");
+  return { state, selectedId, queue, body };
 }
 
 function assuranceProjectionInput(
@@ -774,7 +795,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const unassessedQueue = await listJson(unassessed);
     const { main: unassessedMain } = await renderProducerJson(unassessedBody, [], unassessedQueue);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
-    expect(unassessedMain.textContent).toContain("Assessment coverage is advisory; check each selected obligation's current detail for its recorded execution and provider status.");
+    expect(unassessedMain.textContent).toContain("The result is advisory and cannot authorize or execute payment.");
     expect(unassessedMain.textContent).not.toMatch(/no provider submission/i);
     cleanup();
 
@@ -798,6 +819,81 @@ describe("real detail GET producer-consumer packet controls", () => {
       .filter((element) => element.children.length === 0 && /aggregate version/i.test(element.textContent ?? ""))
       .filter((element) => !developerEvidence.contains(element));
     expect(visibleOutsideTechnicalEvidence).toHaveLength(0);
+  });
+
+  it.each(["PAY", "HOLD", "ESCALATE"] as const)("renders the producer-returned %s assessment as a clerk-readable result", async (decision) => {
+    const fixture = await assessedProducerState(decision);
+    const assessment = fixture.body.current_assessment;
+    const race = assessment.race;
+    const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+
+    const card = await screen.findByRole("region", { name: "Assessment result" });
+    expect(card.textContent).toContain(`Advisory — ${decision}`);
+    expect(card.textContent).toContain(race.result.decision_summary);
+    expect(card.textContent).toContain("What this means");
+    expect(card.textContent).toContain("What to do next");
+    for (const check of race.action_taken.checks) expect(card.textContent).toContain(check);
+    for (const finding of race.result.validated_findings) expect(card.textContent).toContain(finding.reason);
+    for (const remediation of race.remediation) expect(card.textContent).toContain(remediation.required_action);
+    const expectedOwner = decision === "HOLD" ? race.remediation[0]?.owner_role
+      : decision === "ESCALATE" ? race.remediation[0]?.escalation_target
+        : "Authorized operator";
+    if (expectedOwner) expect(card.textContent).toContain(`Next owner/role: ${expectedOwner}`);
+    else expect(card.textContent).not.toContain("Next owner/role:");
+    expect(card.textContent).not.toContain(assessment.assessment_id);
+    expect(card.textContent).not.toContain(assessment.assessment_hash);
+    expect(card.textContent).not.toContain(race.evidence.evidence_ids[0]);
+    if (race.result.validated_findings[0]) expect(card.textContent).not.toContain(race.result.validated_findings[0].code);
+    expect(card.textContent).not.toMatch(/\bPASS\b|passed/i);
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(decision === "PAY" ? 1 : 0);
+    expect(within(card).queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("promotes only the existing eligible reassessment option and keeps the simple entry untouched", async () => {
+    const fixture = await proxyPreparedWithoutCurrentAssessment(true);
+    const queue = await listJson(fixture.state);
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.demo_arc_trust_simulated = true;
+    body.aggregate.product_trust_provenance = "UNVERIFIED";
+    body.aggregate.destination_verification_status = "UNVERIFIED";
+    body.aggregate.destination_operational_status = "UNVERIFIED";
+    body.aggregate.source_wallet_ref = "SIMULATED-ROUTE-WALLET";
+    body.aggregate.source_wallet_status = "INACTIVE";
+    const { main } = await renderProducerJson(body, [], queue);
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+
+    const card = await screen.findByRole("region", { name: "Assessment result" });
+    const reassess = within(card).getByRole("button", { name: "Run AI Assessment again" }) as HTMLButtonElement;
+    expect(reassess.disabled).toBe(false);
+    expect(reassess.className).toMatch(/min-h-\[44px\]/);
+    expect(reassess.className).not.toMatch(/underline/);
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment again");
+    fireEvent.click(reassess);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith(`/${fixture.selectedId}/assess`) && init?.method === "POST")).toBe(true));
+
+    cleanup();
+    const unassessed = new DemoState();
+    const initialQueue = await listJson(unassessed);
+    const initialBody = await detailJson(unassessed, initialQueue.obligations[0].obligation_id);
+    const entry = await renderProducerJson(initialBody, [], initialQueue);
+    expect(initialBody.current_assessment).toBeNull();
+    expect(entry.main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
+    expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
+  });
+
+  it("does not offer reassessment when authorized truth makes the assessment historical", async () => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    const queue = await listJson(fixture.state);
+    const { main } = await renderProducerJson(body, [], queue);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+
+    expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("consumes the actual 422 assurance refusal with N+1 and no sealed PAE as NOT_CREATED evidence", async () => {

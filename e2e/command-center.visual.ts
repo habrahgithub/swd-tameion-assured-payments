@@ -105,7 +105,7 @@ const detail = {
   },
   aggregate: { aggregate_version: 1, state: "APPROVAL_PENDING", amount: "125.000000", asset: "USDC", network: "ARC_TESTNET", destination_address: "0x1111111111111111111111111111111111111111", destination_verification_status: "PENDING_VERIFICATION", destination_operational_status: "ON_HOLD", source_wallet_ref: "UAT-WALLET", source_wallet_status: "INACTIVE", product_trust_provenance: "UNVERIFIED_CURRENT_TRUST", execution_state: "NONE", pae_state: "UNUSED" },
   record: { obligation_id: "OBL-UAT-01", amount: "125.00", currency: "USD", due_date: "2026-10-05", issue_date: "2026-09-01", commercial_terms: "Net 30" },
-  current_assessment: { obligation_id: "OBL-UAT-01", assessment_id: "ASM-UAT-01", assessment_hash: "a".repeat(64), aggregate_version: "1", decision: "PAY", reasons: ["Advisory checks passed; route assurance is separate."], provider_mode: "NOT_LIVE_AI" },
+  current_assessment: { obligation_id: "OBL-UAT-01", assessment_id: "ASM-UAT-01", assessment_hash: "a".repeat(64), aggregate_version: "1", decision: "PAY", reasons: ["No validated blocker was found; existing deterministic authorization and Safety Kernel gates still apply."], provider_mode: "NOT_LIVE_AI" },
   demo_arc_trust_simulated: false,
   pae_sealed: false,
   execution: null,
@@ -232,7 +232,7 @@ function liveWinnerForPreparation(): Record<string, any> {
   candidate.current_assessment.provider_used = "mocked-test-provider";
   candidate.current_assessment.provider_mode = "LIVE_AI";
   candidate.current_assessment.race = {
-    result: { decision: "PAY", decision_summary: "Current advisory checks pass.", validated_findings: [] },
+    result: { decision: "PAY", decision_summary: "No validated blocker was found; existing deterministic authorization and Safety Kernel gates still apply.", validated_findings: [] },
     action_taken: { summary: "Required checks evaluated.", checks: ["Source identity", "Current obligation"] },
     caveats: { missing_context: [], uncertainty_signal: false, model_explanation: "Advisory fixture.", model_explanation_authority: "NON_AUTHORITATIVE" },
     evidence: {
@@ -275,6 +275,54 @@ async function openFixture(
   return unexpectedWrites;
 }
 
+test("clerk Assessment result renders on desktop and mobile from a read-only producer-shaped detail", async ({ page }, testInfo) => {
+  const result = liveWinnerForPreparation();
+  result.current_assessment.provider_mode = "NOT_LIVE_AI";
+  result.current_assessment.provider_used = "test-fixture-provider";
+  const unexpectedWrites = await openFixture(page, result);
+
+  const openAssessmentOnDesktop = async () => {
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
+    const card = page.getByRole("region", { name: "Assessment result" });
+    await expect(card.getByRole("heading", { name: "Advisory — PAY" })).toBeVisible();
+    await expect(card).toContainText(result.current_assessment.race.result.decision_summary);
+    await expect(card).toContainText("What this means");
+    await expect(card).toContainText("What to do next");
+    for (const check of result.current_assessment.race.action_taken.checks) await expect(card).toContainText(check);
+    await expect(card).not.toContainText(result.current_assessment.assessment_id);
+    await expect(card).not.toContainText(result.current_assessment.assessment_hash);
+    await expect(card).not.toContainText("UAT-EVIDENCE-1");
+    return card;
+  };
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const desktopCard = await openAssessmentOnDesktop();
+  const desktopReview = page.getByRole("button", { name: "Review current PAY assessment" });
+  await expect(desktopReview).toBeVisible();
+  await desktopReview.click();
+  const desktopRerun = desktopCard.getByRole("button", { name: "Run AI Assessment again" });
+  await expect(desktopRerun).toBeVisible();
+  expect(await desktopRerun.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: testInfo.outputPath("clerk-assessment-desktop.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await page.getByText("View all stages").click();
+  await page.getByRole("navigation", { name: "All lifecycle stages" }).getByRole("button", { name: "Assessment" }).click();
+  const mobileCard = page.getByRole("region", { name: "Assessment result" });
+  await expect(mobileCard.getByRole("heading", { name: "Advisory — PAY" })).toBeVisible();
+  await expect(mobileCard).toContainText(result.current_assessment.race.result.decision_summary);
+  await page.getByRole("button", { name: "Review current PAY assessment" }).click();
+  const mobileRerun = mobileCard.getByRole("button", { name: "Run AI Assessment again" });
+  await expect(mobileRerun).toBeVisible();
+  expect(await mobileRerun.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  const dimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await page.screenshot({ path: testInfo.outputPath("clerk-assessment-mobile.png"), fullPage: true });
+  expect(unexpectedWrites).toEqual([]);
+});
+
 test("Command Center desktop accessibility and review image", async ({ page }) => {
   await page.setViewportSize({ width: 1365, height: 900 });
   const unexpectedWrites = await openFixture(page);
@@ -305,7 +353,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByTestId("current-next-step")).toContainText("Current position: Assessment");
   await expect(page.getByTestId("current-next-step")).toContainText("payment-route assurance is not ready and authorization remains locked");
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
-  await expect(page.getByText("The current PAY recommendation has no review evidence in this detail; authorization remains locked.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("no review evidence in this detail; authorization remains locked");
   await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await page.getByText("Demo tools", { exact: true }).click();
   await page.getByText("Read-only sample", { exact: true }).click();
