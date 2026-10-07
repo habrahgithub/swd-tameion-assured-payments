@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RaceAssessment } from "../src/agent/schema";
 import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary";
 import {
@@ -431,6 +431,23 @@ async function postJson(url: string, body?: unknown, headers: Record<string, str
 }
 
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
+type ExecutionConfirmation = { identity: string; value: string } | null;
+
+export function useExecutionConfirmation(identity: string | null) {
+  const [confirmation, setConfirmation] = useState<ExecutionConfirmation>(null);
+  useLayoutEffect(() => {
+    setConfirmation((current) => current?.identity === identity ? current : null);
+  }, [identity]);
+  const isBound = Boolean(identity && confirmation?.identity === identity);
+  return {
+    value: isBound ? confirmation!.value : "",
+    isBound,
+    matchesExact: Boolean(isBound && confirmation?.value === "SUBMIT EXACT TESTNET SETTLEMENT PROXY"),
+    setValue: (value: string) => {
+      if (identity) setConfirmation({ identity, value });
+    },
+  };
+}
 
 const TONE_STYLE: Record<Tone, { border: string; text: string }> = {
   neutral: { border: "border-s-[3px] border-s-[var(--color-border)]", text: "text-[var(--color-ink-muted)]" },
@@ -1002,7 +1019,6 @@ export function CommandCenter() {
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
-  const [executionConfirmation, setExecutionConfirmation] = useState("");
   const activeRunCount = useRef(0);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
   const detailGeneration = useRef(0);
@@ -1206,6 +1222,10 @@ export function CommandCenter() {
     detail.execution === null && detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET" &&
     detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
     detail.execution_kill_switched === false);
+  const exactPacketConfirmationIdentity = exactPacketSubmissionReady && detail && selectedId
+    ? JSON.stringify([selectedId, detail.execution_packet!.packet_sha256, detail.sealed_pae_instruction_hash])
+    : null;
+  const executionConfirmation = useExecutionConfirmation(exactPacketConfirmationIdentity);
   const exactPacketGateOpen = exactPacketSubmissionReady;
   const currentPacketAwaitingPrime = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
     detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
@@ -1475,14 +1495,14 @@ export function CommandCenter() {
     workspaceAction = null;
   } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
     workspaceAction = { label: "Submit this exact Arc Testnet proxy intent", actor: "Authorized operator · exact packet gate passed", run: () => {
-      if (!exactPacketSubmissionReady || executionConfirmation !== "SUBMIT EXACT TESTNET SETTLEMENT PROXY" ||
+      if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
           !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
       void run("execute", () => postJson(`/api/obligations/${selectedId}/execute`, {
         expected_version: detail.aggregate.aggregate_version,
         packet_sha256: detail.execution_packet!.packet_sha256,
         pae_instruction_hash: detail.sealed_pae_instruction_hash,
-        confirmation: executionConfirmation,
+        confirmation: executionConfirmation.value,
       }));
     } };
   } else if (proxyPreparationReady && detail) {
@@ -1769,8 +1789,8 @@ export function CommandCenter() {
                     Confirm exact testnet intent
                     <input
                       className="min-h-11 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]"
-                      value={executionConfirmation}
-                      onChange={(event) => setExecutionConfirmation(event.target.value)}
+                      value={executionConfirmation.value}
+                      onChange={(event) => executionConfirmation.setValue(event.target.value)}
                       placeholder="SUBMIT EXACT TESTNET SETTLEMENT PROXY"
                       aria-describedby="execution-confirmation-guidance"
                     />
@@ -1780,7 +1800,7 @@ export function CommandCenter() {
               </div>
               {workspaceAction && (
                 <PrimaryButton
-                  disabled={busy || (workspaceAction.label === "Submit this exact Arc Testnet proxy intent" && executionConfirmation !== "SUBMIT EXACT TESTNET SETTLEMENT PROXY")}
+                  disabled={busy || (workspaceAction.label === "Submit this exact Arc Testnet proxy intent" && !executionConfirmation.matchesExact)}
                   danger={workspaceAction.label === "Submit this exact Arc Testnet proxy intent"}
                   onClick={workspaceAction.run}
                 >

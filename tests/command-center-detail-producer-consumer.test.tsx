@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 
 const stateMocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
 vi.mock("../src/server/demo-state", async (importOriginal) => {
@@ -9,7 +9,7 @@ vi.mock("../src/server/demo-state", async (importOriginal) => {
 });
 
 import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
-import { CommandCenter } from "../app/command-center";
+import { CommandCenter, useExecutionConfirmation } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -124,8 +124,11 @@ async function renderProducerJson(body: Record<string, unknown>, additionalBodie
       provider_mode: null,
     };
   };
-  fetchMock.mockImplementation((input) => {
+  fetchMock.mockImplementation((input, init) => {
     const url = String(input);
+    if (init?.method === "POST") {
+      return Promise.resolve(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
+    }
     if (url === "/api/obligations") {
       return Promise.resolve(new Response(JSON.stringify({ obligations: [...bodies.values()].map(summary) }), { status: 200 }));
     }
@@ -228,6 +231,82 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
+  it("clears confirmation across reversible kill-switch and A→B→A selection transitions", async () => {
+    const fixture = await preparedAuthorizedState();
+    const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    expect(packet).toBeTruthy();
+    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    const openGate = await detailJson(fixture.state, fixture.selectedId);
+    const otherId = fixture.state.liveUsageRecords.find((record) => record.obligation_id !== fixture.selectedId)?.obligation_id;
+    if (!otherId) throw new Error("A second frozen obligation is required to exercise selection identity refresh.");
+    const otherBody = await detailJson(fixture.state, otherId);
+    const { setDetailBody } = await renderProducerJson(openGate, [otherBody]);
+    const submit = () => screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" });
+    const confirm = () => screen.getByRole("textbox", { name: /Confirm exact testnet intent/ });
+
+    fireEvent.change(confirm(), { target: { value: exactConfirmation } });
+    expect(submit().hasAttribute("disabled")).toBe(false);
+
+    fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
+    const suspended = await detailJson(fixture.state, fixture.selectedId);
+    expect(suspended.execution_kill_switched).toBe(true);
+    setDetailBody(suspended);
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(otherId) }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain(otherId));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(fixture.selectedId) }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain(fixture.selectedId));
+    expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+
+    fixture.state.store.deactivateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
+    const recovered = await detailJson(fixture.state, fixture.selectedId);
+    expect(recovered.execution_kill_switched).toBe(false);
+    expect(recovered.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    setDetailBody(recovered);
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(otherId) }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain(otherId));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(fixture.selectedId) }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain(fixture.selectedId));
+    expect(confirm().getAttribute("value")).not.toBe(exactConfirmation);
+    expect((confirm() as HTMLInputElement).value).toBe("");
+    expect(submit().hasAttribute("disabled")).toBe(true);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+
+    fireEvent.change(confirm(), { target: { value: exactConfirmation } });
+    expect(submit().hasAttribute("disabled")).toBe(false);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("binds the exact text to selected obligation and both hashes, clearing invalid and replaced identities", () => {
+    const identity = JSON.stringify(["OBL-01", "packet-a", "instruction-a"]);
+    const { result, rerender } = renderHook(({ currentIdentity }) => useExecutionConfirmation(currentIdentity), {
+      initialProps: { currentIdentity: identity as string | null },
+    });
+
+    act(() => result.current.setValue(exactConfirmation));
+    expect(result.current.matchesExact).toBe(true);
+    rerender({ currentIdentity: identity });
+    expect(result.current.value).toBe(exactConfirmation);
+    expect(result.current.matchesExact).toBe(true);
+
+    rerender({ currentIdentity: JSON.stringify(["OBL-01", "packet-b", "instruction-a"]) });
+    expect(result.current.value).toBe("");
+    expect(result.current.matchesExact).toBe(false);
+    act(() => result.current.setValue(exactConfirmation));
+    rerender({ currentIdentity: JSON.stringify(["OBL-01", "packet-b", "instruction-b"]) });
+    expect(result.current.value).toBe("");
+    expect(result.current.matchesExact).toBe(false);
+
+    act(() => result.current.setValue(exactConfirmation));
+    rerender({ currentIdentity: null });
+    expect(result.current.value).toBe("");
+    expect(result.current.matchesExact).toBe(false);
+    rerender({ currentIdentity: identity });
+    expect(result.current.value).toBe("");
+    expect(result.current.matchesExact).toBe(false);
+  });
+
   it("preserves the real valid awaiting-Prime and open-gate controls", async () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
@@ -245,8 +324,26 @@ describe("real detail GET producer-consumer packet controls", () => {
     const openGate = await detailJson(fixture.state, fixture.selectedId);
     expect(openGate.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
     await renderProducerJson(openGate);
-    expect(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeTruthy();
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    const submit = screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" });
+    const confirmation = screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement;
+    fireEvent.change(confirmation, { target: { value: exactConfirmation } });
+    expect(submit.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    fireEvent.click(screen.getByRole("button", { name: "Obligations" }));
+    expect((screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement).value).toBe(exactConfirmation);
+    expect(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" }).hasAttribute("disabled")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" }));
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1));
+    const [postUrl, postInit] = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(String(postUrl)).toBe(`/api/obligations/${fixture.selectedId}/execute`);
+    expect(postInit?.method).toBe("POST");
+    expect(JSON.parse(String(postInit?.body))).toMatchObject({
+      expected_version: openGate.aggregate.aggregate_version,
+      packet_sha256: openGate.execution_packet.packet_sha256,
+      pae_instruction_hash: openGate.sealed_pae_instruction_hash,
+      confirmation: exactConfirmation,
+    });
+    expect(fixture.api.createTransaction).not.toHaveBeenCalled();
   });
 });
