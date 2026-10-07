@@ -60,12 +60,7 @@ async function preparedState(selectedIndex = 0) {
   const api = circleClient();
   let state: DemoState;
   const provider = new ArcCircleProviderAdapter(api, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
-  state = new DemoState(undefined, undefined, undefined, provider, {
-    resolveActorAuthority: (actorId, organizationId) =>
-      organizationId === DEMO_ORGANIZATION_ID && ["USR-DEMO-OPERATOR", "USR-ROUTE-TEST"].includes(actorId)
-        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
-        : undefined,
-  });
+  state = new DemoState(undefined, undefined, undefined, provider);
   const records = eligibleSources(state);
   const selected = selectedIndex < 0 ? records.at(selectedIndex) : records[selectedIndex];
   if (!selected) throw new Error("Frozen genuine set has too few complete USD sources for this route proof.");
@@ -107,13 +102,15 @@ function sealAuthorization(state: DemoState, selectedId: string, now?: () => Dat
   reassess(state, selectedId);
   const aggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
   const review = currentAssessmentReview(state.store, DEMO_ORGANIZATION_ID, selectedId);
+  const approver = state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID, now?.() ?? new Date());
   const result = approveAndSealPae(state.store, signingKeyId, {
     organizationId: DEMO_ORGANIZATION_ID,
     obligationId: selectedId,
     expectedVersion: aggregate.aggregate_version,
     ...review,
-    actorId: "USR-ROUTE-TEST",
-    actorRole: "FINANCE_APPROVER",
+    actorId: approver.actor_id,
+    actorRole: approver.actor_role,
+    authorityVersion: approver.authority_version,
     policyVersion: aggregate.policy_version,
     reasonText: "Mock route test for the exact Arc proxy identity.",
     ...(now ? { now } : {}),
@@ -177,6 +174,46 @@ afterEach(() => {
 });
 
 describe("selected genuine Arc proxy route enforcement", () => {
+  it("selects the current designated approver from durable authority, ignoring request actor identity", async () => {
+    const { state, selectedId, api } = await preparedState();
+    reassess(state, selectedId);
+    const designated = state.actorAuthorities.export()[0]!;
+    state.actorAuthorities.restore([{ ...designated, authority_version: "7" }]);
+    const original = await approvalRequest(state, selectedId).json() as Record<string, unknown>;
+    const request = new Request(`http://localhost/api/obligations/${selectedId}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...original, actor_id: "USR-ATTACKER-SUPPLIED-BY-CLIENT" }),
+    });
+    mocks.getDemoState.mockResolvedValue(state);
+
+    const response = await approve(request, { params: Promise.resolve({ id: selectedId }) });
+
+    expect(response.status).toBe(200);
+    expect(state.getAuthorizationArtifacts(selectedId)?.approval_record).toMatchObject({
+      actor_id: "USR-DEMO-OPERATOR",
+      actor_role: "FINANCE_APPROVER",
+      authority_version: "7",
+    });
+    expect(state.getSealedPae(selectedId)?.payload.approval_evidence[0]?.authority_version).toBe("7");
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("fails approval closed when the designated approver record is missing", async () => {
+    const { state, selectedId, api } = await preparedState();
+    reassess(state, selectedId);
+    state.actorAuthorities.restore([]);
+    mocks.getDemoState.mockResolvedValue(state);
+
+    const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.code).toBe("ACT-002");
+    expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
   it("rejects authorization after proxy preparation when the current assessment is stale", async () => {
     const { state, selectedId, api } = await preparedState();
     const stale = { reviewedAssessmentId: "stale-review", reviewedAssessmentHash: "a".repeat(64) };

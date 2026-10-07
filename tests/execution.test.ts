@@ -21,11 +21,14 @@ class ExecutionWorker extends BaseExecutionWorker {
       resolveActorAuthority: (actorId, organizationId) => {
         const approval = authorizationByIdentity.get(`${organizationId}/OBL-J0C-002`)?.approval_record;
         return approval?.actor_id === actorId ? {
+          organization_id: approval.organization_id,
           actor_id: approval.actor_id,
           actor_role: approval.actor_role,
           authority_version: approval.authority_version,
           status: "ACTIVE",
-          revoked: false,
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
         } : undefined;
       },
     };

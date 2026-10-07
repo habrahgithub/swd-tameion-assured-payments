@@ -90,13 +90,15 @@ async function authorizedSnapshot() {
   const preparedAggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
   sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, selectedId, preparedAggregate.aggregate_version, { provider_mode: "LIVE_AI" });
   const review = currentAssessmentReview(state.store, DEMO_ORGANIZATION_ID, selectedId);
+  const approver = state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
   const authorized = approveAndSealPae(state.store, SIGNING_KEY_ID, {
     organizationId: DEMO_ORGANIZATION_ID,
     obligationId: selectedId,
     expectedVersion: preparedAggregate.aggregate_version,
     ...review,
-    actorId: "USR-TEST-PRIME",
-    actorRole: "FINANCE_APPROVER",
+    actorId: approver.actor_id,
+    actorRole: approver.actor_role,
+    authorityVersion: approver.authority_version,
     policyVersion: preparedAggregate.policy_version,
     reasonText: "Approve exact Arc Testnet proxy for this genuine source obligation; source payable remains outstanding.",
   }, state.trustedKeys);
@@ -114,20 +116,7 @@ async function authorizedSnapshot() {
 function restoredWithCircle(snapshot: ReturnType<DemoState["exportSnapshot"]>, provider: ReturnType<typeof circleClient>) {
   let state: DemoState;
   const adapter = new ArcCircleProviderAdapter(provider.client, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
-  state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter, {
-    resolveActorAuthority: (actorId, organizationId) => {
-      const approval = snapshot.authorization_history.find((item) =>
-        item.approval_record.actor_id === actorId && item.approval_record.organization_id === organizationId,
-      )?.approval_record;
-      return approval ? {
-        actor_id: approval.actor_id,
-        actor_role: approval.actor_role,
-        authority_version: approval.authority_version,
-        status: "ACTIVE",
-        revoked: false,
-      } : undefined;
-    },
-  });
+  state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter);
   return state;
 }
 

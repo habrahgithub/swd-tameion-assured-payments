@@ -30,6 +30,7 @@ export interface ApprovalInput {
   reviewedAssessmentHash: string;
   actorId: string;
   actorRole: string;
+  authorityVersion?: string;
   policyVersion: string;
   reasonText: string;
   now?: () => Date;
@@ -85,7 +86,7 @@ export function approveAndSealPae(
     actor_id: input.actorId,
     actor_role: input.actorRole,
     action: "APPROVE",
-    authority_version: "1",
+    authority_version: input.authorityVersion ?? "1",
     reviewed_aggregate_version: String(input.expectedVersion),
     authorized_aggregate_version: String(aggregate.aggregate_version),
     policy_version: input.policyVersion,
@@ -154,7 +155,7 @@ export function approveAndSealPae(
         obligation_id: input.obligationId,
         actor_id: input.actorId,
         actor_role: input.actorRole,
-        authority_version: "1",
+        authority_version: approvalRecord.authority_version,
         reviewed_aggregate_version: String(input.expectedVersion),
         authorized_aggregate_version: String(aggregate.aggregate_version),
         approved_at: isoNow,

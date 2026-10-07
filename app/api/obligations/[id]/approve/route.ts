@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { AssuranceFailedError, approveAndSealPae } from "../../../../../src/pipeline/authorize-and-seal";
 import { AuthorityError, StaleStateError } from "../../../../../src/authority/aggregate";
+import { ActorAuthorityRegistryError } from "../../../../../src/authority/actor-authority";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, getDemoState } from "../../../../../src/server/demo-state";
 import { DemoStateConflictError } from "../../../../../src/server/supabase-demo-state-repository";
 
@@ -9,7 +10,6 @@ interface ApproveRequestBody {
   expected_version: number;
   reviewed_assessment_id: string;
   reviewed_assessment_hash: string;
-  actor_id?: string;
   reason_text?: string;
 }
 
@@ -57,14 +57,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           : `The existing sole-candidate gate selected ${soleCandidate ?? "no obligation"}; authorization is blocked for this source.`,
       }, { status: 409 });
     }
+    const approver = state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
     const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(state.store, DEMO_SIGNING_KEY_ID, {
       organizationId: DEMO_ORGANIZATION_ID,
       obligationId: id,
       expectedVersion: body.expected_version,
       reviewedAssessmentId: body.reviewed_assessment_id,
       reviewedAssessmentHash: body.reviewed_assessment_hash,
-      actorId: body.actor_id ?? "USR-DEMO-OPERATOR",
-      actorRole: "FINANCE_APPROVER",
+      actorId: approver.actor_id,
+      actorRole: approver.actor_role,
+      authorityVersion: approver.authority_version,
       policyVersion: "POLICY-P0-1",
       reasonText: body.reason_text ?? `Reviewed genuine source obligation ${id} for a distinct Arc Testnet settlement proxy; the real-world payable remains outstanding.`,
     }, state.trustedKeys);
@@ -87,6 +89,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
   } catch (error) {
     if (error instanceof StaleStateError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
+    }
+    if (error instanceof ActorAuthorityRegistryError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
     }
     if (error instanceof AssuranceFailedError) {

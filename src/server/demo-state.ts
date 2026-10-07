@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
+import { ActorAuthorityRegistry, type ActorAuthorityRecord } from "../authority/actor-authority";
 import { ExecutionWorker, type ExecutionRecord, type ExecutionWorkerOptions } from "../execution/worker";
 import type { ProviderAdapter } from "../execution/provider-adapter";
 import type { StatusResult } from "../execution/provider-adapter";
@@ -81,6 +82,8 @@ export interface DemoStateSnapshot {
   sealed_paes: Array<[string, SealedPae]>;
   authorization_history: DemoAuthorizationArtifacts[];
   trusted_keys: TrustedKeyEntry[];
+  actor_authorities: ActorAuthorityRecord[];
+  actor_authority_registry_initialized: boolean;
   execution_ledger: ExecutionRecord[];
   provider_adapter: FakeProviderAdapterSnapshot;
   settlement_proxies?: StoredSettlementProxy[];
@@ -171,6 +174,13 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   const trustedKeys = snapshot.schema_version === 1
     ? []
     : parseTrustedKeyRegistry(snapshot.trusted_keys);
+  if (snapshot.actor_authority_registry_initialized !== undefined && typeof snapshot.actor_authority_registry_initialized !== "boolean") {
+    throw new Error("Malformed actor-authority registry bootstrap marker.");
+  }
+  const actorAuthorityRegistryInitialized = snapshot.actor_authority_registry_initialized ?? Array.isArray(snapshot.actor_authorities);
+  const actorAuthorities = snapshot.actor_authorities === undefined
+    ? []
+    : new ActorAuthorityRegistry(snapshot.actor_authorities).export();
   const authorizationHistory = snapshot.authorization_history.map(authorizationArtifactsParser);
   const assessmentsByHash = new Map<string, {
     assessment_id: string;
@@ -282,6 +292,8 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
     sealed_paes: sealedPaes,
     authorization_history: authorizationHistory,
     trusted_keys: trustedKeys,
+    actor_authorities: actorAuthorities,
+    actor_authority_registry_initialized: actorAuthorityRegistryInitialized,
     execution_ledger: executionLedger,
     provider_adapter: providerAdapter,
     settlement_proxies: settlementProxies,
@@ -377,6 +389,8 @@ function toUsdcAmount(rawAmount: string, currency: string): string {
 
 export class DemoState {
   readonly trustedKeys = new TrustedKeyRegistry();
+  readonly actorAuthorities: ActorAuthorityRegistry;
+  private actorAuthorityRegistryInitialized: boolean;
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   readonly adapter: FakeProviderAdapter;
@@ -400,6 +414,8 @@ export class DemoState {
     this.repository = repository;
     this.revision = revision;
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.actorAuthorityRegistryInitialized = snapshot?.actor_authority_registry_initialized ?? !snapshot;
+    this.actorAuthorities = new ActorAuthorityRegistry(snapshot?.actor_authorities ?? (snapshot ? [] : [ActorAuthorityRegistry.seedP0Approver(DEMO_ORGANIZATION_ID)]));
     this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
     this.adapter = new FakeProviderAdapter(snapshot?.provider_adapter);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
@@ -413,12 +429,14 @@ export class DemoState {
       ...workerOptions,
       loadAuthorizationArtifacts: workerOptions.loadAuthorizationArtifacts ?? ((organizationId, obligationId) =>
         organizationId === DEMO_ORGANIZATION_ID ? this.getAuthorizationArtifacts(obligationId) : undefined),
+      resolveActorAuthority: workerOptions.resolveActorAuthority ?? ((actorId, organizationId) => this.actorAuthorities.resolve(organizationId, actorId)),
       reloadDurableExecutionContext: workerOptions.reloadDurableExecutionContext ?? (async (organizationId, obligationId) => {
         if (!this.repository || !this.namespace) {
           return {
             authorization: this.getAuthorizationArtifacts(obligationId) ?? null,
             aggregate: this.store.get(organizationId, obligationId),
             trustedKeys: this.trustedKeys.export(),
+            actorAuthorities: this.actorAuthorities.export(),
           };
         }
         const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
@@ -428,7 +446,12 @@ export class DemoState {
           entry.sealed_pae.payload.organization_id === organizationId &&
           entry.sealed_pae.payload.obligation_ids[0] === obligationId,
         ) ?? null;
-        return { authorization, aggregate: currentStore.get(organizationId, obligationId), trustedKeys: current.trusted_keys };
+        return {
+          authorization,
+          aggregate: currentStore.get(organizationId, obligationId),
+          trustedKeys: current.trusted_keys,
+          actorAuthorities: current.actor_authorities,
+        };
       }),
     });
     if (snapshot) this.worker.restoreSnapshot(snapshot.execution_ledger);
@@ -715,6 +738,19 @@ export class DemoState {
       entry.sealed_pae.payload.obligation_ids.length === 1 && entry.sealed_pae.payload.obligation_ids[0] === obligationId);
   }
 
+  resolveDesignatedApprover(organizationId = DEMO_ORGANIZATION_ID, now = new Date()): ActorAuthorityRecord {
+    return this.actorAuthorities.resolveDesignatedApprover(organizationId, now);
+  }
+
+  bootstrapP0ApproverIfUninitialized(now = new Date()): boolean {
+    if (this.actorAuthorityRegistryInitialized) return false;
+    if (this.actorAuthorities.export().length === 0) {
+      this.actorAuthorities.restore([ActorAuthorityRegistry.seedP0Approver(DEMO_ORGANIZATION_ID, now)]);
+    }
+    this.actorAuthorityRegistryInitialized = true;
+    return true;
+  }
+
   recordAuthorization(artifacts: DemoAuthorizationArtifacts): void {
     this.authorizationHistory.push(authorizationArtifactsParser(artifacts));
     this.setSealedPae(artifacts.sealed_pae.payload.obligation_ids[0], artifacts.sealed_pae);
@@ -736,6 +772,8 @@ export class DemoState {
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
       trusted_keys: this.trustedKeys.export(),
+      actor_authorities: this.actorAuthorities.export(),
+      actor_authority_registry_initialized: this.actorAuthorityRegistryInitialized,
       execution_ledger: this.worker.exportSnapshot(),
       provider_adapter: this.adapter.exportSnapshot(),
       settlement_proxies: [...this.settlementProxies.values()].map((item) => structuredClone(item)),
@@ -761,6 +799,8 @@ export class DemoState {
  * and never shares the simulated provider adapter. */
 export class J2aRealTestnetDemoState {
   readonly trustedKeys = new TrustedKeyRegistry();
+  readonly actorAuthorities: ActorAuthorityRegistry;
+  private actorAuthorityRegistryInitialized: boolean;
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
@@ -778,6 +818,8 @@ export class J2aRealTestnetDemoState {
     workerOptions: ExecutionWorkerOptions = {},
   ) {
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
+    this.actorAuthorityRegistryInitialized = snapshot?.actor_authority_registry_initialized ?? !snapshot;
+    this.actorAuthorities = new ActorAuthorityRegistry(snapshot?.actor_authorities ?? (snapshot ? [] : [ActorAuthorityRegistry.seedP0Approver("ORG-TAMEION-TESTNET-DEMO")]));
     this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
@@ -793,12 +835,14 @@ export class J2aRealTestnetDemoState {
         ...workerOptions,
         loadAuthorizationArtifacts: workerOptions.loadAuthorizationArtifacts ?? ((organizationId, obligationId) =>
           organizationId === "ORG-TAMEION-TESTNET-DEMO" ? this.getAuthorizationArtifacts(obligationId) : undefined),
+        resolveActorAuthority: workerOptions.resolveActorAuthority ?? ((actorId, organizationId) => this.actorAuthorities.resolve(organizationId, actorId)),
         reloadDurableExecutionContext: workerOptions.reloadDurableExecutionContext ?? (async (organizationId, obligationId) => {
           if (!this.repository || !this.namespace) {
             return {
               authorization: this.getAuthorizationArtifacts(obligationId) ?? null,
               aggregate: this.store.get(organizationId, obligationId),
               trustedKeys: this.trustedKeys.export(),
+              actorAuthorities: this.actorAuthorities.export(),
             };
           }
           const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
@@ -808,7 +852,12 @@ export class J2aRealTestnetDemoState {
             entry.sealed_pae.payload.organization_id === organizationId &&
             entry.sealed_pae.payload.obligation_ids[0] === obligationId,
           ) ?? null;
-          return { authorization, aggregate: currentStore.get(organizationId, obligationId), trustedKeys: current.trusted_keys };
+          return {
+            authorization,
+            aggregate: currentStore.get(organizationId, obligationId),
+            trustedKeys: current.trusted_keys,
+            actorAuthorities: current.actor_authorities,
+          };
         }),
       },
     );
@@ -824,6 +873,19 @@ export class J2aRealTestnetDemoState {
       entry.sealed_pae.payload.organization_id === "ORG-TAMEION-TESTNET-DEMO" &&
       entry.sealed_pae.payload.obligation_ids[0] === obligationId,
     );
+  }
+
+  resolveDesignatedApprover(organizationId = "ORG-TAMEION-TESTNET-DEMO", now = new Date()): ActorAuthorityRecord {
+    return this.actorAuthorities.resolveDesignatedApprover(organizationId, now);
+  }
+
+  bootstrapP0ApproverIfUninitialized(now = new Date()): boolean {
+    if (this.actorAuthorityRegistryInitialized) return false;
+    if (this.actorAuthorities.export().length === 0) {
+      this.actorAuthorities.restore([ActorAuthorityRegistry.seedP0Approver("ORG-TAMEION-TESTNET-DEMO", now)]);
+    }
+    this.actorAuthorityRegistryInitialized = true;
+    return true;
   }
 
   setSealedPae(obligationId: string, sealed: SealedPae): void {
@@ -870,6 +932,8 @@ export class J2aRealTestnetDemoState {
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
       trusted_keys: this.trustedKeys.export(),
+      actor_authorities: this.actorAuthorities.export(),
+      actor_authority_registry_initialized: this.actorAuthorityRegistryInitialized,
       execution_ledger: this.worker.exportSnapshot(),
       provider_adapter: new FakeProviderAdapter().exportSnapshot(),
       j2a_preflight: this.lastPreflight,
@@ -896,6 +960,8 @@ function emptyJ2aSnapshot(): DemoStateSnapshot & { j2a_preflight: null } {
     sealed_paes: [],
     authorization_history: [],
     trusted_keys: [],
+    actor_authorities: [ActorAuthorityRegistry.seedP0Approver("ORG-TAMEION-TESTNET-DEMO")],
+    actor_authority_registry_initialized: true,
     execution_ledger: [],
     provider_adapter: new FakeProviderAdapter().exportSnapshot(),
     j2a_preflight: null,
@@ -918,6 +984,7 @@ async function createPersistentJ2aState(url: string, serviceRoleKey: string): Pr
   const stored = await repository.loadOrSeed(namespace, emptyJ2aSnapshot() as unknown as Record<string, unknown>);
   const state = new J2aRealTestnetDemoState(parseJ2aSnapshot(stored.snapshot), repository, stored.revision);
   state.attachRepository(repository, namespace, stored.revision);
+  if (state.bootstrapP0ApproverIfUninitialized()) await state.flush();
   await migrateLegacyTrustedKeys(stored.snapshot, state);
   return state;
 }
@@ -985,6 +1052,7 @@ async function createPersistentDemoState(url: string, serviceRoleKey: string): P
   const stored = await repository.loadOrSeed(namespace, initial.exportSnapshot() as unknown as Record<string, unknown>);
   const state = createRuntimeDemoState(parseDemoStateSnapshot(stored.snapshot), repository, stored.revision);
   state.attachRepository(repository, namespace, stored.revision);
+  if (state.bootstrapP0ApproverIfUninitialized()) await state.flush();
   await migrateLegacyTrustedKeys(stored.snapshot, state);
   return state;
 }

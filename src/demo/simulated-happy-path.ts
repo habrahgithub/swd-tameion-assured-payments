@@ -247,7 +247,16 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     }),
     resolveActorAuthority: (actorId, organizationId) =>
       actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
-        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
+        ? {
+          organization_id: organizationId,
+          actor_id: actorId,
+          actor_role: "FINANCE_APPROVER",
+          authority_version: "1",
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        }
         : undefined,
   });
   const execution = await worker.execute(sealed);
@@ -339,7 +348,16 @@ export async function runSimulatedAttackVariant(): Promise<SimulatedAttackVarian
     }),
     resolveActorAuthority: (actorId, organizationId) =>
       actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
-        ? { actor_id: actorId, actor_role: "FINANCE_APPROVER", authority_version: "1", status: "ACTIVE", revoked: false }
+        ? {
+          organization_id: organizationId,
+          actor_id: actorId,
+          actor_role: "FINANCE_APPROVER",
+          authority_version: "1",
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        }
         : undefined,
   });
   try {

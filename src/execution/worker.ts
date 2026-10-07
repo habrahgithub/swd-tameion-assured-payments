@@ -1,4 +1,5 @@
 import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
+import { T1_SINGLE_APPROVAL, type ActorAuthorityRecord } from "../authority/actor-authority";
 import { AuthorityError } from "../authority/aggregate";
 import type { DurableApprovalRecord, DurableAssuranceRecord, SealedPae } from "../domain/schemas";
 import { verifySealedPae } from "../pae/sign-verify";
@@ -34,13 +35,7 @@ export interface WorkerAuthorizationArtifacts {
   sealed_pae: SealedPae;
 }
 
-export interface CurrentActorAuthority {
-  actor_id: string;
-  actor_role: string;
-  authority_version: string;
-  status: "ACTIVE" | "SUSPENDED" | "REVOKED";
-  revoked: boolean;
-}
+export type CurrentActorAuthority = ActorAuthorityRecord;
 
 export interface ExecutionWorkerOptions {
   /** Read the current durable authorization snapshot for the exact PAE identity. */
@@ -52,7 +47,12 @@ export interface ExecutionWorkerOptions {
   reloadDurableExecutionContext?: (
     organizationId: string,
     obligationId: string,
-  ) => Promise<{ authorization?: WorkerAuthorizationArtifacts | null; aggregate: AuthorityAggregate; trustedKeys: TrustedKeyEntry[] }>;
+  ) => Promise<{
+    authorization?: WorkerAuthorizationArtifacts | null;
+    aggregate: AuthorityAggregate;
+    trustedKeys: TrustedKeyEntry[];
+    actorAuthorities: ActorAuthorityRecord[];
+  }>;
   /** Resolve the approver against a current authority source; request fields are never a substitute. */
   resolveActorAuthority?: (
     actorId: string,
@@ -247,6 +247,11 @@ export class ExecutionWorker {
         sealed,
         latestAggregate,
         durableContext ? durableContext.authorization ?? null : undefined,
+        durableContext
+          ? durableContext.actorAuthorities.find((record) =>
+            record.organization_id === payload.organization_id && record.actor_id === payload.approval_evidence[0]?.actor_id,
+          ) ?? null
+          : undefined,
       );
       if (latestAggregate.aggregate_version !== Number(payload.aggregate_version)) {
         throw new ExecutionBlockedError("Aggregate version changed at the final pre-submit gate", "PAE-011");
@@ -363,6 +368,7 @@ export class ExecutionWorker {
     sealed: SealedPae,
     aggregate: AuthorityAggregate,
     reloadedAuthorization?: WorkerAuthorizationArtifacts | null,
+    reloadedActorAuthority?: CurrentActorAuthority | null,
   ): void {
     const { payload } = sealed;
     const obligationId = payload.obligation_ids[0];
@@ -424,15 +430,25 @@ export class ExecutionWorker {
     if (!this.options.resolveActorAuthority) {
       throw new ExecutionBlockedError("Current actor authority source is unavailable; approver status cannot be independently confirmed", "ACT-002");
     }
-    let actor: CurrentActorAuthority | null | undefined;
-    try {
-      actor = this.options.resolveActorAuthority(approval.actor_id, payload.organization_id);
-    } catch {
-      throw new ExecutionBlockedError("Current actor authority source could not resolve the recorded approver", "ACT-002");
+    let actor = reloadedActorAuthority;
+    if (actor === undefined) {
+      try {
+        actor = this.options.resolveActorAuthority(approval.actor_id, payload.organization_id);
+      } catch {
+        throw new ExecutionBlockedError("Current actor authority source could not resolve the recorded approver", "ACT-002");
+      }
     }
-    if (!actor || actor.actor_id !== approval.actor_id || actor.actor_role !== approval.actor_role ||
-        actor.authority_version !== approval.authority_version || actor.status !== "ACTIVE" || actor.revoked) {
-      throw new ExecutionBlockedError("Recorded approver is missing, inactive, revoked, or no longer holds the approved authority", "ACT-001");
+    const now = (this.options.now?.() ?? new Date()).getTime();
+    const approvedAt = Date.parse(approval.approved_at);
+    const authorityWasValidAtApproval = actor !== null && actor !== undefined &&
+      Date.parse(actor.valid_from) <= approvedAt &&
+      (actor.expires_at === null || approvedAt < Date.parse(actor.expires_at));
+    if (!actor || actor.organization_id !== payload.organization_id || actor.actor_id !== approval.actor_id ||
+        actor.actor_role !== approval.actor_role || actor.authority_version !== approval.authority_version ||
+        actor.status !== "ACTIVE" || !actor.permissions.includes(T1_SINGLE_APPROVAL) ||
+        Date.parse(actor.valid_from) > now || (actor.expires_at !== null && now >= Date.parse(actor.expires_at)) ||
+        !authorityWasValidAtApproval) {
+      throw new ExecutionBlockedError("Recorded approver is missing, inactive, expired, revoked, or no longer holds T1_SINGLE_APPROVAL authority", "ACT-001");
     }
 
     if (payload.counterparty_id !== aggregate.counterparty_id ||

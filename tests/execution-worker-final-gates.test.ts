@@ -83,11 +83,14 @@ function authorizedFixture() {
   adapter.queueOutcome("CONFIRMED");
   const clock = { now: () => new Date() };
   const actorAuthority = {
+    organization_id: ORG,
     actor_id: "USR-OPERATOR-001",
     actor_role: "FINANCE_APPROVER",
     authority_version: "1",
     status: "ACTIVE" as const,
-    revoked: false,
+    permissions: ["T1_SINGLE_APPROVAL"],
+    valid_from: "2020-01-01T00:00:00.000Z",
+    expires_at: null,
   };
   const worker = (overrides: Record<string, unknown> = {}) => new ExecutionWorker(
     store,
@@ -101,7 +104,7 @@ function authorizedFixture() {
       ...overrides,
     },
   );
-  return { store, sealed: authorized.sealed, authorization, adapter, worker };
+  return { store, sealed: authorized.sealed, authorization, adapter, actorAuthority, worker };
 }
 
 describe("ExecutionWorker final authority gates", () => {
@@ -174,15 +177,24 @@ describe("ExecutionWorker final authority gates", () => {
   });
 
   it.each([
-    { status: "SUSPENDED", revoked: false },
-    { status: "ACTIVE", revoked: true },
-    { status: "ACTIVE", revoked: false, actor_id: "USR-OTHER-APPROVER" },
-  ])("blocks a $status or revoked current approver", async (currentActor) => {
+    { status: "SUSPENDED" },
+    { status: "REVOKED" },
+    { status: "ACTIVE", actor_id: "USR-OTHER-APPROVER" },
+    { status: "ACTIVE", permissions: [] },
+    { status: "ACTIVE", expires_at: "2000-01-01T00:00:00.000Z" },
+    { status: "ACTIVE", valid_from: "2099-01-01T00:00:00.000Z" },
+    { status: "ACTIVE", authority_version: "2" },
+    { status: "ACTIVE", actor_role: "VIEWER" },
+  ])("blocks current approver authority mismatch: %o", async (currentActor) => {
     const fixture = authorizedFixture();
     await expect(fixture.worker({ resolveActorAuthority: () => ({
+      organization_id: ORG,
       actor_id: "USR-OPERATOR-001",
       actor_role: "FINANCE_APPROVER",
       authority_version: "1",
+      permissions: ["T1_SINGLE_APPROVAL"],
+      valid_from: "2020-01-01T00:00:00.000Z",
+      expires_at: null,
       ...currentActor,
     }) }).execute(fixture.sealed)).rejects.toMatchObject({ code: "ACT-001" });
     expect(fixture.store.get(ORG, OBLIGATION).pae_state).toBe("UNUSED");
@@ -207,23 +219,53 @@ describe("ExecutionWorker final authority gates", () => {
     const fixture = authorizedFixture();
     const actorResolver = vi.fn()
       .mockReturnValueOnce({
+        organization_id: ORG,
         actor_id: "USR-OPERATOR-001",
         actor_role: "FINANCE_APPROVER",
         authority_version: "1",
+        permissions: ["T1_SINGLE_APPROVAL"],
+        valid_from: "2020-01-01T00:00:00.000Z",
+        expires_at: null,
         status: "ACTIVE",
-        revoked: false,
       })
       .mockReturnValueOnce({
+        organization_id: ORG,
         actor_id: "USR-OPERATOR-001",
         actor_role: "FINANCE_APPROVER",
         authority_version: "1",
+        permissions: ["T1_SINGLE_APPROVAL"],
+        valid_from: "2020-01-01T00:00:00.000Z",
+        expires_at: null,
         status: "REVOKED",
-        revoked: true,
       });
     const worker = fixture.worker({ resolveActorAuthority: actorResolver });
 
     await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "ACT-001" });
     expect(actorResolver).toHaveBeenCalledTimes(2);
+    expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
+    expect(fixture.adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it.each([
+    { authority_version: "2" },
+    { actor_role: "VIEWER" },
+    { permissions: [] },
+    { status: "SUSPENDED" as const },
+    { status: "REVOKED" as const },
+    { expires_at: "2000-01-01T00:00:00.000Z" },
+    { organization_id: "ORG-OTHER" },
+  ])("blocks final durable actor authority change after in-memory precheck: %o", async (change) => {
+    const fixture = authorizedFixture();
+    const worker = fixture.worker({
+      reloadDurableExecutionContext: async () => ({
+        authorization: fixture.authorization,
+        aggregate: fixture.store.get(ORG, OBLIGATION),
+        trustedKeys: processTrustedKeyRegistry.export(),
+        actorAuthorities: [{ ...fixture.actorAuthority, ...change }],
+      }),
+    });
+
+    await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "ACT-001" });
     expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
     expect(fixture.adapter.getSubmissionCount()).toBe(0);
   });
@@ -235,6 +277,7 @@ describe("ExecutionWorker final authority gates", () => {
         authorization: null,
         aggregate: fixture.store.get(ORG, OBLIGATION),
         trustedKeys: processTrustedKeyRegistry.export(),
+        actorAuthorities: [fixture.actorAuthority],
       }),
     });
 
@@ -251,6 +294,7 @@ describe("ExecutionWorker final authority gates", () => {
         authorization: fixture.authorization,
         aggregate: fixture.store.get(ORG, OBLIGATION),
         trustedKeys: revokedKeys,
+        actorAuthorities: [fixture.actorAuthority],
       }),
     });
 
@@ -263,6 +307,7 @@ describe("ExecutionWorker final authority gates", () => {
     const fixture = authorizedFixture();
     await expect(fixture.worker({ resolveActorAuthority: undefined }).execute(fixture.sealed))
       .rejects.toMatchObject({ code: "ACT-002", message: expect.stringContaining("actor authority source") });
+    expect(fixture.store.get(ORG, OBLIGATION).pae_state).toBe("UNUSED");
     expect(fixture.adapter.getSubmissionCount()).toBe(0);
   });
 });

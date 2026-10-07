@@ -126,11 +126,14 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
         sealed_pae: sealed,
       }),
       resolveActorAuthority: (actorId) => actorId === approvalRecord.record.actor_id ? {
+        organization_id: approvalRecord.record.organization_id,
         actor_id: approvalRecord.record.actor_id,
         actor_role: approvalRecord.record.actor_role,
         authority_version: approvalRecord.record.authority_version,
         status: "ACTIVE",
-        revoked: false,
+        permissions: ["T1_SINGLE_APPROVAL"],
+        valid_from: "2020-01-01T00:00:00.000Z",
+        expires_at: null,
       } : undefined,
     });
     const record = await worker.execute(sealed);
