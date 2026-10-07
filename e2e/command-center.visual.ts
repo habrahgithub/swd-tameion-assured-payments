@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const obligation = {
   obligation_id: "OBL-UAT-01",
@@ -44,6 +44,7 @@ function detailFor(obligationId: string, sourceAmount: string, dueDate: string, 
     ...detail,
     truth: {
       ...detail.truth,
+      tameion_control_truth: { ...detail.truth.tameion_control_truth },
       source_truth: { ...detail.truth.source_truth, source: { ...detail.truth.source_truth.source, record_id: sourceRecordId } },
       settlement_truth: { ...detail.truth.settlement_truth, settlement_amount: settlementAmount, settlement_atomic_amount: atomicAmount, source_amount: sourceAmount },
     },
@@ -53,7 +54,7 @@ function detailFor(obligationId: string, sourceAmount: string, dueDate: string, 
   };
 }
 
-function detailWithProxy() {
+function detailWithProxy(): Record<string, any> {
   const source = detailFor("OBL-UAT-03", "125.00", "2026-10-15", "UAT-INV-03");
   return {
     ...source,
@@ -126,16 +127,66 @@ function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "
   };
 }
 
-async function openFixture(page: Page, selectedDetail: Record<string, any> = detail) {
+function postApprovalNPlusOneDetail(paeSealed: boolean): Record<string, any> {
+  const approved = detailWithProxy();
+  approved.record.obligation_id = "OBL-UAT-01";
+  approved.truth.source_truth.source.record_id = "UAT-INV-01";
+  approved.aggregate.aggregate_version = 3;
+  approved.aggregate.state = "AUTHORIZED";
+  approved.aggregate.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.aggregate_version = 3;
+  approved.truth.tameion_control_truth.aggregate_state = "AUTHORIZED";
+  approved.truth.tameion_control_truth.assessment_state = "NOT_CURRENT";
+  approved.truth.tameion_control_truth.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.pae_sealed = paeSealed;
+  approved.truth.tameion_control_truth.execution_state = "NONE";
+  approved.truth.tameion_control_truth.execution_release_authority = paeSealed ? "TAMEION_PAE_REVERIFY_REQUIRED" : "NOT_GRANTED";
+  approved.settlement_proxy.mapped_aggregate_version = 2;
+  approved.current_assessment = null;
+  approved.pae_sealed = paeSealed;
+  approved.execution = null;
+  approved.execution_packet = null;
+  approved.execution_gate = paeSealed ? "WAITING_FOR_PRIME_EXACT_PACKET" : "LOCKED_AFTER_ASSURANCE_HOLD";
+  approved.sealed_pae_instruction_hash = paeSealed ? "d".repeat(64) : null;
+  return approved;
+}
+
+function liveWinnerForPreparation(): Record<string, any> {
+  const candidate: Record<string, any> = detailFor("OBL-UAT-01", "125.00", "2026-10-05", "UAT-INV-01");
+  candidate.current_assessment.provider_used = "mocked-test-provider";
+  candidate.current_assessment.provider_mode = "LIVE_AI";
+  candidate.current_assessment.race = {
+    result: { decision: "PAY", decision_summary: "Current advisory checks pass.", validated_findings: [] },
+    action_taken: { summary: "Required checks evaluated.", checks: ["Source identity", "Current obligation"] },
+    caveats: { missing_context: [], uncertainty_signal: false, model_explanation: "Advisory fixture.", model_explanation_authority: "NON_AUTHORITATIVE" },
+    evidence: {
+      evidence_ids: ["UAT-EVIDENCE-1"],
+      authoritative_facts: {
+        obligation_id: "OBL-UAT-01", aggregate_version: "1", amount: "125.00", currency: "USD",
+        due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", due_date_position: "NOT_STATED",
+        as_of_date: "2026-10-04", state_at_event_baseline: "OUTSTANDING", business_purpose_confirmed: true,
+        source_evidence_present: true, destination_status: "PENDING_VERIFICATION",
+      },
+    },
+    remediation: [], prompt_identity: { version: "uat-fixture-v1", sha256: "e".repeat(64) },
+  };
+  return candidate;
+}
+
+async function openFixture(
+  page: Page,
+  selectedDetail: Record<string, any> = detail,
+  queue: Array<Record<string, any>> = [obligation, secondObligation, proxiedObligation],
+) {
   const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
     if (url.pathname === "/api/obligations") return route.fulfill({ json: {
-      obligations: [obligation, secondObligation, proxiedObligation],
-      assessed_count: 3,
-      total_count: 3,
-      sole_pay_candidate_id: "OBL-UAT-01",
+      obligations: queue,
+      assessed_count: queue.filter((item) => item.assessed).length,
+      total_count: queue.length,
+      sole_pay_candidate_id: queue.length === 3 ? "OBL-UAT-01" : null,
     } });
     if (url.pathname === "/api/obligations/OBL-UAT-01") return route.fulfill({ json: selectedDetail });
     if (url.pathname === "/api/obligations/OBL-UAT-02") return route.fulfill({ json: detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02") });
@@ -232,6 +283,59 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await page.mouse.move(1, 1);
   await expect(page).toHaveScreenshot("command-center-desktop.png", { fullPage: true, animations: "disabled" });
   expect(unexpectedWrites).toEqual([]);
+});
+
+test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }) => {
+  for (const scenario of [
+    { paeSealed: false, expectedStage: "Assurance", expectedStatus: "Assurance failed or blocked; no PASS assurance is available", expectedGuidance: "Authorization recorded · Assurance failed/blocked" },
+    { paeSealed: true, expectedStage: "Payment", expectedStatus: "Arc Testnet proxy prepared; execution awaits separate exact-packet gate", expectedGuidance: "Approved instruction is sealed for the Arc Testnet settlement proxy" },
+  ]) {
+    const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
+    const writes = await openFixture(page, postApprovalNPlusOneDetail(scenario.paeSealed), queue);
+    const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+    await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
+    await expect(lifecycle.locator('[aria-current="step"]')).toContainText(scenario.expectedStage);
+    await expect(lifecycle).toContainText(scenario.expectedStatus);
+    await expect(page.getByTestId("current-next-step")).toContainText(scenario.expectedGuidance);
+    await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+    await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+    await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();
+    await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+    expect(writes).toEqual([]);
+    await page.unrouteAll();
+  }
+});
+
+test("the permitted proxy-preparation step and its reason fit the first desktop viewport", async ({ page }, testInfo: TestInfo) => {
+  await page.setViewportSize({ width: 1188, height: 761 });
+  const writes = await openFixture(page, liveWinnerForPreparation());
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
+  await expect(page.getByTestId("current-next-step")).toContainText("Prepare the Arc Testnet proxy");
+  await expect(page.getByTestId("current-next-step")).toContainText("fresh assessment");
+  await expect(page.getByTestId("current-next-step")).toContainText("then review");
+  await expect(page.getByTestId("current-next-step")).toContainText("Next actor: Authorized operator");
+  const firstViewport = await page.evaluate(() => {
+    const step = document.querySelector('[data-testid="current-next-step"]');
+    const reason = step?.querySelector("h3") ?? null;
+    const guidance = Array.from(step?.querySelectorAll("p") ?? []).find((element) => element.textContent?.includes("Prepare the Arc Testnet proxy")) ?? null;
+    const actor = Array.from(step?.querySelectorAll("p") ?? []).find((element) => element.textContent?.includes("Next actor:")) ?? null;
+    const elements = [
+      { name: "selected source identity", element: document.querySelector('[aria-label="Selected source obligation"] h2') },
+      { name: "current lifecycle stage", element: document.querySelector('[aria-label="Payment lifecycle"] [aria-current="step"]') },
+      { name: "current reason", element: reason },
+      { name: "permitted-action guidance", element: guidance },
+      { name: "next actor", element: actor },
+      { name: "permitted primary action", element: step?.querySelector('button[data-primary-action="true"]') ?? null },
+    ];
+    return elements.map(({ name, element }) => {
+      const rect = element?.getBoundingClientRect();
+      return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null };
+    });
+  });
+  await page.screenshot({ path: testInfo.outputPath("desktop-short-after.png") });
+  expect(firstViewport.every((element) => element.exists && element.top! >= 0 && element.bottom! <= 761), JSON.stringify(firstViewport)).toBe(true);
+  await expect(page).toHaveScreenshot("command-center-desktop-short.png", { animations: "disabled" });
+  expect(writes).toEqual([]);
 });
 
 test("sealed, submitted, unknown and reconciled proxy states preserve source truth", async ({ page }) => {

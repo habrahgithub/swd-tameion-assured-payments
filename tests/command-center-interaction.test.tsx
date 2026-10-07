@@ -199,6 +199,24 @@ function sealedDetail(id: string) {
   return sealed;
 }
 
+function approvedNPlusOneDetail(id: string, paeSealed: boolean) {
+  const approved = proxyPrepared(assessedDetail(id, "PAY"));
+  approved.aggregate.aggregate_version = 2;
+  approved.aggregate.state = "AUTHORIZED";
+  approved.aggregate.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.aggregate_version = 2;
+  approved.truth.tameion_control_truth.aggregate_state = "AUTHORIZED";
+  approved.truth.tameion_control_truth.assessment_state = "NOT_CURRENT";
+  approved.truth.tameion_control_truth.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.pae_sealed = paeSealed;
+  approved.truth.tameion_control_truth.execution_state = "NONE";
+  approved.truth.tameion_control_truth.execution_release_authority = paeSealed ? "TAMEION_PAE_REVERIFY_REQUIRED" : "NOT_GRANTED";
+  approved.current_assessment = null;
+  approved.pae_sealed = paeSealed;
+  approved.execution = null;
+  return approved;
+}
+
 function response(body: unknown, status = 200): Response {
   return new Response(body === null ? "" : JSON.stringify(body), { status });
 }
@@ -626,11 +644,60 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.getByTestId("current-next-step").textContent).toContain("Authorization recorded · Assurance failed/blocked");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("No PASS assurance, usable PAE, or execution is available");
+    expect(screen.getByTestId("current-next-step").textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
     expect(lifecycle.textContent).toContain("AuthorizationAuthorization recorded — assurance failed or blocked");
     expect(lifecycle.textContent).toContain("AssuranceAssurance failed or blocked; no PASS assurance is available");
     expect(lifecycle.textContent).toContain("PaymentAuthorization recorded; assurance failed or blocked; no usable PAE or execution");
+  });
+
+  it("keeps an actual post-approval AUTHORIZED N+1 response at Assurance with no unsupported reassessment", async () => {
+    const id = "OBL-AUTHORIZED-NPLUS1-NO-PAE";
+    const authorized = approvedNPlusOneDetail(id, false);
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation(id, false)] }))
+      : Promise.resolve(response(authorized)));
+
+    render(<CommandCenter />);
+    const nextStep = await screen.findByTestId("current-next-step");
+    const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
+    await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assurance"));
+    expect(lifecycle.textContent).toContain("AssessmentNot current for this version");
+    expect(lifecycle.textContent).toContain("AssuranceAssurance failed or blocked; no PASS assurance is available");
+    expect(nextStep.textContent).toContain("Authorization recorded · Assurance failed/blocked");
+    expect(nextStep.textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByText(/Authorization was recorded, but assurance failed or is blocked/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Authorization" }));
+    expect(screen.getByText(/Authorization was recorded, but assurance failed or is blocked/)).toBeTruthy();
+    expect(screen.queryByText(/Authorization review applies to the current PAY assessment/)).toBeNull();
+    expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps an actual sealed post-approval N+1 response at Payment without offering assessment", async () => {
+    const id = "OBL-SEALED-NPLUS1-NO-ASSESSMENT";
+    const sealed = approvedNPlusOneDetail(id, true);
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation(id, false)] }))
+      : Promise.resolve(response(sealed)));
+
+    render(<CommandCenter />);
+    const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
+    await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment"));
+    expect(lifecycle.textContent).toContain("AssessmentNot current for this version");
+    expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Approved instruction is sealed for the Arc Testnet settlement proxy");
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("shows the current OBL-J0C-003 HOLD remediation and truthful lifecycle in the primary obligation workspace", async () => {

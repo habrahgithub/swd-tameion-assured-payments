@@ -206,11 +206,12 @@ export type DetailState = "none" | "loading" | "failed" | "loaded" | "stale";
 
 export type AssessmentPrimaryAction = "none" | "assess" | "review" | "continue";
 
-export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false, hasSettlementProxy = false): string {
+export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false, hasSettlementProxy = false, authorizationRecordedBlocked = false): string {
   if (!hasSelection || state === "none") return "Select an obligation to review its authorization and payment-intent status.";
   if (state === "loading") return "Loading current obligation detail; authorization status is not yet available.";
   if (state === "failed") return "Selected obligation detail is unavailable; authorization and payment-intent status cannot be confirmed.";
   if (state === "stale") return "Last-known obligation detail is stale; refresh before relying on authorization or payment-intent status.";
+  if (authorizationRecordedBlocked) return "Authorization was recorded, but assurance failed or is blocked. No PASS assurance, usable PAE, or execution is available; reassessment and further authorization are unavailable here.";
   if (paeSealed && hasSettlementProxy) return "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks.";
   if (paeSealed) return "An authorization envelope is already sealed for this obligation. No further authorization action is available here; provider submission remains separate.";
   return "Current detail confirms no payment intent exists. If every deterministic Safety Kernel control passes, the system can seal a signed Payment Authorization Envelope; no provider submission occurs here.";
@@ -218,14 +219,15 @@ export function authorizationPanelCopy(state: DetailState, hasSelection: boolean
 
 /** Actionable authorization prerequisites are meaningful only for current,
  * selected detail that has not already sealed its authorization envelope. */
-export function authorizationPrerequisitesVisible(state: DetailState, hasSelection: boolean, paeSealed: boolean): boolean {
-  return state === "loaded" && hasSelection && !paeSealed;
+export function authorizationPrerequisitesVisible(state: DetailState, hasSelection: boolean, paeSealed: boolean, authorizationRecordedBlocked = false): boolean {
+  return state === "loaded" && hasSelection && !paeSealed && !authorizationRecordedBlocked;
 }
 
 export function assessmentPrimaryAction(state: {
   detailState: DetailState;
   hasSelection: boolean;
   paeSealed: boolean;
+  authorizationRecordedBlocked: boolean;
   hasCurrentAssessment: boolean;
   decision: string | undefined;
   assessmentReviewAvailable: boolean;
@@ -234,6 +236,7 @@ export function assessmentPrimaryAction(state: {
   routeAssuranceReady: boolean;
 }): AssessmentPrimaryAction {
   if (state.detailState !== "loaded" || !state.hasSelection || state.paeSealed) return "none";
+  if (state.authorizationRecordedBlocked) return "none";
   if (!state.hasCurrentAssessment) return "assess";
   if (state.decision !== "PAY") return "none";
   if (!state.assessmentReviewAvailable) return "none";
@@ -488,6 +491,13 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
   }
   if (releaseAuthority === "CONSUMED") {
     return { label: "PAE consumed", tone: "neutral", explanation: "This payment authority has already been consumed and cannot be reused." };
+  }
+  if (aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !execution) {
+    return {
+      label: "Authorization recorded · Assurance failed/blocked",
+      tone: "warning",
+      explanation: "No PASS assurance, usable PAE, or execution is available. Reassessment and further authorization are unavailable in this state.",
+    };
   }
   if (aggregate.state === "APPROVAL_PENDING") {
     const assessment = detail.current_assessment &&
@@ -1200,6 +1210,7 @@ export function CommandCenter() {
     detailState,
     hasSelection: Boolean(selectedId),
     paeSealed: Boolean(detail?.pae_sealed),
+    authorizationRecordedBlocked: Boolean(detailState === "loaded" && detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution),
     hasCurrentAssessment,
     decision: currentAssessment?.decision,
     assessmentReviewAvailable: Boolean(currentAssessment?.race),
@@ -1264,11 +1275,13 @@ export function CommandCenter() {
       ? "Obligation"
       : detail.execution && ["SUBMITTING", "SUBMITTED", "UNKNOWN", "SETTLED"].includes(detail.execution.status)
         ? "Reconciliation"
+      : detail.pae_sealed
+        ? "Payment"
+      : detail.aggregate.state === "AUTHORIZED"
+        ? "Assurance"
       : !allAssessed || !hasCurrentAssessment || !currentAssessment || currentAssessment.decision !== "PAY"
         ? "Assessment"
-        : detail.pae_sealed
-          ? "Payment"
-          : "Authorization";
+        : "Authorization";
 
   const selectedWorkspaceGuidance = !selectedId
     ? "Choose one obligation from the queue."
@@ -1285,11 +1298,13 @@ export function CommandCenter() {
       : detail?.settlement_proxy && detail.execution?.status === "SETTLED"
         ? `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION. The source payable remains ${sourcePayableState(detail)}.`
       : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
-          ? "Authorization recorded · Assurance failed/blocked. No PASS assurance, usable PAE, or execution is available."
+          ? "Authorization is recorded, but assurance failed or is blocked; no PASS assurance, usable PAE, or execution is available. No reassessment or further authorization action is available."
         : detail?.pae_sealed
           ? detail.settlement_proxy
             ? "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks."
             : "Blocker: this genuine obligation has no Arc payment binding; the separate fixed testnet intent does not represent it."
+          : proxyPreparationReady
+            ? "Prepare the Arc Testnet proxy using read-only provider checks. Preparation changes the aggregate, so run a fresh assessment next, then review it. Payment-route assurance remains a separate authorization gate."
             : !allAssessed
               ? "Next step: assess the remaining obligations before authorization review."
               : !hasCurrentAssessment || !currentAssessment
@@ -1316,6 +1331,8 @@ export function CommandCenter() {
             ? detail.settlement_proxy
               ? "The approved instruction is sealed for the Arc Testnet settlement proxy. Reassessment is unavailable; execution remains subject to exact-packet and pre-send gates."
               : "A payment authorization envelope is already sealed. Reassessment is unavailable here; payment remains blocked without an Arc binding."
+            : detail?.aggregate.state === "AUTHORIZED" && !detail.execution
+              ? "Authorization was recorded, but assurance failed or is blocked. No PASS assurance or usable PAE is available; reassessment and further authorization are unavailable here."
             : currentAssessment?.decision === "PAY" && !currentAssessment.race
               ? "The current PAY recommendation has no review evidence in this detail; authorization remains locked."
               : currentAssessment?.decision === "PAY" && authorizationAssessment && !routeAssuranceReady
@@ -1401,7 +1418,7 @@ export function CommandCenter() {
       }));
     } };
   } else if (proxyPreparationReady && detail) {
-    workspaceAction = { label: "Prepare Arc Testnet settlement proxy", actor: "Authorized operator · read-only provider checks", run: () => {
+    workspaceAction = { label: "Prepare Arc Testnet settlement proxy", actor: "Authorized operator", run: () => {
       void run("proxy preflight", () => postJson("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
@@ -1425,8 +1442,8 @@ export function CommandCenter() {
   }
 
   return (
-    <main dir="ltr" className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-4 px-4 py-5 md:gap-5 md:px-6 md:py-8">
-      <header className="-mx-4 flex flex-col items-start justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
+    <main dir="ltr" className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
+      <header className="-mx-4 flex flex-col items-start justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
@@ -1438,7 +1455,7 @@ export function CommandCenter() {
         </p>
       </header>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-[300px_minmax(0,1fr)] md:gap-6">
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
         <aside className="order-1 min-w-0 md:order-1 md:border-e md:pe-4">
           <button
             type="button"
@@ -1523,9 +1540,9 @@ export function CommandCenter() {
           </div>
         </aside>
 
-        <section className="order-2 flex min-w-0 flex-col gap-4 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 md:order-2 md:p-6" aria-label="Selected obligation details">
+        <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
           {selected && (
-            <section aria-label="Selected source obligation" className="grid gap-4 border-b border-[var(--color-border)] pb-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+            <section aria-label="Selected source obligation" className="grid gap-2 border-b border-[var(--color-border)] pb-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected genuine obligation</p>
                 <h2 className="mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]">
@@ -1634,14 +1651,14 @@ export function CommandCenter() {
             </details>
           )}
 
-          <section aria-label="Payment lifecycle" className="space-y-3 border-b border-[var(--color-border)] pb-4">
+          <section aria-label="Payment lifecycle" className="space-y-1 border-b border-[var(--color-border)] pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Selected obligation lifecycle</p>
               <p className="text-[12px] font-semibold tracking-wide text-[var(--color-ink-muted)]">AI recommends · human authorizes · assurance controls release</p>
             </div>
-            <ol aria-label="Payment lifecycle" className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+            <ol aria-label="Payment lifecycle" className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
               {PAYMENT_LIFECYCLE_STAGES.map((stage, index) => (
-                <li key={stage} aria-current={currentLifecycleStage === stage ? "step" : undefined} className={`min-w-0 rounded-sm px-2 py-2 ${currentLifecycleStage === stage ? "border-s-2 border-[var(--color-accent)] bg-[var(--color-surface)]" : "border-s border-[var(--color-border)]"}`}>
+                <li key={stage} aria-current={currentLifecycleStage === stage ? "step" : undefined} className={`min-w-0 rounded-sm px-2 py-1 ${currentLifecycleStage === stage ? "border-s-2 border-[var(--color-accent)] bg-[var(--color-surface)]" : "border-s border-[var(--color-border)]"}`}>
                   <div className="flex items-baseline gap-2">
                     <span className="mono text-[12px] font-semibold text-[var(--color-ink-muted)]">{index + 1}.</span>
                     <span className="min-w-0 break-words text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{stage}</span>
@@ -1652,8 +1669,8 @@ export function CommandCenter() {
             </ol>
           </section>
 
-          <section aria-label="Current next step" data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-4 md:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <section aria-label="Current next step" data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Current position · {currentLifecycleStage}</p>
                 <h3 className="mt-1 text-[17px] font-semibold leading-6 text-[var(--color-ink)]">{state.label}</h3>
@@ -1667,6 +1684,8 @@ export function CommandCenter() {
                       ? "Prime · exact-packet authorization"
                       : detail?.settlement_proxy && detail.execution?.status === "UNKNOWN"
                         ? "Unassigned · read-only reconciliation only"
+                        : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
+                          ? "External-evidence owner unavailable"
                         : firstUnmetPrerequisite?.startsWith("Payment-route assurance")
                           ? "External-evidence owner unavailable"
                           : "Unassigned · no permitted product action is available"}
@@ -1697,7 +1716,10 @@ export function CommandCenter() {
               )}
             </div>
             {selectedId && detailState === "loaded" && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
-              <p className="mt-3 border-t border-[var(--color-border)] pt-3 text-[12px] leading-5 text-[var(--color-warning)]"><strong>Separate external-evidence blocker: </strong>{firstUnmetPrerequisite}</p>
+              <details className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-warning)]">
+                <summary className="cursor-pointer font-semibold">Separate external-evidence blocker: payment-route assurance is not ready.</summary>
+                <p className="mt-1">{firstUnmetPrerequisite}</p>
+              </details>
             )}
           </section>
 
@@ -1920,8 +1942,14 @@ export function CommandCenter() {
             {panel === "authorization" && (
               <div className="max-w-xl space-y-3">
                 <p className="text-[13px] text-[var(--color-ink-muted)]">
-                  {authorizationPanelCopy(detailState, Boolean(selectedId), Boolean(detailState === "loaded" && detail?.pae_sealed), Boolean(detailState === "loaded" && detail?.settlement_proxy))}
-                  {detailState === "loaded" && !detail?.pae_sealed && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
+                  {authorizationPanelCopy(
+                    detailState,
+                    Boolean(selectedId),
+                    Boolean(detailState === "loaded" && detail?.pae_sealed),
+                    Boolean(detailState === "loaded" && detail?.settlement_proxy),
+                    Boolean(detailState === "loaded" && detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution),
+                  )}
+                  {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
                 </p>
                 {detailState === "loaded" && selectedId && detail && (
                   <section aria-label="Genuine obligation and Arc Testnet settlement proxy" className="space-y-2 rounded border border-[var(--color-border)] p-3">
@@ -1973,7 +2001,7 @@ export function CommandCenter() {
                     </dl>
                   </details>
                 )}
-                {authorizationPrerequisitesVisible(detailState, Boolean(selectedId), Boolean(detail?.pae_sealed)) && (() => {
+                {authorizationPrerequisitesVisible(detailState, Boolean(selectedId), Boolean(detail?.pae_sealed), Boolean(detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution)) && (() => {
                   const blockers = authorizationBlockers({
                     hasSelection: Boolean(selectedId),
                     allAssessed,
