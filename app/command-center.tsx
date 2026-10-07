@@ -1893,10 +1893,17 @@ export function CommandCenter() {
   ));
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
-  const authorizationActionAvailable = Boolean(detailState === "loaded" && detail?.settlement_proxy &&
-    authorizationAssessment?.decision === "PAY" && routeAssuranceReady && !detail.pae_sealed && !detail.execution);
-  const preauthorizationRevocationIsNotCurrentException = Boolean(detail && authorizationActionAvailable &&
-    detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" && !detail.pae_sealed && !detail.execution);
+  // This affects Recovery copy only. A current PAY assessment can establish
+  // that the aggregate's preauthorization REVOKED marker is not a current
+  // exception before the human's local Review acknowledgement; action and
+  // authorization eligibility continue to use their existing predicates.
+  const preauthorizationRevocationIsNotCurrentException = Boolean(detailState === "loaded" && detail &&
+    detail.aggregate.state === "APPROVAL_PENDING" && detail.settlement_proxy && hasCurrentPayAssessment && routeAssuranceReady &&
+    detail.pae_sealed === false && detail.execution === null &&
+    detail.truth.tameion_control_truth.pae_state === "REVOKED" &&
+    detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" &&
+    detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION" &&
+    detail.execution_packet == null && detail.sealed_pae_instruction_hash == null);
   const currentException = Boolean(selectedId && (
     detailState === "failed" || detailState === "stale" ||
     detail?.execution?.status === "BLOCKED" || detail?.execution?.status === "FAILED" || detail?.execution?.status === "UNKNOWN" ||

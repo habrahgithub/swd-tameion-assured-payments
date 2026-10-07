@@ -983,28 +983,107 @@ describe("real detail GET producer-consumer packet controls", () => {
     }
   });
 
-  it("does not frame the fresh PAY authorization path as recovery when proxy preparation leaves no PAE", async () => {
+  it("uses current fresh PAY truth for Recovery copy before Review, then preserves reviewed authorization", async () => {
     const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const body = await detailJson(fixture.state, fixture.selectedId);
+    const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     expect(body.aggregate.pae_state).toBe("REVOKED");
+    expect(body.aggregate.state).toBe("APPROVAL_PENDING");
+    expect(body.aggregate.aggregate_version).toBe(2);
     expect(body.truth.tameion_control_truth.execution_release_authority).toBe("REVOKED");
     expect(body.pae_sealed).toBe(false);
+    expect(body.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
     expect(body.execution).toBeNull();
     expect(body.current_assessment).toMatchObject({
       obligation_id: fixture.selectedId,
+      aggregate_version: String(current.aggregate_version),
       decision: "PAY",
       provider_mode: "LIVE_AI",
     });
 
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
+    expect(screen.queryByRole("region", { name: "Exception recovery" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assessment$/ }));
+    expect(screen.queryByRole("region", { name: "Exception recovery" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
+
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    expect(screen.queryByRole("region", { name: "Exception recovery" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Continue to Authorization" }));
     fireEvent.click(screen.getByRole("button", { name: /^Authorization$/ }));
     expect(screen.getByText("Eligible for human authorization review")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Exception recovery" })).toBeNull();
     expect(screen.getByRole("button", { name: "Authorize payment" })).toBeTruthy();
     expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps genuine sealed-PAE revocation in Recovery after material change and fresh PAY", async () => {
+    const fixture = await preparedAuthorizedState();
+    expect(fixture.state.getSealedPae(fixture.selectedId)).toBeTruthy();
+    const before = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    fixture.state.store.applyMaterialChange(
+      DEMO_ORGANIZATION_ID,
+      fixture.selectedId,
+      before.aggregate_version,
+      { destination_version: before.destination_version + 1 },
+    );
+    const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, fixture.selectedId, current.aggregate_version, {
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+    });
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    expect(body.pae_sealed).toBe(true);
+    expect(body.truth.tameion_control_truth).toMatchObject({ pae_state: "REVOKED", execution_release_authority: "REVOKED" });
+
+    const queue = await listJson(fixture.state);
+    const { main } = await renderProducerJson(body, [], queue);
+    fireEvent.click(screen.getByRole("button", { name: /^Authorization$/ }));
+    expect(screen.getByRole("region", { name: "Exception recovery" }).textContent).toMatch(/payment authority is revoked/i);
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(main.querySelector('button[data-primary-action="true"]')).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("retains Recovery for non-current, HOLD, and cancelled preauthorization states", async () => {
+    const nonCurrent = await proxyPreparedWithoutCurrentAssessment();
+    const nonCurrentBody = await detailJson(nonCurrent.state, nonCurrent.selectedId);
+    expect(nonCurrentBody.current_assessment?.aggregate_version).not.toBe(String(nonCurrentBody.aggregate.aggregate_version));
+    await renderProducerJson(nonCurrentBody, [], await listJson(nonCurrent.state));
+    expect(screen.getByRole("region", { name: "Exception recovery" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+
+    cleanup();
+    fetchMock.mockClear();
+    const held = await proxyPreparedWithoutCurrentAssessment(true);
+    const heldAggregate = held.state.store.get(DEMO_ORGANIZATION_ID, held.selectedId);
+    sealTestAssessment(held.state.store, DEMO_ORGANIZATION_ID, held.selectedId, heldAggregate.aggregate_version, {
+      decision: "HOLD",
+      provider_mode: "LIVE_AI",
+    });
+    const heldBody = await detailJson(held.state, held.selectedId);
+    expect(heldBody.current_assessment).toMatchObject({ decision: "HOLD", aggregate_version: String(heldAggregate.aggregate_version) });
+    await renderProducerJson(heldBody, [], await listJson(held.state));
+    expect(screen.getByRole("region", { name: "Exception recovery" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+
+    cleanup();
+    fetchMock.mockClear();
+    const cancelled = await proxyPreparedWithoutCurrentAssessment(true);
+    const beforeCancel = cancelled.state.store.get(DEMO_ORGANIZATION_ID, cancelled.selectedId);
+    cancelled.state.store.cancel(DEMO_ORGANIZATION_ID, cancelled.selectedId, beforeCancel.aggregate_version);
+    const cancelledBody = await detailJson(cancelled.state, cancelled.selectedId);
+    expect(cancelledBody.aggregate.state).toBe("CANCELLED");
+    await renderProducerJson(cancelledBody, [], await listJson(cancelled.state));
+    expect(screen.getByRole("region", { name: "Exception recovery" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 

@@ -310,7 +310,7 @@ function postProxyFreshPayWithAggregateRevoked(): Record<string, any> {
   candidate.execution = null;
   candidate.execution_packet = null;
   candidate.sealed_pae_instruction_hash = null;
-  candidate.execution_gate = "LOCKED_AFTER_ASSURANCE_HOLD";
+  candidate.execution_gate = "LOCKED_UNTIL_CURRENT_AUTHORIZATION";
   return candidate;
 }
 
@@ -462,10 +462,21 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
   for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
     const page = await browser.newPage({ viewport });
     const unexpectedWrites = await openFixture(page, freshPay);
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Review current PAY assessment" })).toBeVisible();
+    await expect(page.getByTestId("current-next-step")).toContainText("Review current PAY assessment");
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-1-${viewport.label}.png`), fullPage: true });
     if (viewport.label === "mobile") await page.getByText("View all stages").click();
     await page.getByRole("button", { name: "Assessment", exact: true }).click();
     await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Advisory — PAY");
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Review current PAY assessment" })).toBeVisible();
+    await expect(page.getByTestId("current-next-step")).toContainText("Review current PAY assessment");
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-2-before-review-${viewport.label}.png`), fullPage: true });
     await page.getByRole("button", { name: "Review current PAY assessment" }).click();
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
     await page.getByRole("button", { name: "Continue to Authorization" }).click();
     await expect(page.getByText("Eligible for human authorization review")).toBeVisible();
     await expect(page.getByRole("button", { name: "Authorize payment" })).toBeVisible();
