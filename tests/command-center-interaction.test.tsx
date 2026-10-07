@@ -633,6 +633,68 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByText(/payment remains blocked without an Arc binding/)).toBeNull();
   });
 
+  it.each([
+    {
+      name: "execution FAILED",
+      executionStatus: "FAILED",
+      releaseAuthority: "BLOCKED",
+      paeState: "REVOKED",
+      currentStage: "Reconciliation",
+      expected: /provider attempt failed/i,
+    },
+    {
+      name: "execution BLOCKED",
+      executionStatus: "BLOCKED",
+      releaseAuthority: "BLOCKED",
+      paeState: "REVOKED",
+      currentStage: "Payment",
+      expected: /blocked before provider submission/i,
+    },
+    {
+      name: "PAE-011/REVOKED without an execution record",
+      executionStatus: null,
+      aggregateExecutionState: "BLOCKED",
+      releaseAuthority: "BLOCKED",
+      paeState: "REVOKED",
+      currentStage: "Payment",
+      expected: /execution record (?:is )?unavailable.*revoked/i,
+    },
+    {
+      name: "PAE EXPIRED without an execution record",
+      executionStatus: null,
+      releaseAuthority: "EXPIRED",
+      paeState: "EXPIRED",
+      currentStage: "Payment",
+      expected: /execution record (?:is )?unavailable.*expired/i,
+    },
+  ])("keeps $name distinct from a valid sealed exact-packet gate", async ({ executionStatus, aggregateExecutionState, releaseAuthority, paeState, currentStage, expected }) => {
+    const id = `OBL-TERMINAL-${releaseAuthority}-${executionStatus ?? "NO-EXECUTION"}`;
+    const terminal = proxyPrepared(sealedDetail(id));
+    terminal.truth.tameion_control_truth.pae_state = paeState;
+    terminal.truth.tameion_control_truth.execution_state = executionStatus ?? aggregateExecutionState ?? "NONE";
+    terminal.truth.tameion_control_truth.execution_release_authority = releaseAuthority;
+    terminal.aggregate.pae_state = paeState;
+    if (aggregateExecutionState) terminal.aggregate.execution_state = aggregateExecutionState;
+    if (executionStatus) {
+      terminal.execution = { status: executionStatus, provider_ref: null };
+      terminal.aggregate.execution_state = executionStatus;
+    }
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation(id, true)] }))
+      : Promise.resolve(response(terminal)));
+
+    render(<CommandCenter />);
+    const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
+    await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain(currentStage));
+    expect(lifecycle.textContent).not.toMatch(/awaits separate exact-packet gate/i);
+    expect(screen.getByTestId("current-next-step").textContent).not.toContain("Prime · exact-packet authorization");
+    expect(screen.getByTestId("current-next-step").textContent).toMatch(expected);
+    expect(lifecycle.textContent).toMatch(expected);
+    expect(lifecycle.textContent).not.toMatch(/Not submitted/i);
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("labels AUTHORIZED N+1 without a sealed PAE as assurance failed or blocked", async () => {
     const authorized = proxyPrepared(assessedDetail("OBL-ASSURANCE-BLOCKED-AFTER-APPROVAL", "PAY"));
     authorized.aggregate.state = "AUTHORIZED";

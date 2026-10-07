@@ -373,9 +373,13 @@ export function reconciliationLeadLine(state: DetailState, execution: unknown, h
   if (state !== "loaded") return "Submission state unknown — authoritative detail is not loaded.";
   if (execution === null) return "No Arc settlement to reconcile.";
   if (execution && typeof execution === "object" && typeof (execution as { status?: unknown }).status === "string") {
-    const status = (execution as { status: string }).status;
+    const record = execution as { status: string; provider_ref?: unknown; provider_evidence?: unknown };
+    const status = record.status;
     if (hasSettlementProxy && status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION · source payable remains ${sourceState}.`;
     if (hasSettlementProxy && (status === "UNKNOWN" || status === "SUBMITTING")) return "TESTNET outcome is UNKNOWN — perform read-only reconciliation for this same intent; resubmission is blocked.";
+    if (hasSettlementProxy && status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourceState}.`;
+    if (hasSettlementProxy && status === "BLOCKED" && !record.provider_ref && !record.provider_evidence) return `Arc Testnet execution was blocked before provider submission; source payable remains ${sourceState}.`;
+    if (hasSettlementProxy && status === "BLOCKED") return `Arc Testnet execution is blocked with provider evidence present; outcome requires review. Source payable remains ${sourceState}.`;
     if (hasSettlementProxy) return `Arc Testnet proxy execution ${status}; source payable remains ${sourceState}.`;
     return `Simulated execution ${status}; no Arc settlement to reconcile.`;
   }
@@ -1224,6 +1228,11 @@ export function CommandCenter() {
     if (detailState === "failed") return "Unavailable";
     if (detailState === "stale") return "Last-known — stale";
     if (!detail) return "Unavailable";
+    const releaseAuthority = detail.truth.tameion_control_truth.execution_release_authority;
+    const invalidReleaseAuthority = ["BLOCKED", "REVOKED", "EXPIRED"].includes(releaseAuthority);
+    const invalidPaeState = ["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state)
+      ? detail.truth.tameion_control_truth.pae_state.toLowerCase()
+      : releaseAuthority.toLowerCase();
 
     switch (stage) {
       case "Obligation":
@@ -1250,6 +1259,9 @@ export function CommandCenter() {
         if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `Arc Testnet proxy execution reconciled; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Outcome unknown — reconcile this same intent; resubmission blocked";
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return "Submitted to Arc Testnet provider; reconciliation is pending";
+        if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution?.status === "BLOCKED") return reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail));
+        if (detail.settlement_proxy && invalidReleaseAuthority) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Authorization recorded; assurance failed or blocked; no usable PAE or execution";
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet proxy prepared; execution awaits separate exact-packet gate";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
@@ -1261,7 +1273,11 @@ export function CommandCenter() {
         if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Read-only reconciliation pending; no resubmission";
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return `Submission recorded; reconcile this same intent; source payable remains ${sourcePayableState(detail)}`;
-        if (detail.settlement_proxy) return `Not submitted; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution?.status === "BLOCKED") return reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail));
+        if (detail.settlement_proxy && invalidReleaseAuthority) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.truth.tameion_control_truth.execution_state === "NONE") return `No execution record is present; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy) return `Execution history is unavailable; source payable remains ${sourcePayableState(detail)}`;
         if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
           return "Simulated evidence only; no Arc settlement to reconcile";
         }
@@ -1275,6 +1291,12 @@ export function CommandCenter() {
       ? "Obligation"
       : detail.execution && ["SUBMITTING", "SUBMITTED", "UNKNOWN", "SETTLED"].includes(detail.execution.status)
         ? "Reconciliation"
+      : detail.execution?.status === "FAILED"
+        ? "Reconciliation"
+      : detail.truth.tameion_control_truth.execution_release_authority === "BLOCKED" ||
+        detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" ||
+        detail.truth.tameion_control_truth.execution_release_authority === "EXPIRED"
+        ? "Payment"
       : detail.pae_sealed
         ? "Payment"
       : detail.aggregate.state === "AUTHORIZED"
@@ -1297,6 +1319,12 @@ export function CommandCenter() {
         ? `The Arc Testnet submission is recorded. Reconcile this same intent; do not resubmit. The source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution?.status === "SETTLED"
         ? `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION. The source payable remains ${sourcePayableState(detail)}.`
+      : detail?.settlement_proxy && detail.execution?.status === "FAILED"
+        ? `The Arc Testnet provider attempt failed. No successful reconciliation is recorded; the source payable remains ${sourcePayableState(detail)}.`
+      : detail?.settlement_proxy && detail.execution?.status === "BLOCKED"
+        ? reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail))
+      : detail?.settlement_proxy && ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
+        ? `Execution record is unavailable. The sealed Arc Testnet payment authority is ${["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) ? detail.truth.tameion_control_truth.pae_state.toLowerCase() : detail.truth.tameion_control_truth.execution_release_authority.toLowerCase()}; execution history is unavailable. The source payable remains ${sourcePayableState(detail)}.`
       : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
           ? "Authorization is recorded, but assurance failed or is blocked; no PASS assurance, usable PAE, or execution is available. No reassessment or further authorization action is available."
         : detail?.pae_sealed
@@ -1394,6 +1422,10 @@ export function CommandCenter() {
     reviewed: Boolean(authorizationAssessment),
     killSwitchEngaged: killSwitchView === "engaged",
   })[0] ?? null;
+  const terminalExecutionNoAction = Boolean(detail && (
+    detail.execution?.status === "FAILED" || detail.execution?.status === "BLOCKED" ||
+    ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
+  ));
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
 
@@ -1680,7 +1712,10 @@ export function CommandCenter() {
                 {workspaceAction && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next actor: <strong className="text-[var(--color-ink)]">{workspaceAction.actor}</strong></p>}
                 {!workspaceAction && selectedId && detailState === "loaded" && (
                   <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next actor: <strong className="text-[var(--color-ink)]">
-                    {detail?.pae_sealed && detail.settlement_proxy && detail.execution_gate !== "PRIME_AUTHORIZED_EXACT_PACKET"
+                    {detail?.execution?.status === "FAILED" || detail?.execution?.status === "BLOCKED" ||
+                    ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "")
+                      ? "Unassigned · no permitted product action is available"
+                      : detail?.pae_sealed && detail.settlement_proxy && detail.execution_gate !== "PRIME_AUTHORIZED_EXACT_PACKET"
                       ? "Prime · exact-packet authorization"
                       : detail?.settlement_proxy && detail.execution?.status === "UNKNOWN"
                         ? "Unassigned · read-only reconciliation only"
@@ -1715,7 +1750,7 @@ export function CommandCenter() {
                 </PrimaryButton>
               )}
             </div>
-            {selectedId && detailState === "loaded" && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
+            {selectedId && detailState === "loaded" && !terminalExecutionNoAction && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
               <details className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-warning)]">
                 <summary className="cursor-pointer font-semibold">Separate external-evidence blocker: payment-route assurance is not ready.</summary>
                 <p className="mt-1">{firstUnmetPrerequisite}</p>
