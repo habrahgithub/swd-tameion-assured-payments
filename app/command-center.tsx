@@ -486,6 +486,14 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
   if (releaseAuthority === "SUSPENDED_KILL_SWITCH") {
     return { label: "Execution suspended", tone: "warning", explanation: "A kill switch prevents release of the currently sealed PAE." };
   }
+  if (detail.pae_sealed && detail.settlement_proxy && !execution &&
+      (!detail.execution_packet || !detail.sealed_pae_instruction_hash || detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION")) {
+    return {
+      label: "PAE sealed · no current exact packet",
+      tone: "warning",
+      explanation: "A sealed record exists, but no current exact execution packet is available. Payment authority must be re-established before submission.",
+    };
+  }
   if (releaseAuthority === "TAMEION_PAE_REVERIFY_REQUIRED") {
     return {
       label: "Authorized — PAE sealed",
@@ -1191,8 +1199,24 @@ export function CommandCenter() {
   const detailState: DetailState = detail && detailIsStale ? "stale" : detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
   const killSwitchView = killSwitchPresentation(detailState, detail?.execution_kill_switched);
   const routeAssuranceReady = isRouteAssuranceReady(detail);
-  const exactPacketGateOpen = Boolean(detailState === "loaded" && !detailIsStale && detail?.execution_packet &&
-    detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET" && !detail.execution);
+  const exactPacketSubmissionReady = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
+    detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
+    detail.settlement_proxy?.preflight.obligation_id === selectedId &&
+    detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
+    detail.execution === null && detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET" &&
+    detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
+    detail.execution_kill_switched === false);
+  const exactPacketGateOpen = exactPacketSubmissionReady;
+  const currentPacketAwaitingPrime = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
+    detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
+    detail.settlement_proxy?.preflight.obligation_id === selectedId &&
+    detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
+    detail.execution === null && detail.execution_gate === "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" &&
+    detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
+    detail.execution_kill_switched === false);
+  const noCurrentExactExecutionPacket = Boolean(detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy &&
+    !detail.execution && (!detail.execution_packet || !detail.sealed_pae_instruction_hash ||
+      detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION"));
   const state = useMemo(() => detailState === "stale"
     ? { label: "Last-known state — stale", tone: "warning" as const, explanation: "Control and execution truth is not freshly verified. Retry detail before relying on it." }
     : workflowState(detailState === "loaded" ? detail : null, routeAssuranceReady), [detail, detailState, routeAssuranceReady]);
@@ -1262,6 +1286,10 @@ export function CommandCenter() {
         if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "BLOCKED") return reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail));
         if (detail.settlement_proxy && invalidReleaseAuthority) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.pae_sealed && !detail.execution &&
+            (!detail.execution_packet || !detail.sealed_pae_instruction_hash || detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION")) {
+          return "No current exact execution packet is available. Payment authority must be re-established before submission.";
+        }
         if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Authorization recorded; assurance failed or blocked; no usable PAE or execution";
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet proxy prepared; execution awaits separate exact-packet gate";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
@@ -1325,6 +1353,10 @@ export function CommandCenter() {
         ? reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail))
       : detail?.settlement_proxy && ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
         ? `Execution record is unavailable. The sealed Arc Testnet payment authority is ${["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) ? detail.truth.tameion_control_truth.pae_state.toLowerCase() : detail.truth.tameion_control_truth.execution_release_authority.toLowerCase()}; execution history is unavailable. The source payable remains ${sourcePayableState(detail)}.`
+      : detail?.settlement_proxy && detail.execution_kill_switched === true
+        ? "Execution is suspended while a kill switch is active. No submission action is available."
+      : noCurrentExactExecutionPacket
+        ? "No current exact execution packet is available. Payment authority must be re-established before submission."
       : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
           ? "Authorization is recorded, but assurance failed or is blocked; no PASS assurance, usable PAE, or execution is available. No reassessment or further authorization action is available."
         : detail?.pae_sealed
@@ -1439,9 +1471,13 @@ export function CommandCenter() {
     workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { setPanel("reconciliation"); void refreshDetail(selectedId, true); } };
   } else if (detailState === "loaded" && detail?.execution?.status === "SETTLED") {
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => setPanel("reconciliation") };
-  } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketGateOpen && detail.execution_packet) {
+  } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
+    workspaceAction = null;
+  } else if (detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
     workspaceAction = { label: "Submit this exact Arc Testnet proxy intent", actor: "Authorized operator · exact packet gate passed", run: () => {
-      if (executionConfirmation !== "SUBMIT EXACT TESTNET SETTLEMENT PROXY" || !detail.sealed_pae_instruction_hash || !detail.execution_packet) return;
+      if (!exactPacketSubmissionReady || executionConfirmation !== "SUBMIT EXACT TESTNET SETTLEMENT PROXY" ||
+          !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
+          !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
       void run("execute", () => postJson(`/api/obligations/${selectedId}/execute`, {
         expected_version: detail.aggregate.aggregate_version,
         packet_sha256: detail.execution_packet!.packet_sha256,
@@ -1715,7 +1751,9 @@ export function CommandCenter() {
                     {detail?.execution?.status === "FAILED" || detail?.execution?.status === "BLOCKED" ||
                     ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "")
                       ? "Unassigned · no permitted product action is available"
-                      : detail?.pae_sealed && detail.settlement_proxy && detail.execution_gate !== "PRIME_AUTHORIZED_EXACT_PACKET"
+                      : noCurrentExactExecutionPacket || detail?.execution_kill_switched === true
+                        ? "Unassigned · no permitted product action is available"
+                      : currentPacketAwaitingPrime
                       ? "Prime · exact-packet authorization"
                       : detail?.settlement_proxy && detail.execution?.status === "UNKNOWN"
                         ? "Unassigned · read-only reconciliation only"
@@ -1726,7 +1764,7 @@ export function CommandCenter() {
                           : "Unassigned · no permitted product action is available"}
                   </strong></p>
                 )}
-                {workspaceAction?.label === "Submit this exact Arc Testnet proxy intent" && (
+                {exactPacketSubmissionReady && workspaceAction?.label === "Submit this exact Arc Testnet proxy intent" && (
                   <label className="mt-3 grid max-w-lg gap-1 text-[12px] font-medium text-[var(--color-ink)]">
                     Confirm exact testnet intent
                     <input
@@ -2095,8 +2133,17 @@ export function CommandCenter() {
                     {detail.execution_packet && !detail.execution && (
                       <EvidencePanel value={detail.execution_packet.packet} />
                     )}
-                    {detail.execution_packet && !detail.execution && !exactPacketGateOpen && <p className="text-[11px] text-[var(--color-warning)]">Locked — separate Prime authorization of this exact packet is required.</p>}
+                    {detail.execution_packet && !detail.execution && !exactPacketGateOpen && (
+                      <p className="text-[11px] text-[var(--color-warning)]">
+                        {currentPacketAwaitingPrime
+                          ? "Locked — separate Prime authorization of this exact packet is required."
+                          : detail.execution_kill_switched === true
+                            ? "Execution is suspended while a kill switch is active; packet display does not enable submission."
+                            : "Submission is unavailable because current payment authority does not permit execution."}
+                      </p>
+                    )}
                     {detail.execution_packet && !detail.execution && exactPacketGateOpen && <p className="text-[11px] text-[var(--color-warning)]">The exact-packet gate is open. Confirm the exact testnet intent in the current next-step card before submission.</p>}
+                    {noCurrentExactExecutionPacket && <p className="text-[11px] text-[var(--color-warning)]">No current exact execution packet is available. Payment authority must be re-established before submission.</p>}
                   </section>
                 )}
 

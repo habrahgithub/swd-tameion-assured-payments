@@ -120,8 +120,8 @@ function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "
       product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
     },
     pae_sealed: true,
-    execution_gate: status === "AUTHORIZED" ? "WAITING_FOR_PRIME_EXACT_PACKET" : "LOCKED_AFTER_SUBMISSION",
-    execution_packet: null,
+    execution_gate: status === "AUTHORIZED" ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_AFTER_SUBMISSION",
+    execution_packet: status === "AUTHORIZED" ? { packet_sha256: "e".repeat(64), packet: { obligation_id: "OBL-UAT-01" } } : null,
     sealed_pae_instruction_hash: "d".repeat(64),
     execution: executionStatus ? { status: executionStatus, provider_ref: "MOCK-ARC-REFERENCE" } : null,
   };
@@ -146,7 +146,7 @@ function postApprovalNPlusOneDetail(paeSealed: boolean): Record<string, any> {
   approved.pae_sealed = paeSealed;
   approved.execution = null;
   approved.execution_packet = null;
-  approved.execution_gate = paeSealed ? "WAITING_FOR_PRIME_EXACT_PACKET" : "LOCKED_AFTER_ASSURANCE_HOLD";
+  approved.execution_gate = paeSealed ? "LOCKED_UNTIL_CURRENT_AUTHORIZATION" : "LOCKED_AFTER_ASSURANCE_HOLD";
   approved.sealed_pae_instruction_hash = paeSealed ? "d".repeat(64) : null;
   return approved;
 }
@@ -285,10 +285,10 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   expect(unexpectedWrites).toEqual([]);
 });
 
-test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }) => {
+test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }, testInfo: TestInfo) => {
   for (const scenario of [
     { paeSealed: false, expectedStage: "Assurance", expectedStatus: "Assurance failed or blocked; no PASS assurance is available", expectedGuidance: "Authorization recorded · Assurance failed/blocked" },
-    { paeSealed: true, expectedStage: "Payment", expectedStatus: "Arc Testnet proxy prepared; execution awaits separate exact-packet gate", expectedGuidance: "Approved instruction is sealed for the Arc Testnet settlement proxy" },
+    { paeSealed: true, expectedStage: "Payment", expectedStatus: "No current exact execution packet is available. Payment authority must be re-established before submission.", expectedGuidance: "No current exact execution packet is available. Payment authority must be re-established before submission." },
   ]) {
     const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
     const writes = await openFixture(page, postApprovalNPlusOneDetail(scenario.paeSealed), queue);
@@ -297,6 +297,9 @@ test("post-approval N+1 response states remain blocked without assessment action
     await expect(lifecycle.locator('[aria-current="step"]')).toContainText(scenario.expectedStage);
     await expect(lifecycle).toContainText(scenario.expectedStatus);
     await expect(page.getByTestId("current-next-step")).toContainText(scenario.expectedGuidance);
+    if (scenario.paeSealed) {
+      await page.screenshot({ path: testInfo.outputPath("sealed-no-current-packet.png") });
+    }
     await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
     await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
     await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assessment" }).click();

@@ -617,6 +617,9 @@ describe("Command Center mounted Operational Report", () => {
     authorized.aggregate.destination_operational_status = "ACTIVE";
     authorized.aggregate.source_wallet_status = "ACTIVE";
     authorized.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    authorized.execution_packet = { packet_sha256: "c".repeat(64), packet: { obligation_id: "OBL-SEALED-PROXY" } };
+    authorized.sealed_pae_instruction_hash = "d".repeat(64);
+    authorized.execution_gate = "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-SEALED-PROXY", true)] }))
       : Promise.resolve(response(authorized)));
@@ -753,7 +756,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment"));
     expect(lifecycle.textContent).toContain("AssessmentNot current for this version");
     expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Approved instruction is sealed for the Arc Testnet settlement proxy");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("No current exact execution packet is available. Payment authority must be re-established before submission.");
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
 
