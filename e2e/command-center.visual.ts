@@ -430,9 +430,14 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
   await expect(page.getByRole("button", { name: /Switch obligation/ })).toBeVisible();
+  const assertMobileTarget = async (locator: ReturnType<typeof page.getByRole> | ReturnType<typeof page.locator>, label: string) => {
+    expect(await locator.evaluate((element) => element.getBoundingClientRect().height), `${label} mobile target`).toBeGreaterThanOrEqual(44);
+  };
+  await assertMobileTarget(page.getByRole("button", { name: /Switch obligation/ }), "Switch obligation");
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeHidden();
   await page.getByRole("button", { name: /Switch obligation/ }).click();
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeVisible();
+  await assertMobileTarget(page.getByRole("button", { name: /OBL-UAT-01/ }), "Queue obligation");
   await page.getByRole("button", { name: "Close obligation list" }).click();
   const mobilePrimary = page.locator('[data-testid="current-next-step"] button[data-primary-action="true"]');
   await expect(mobilePrimary).toBeVisible();
@@ -441,6 +446,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
   await expect(page.getByText("Step 1 of 6 · Obligation")).toHaveAttribute("aria-live", "polite");
+  await assertMobileTarget(page.locator("summary").filter({ hasText: "View all stages" }), "View all stages");
   const mobileBack = page.getByRole("button", { name: "Back" });
   await expect(mobileBack).toBeVisible();
   expect(await mobileBack.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
@@ -450,9 +456,14 @@ test("Command Center mobile layout and review image", async ({ page }) => {
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
   ]);
   await page.getByText("Demonstrations", { exact: true }).click();
+  await assertMobileTarget(page.locator("summary").filter({ hasText: "Demonstrations" }), "Demonstrations");
   await page.getByText("Read-only sample", { exact: true }).click();
+  await assertMobileTarget(page.locator("summary").filter({ hasText: "Read-only sample" }), "Read-only sample");
+  await assertMobileTarget(page.getByRole("button", { name: "Operational Report (secondary)" }), "Operational Report");
   const beforePlayback = unexpectedWrites.length;
   await page.getByRole("button", { name: "Show sample playback" }).click();
+  await assertMobileTarget(page.getByRole("button", { name: "Hide sample playback" }), "Sample playback");
+  await assertMobileTarget(page.locator("summary").filter({ hasText: "Evidence & technical details" }), "Sample evidence disclosure");
   const playback = page.getByRole("region", { name: "Read-only sample playback" });
   await expect(playback).toContainText("No approval, assurance, provider call, or settlement is performed");
   await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination branch — expected BLOCK");

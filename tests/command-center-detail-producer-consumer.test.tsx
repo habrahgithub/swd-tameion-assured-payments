@@ -719,6 +719,40 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
+  it("keeps assessment coverage advisory and aggregate version in collapsed technical evidence", async () => {
+    const unassessed = new DemoState();
+    const firstSource = unassessed.liveUsageRecords[0];
+    if (!firstSource) throw new Error("Frozen source set is empty.");
+    const unassessedBody = await detailJson(unassessed, firstSource.obligation_id);
+    const unassessedQueue = await listJson(unassessed);
+    const { main: unassessedMain } = await renderProducerJson(unassessedBody, [], unassessedQueue);
+    fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
+    expect(unassessedMain.textContent).toContain("Assessment coverage is advisory; check each selected obligation's current detail for its recorded execution and provider status.");
+    expect(unassessedMain.textContent).not.toMatch(/no provider submission/i);
+    cleanup();
+
+    const fixture = await proxyPreparedWithoutCurrentAssessment(true);
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.demo_arc_trust_simulated = false;
+    body.aggregate = {
+      ...body.aggregate,
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+      destination_verification_status: "VERIFIED",
+      destination_operational_status: "ACTIVE",
+      source_wallet_ref: "CURRENT-ROUTE-SOURCE-WALLET",
+      source_wallet_status: "ACTIVE",
+    };
+    const queue = await listJson(fixture.state);
+    const { main } = await renderProducerJson(body, [], queue);
+    const developerEvidence = screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement;
+    expect(developerEvidence.open).toBe(false);
+    expect(developerEvidence.textContent).toContain("Aggregate version");
+    const visibleOutsideTechnicalEvidence = Array.from(main.querySelectorAll("*"))
+      .filter((element) => element.children.length === 0 && /aggregate version/i.test(element.textContent ?? ""))
+      .filter((element) => !developerEvidence.contains(element));
+    expect(visibleOutsideTechnicalEvidence).toHaveLength(0);
+  });
+
   it("consumes the actual 422 assurance refusal with N+1 and no sealed PAE as NOT_CREATED evidence", async () => {
     const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
@@ -862,5 +896,36 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(receipt.textContent).toContain("Destination matchconfirmed");
     expect(receipt.textContent).toContain("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
     expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
+  });
+
+  it.each([
+    ["SUBMITTING", "Submission is in progress. Provider outcome has not been reconciled; continue with read-only reconciliation for this same intent. Do not resubmit."],
+    ["SUBMITTED", "Submission is recorded. Provider outcome is awaiting reconciliation for this same intent; reconcile read-only and do not resubmit."],
+  ] as const)("renders the recorded %s execution as pending reconciliation from the detail GET", async (status, expectedReceipt) => {
+    const fixture = await preparedAuthorizedState();
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.aggregate = { ...body.aggregate, pae_state: "SUBMITTED", execution_state: status };
+    body.truth.tameion_control_truth = {
+      ...body.truth.tameion_control_truth,
+      pae_state: "SUBMITTED",
+      execution_state: status,
+      execution_release_authority: "SUBMITTED_TO_PROVIDER",
+    };
+    body.execution = {
+      status,
+      provider_ref: null,
+      idempotency_key: "pending-producer-consumer-instruction",
+      atomic_amount: body.settlement_proxy.preflight.atomic_amount,
+      destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+      provider_evidence: null,
+    };
+
+    await renderProducerJson(body);
+    fireEvent.click(screen.getByRole("button", { name: "Reconciliation" }));
+    const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+    expect(receipt.textContent).toContain(expectedReceipt);
+    expect(receipt.textContent).not.toContain("No Tameion execution record is recorded for this instruction");
+    expect(receipt.textContent).toContain("No provider reference is recorded for this instruction");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 });

@@ -743,7 +743,7 @@ function EvidenceAndRuntimeDetail({ assessment }: { assessment: AssessmentReview
   const { provider_truth: providerTruth, race } = assessment;
   return (
     <details className="rounded border border-[var(--color-border)] px-3 py-2 text-xs">
-      <summary className="cursor-pointer select-none text-[var(--color-ink-muted)]">Evidence &amp; runtime detail</summary>
+      <summary className="min-h-11 cursor-pointer select-none py-2 text-[var(--color-ink-muted)]">Evidence &amp; runtime detail</summary>
       <div className="mt-2 space-y-1">
         <Field label="Assessment ID" value={assessment.assessment_id} />
         <div className="flex items-baseline justify-between gap-4 border-b border-[var(--color-border)] py-1.5">
@@ -1073,7 +1073,7 @@ function SimulatedDemoStages() {
         </div>
       </section>
       <details className="rounded border border-[var(--color-border)] px-3 py-2 text-[12px]">
-        <summary className="cursor-pointer font-semibold text-[var(--color-ink-muted)]">Evidence &amp; technical details</summary>
+        <summary className="min-h-11 cursor-pointer py-2 font-semibold text-[var(--color-ink-muted)]">Evidence &amp; technical details</summary>
         <p className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Deterministic sample fixture; zero network requests from playback. It does not prove readiness, selected-obligation execution, or live Arc settlement.</p>
       </details>
     </div>
@@ -1791,7 +1791,7 @@ export function CommandCenter() {
             aria-expanded={mobileQueueOpen}
             aria-controls="genuine-obligation-queue"
             onClick={() => setMobileQueueOpen((open) => !open)}
-            className="mb-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-start text-[13px] font-semibold text-[var(--color-ink)] md:hidden"
+            className="mb-3 min-h-11 w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-start text-[13px] font-semibold text-[var(--color-ink)] md:hidden"
           >
             {mobileQueueOpen ? "Close obligation list" : `Switch obligation${selected ? ` · ${selected.service_category.replaceAll("_", " ").toLowerCase()}` : ""}`}
           </button>
@@ -2047,7 +2047,7 @@ export function CommandCenter() {
             </div>
             {selectedId && detailState === "loaded" && !terminalExecutionNoAction && firstUnmetPrerequisite?.startsWith("Payment-route assurance is not ready") && (
               <details className="mt-2 border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-warning)]">
-                <summary className="cursor-pointer font-semibold">Separate external-evidence blocker: payment-route assurance is not ready.</summary>
+                <summary className="min-h-11 cursor-pointer py-2 font-semibold">Separate external-evidence blocker: payment-route assurance is not ready.</summary>
                 <p className="mt-1">{firstUnmetPrerequisite}</p>
               </details>
             )}
@@ -2086,7 +2086,7 @@ export function CommandCenter() {
                 )}
                 {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
                 {optionalReassessmentAvailable && (
-                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="text-[12px] font-medium underline disabled:opacity-50">
+                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="min-h-11 text-start text-[12px] font-medium underline disabled:opacity-50">
                     Reassess current PAY recommendation (optional)
                   </button>
                 )}
@@ -2115,7 +2115,7 @@ export function CommandCenter() {
                     action={
                       <button
                         type="button"
-                        className="text-[12px] font-semibold underline text-[var(--color-warning)]"
+                        className="min-h-11 text-start text-[12px] font-semibold underline text-[var(--color-warning)]"
                         disabled={detailState !== "loaded" || !displayedAssessment.race}
                         onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(detail!.current_assessment)!)}
                       >
@@ -2130,7 +2130,7 @@ export function CommandCenter() {
                     label="Assessment evidence under review — authorization locked"
                     allAssessed={allAssessed}
                     action={
-                      <button type="button" className="text-[12px] font-semibold underline" onClick={() => setDisplayedAssessment(null)}>
+                      <button type="button" className="min-h-11 text-start text-[12px] font-semibold underline" onClick={() => setDisplayedAssessment(null)}>
                         Close evidence review
                       </button>
                     }
@@ -2144,7 +2144,7 @@ export function CommandCenter() {
                     action={
                       <button
                         type="button"
-                        className="text-[12px] font-semibold underline"
+                        className="min-h-11 text-start text-[12px] font-semibold underline"
                         disabled={detailState !== "loaded" || !currentAssessment.race}
                         onClick={() => setDisplayedAssessment(assessmentReviewSnapshot(currentAssessment)!)}
                       >
@@ -2160,7 +2160,7 @@ export function CommandCenter() {
                 )}
                 {assessmentAction === "none" && <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessmentActionStatus}</p>}
                 {optionalReassessmentAvailable && (
-                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="text-[12px] font-medium underline disabled:opacity-50">
+                  <button type="button" disabled={busy} onClick={() => void runAssessment()} className="min-h-11 text-start text-[12px] font-medium underline disabled:opacity-50">
                     Reassess current PAY recommendation (optional)
                   </button>
                 )}
@@ -2188,7 +2188,7 @@ export function CommandCenter() {
                         : "Not all obligations have been assessed. Every obligation requires a sealed assessment before the Safety Kernel or PAE can run."}
                     </p>
                     <p className="mt-1 text-[var(--color-ink-muted)]">
-                      {lifecycleStopLabel({ presentation: listPresentation, total: obligations.length, assessed: assessedCount, pay: payCandidateCount })} No payment execution, no signed PAE, no provider submission.
+                      {lifecycleStopLabel({ presentation: listPresentation, total: obligations.length, assessed: assessedCount, pay: payCandidateCount })} Assessment coverage is advisory; check each selected obligation's current detail for its recorded execution and provider status.
                     </p>
                   </div>
                 ) : (
@@ -2216,7 +2216,7 @@ export function CommandCenter() {
                     Boolean(detailState === "loaded" && detail?.settlement_proxy),
                     Boolean(detailState === "loaded" && detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution),
                   )}
-                  {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && hasCurrentPayAssessment && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
+                  {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && hasCurrentPayAssessment && selectedId && <> Authorization review applies to the current PAY assessment.</>}
                 </p>
                 {detailState === "loaded" && selectedId && detail && (
                   <section aria-label="Approver decision packet" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
@@ -2393,11 +2393,17 @@ export function CommandCenter() {
                     ? "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION"
                     : detail.execution?.status === "UNKNOWN"
                       ? "Outcome unknown · read-only reconciliation only; do not resubmit"
+                      : detail.execution?.status === "SUBMITTING"
+                        ? "Submission is in progress. Provider outcome has not been reconciled; continue with read-only reconciliation for this same intent. Do not resubmit."
+                        : detail.execution?.status === "SUBMITTED"
+                          ? "Submission is recorded. Provider outcome is awaiting reconciliation for this same intent; reconcile read-only and do not resubmit."
                       : detail.execution?.status === "FAILED"
                         ? "Provider attempt failed · successful reconciliation is not recorded"
                         : detail.execution?.status === "BLOCKED"
                           ? "Execution is blocked · external provider outcome is not established by this record"
-                          : "No Tameion execution record is recorded for this instruction";
+                          : detail.execution == null
+                            ? "No Tameion execution record is recorded for this instruction"
+                            : "An execution record is present; its status is not classified in this receipt.";
                   return (
                     <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
                       <h3 className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
@@ -2775,17 +2781,17 @@ export function CommandCenter() {
       </div>
 
       <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-        <summary className="cursor-pointer text-[12px] font-semibold text-[var(--color-ink)]">Demonstrations</summary>
+        <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink)]">Demonstrations</summary>
         <div className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
           <details className="rounded border border-[var(--color-warning)] px-3 py-2">
-            <summary className="cursor-pointer text-[13px] font-semibold text-[var(--color-warning)]">Read-only sample</summary>
+            <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-warning)]">Read-only sample</summary>
             <section aria-label="Simulated demonstration" className="mt-3 space-y-3 border-t border-[var(--color-border)] pt-3">
               <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
                 <div>
                   <p className="text-[13px] font-semibold text-[var(--color-warning)]">Illustrative only · not a genuine payment</p>
                   <p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Playback uses a fixed local fixture. It makes no approval, assurance, provider, or execution requests.</p>
                 </div>
-                <button type="button" aria-expanded={samplePlaybackVisible} onClick={() => setSamplePlaybackVisible((visible) => !visible)} className="rounded border border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-ink)] hover:bg-[var(--color-surface)]">
+                <button type="button" aria-expanded={samplePlaybackVisible} onClick={() => setSamplePlaybackVisible((visible) => !visible)} className="min-h-11 rounded border border-[var(--color-border)] px-3 py-2 text-[13px] font-semibold text-[var(--color-ink)] hover:bg-[var(--color-surface)]">
                   {samplePlaybackVisible ? "Hide sample playback" : "Show sample playback"}
                 </button>
               </div>
