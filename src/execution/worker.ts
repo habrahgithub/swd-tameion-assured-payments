@@ -52,6 +52,8 @@ export interface ExecutionWorkerOptions {
     aggregate: AuthorityAggregate;
     trustedKeys: TrustedKeyEntry[];
     actorAuthorities: ActorAuthorityRecord[];
+    /** Kill-switch decision derived from the same latest durable authority snapshot. */
+    executionKillSwitched: boolean;
   }>;
   /** Resolve the approver against a current authority source; request fields are never a substitute. */
   resolveActorAuthority?: (
@@ -235,9 +237,11 @@ export class ExecutionWorker {
     // Re-resolve the durable human authority and business prerequisites at
     // the last worker-owned boundary after the reservation write. A stale
     // or unavailable authority source blocks before submitTransfer.
+    let preSubmitAggregate = this.store.get(payload.organization_id, obligationId);
     try {
       const durableContext = await this.options.reloadDurableExecutionContext?.(payload.organization_id, obligationId);
       const latestAggregate = durableContext?.aggregate ?? this.store.get(payload.organization_id, obligationId);
+      preSubmitAggregate = latestAggregate;
       if (durableContext) {
         const currentTrustedKeys = new TrustedKeyRegistry();
         currentTrustedKeys.restore(durableContext.trustedKeys);
@@ -256,7 +260,10 @@ export class ExecutionWorker {
       if (latestAggregate.aggregate_version !== Number(payload.aggregate_version)) {
         throw new ExecutionBlockedError("Aggregate version changed at the final pre-submit gate", "PAE-011");
       }
-      if (this.store.isExecutionKillSwitched(payload.organization_id, obligationId)) {
+      const killSwitchActive = durableContext
+        ? durableContext.executionKillSwitched
+        : this.store.isExecutionKillSwitched(payload.organization_id, obligationId);
+      if (killSwitchActive) {
         throw new ExecutionBlockedError("Kill switch became active at the final pre-submit gate", "WDG-001");
       }
       const latestDestinationCurrent = payload.destination_ref === latestAggregate.destination_ref &&
@@ -281,7 +288,45 @@ export class ExecutionWorker {
         destination_address: payload.destination_address,
       };
       this.executionLedger.set(payload.idempotency_key, blocked);
-      await this.onDurableStateChange?.();
+      try {
+        await this.onDurableStateChange?.();
+      } catch (persistenceError) {
+        this.store.restoreAggregateSnapshot(preSubmitAggregate);
+        this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+        throw persistenceError;
+      }
+      throw error;
+    }
+
+    // Expiry is time-sensitive and can be crossed while the reservation is
+    // being persisted or the durable authorization context is reloaded. Make
+    // this the last local gate, with no await before the provider boundary.
+    const finalNow = (this.options.now?.() ?? new Date()).getTime();
+    if (!Number.isFinite(expiry) || expiry <= finalNow) {
+      const error = new ExecutionBlockedError(
+        "PAE expiry was reached at the final pre-submit gate; the reserved instruction was refused",
+        "EXP-001",
+      );
+      this.store.markBlocked(payload.organization_id, obligationId, "PAE expired at final pre-submit gate");
+      const blocked: ExecutionRecord = {
+        obligation_id: obligationId,
+        idempotency_key: payload.idempotency_key,
+        provider_ref: null,
+        status: "BLOCKED",
+        atomic_amount: payload.atomic_amount,
+        destination_address: payload.destination_address,
+      };
+      this.executionLedger.set(payload.idempotency_key, blocked);
+      // The reservation is already durable. A failed CAS while recording this
+      // refusal must propagate and must never be represented as a persisted
+      // BLOCKED outcome by the caller.
+      try {
+        await this.onDurableStateChange?.();
+      } catch (persistenceError) {
+        this.store.restoreAggregateSnapshot(preSubmitAggregate);
+        this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+        throw persistenceError;
+      }
       throw error;
     }
 

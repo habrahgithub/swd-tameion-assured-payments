@@ -7,6 +7,7 @@ import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { sealDurableApprovalRecord } from "../src/pae/durable-records";
 import { processTrustedKeyRegistry } from "../src/pae/keys";
 import type { DurableApprovalRecord, DurableAssuranceRecord, SealedPae } from "../src/domain/schemas";
+import { DemoStateConflictError } from "../src/server/supabase-demo-state-repository";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const ORG = "ORG-DEMO-001";
@@ -124,6 +125,114 @@ describe("ExecutionWorker final authority gates", () => {
     });
     await expect(futureWorker.execute(future.sealed)).resolves.toMatchObject({ status: "SETTLED" });
     expect(future.adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it.each(["reservation persistence", "durable context reload"] as const)(
+    "rechecks PAE expiry after %s and durably refuses without provider submission",
+    async (advanceDuring) => {
+      const fixture = authorizedFixture();
+      const expiry = Date.parse(fixture.sealed.payload.expiry);
+      let currentTime = expiry - 1;
+      let durableWrites = 0;
+      let persistedAggregate: AuthorityAggregate | undefined;
+      const worker = new ExecutionWorker(
+        fixture.store,
+        fixture.adapter,
+        async () => {
+          durableWrites += 1;
+          if (advanceDuring === "reservation persistence" && durableWrites === 1) currentTime = expiry;
+          persistedAggregate = fixture.store.get(ORG, OBLIGATION);
+        },
+        undefined,
+        {
+          now: () => new Date(currentTime),
+          loadAuthorizationArtifacts: () => fixture.authorization,
+          resolveActorAuthority: () => fixture.actorAuthority,
+          reloadDurableExecutionContext: async () => {
+            if (advanceDuring === "durable context reload") currentTime = expiry;
+            return {
+              authorization: fixture.authorization,
+              aggregate: fixture.store.get(ORG, OBLIGATION),
+              trustedKeys: processTrustedKeyRegistry.export(),
+              actorAuthorities: [fixture.actorAuthority],
+              executionKillSwitched: false,
+            };
+          },
+        },
+      );
+
+      await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "EXP-001" });
+      expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
+      expect(worker.getExecutionRecord(fixture.sealed.payload.idempotency_key)).toMatchObject({ status: "BLOCKED" });
+      expect(persistedAggregate).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
+      expect(fixture.adapter.getSubmissionCount()).toBe(0);
+      expect(durableWrites).toBe(2);
+    },
+  );
+
+  it.each([
+    { scope: "TRANSACTION_DISABLED" as const, target: OBLIGATION },
+    { scope: "ORGANIZATION_EXECUTION_DISABLED" as const, target: ORG },
+    { scope: "GLOBAL_EXECUTION_DISABLED" as const, target: undefined },
+  ])("honors a durable $scope switch activated after reservation without aggregate version change", async ({ scope, target }) => {
+    const fixture = authorizedFixture();
+    const currentDurableStore = AuthorityStore.fromSnapshot(fixture.store.exportSnapshot());
+    const preparedVersion = currentDurableStore.get(ORG, OBLIGATION).aggregate_version;
+    currentDurableStore.activateKillSwitch(scope, target);
+    expect(currentDurableStore.get(ORG, OBLIGATION).aggregate_version).toBe(preparedVersion);
+    const worker = fixture.worker({
+      reloadDurableExecutionContext: async () => ({
+        authorization: fixture.authorization,
+        aggregate: fixture.store.get(ORG, OBLIGATION),
+        trustedKeys: processTrustedKeyRegistry.export(),
+        actorAuthorities: [fixture.actorAuthority],
+        executionKillSwitched: currentDurableStore.isExecutionKillSwitched(ORG, OBLIGATION),
+      }),
+    });
+
+    await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "WDG-001" });
+    expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
+    expect(fixture.adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("does not publish a kill-switch refusal when its durable CAS conflicts", async () => {
+    const fixture = authorizedFixture();
+    const currentDurableStore = AuthorityStore.fromSnapshot(fixture.store.exportSnapshot());
+    currentDurableStore.activateKillSwitch("GLOBAL_EXECUTION_DISABLED");
+    let writes = 0;
+    let durableAuthority = fixture.store.exportSnapshot();
+    const conflict = new DemoStateConflictError();
+    const worker = new ExecutionWorker(
+      fixture.store,
+      fixture.adapter,
+      async () => {
+        writes += 1;
+        if (writes === 1) {
+          durableAuthority = fixture.store.exportSnapshot();
+          return;
+        }
+        throw conflict;
+      },
+      undefined,
+      {
+        loadAuthorizationArtifacts: () => fixture.authorization,
+        resolveActorAuthority: () => fixture.actorAuthority,
+        reloadDurableExecutionContext: async () => ({
+          authorization: fixture.authorization,
+          aggregate: fixture.store.get(ORG, OBLIGATION),
+          trustedKeys: processTrustedKeyRegistry.export(),
+          actorAuthorities: [fixture.actorAuthority],
+          executionKillSwitched: currentDurableStore.isExecutionKillSwitched(ORG, OBLIGATION),
+        }),
+      },
+    );
+
+    await expect(worker.execute(fixture.sealed)).rejects.toBe(conflict);
+    expect(writes).toBe(2);
+    expect(durableAuthority.aggregates[0]).toMatchObject({ pae_state: "RESERVED", execution_state: "SUBMITTING" });
+    expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "RESERVED", execution_state: "SUBMITTING" });
+    expect(worker.getExecutionRecord(fixture.sealed.payload.idempotency_key)).toMatchObject({ status: "SUBMITTING" });
+    expect(fixture.adapter.getSubmissionCount()).toBe(0);
   });
 
   it("blocks approval hash tampering and missing current approval without a claim", async () => {
@@ -262,6 +371,7 @@ describe("ExecutionWorker final authority gates", () => {
         aggregate: fixture.store.get(ORG, OBLIGATION),
         trustedKeys: processTrustedKeyRegistry.export(),
         actorAuthorities: [{ ...fixture.actorAuthority, ...change }],
+        executionKillSwitched: false,
       }),
     });
 
@@ -278,6 +388,7 @@ describe("ExecutionWorker final authority gates", () => {
         aggregate: fixture.store.get(ORG, OBLIGATION),
         trustedKeys: processTrustedKeyRegistry.export(),
         actorAuthorities: [fixture.actorAuthority],
+        executionKillSwitched: false,
       }),
     });
 
@@ -295,6 +406,7 @@ describe("ExecutionWorker final authority gates", () => {
         aggregate: fixture.store.get(ORG, OBLIGATION),
         trustedKeys: revokedKeys,
         actorAuthorities: [fixture.actorAuthority],
+        executionKillSwitched: false,
       }),
     });
 

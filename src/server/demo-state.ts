@@ -437,6 +437,7 @@ export class DemoState {
             aggregate: this.store.get(organizationId, obligationId),
             trustedKeys: this.trustedKeys.export(),
             actorAuthorities: this.actorAuthorities.export(),
+            executionKillSwitched: this.store.isExecutionKillSwitched(organizationId, obligationId),
           };
         }
         const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
@@ -451,6 +452,7 @@ export class DemoState {
           aggregate: currentStore.get(organizationId, obligationId),
           trustedKeys: current.trusted_keys,
           actorAuthorities: current.actor_authorities,
+          executionKillSwitched: currentStore.isExecutionKillSwitched(organizationId, obligationId),
         };
       }),
     });
@@ -843,6 +845,7 @@ export class J2aRealTestnetDemoState {
               aggregate: this.store.get(organizationId, obligationId),
               trustedKeys: this.trustedKeys.export(),
               actorAuthorities: this.actorAuthorities.export(),
+              executionKillSwitched: this.store.isExecutionKillSwitched(organizationId, obligationId),
             };
           }
           const stored = await this.repository.loadOrSeed(this.namespace, this.exportSnapshot() as unknown as Record<string, unknown>);
@@ -857,6 +860,7 @@ export class J2aRealTestnetDemoState {
             aggregate: currentStore.get(organizationId, obligationId),
             trustedKeys: current.trusted_keys,
             actorAuthorities: current.actor_authorities,
+            executionKillSwitched: currentStore.isExecutionKillSwitched(organizationId, obligationId),
           };
         }),
       },
