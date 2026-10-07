@@ -5,6 +5,7 @@ import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-
 import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
 import { getCurrentSettlementProxyPacket } from "../../../../src/server/settlement-proxy-packet";
 import { DemoStateConflictError, DemoStatePersistenceError } from "../../../../src/server/supabase-demo-state-repository";
+import { projectAssuranceEvidence } from "../../../../src/server/assurance-evidence-projection";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -118,6 +119,18 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       source_currency: aggregate.source_currency ?? "UNKNOWN",
       settlement_conversion_rate: aggregate.settlement_conversion_rate ?? null,
     });
+    const assuranceEvidence = projectAssuranceEvidence({
+      organizationId: DEMO_ORGANIZATION_ID,
+      obligationId: id,
+      aggregate,
+      executionReleaseAuthority: truth.tameion_control_truth.execution_release_authority,
+      executionKillSwitched,
+      execution: execution ?? null,
+      sealedPae: sealed ?? null,
+      authorizationArtifacts: state.getAuthorizationArtifacts(id) ?? null,
+      trustedKeys: state.trustedKeys.export(),
+      now: new Date(),
+    });
     return NextResponse.json({
       truth,
       aggregate,
@@ -148,6 +161,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           ? "PRIME_AUTHORIZED_EXACT_PACKET"
           : executionPacket ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
       execution_kill_switched: executionKillSwitched,
+      assurance_evidence: assuranceEvidence,
     });
   } catch (error) {
     if (error instanceof AuthorityError) {

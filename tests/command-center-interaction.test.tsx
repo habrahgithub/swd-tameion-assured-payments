@@ -607,7 +607,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(lifecycle.textContent).toContain("Authorized — sealed PAE exists"));
     expect(lifecycle.textContent).toContain("AuthorizationAuthorized — sealed PAE exists");
     expect(lifecycle.textContent).toContain("AssurancePAE is sealed; detailed assurance unavailable in this view");
-    expect(lifecycle.textContent).toContain("PaymentBlocked — no Arc payment binding for this obligation");
+    expect(lifecycle.textContent).toContain("PaymentArc Testnet proxy not prepared for this obligation");
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
 
@@ -650,7 +650,7 @@ describe("Command Center mounted Operational Report", () => {
       executionStatus: "BLOCKED",
       releaseAuthority: "BLOCKED",
       paeState: "REVOKED",
-      currentStage: "Payment",
+      currentStage: "Reconciliation",
       expected: /blocked before provider submission/i,
     },
     {
@@ -803,7 +803,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.textContent).toContain("AssessmentRequires attention");
     expect(lifecycle.textContent).toContain("AuthorizationLocked — assessment requires attention");
     expect(lifecycle.textContent).toContain("AssuranceFinal assurance not run");
-    expect(lifecycle.textContent).toContain("PaymentBlocked — no Arc payment binding for this obligation");
+    expect(lifecycle.textContent).toContain("PaymentArc Testnet proxy not prepared for this obligation");
     expect(lifecycle.textContent).toContain("ReconciliationNo Arc settlement to reconcile");
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
   });
@@ -863,7 +863,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.textContent).toContain("PAY — advisory");
     expect(lifecycle.textContent).toContain("Approval locked — route assurance not ready");
     expect(lifecycle.textContent).toContain("Final assurance not run");
-    expect(lifecycle.textContent).toContain("Blocked — no Arc payment binding for this obligation");
+    expect(lifecycle.textContent).toContain("Arc Testnet proxy not prepared for this obligation");
     expect(lifecycle.textContent).toContain("No Arc settlement to reconcile");
     const selectedHeader = screen.getByRole("region", { name: "Selected source obligation" });
     expect(within(selectedHeader as HTMLElement).getByText("PAY recommended — assurance not ready; authorization locked")).toBeTruthy();

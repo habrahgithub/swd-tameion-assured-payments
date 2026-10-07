@@ -4,6 +4,7 @@ import type { RaceAssessment } from "../src/agent/schema";
 import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay, type AssessmentTraceStep } from "../src/client/command-center-state";
 
 import {
+  authorizationPanelCopy,
   aggregateVersionLabel,
   assessmentCoverageLabel,
   assessmentGateCopy,
@@ -17,6 +18,15 @@ import {
   operationalReportDetailPrompt,
   workflowState,
 } from "../app/command-center";
+
+describe("authorization copy follows prepared proxy state", () => {
+  it("does not describe an existing proxy as a missing payment intent before PAE sealing", () => {
+    expect(authorizationPanelCopy("loaded", true, false, true, false)).toBe(
+      "The Arc Testnet proxy is prepared. Current assessment and assurance determine whether authorization is available; no PAE is sealed.",
+    );
+    expect(authorizationPanelCopy("loaded", true, false, false, false)).toContain("no payment intent exists");
+  });
+});
 
 describe("Command Center obligation list presentation", () => {
   it("distinguishes loading, error, empty and populated genuine lists", () => {

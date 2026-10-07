@@ -31,8 +31,15 @@ interface ObligationSummary {
   assessed: boolean;
   decision: string | null;
   provider_mode: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL" | null;
+  aggregate_state?: string;
+  pae_sealed?: boolean;
+  execution_status?: string | null;
   route_assurance_status?: "Route assurance ready" | "Route assurance not ready";
 }
+
+type AssuranceEvidenceView =
+  | { state: "NOT_CREATED" | "UNAVAILABLE" | "INVALID"; message: string; control_results: [] }
+  | { state: "AVAILABLE_CURRENT_BINDING" | "AVAILABLE_HISTORICAL"; message: string; control_results: ControlResultView[]; overall: "PASS"; assurance_id: string; recorded_at: string; aggregate_version: string; policy_version: string };
 
 interface AggregateView {
   aggregate_version: number;
@@ -96,6 +103,7 @@ interface ObligationDetail {
   sealed_pae_instruction_hash?: string | null;
   execution_gate?: string;
   execution_kill_switched: boolean;
+  assurance_evidence?: AssuranceEvidenceView;
 }
 
 function isRouteAssuranceReady(detail: ObligationDetail | null): boolean {
@@ -214,6 +222,7 @@ export function authorizationPanelCopy(state: DetailState, hasSelection: boolean
   if (authorizationRecordedBlocked) return "Authorization was recorded, but assurance failed or is blocked. No PASS assurance, usable PAE, or execution is available; reassessment and further authorization are unavailable here.";
   if (paeSealed && hasSettlementProxy) return "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks.";
   if (paeSealed) return "An authorization envelope is already sealed for this obligation. No further authorization action is available here; provider submission remains separate.";
+  if (hasSettlementProxy) return "The Arc Testnet proxy is prepared. Current assessment and assurance determine whether authorization is available; no PAE is sealed.";
   return "Current detail confirms no payment intent exists. If every deterministic Safety Kernel control passes, the system can seal a signed Payment Authorization Envelope; no provider submission occurs here.";
 }
 
@@ -481,14 +490,14 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
   if (execution?.status === "FAILED") {
     return { label: "Execution failed", tone: "danger", explanation: "Provider confirmed the attempt failed." };
   }
-  if (releaseAuthority === "BLOCKED" || releaseAuthority === "REVOKED") {
+  if ((releaseAuthority === "BLOCKED" || releaseAuthority === "REVOKED") && (detail.pae_sealed || execution)) {
     return {
       label: "Blocked",
       tone: "danger",
       explanation: "Execution authority is no longer usable. Review the control and evidence state before any new attempt.",
     };
   }
-  if (releaseAuthority === "EXPIRED") {
+  if (releaseAuthority === "EXPIRED" && (detail.pae_sealed || execution)) {
     return { label: "PAE expired", tone: "warning", explanation: "The sealed payment authority expired and cannot be submitted." };
   }
   if (releaseAuthority === "SUBMITTED_TO_PROVIDER") {
@@ -845,7 +854,7 @@ function PrimaryButton({
       data-primary-action="true"
       onClick={onClick}
       disabled={disabled}
-      className={`w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`min-h-[44px] w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
         danger ? "bg-[var(--color-danger)] hover:opacity-90" : "bg-[var(--color-ink)] hover:opacity-90"
       }`}
     >
@@ -939,7 +948,7 @@ function SafetyKernelBreakdown({ overall, controlResults }: { overall: string; c
   return (
     <div className="max-w-xl space-y-2 border border-[var(--color-border)] rounded-[var(--radius-md)] p-3">
       <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-ink)]">
-        Safety Kernel — {overall} ({controlResults.filter((c) => c.result === "PASS").length}/{controlResults.length} PASS)
+        Stored assurance evidence — {overall} ({controlResults.filter((c) => c.result === "PASS").length}/{controlResults.length} PASS)
       </p>
       <ul className="space-y-1">
         {controlResults.map((c) => {
@@ -1305,25 +1314,27 @@ export function CommandCenter() {
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return "Submitted to Arc Testnet provider; reconciliation is pending";
         if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "BLOCKED") return reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail));
-        if (detail.settlement_proxy && invalidReleaseAuthority) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution_kill_switched) return "Execution suspended by active kill switch; no submission is permitted";
+        if (detail.settlement_proxy && invalidReleaseAuthority && (detail.pae_sealed || detail.execution)) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.pae_sealed && !detail.execution &&
             (!detail.execution_packet || !detail.sealed_pae_instruction_hash || detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION")) {
           return "No current exact execution packet is available. Payment authority must be re-established before submission.";
         }
         if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Authorization recorded; assurance failed or blocked; no usable PAE or execution";
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet proxy prepared; execution awaits separate exact-packet gate";
+        if (detail.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)) return "Arc Testnet proxy prepared; fresh assessment required before authorization";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
         if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
           return `Simulated execution ${judgeReadableState(detail.execution.status)}; no Arc payment binding`;
         }
-        return "Blocked — no Arc payment binding for this obligation";
+        return "Arc Testnet proxy not prepared for this obligation";
       case "Reconciliation":
         if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Read-only reconciliation pending; no resubmission";
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return `Submission recorded; reconcile this same intent; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "BLOCKED") return reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail));
-        if (detail.settlement_proxy && invalidReleaseAuthority) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && invalidReleaseAuthority && (detail.pae_sealed || detail.execution)) return `Execution record unavailable; sealed PAE is ${invalidPaeState}. Execution history unavailable; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.truth.tameion_control_truth.execution_state === "NONE") return `No execution record is present; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy) return `Execution history is unavailable; source payable remains ${sourcePayableState(detail)}`;
         if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
@@ -1337,18 +1348,18 @@ export function CommandCenter() {
     ? "Obligation"
     : detailState !== "loaded" || !detail
       ? "Obligation"
-      : detail.execution && ["SUBMITTING", "SUBMITTED", "UNKNOWN", "SETTLED"].includes(detail.execution.status)
+      : detail.execution && ["SUBMITTING", "SUBMITTED", "UNKNOWN", "SETTLED", "FAILED", "BLOCKED"].includes(detail.execution.status)
         ? "Reconciliation"
-      : detail.execution?.status === "FAILED"
-        ? "Reconciliation"
-      : detail.truth.tameion_control_truth.execution_release_authority === "BLOCKED" ||
-        detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" ||
-        detail.truth.tameion_control_truth.execution_release_authority === "EXPIRED"
-        ? "Payment"
       : detail.pae_sealed
+        ? "Payment"
+      : (detail.pae_sealed || detail.execution) && (detail.truth.tameion_control_truth.execution_release_authority === "BLOCKED" ||
+        detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" ||
+        detail.truth.tameion_control_truth.execution_release_authority === "EXPIRED")
         ? "Payment"
       : detail.aggregate.state === "AUTHORIZED"
         ? "Assurance"
+      : detail.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)
+        ? "Assessment"
       : !allAssessed || !hasCurrentAssessment || !currentAssessment || currentAssessment.decision !== "PAY"
         ? "Assessment"
         : "Authorization";
@@ -1371,10 +1382,10 @@ export function CommandCenter() {
         ? `The Arc Testnet provider attempt failed. No successful reconciliation is recorded; the source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution?.status === "BLOCKED"
         ? reconciliationLeadLine("loaded", detail.execution, true, sourcePayableState(detail))
-      : detail?.settlement_proxy && ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
-        ? `Execution record is unavailable. The sealed Arc Testnet payment authority is ${["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) ? detail.truth.tameion_control_truth.pae_state.toLowerCase() : detail.truth.tameion_control_truth.execution_release_authority.toLowerCase()}; execution history is unavailable. The source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution_kill_switched === true
         ? "Execution is suspended while a kill switch is active. No submission action is available."
+      : detail?.settlement_proxy && (detail.pae_sealed || detail.execution) && ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
+        ? `Execution record is unavailable. The sealed Arc Testnet payment authority is ${["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) ? detail.truth.tameion_control_truth.pae_state.toLowerCase() : detail.truth.tameion_control_truth.execution_release_authority.toLowerCase()}; execution history is unavailable. The source payable remains ${sourcePayableState(detail)}.`
       : noCurrentExactExecutionPacket
         ? "No current exact execution packet is available. Payment authority must be re-established before submission."
       : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
@@ -1383,6 +1394,8 @@ export function CommandCenter() {
           ? detail.settlement_proxy
             ? "Approved instruction is sealed for the Arc Testnet settlement proxy. Execution remains subject to the exact-packet gate and final pre-send checks."
             : "Blocker: this genuine obligation has no Arc payment binding; the separate fixed testnet intent does not represent it."
+          : detail?.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)
+            ? "Next step: run a fresh assessment for the prepared Arc Testnet proxy; a PAY recommendation is advisory."
           : proxyPreparationReady
             ? "Prepare the Arc Testnet proxy using read-only provider checks. Preparation changes the aggregate, so run a fresh assessment next, then review it. Payment-route assurance remains a separate authorization gate."
             : !allAssessed
@@ -1588,17 +1601,24 @@ export function CommandCenter() {
                   >
                     <span className="col-span-2 min-w-0 break-words text-[13px] font-semibold text-[var(--color-ink)]">
                       <span
-                        aria-label={o.assessed ? "assessment complete" : "assessment required"}
-                        title={o.assessed ? `Assessment complete: ${o.decision} recommendation` : "Assessment required"}
+                        aria-label={o.assessed || o.pae_sealed || o.aggregate_state === "AUTHORIZED" || Boolean(o.execution_status) ? "workflow evidence recorded" : "assessment required"}
+                        title={o.assessed ? `Assessment complete: ${o.decision} recommendation` : o.pae_sealed ? "A sealed PAE is recorded" : o.aggregate_state === "AUTHORIZED" ? "Authorization is recorded; assurance status is shown in the selected detail" : o.execution_status ? `Execution record: ${o.execution_status}` : "Assessment required"}
                         className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ background: o.assessed ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
+                        style={{ background: o.assessed || o.pae_sealed || o.aggregate_state === "AUTHORIZED" || Boolean(o.execution_status) ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
+                      {solePayCandidateId === o.obligation_id && <span className="ms-2 rounded border border-[var(--color-border-strong)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Sole PAY candidate</span>}
                     </span>
                     <span className="col-span-1 tabular text-start text-[16px] font-semibold text-[var(--color-ink)]">
                       {o.amount} {o.currency}
                     </span>
                     <span className="col-span-1 text-end text-[12px] font-semibold" style={{ color: statusColor }}>
-                      {o.assessed
+                      {o.execution_status
+                        ? o.execution_status === "SETTLED" ? "Testnet execution reconciled" : `${o.execution_status} · read current detail`
+                        : o.pae_sealed
+                          ? "Authorized · sealed PAE"
+                          : o.aggregate_state === "AUTHORIZED"
+                            ? "Authorization recorded · no sealed PAE"
+                            : o.assessed
                         ? o.decision === "PAY" ? "PAY recommendation (advisory)" : `${o.decision ?? "—"} assessment`
                         : "Assessment required"}
                     </span>
@@ -2042,7 +2062,7 @@ export function CommandCenter() {
                     Boolean(detailState === "loaded" && detail?.settlement_proxy),
                     Boolean(detailState === "loaded" && detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution),
                   )}
-                  {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
+                  {detailState === "loaded" && !detail?.pae_sealed && detail?.aggregate.state !== "AUTHORIZED" && hasCurrentPayAssessment && selectedId && <> Authorization review applies to the current PAY assessment (aggregate version: {aggregateVersionLabel(aggregateVersion, true)}).</>}
                 </p>
                 {detailState === "loaded" && selectedId && detail && (
                   <section aria-label="Genuine obligation and Arc Testnet settlement proxy" className="space-y-2 rounded border border-[var(--color-border)] p-3">
@@ -2118,14 +2138,6 @@ export function CommandCenter() {
                   <p className="text-[12px] text-[var(--color-ink-muted)]">The reviewed current PAY, proxy binding, and route assurance are ready for human authorization. Use the current next-step action above.</p>
                 )}
                 {currentResult?.label === "approve" && <ActionResultBanner result={currentResult} />}
-                {currentResult?.label === "approve" &&
-                  (() => {
-                    const data = currentResult.data as { safety_kernel?: { overall: string; control_results: ControlResultView[] } };
-                    return data.safety_kernel ? (
-                      <SafetyKernelBreakdown overall={data.safety_kernel.overall} controlResults={data.safety_kernel.control_results} />
-                    ) : null;
-                  })()}
-                {currentResult?.label === "approve" && <EvidencePanel value={currentResult.data} />}
               </div>
             )}
 
@@ -2155,10 +2167,10 @@ export function CommandCenter() {
                     )}
                     {detail.execution_packet && !detail.execution && !exactPacketGateOpen && (
                       <p className="text-[11px] text-[var(--color-warning)]">
-                        {currentPacketAwaitingPrime
-                          ? "Locked — separate Prime authorization of this exact packet is required."
-                          : detail.execution_kill_switched === true
-                            ? "Execution is suspended while a kill switch is active; packet display does not enable submission."
+                        {detail.execution_kill_switched === true
+                          ? "Execution is suspended while a kill switch is active; packet display does not enable submission."
+                          : currentPacketAwaitingPrime
+                            ? "Locked — separate Prime authorization of this exact packet is required."
                             : "Submission is unavailable because current payment authority does not permit execution."}
                       </p>
                     )}
@@ -2166,6 +2178,26 @@ export function CommandCenter() {
                     {noCurrentExactExecutionPacket && <p className="text-[11px] text-[var(--color-warning)]">No current exact execution packet is available. Payment authority must be re-established before submission.</p>}
                   </section>
                 )}
+
+                <details className="rounded border border-[var(--color-border)] p-3">
+                  <summary className="cursor-pointer text-[13px] font-semibold text-[var(--color-ink)]">View assurance evidence</summary>
+                  <div className="mt-3 space-y-2">
+                    <p role="status" className="text-[12px] text-[var(--color-ink-muted)]">
+                      {detail?.assurance_evidence?.message ?? "Assurance evidence is expected but unavailable."}
+                    </p>
+                    {detail?.assurance_evidence && (detail.assurance_evidence.state === "AVAILABLE_CURRENT_BINDING" || detail.assurance_evidence.state === "AVAILABLE_HISTORICAL") && (
+                      <>
+                        <dl className="space-y-1">
+                          <Field label="Assurance record" value={detail.assurance_evidence.assurance_id} />
+                          <Field label="Recorded at" value={detail.assurance_evidence.recorded_at} />
+                          <Field label="Recorded aggregate version" value={detail.assurance_evidence.aggregate_version} />
+                          <Field label="Recorded policy" value={detail.assurance_evidence.policy_version} />
+                        </dl>
+                        <SafetyKernelBreakdown overall={detail.assurance_evidence.overall} controlResults={detail.assurance_evidence.control_results} />
+                      </>
+                    )}
+                  </div>
+                </details>
 
                 <div
                   className={`flex flex-wrap items-center justify-between gap-3 border-s-[3px] px-3 py-2 ${

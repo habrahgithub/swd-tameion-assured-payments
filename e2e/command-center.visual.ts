@@ -212,7 +212,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(lifecycle.locator("li div span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
   ]);
-  await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
+  await expect(lifecycle).toContainText("Arc Testnet proxy not prepared for this obligation");
   await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Authorization");
   await expect(page.getByTestId("current-next-step")).toContainText("Current position · Authorization");
   await expect(page.getByTestId("current-next-step")).toContainText("Next step: review the current PAY assessment; payment-route assurance is not ready and authorization remains locked.");
@@ -241,7 +241,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(sourceProxy).toContainText("40.00 USD · OUTSTANDING");
   await expect(sourceProxy).not.toContainText("OBL-UAT-01");
   await expect(page.getByText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.")).toBeVisible();
-  await expect(lifecycle).toContainText("Blocked — no Arc payment binding for this obligation");
+  await expect(lifecycle).toContainText("Arc Testnet proxy not prepared for this obligation");
   await page.getByRole("button", { name: /OBL-UAT-03/ }).click();
   await expect(sourceProxy).toContainText("125.00 USD · OUTSTANDING");
   await expect(sourceProxy).toContainText("125.000000 USDC");
@@ -335,6 +335,8 @@ test("the permitted proxy-preparation step and its reason fit the first desktop 
       return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null };
     });
   });
+  const primaryHeight = await page.locator('[data-testid="current-next-step"] button[data-primary-action="true"]').evaluate((element) => element.getBoundingClientRect().height);
+  expect(primaryHeight).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: testInfo.outputPath("desktop-short-after.png") });
   expect(firstViewport.every((element) => element.exists && element.top! >= 0 && element.bottom! <= 761), JSON.stringify(firstViewport)).toBe(true);
   await expect(page).toHaveScreenshot("command-center-desktop-short.png", { animations: "disabled" });
@@ -408,13 +410,16 @@ test("stale detail offers only a mocked read refresh after an assessment respons
 
 test("Command Center mobile layout and review image", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const unexpectedWrites = await openFixture(page);
+  const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
   await expect(page.getByRole("button", { name: /Switch obligation/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeHidden();
   await page.getByRole("button", { name: /Switch obligation/ }).click();
   await expect(page.getByRole("button", { name: /OBL-UAT-01/ })).toBeVisible();
   await page.getByRole("button", { name: "Close obligation list" }).click();
+  const mobilePrimary = page.locator('[data-testid="current-next-step"] button[data-primary-action="true"]');
+  await expect(mobilePrimary).toBeVisible();
+  expect(await mobilePrimary.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
   await expect(page.getByText("No payment intent created")).toBeHidden();
   await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
   const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
@@ -452,4 +457,17 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await page.mouse.move(1, 1);
   await expect(page).toHaveScreenshot("command-center-mobile.png", { fullPage: true, animations: "disabled" });
   expect(unexpectedWrites).toEqual([]);
+});
+
+test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const suspended = proxyLifecycleDetail("AUTHORIZED");
+  suspended.execution_kill_switched = true;
+  const writes = await openFixture(page, suspended);
+  await page.getByRole("navigation", { name: "Command Center surfaces" }).getByRole("button", { name: "Assurance & Execution" }).click();
+  await expect(page.getByText("Execution is suspended while a kill switch is active; packet display does not enable submission.")).toBeVisible();
+  await expect(page.getByTestId("current-next-step")).toContainText("Execution is suspended while a kill switch is active");
+  await expect(page.getByTestId("current-next-step")).not.toContainText("Prime · exact-packet authorization");
+  await expect(page.getByRole("button", { name: "Submit this exact Arc Testnet proxy intent" })).toHaveCount(0);
+  expect(writes).toEqual([]);
 });
