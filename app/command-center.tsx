@@ -1250,7 +1250,7 @@ function compactProxyDestination(name: string | undefined, address: string): str
   return `${name || "Arc Testnet settlement proxy"} · ${compact}`;
 }
 
-function paymentStageStatus(detail: ObligationDetail): string {
+function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady: boolean, detailState: DetailState): string {
   if (detail.execution?.status === "UNKNOWN") return "Outcome unknown. Reconcile this same instruction read-only; do not retry or resubmit.";
   if (detail.execution?.status === "SUBMITTING") return "Submission is in progress. Wait for read-only reconciliation; do not resubmit.";
   if (detail.execution?.status === "SUBMITTED") return "Submission is recorded and awaiting reconciliation. Do not resubmit.";
@@ -1258,9 +1258,18 @@ function paymentStageStatus(detail: ObligationDetail): string {
   if (detail.execution?.status === "FAILED") return "The provider attempt failed. Review current evidence; no retry is available from this instruction.";
   if (detail.execution?.status === "BLOCKED") return "Execution is blocked. No successful settlement is established by this record.";
   if (detail.execution_kill_switched) return "A payment stop is active. No execution is permitted.";
-  if (detail.pae_sealed && detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET") return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
-  if (detail.pae_sealed) return "The instruction is sealed, but current execution authority is not available.";
-  return "No execution has been recorded for this instruction.";
+  const authority = detail.truth.tameion_control_truth.execution_release_authority;
+  const paeState = detail.truth.tameion_control_truth.pae_state;
+  if (["BLOCKED", "REVOKED", "EXPIRED"].includes(authority) || ["REVOKED", "EXPIRED"].includes(paeState)) {
+    const reason = paeState === "REVOKED" || authority === "REVOKED" ? "revoked"
+      : paeState === "EXPIRED" || authority === "EXPIRED" ? "expired" : "blocked";
+    return `Payment authority is ${reason}. This instruction is unavailable for submission; re-establish current payment authority before any new execution packet.`;
+  }
+  if (detailState === "stale") return "Payment details are stale. Refresh current status before relying on or acting on this instruction.";
+  if (!detail.pae_sealed) return "No sealed payment instruction is available. Complete the existing authorization and assurance steps before execution.";
+  if (exactPacketSubmissionReady) return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
+  if (detail.execution_gate === "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION") return "The sealed instruction is awaiting exact-packet authorization. Submission remains unavailable until the current gate opens.";
+  return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
 
 function SimulatedDemoStages() {
@@ -2414,7 +2423,7 @@ export function CommandCenter() {
               <section aria-label="Payment status" className="max-w-xl space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="payment-status-card">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payment · Arc Testnet</p>
-                  <h3 className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail)}</h3>
+                  <h3 className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail, exactPacketSubmissionReady, detailState)}</h3>
                 </div>
                 <dl>
                   <Field label="Testnet settlement" value={detail.settlement_proxy
@@ -2427,7 +2436,7 @@ export function CommandCenter() {
                 </dl>
                 {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
                 {detail.execution?.status === "SETTLED" && <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">The Arc Testnet transaction does not discharge the real-world payable.</p>}
-                {detail.execution === null && detail.pae_sealed && <p className="text-[12px] text-[var(--color-ink-muted)]">Confirm the exact instruction only if the current gate is open. Release and pre-send checks remain authoritative.</p>}
+                {detail.execution === null && exactPacketSubmissionReady && <p className="text-[12px] text-[var(--color-ink-muted)]">Confirm the exact instruction only if the current gate is open. Release and pre-send checks remain authoritative.</p>}
               </section>
             )}
 

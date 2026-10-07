@@ -754,3 +754,29 @@ test("active kill switch takes precedence over a waiting exact-packet gate", asy
   await expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
+
+test("revoked release authority overrides retained packet and exact gate on desktop and mobile", async ({ browser }, testInfo) => {
+  const revoked = proxyLifecycleDetail("AUTHORIZED");
+  revoked.truth.tameion_control_truth.pae_state = "REVOKED";
+  revoked.truth.tameion_control_truth.execution_release_authority = "BLOCKED";
+  revoked.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+  revoked.execution_kill_switched = false;
+
+  for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+    const page = await browser.newPage({ viewport });
+    const writes = await openFixture(page, revoked);
+    if (viewport.label === "mobile") await page.getByText("View all stages").click();
+    await page.getByRole("button", { name: "Payment", exact: true }).click();
+
+    const payment = page.getByRole("region", { name: "Payment status" });
+    await expect(payment.locator("h3")).toContainText("Payment authority is revoked");
+    await expect(payment).not.toContainText("ready for confirmation");
+    await expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: /Confirm exact testnet intent/ })).toHaveCount(0);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`screen-5-revoked-${viewport.label}.png`), fullPage: true });
+    expect(writes).toEqual([]);
+    await page.close();
+  }
+});

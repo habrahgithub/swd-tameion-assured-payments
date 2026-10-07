@@ -342,6 +342,11 @@ describe("real detail GET producer-consumer packet controls", () => {
     await waitFor(() => expect(obligationRow(otherId).getAttribute("aria-current")).toBe("true"));
     fireEvent.click(obligationRow(fixture.selectedId));
     await waitFor(() => expect(obligationRow(fixture.selectedId).getAttribute("aria-current")).toBe("true"));
+    fireEvent.click(screen.getByRole("button", { name: /^Payment$/ }));
+    const payment = screen.getByRole("region", { name: "Payment status" });
+    expect(payment.querySelector("h3")?.textContent).toMatch(/revoked|blocked/i);
+    expect(payment.textContent).not.toMatch(/ready for confirmation/i);
+    expect(within(payment).queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     expect(screen.getByTestId("current-next-step").textContent).toMatch(/payment authority is revoked/i);
     expect(screen.getByTestId("current-next-step").textContent).toContain("Unassigned · no permitted product action is available");
     expect(screen.getByTestId("current-next-step").textContent).not.toContain("exact packet gate passed");
@@ -349,6 +354,115 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps Payment status and actions aligned with producer execution and release truth", async () => {
+    const fixture = await preparedAuthorizedState();
+    const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    expect(packet).toBeTruthy();
+    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    const ready = await detailJson(fixture.state, fixture.selectedId);
+    expect(ready.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(ready.truth.tameion_control_truth.execution_release_authority).toBe("TAMEION_PAE_REVERIFY_REQUIRED");
+
+    fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
+    const killSwitched = await detailJson(fixture.state, fixture.selectedId);
+    fixture.state.store.deactivateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
+    expect(killSwitched.execution_kill_switched).toBe(true);
+
+    const makeExecution = (status: string, body: Record<string, any>) => {
+      body.execution = {
+        status,
+        provider_ref: status === "SETTLED" ? "mock-provider-reference" : null,
+        idempotency_key: "producer-fixture-idempotency-key",
+        atomic_amount: "125000000",
+        destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+        provider_evidence: null,
+      };
+      body.aggregate.execution_state = status;
+      body.truth.tameion_control_truth.execution_state = status;
+    };
+    const expired = structuredClone(ready);
+    expired.truth.tameion_control_truth.pae_state = "EXPIRED";
+    expired.truth.tameion_control_truth.execution_release_authority = "EXPIRED";
+    const absentPacket = structuredClone(ready);
+    absentPacket.pae_sealed = false;
+    absentPacket.execution_packet = null;
+    absentPacket.sealed_pae_instruction_hash = null;
+    absentPacket.execution_gate = "LOCKED_UNTIL_CURRENT_AUTHORIZATION";
+    absentPacket.truth.tameion_control_truth.pae_state = "NOT_CREATED";
+    const submitting = structuredClone(ready);
+    makeExecution("SUBMITTING", submitting);
+    const submitted = structuredClone(ready);
+    makeExecution("SUBMITTED", submitted);
+    const unknown = structuredClone(ready);
+    makeExecution("UNKNOWN", unknown);
+    const settled = structuredClone(ready);
+    makeExecution("SETTLED", settled);
+    const cases = [
+      { name: "current exact packet", body: ready, expected: /ready for confirmation/i, execute: true },
+      { name: "expired authority despite retained packet", body: expired, expected: /authority is expired/i, execute: false },
+      { name: "active kill switch", body: killSwitched, expected: /payment stop is active/i, execute: false },
+      { name: "submission in progress", body: submitting, expected: /submission is in progress/i, execute: false },
+      { name: "submission recorded", body: submitted, expected: /awaiting reconciliation/i, execute: false },
+      { name: "unknown outcome", body: unknown, expected: /outcome unknown.*do not retry or resubmit/i, execute: false },
+      { name: "settled testnet execution", body: settled, expected: /real-world payable remains outstanding/i, execute: false },
+    ];
+
+    for (const scenario of cases) {
+      cleanup();
+      fetchMock.mockClear();
+      await renderProducerJson(scenario.body);
+      fireEvent.click(screen.getByRole("button", { name: /^Payment$/ }));
+      const payment = screen.getByRole("region", { name: "Payment status" });
+      expect(payment.querySelector("h3")?.textContent, scenario.name).toMatch(scenario.expected);
+      expect(within(payment).queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+      const executeActions = screen.queryAllByRole("button", { name: "Execute Test Payment" });
+      expect(executeActions.length, scenario.name).toBe(scenario.execute ? 1 : 0);
+      expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]').length, scenario.name).toBeLessThanOrEqual(1);
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
+    }
+
+    cleanup();
+    fetchMock.mockClear();
+    await renderProducerJson(absentPacket);
+    const paymentStage = screen.getByRole("button", { name: /^Payment$/ }) as HTMLButtonElement;
+    expect(paymentStage.disabled).toBe(true);
+    expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("locks Payment while a retained pending execution detail is stale", async () => {
+    const fixture = await preparedAuthorizedState();
+    const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    expect(packet).toBeTruthy();
+    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    body.execution = {
+      status: "UNKNOWN",
+      provider_ref: null,
+      idempotency_key: "producer-fixture-idempotency-key",
+      atomic_amount: "125000000",
+      destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+      provider_evidence: null,
+    };
+    body.aggregate.execution_state = "UNKNOWN";
+    body.truth.tameion_control_truth.execution_state = "UNKNOWN";
+    await renderProducerJson(body);
+    const reconcile = await screen.findByRole("button", { name: /Reconcile this same intent/ });
+    let finishRefresh!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finishRefresh = resolve; }));
+    fireEvent.click(reconcile);
+
+    await screen.findByText("Last-known obligation details are stale.");
+    expect((screen.getByRole("button", { name: /^Payment$/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+
+    finishRefresh(new Response(JSON.stringify(body), { status: 200 }));
+    await waitFor(() => expect(screen.queryByText("Last-known obligation details are stale.")).toBeNull());
   });
 
   it("clears confirmation across reversible kill-switch and A→B→A selection transitions", async () => {
