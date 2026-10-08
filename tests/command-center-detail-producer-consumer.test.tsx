@@ -226,6 +226,9 @@ async function renderProducerJson(body: Record<string, unknown>, additionalBodie
   }));
   const summary = (entry: Record<string, unknown>) => {
     const record = entry.record as { obligation_id: string; amount: string; currency: string };
+    const producedSummary = (queueResponse?.obligations as Array<Record<string, unknown>> | undefined)
+      ?.find((item) => item.obligation_id === record.obligation_id);
+    if (producedSummary) return producedSummary;
     return {
       obligation_id: record.obligation_id,
       service_category: "SOFTWARE_SERVICES",
@@ -826,7 +829,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const eligibleDetail = await detailJson(eligible.state, eligible.selectedId);
     const { main } = await renderProducerJson(eligibleDetail, [], queue);
     const winner = obligationRow(eligible.selectedId);
-    expect(winner.textContent).toContain("Sole PAY candidate");
+    expect(winner.textContent).toContain("PAY recommendation (advisory)");
+    expect(winner.textContent).not.toMatch(/Sole PAY candidate|route assurance|PAE|execution/i);
     expect(main.querySelector('button[data-primary-action="true"]')).not.toBeNull();
     cleanup();
 
@@ -838,7 +842,8 @@ describe("real detail GET producer-consumer packet controls", () => {
       pae_sealed: true,
     });
     const { main: authorizedMain } = await renderProducerJson(authorized, [], authorizedQueue);
-    expect(obligationRow(prepared.selectedId).textContent).toContain("Authorized · sealed PAE");
+    expect(obligationRow(prepared.selectedId).textContent).toContain("Workflow recorded");
+    expect(obligationRow(prepared.selectedId).textContent).not.toMatch(/PAE|execution|route|provider/i);
     expect(obligationRow(prepared.selectedId).textContent).not.toContain("Assessment required");
     expect(authorizedMain.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Assurance" }));
@@ -860,6 +865,110 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement).open).toBe(false);
     expect(screen.queryByText(/Stored assurance evidence/)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps a current non-winner PAY advisory distinct from the authoritative candidate disposition", async () => {
+    const preparedWinner = await proxyPreparedWithoutCurrentAssessment(true);
+    const preparedQueue = await listJson(preparedWinner.state);
+    const preparedDetail = await detailJson(preparedWinner.state, preparedWinner.selectedId);
+    preparedDetail.demo_arc_trust_simulated = false;
+    preparedDetail.aggregate.product_trust_provenance = "UNVERIFIED_CURRENT_TRUST";
+    preparedDetail.aggregate.destination_verification_status = "PENDING_VERIFICATION";
+    preparedDetail.aggregate.destination_operational_status = "ACTIVE";
+    preparedDetail.aggregate.source_wallet_status = "ACTIVE";
+    const { main: preparedMain } = await renderProducerJson(preparedDetail, [], preparedQueue);
+    fireEvent.click(preparedMain.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')!);
+    expect(preparedMain.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("This obligation is the selected payment candidate");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
+    expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
+    cleanup();
+
+    const fixture = livePayAssessedState();
+    const selectedCandidateId = fixture.selectedId;
+    const nonCandidateId = "OBL-J0C-003";
+    expect(selectedCandidateId).toBe("OBL-J0C-001");
+    expect(nonCandidateId).not.toBe(selectedCandidateId);
+    const nonCandidateAggregate = fixture.state.store.get(DEMO_ORGANIZATION_ID, nonCandidateId);
+    expect(nonCandidateAggregate).toBeTruthy();
+    sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, nonCandidateId, nonCandidateAggregate!.aggregate_version, {
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+      reasons: ["Current PAY recommendation for this genuine obligation."],
+    });
+
+    const queue = await listJson(fixture.state);
+    const payRecommendations = queue.obligations.filter((item: { decision: string | null }) => item.decision === "PAY");
+    expect(payRecommendations).toHaveLength(2);
+    expect(queue.sole_pay_candidate_id).toBe(selectedCandidateId);
+    const candidateBody = await detailJson(fixture.state, selectedCandidateId);
+    const body = await detailJson(fixture.state, nonCandidateId);
+    expect(body.current_assessment.decision).toBe("PAY");
+    const { main } = await renderProducerJson(candidateBody, [body], queue);
+    fireEvent.click(obligationRow(nonCandidateId));
+    await waitFor(() => expect(["CURRENT", "BLOCKED"]).toContain(
+      main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state"),
+    ));
+    fireEvent.click(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')!);
+
+    expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Payment eligibility");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("not the selected payment candidate for the demo");
+    const candidateSummary = queue.obligations.find((item: { obligation_id: string }) => item.obligation_id === selectedCandidateId);
+    const candidateLabel = candidateSummary.service_category.replaceAll("_", " ").toLowerCase();
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain(candidateLabel);
+    expect(screen.getByTestId("assessment-result-card").textContent).not.toContain(selectedCandidateId);
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("earliest effective due date among PAY recommendations");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("View the selected payment candidate");
+    expect(screen.getByRole("button", { name: "View selected payment candidate" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "View selected payment candidate" }));
+    await waitFor(() => expect(main.querySelector('[data-obligation-id="OBL-J0C-001"]')?.getAttribute("aria-current")).toBe("true"));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps a current PAY recommendation advisory when assessment coverage leaves the winner unknown", async () => {
+    const state = new DemoState();
+    const nonCandidateId = "OBL-J0C-003";
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, nonCandidateId);
+    expect(aggregate).toBeTruthy();
+    sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, nonCandidateId, aggregate!.aggregate_version, {
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+      reasons: ["Current PAY recommendation while other obligations remain unassessed."],
+    });
+    const queue = await listJson(state);
+    expect(queue.assessed_count).toBeLessThan(queue.total_count);
+    expect(queue.sole_pay_candidate_id).toBeNull();
+    const firstBody = await detailJson(state, queue.obligations[0].obligation_id);
+    const body = await detailJson(state, nonCandidateId);
+    const { main } = await renderProducerJson(firstBody, [body], queue);
+    fireEvent.click(obligationRow(nonCandidateId));
+    await waitFor(() => expect(["CURRENT", "BLOCKED"]).toContain(
+      main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state"),
+    ));
+    fireEvent.click(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')!);
+
+    expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("assessment coverage is incomplete");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Return to obligations");
+    expect(screen.getByRole("button", { name: "Back to obligations" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+    expect(main.querySelectorAll("details[open]")).toHaveLength(0);
+    for (const row of Array.from(main.querySelectorAll<HTMLButtonElement>("button[data-obligation-id]"))) {
+      expect(row.textContent).not.toMatch(/Sole PAY candidate|route assurance|PAE|execution|provider/i);
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to obligations" }));
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1200,8 +1309,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(reassess.disabled).toBe(false);
     expect(reassess.className).toMatch(/min-h-\[44px\]/);
     expect(reassess.className).not.toMatch(/underline/);
-    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
-    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment again");
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+    expect(reassess.hasAttribute("data-primary-action")).toBe(false);
     fireEvent.click(reassess);
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith(`/${fixture.selectedId}/assess`) && init?.method === "POST")).toBe(true));
 
@@ -1256,7 +1365,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
     expect(screen.getByText(/Current position: Assurance/)).toBeTruthy();
-    expect(obligationRow(fixture.selectedId).textContent).toContain("Authorization recorded · no sealed PAE");
+    expect(obligationRow(fixture.selectedId).textContent).toContain("Workflow recorded");
+    expect(obligationRow(fixture.selectedId).textContent).not.toMatch(/PAE|execution|route|provider/i);
     expect(obligationRow(fixture.selectedId).textContent).not.toContain("Assessment required");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
     expect(fixture.api.createTransaction).not.toHaveBeenCalled();

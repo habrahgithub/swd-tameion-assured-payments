@@ -551,7 +551,7 @@ describe("Command Center mounted Operational Report", () => {
   it("makes review the primary PAY action, then removes primary action while route assurance blocks", async () => {
     const pay = assessedDetail("OBL-PAY-BLOCKED", "PAY");
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
-      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-PAY-BLOCKED", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }] }))
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-PAY-BLOCKED", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }], sole_pay_candidate_id: "OBL-PAY-BLOCKED" }))
       : Promise.resolve(response(pay)));
 
     render(<CommandCenter />);
@@ -563,8 +563,8 @@ describe("Command Center mounted Operational Report", () => {
     expect(primary()[0].textContent).not.toContain("Run AI Assessment");
 
     fireEvent.click(primary()[0]);
-    await screen.findByText(/Blocker: payment-route assurance is not ready/);
-    expect(primary()).toHaveLength(1);
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
+    expect(primary()).toHaveLength(0);
     expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Run AI Assessment again" })).toBeTruthy();
   });
@@ -835,7 +835,7 @@ describe("Command Center mounted Operational Report", () => {
     pay.aggregate.source_wallet_status = "INACTIVE";
     pay.aggregate.product_trust_provenance = "UNVERIFIED_CURRENT_TRUST";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
-      ? Promise.resolve(response({ obligations: [obligation("OBL-ASSURANCE-NOT-READY", true)] }))
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-ASSURANCE-NOT-READY", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }], sole_pay_candidate_id: "OBL-ASSURANCE-NOT-READY" }))
       : Promise.resolve(response(pay)));
 
     render(<CommandCenter />);
@@ -849,17 +849,16 @@ describe("Command Center mounted Operational Report", () => {
       "Payment",
       "Reconciliation",
     ]);
-    expect(lifecycle.textContent).toContain("PAY — advisory");
     expect(lifecycle.textContent).toContain("Approval locked — route assurance not ready");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("payment-route assurance is not ready");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(await screen.findByText("Advisory — PAY")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Assessment result" }).textContent).toContain("PAY");
 
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("current-next-step").textContent).toContain("payment-route assurance is not ready");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
@@ -871,7 +870,7 @@ describe("Command Center mounted Operational Report", () => {
     pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
     Object.assign(pay.aggregate, { counterparty_id: "CP-CURRENT-01" });
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
-      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-EXACT-INTENT", true), decision: "PAY", route_assurance_status: "Route assurance ready" }] }))
+      ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-EXACT-INTENT", true), decision: "PAY", route_assurance_status: "Route assurance ready" }], sole_pay_candidate_id: "OBL-EXACT-INTENT" }))
       : Promise.resolve(response(pay)));
     render(<CommandCenter />);
     const sourceSummary = await screen.findByRole("region", { name: "Selected source obligation" });
@@ -924,7 +923,8 @@ describe("Command Center mounted Operational Report", () => {
     render(<CommandCenter />);
     await waitFor(() => expect(obligationRow(winner.obligation_id)).toBeTruthy());
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Payment lifecycle navigation" })).toBeTruthy());
-    expect(obligationRow(winner.obligation_id).textContent).toContain("Sole PAY candidate");
+    expect(obligationRow(winner.obligation_id).textContent).toContain("PAY recommendation (advisory)");
+    expect(obligationRow(winner.obligation_id).textContent).not.toMatch(/Sole PAY candidate|route assurance|PAE|execution/i);
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
 
     const nonwinner = fivePay.find((item) => item.obligation_id !== winner.obligation_id)!;
@@ -958,19 +958,22 @@ describe("Command Center mounted Operational Report", () => {
     expect(within(assessmentStage).queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(assessmentStage.textContent).toContain("remains locked");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("current-next-step").textContent).toContain(`assessment is ${decision}`);
+    expect(screen.queryByTestId("current-next-step")).toBeNull();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
   it("allows only a current reviewed PAY assessment to become authorization eligible", async () => {
-    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
+    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => ({
+      ...obligation(id, true),
+      decision: id === "OBL-A" ? "PAY" : "HOLD",
+    }));
     const pay = proxyPrepared(assessedDetail("OBL-A", "PAY"));
     pay.aggregate.destination_verification_status = "VERIFIED";
     pay.aggregate.destination_operational_status = "ACTIVE";
     pay.aggregate.source_wallet_status = "ACTIVE";
     pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
-      ? Promise.resolve(response({ obligations }))
+      ? Promise.resolve(response({ obligations, sole_pay_candidate_id: "OBL-A" }))
       : Promise.resolve(response(pay)));
 
     render(<CommandCenter />);
@@ -1258,7 +1261,7 @@ describe("guided lifecycle navigation", () => {
     expect(screen.getByRole("heading", { name: "Current stage: Obligation. Step 1 of 6." })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     await act(async () => { delayedDetail.resolve(response(refreshed)); });
-    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Current stage · Assessment"));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Assessment result" })).toBeTruthy());
     expect(screen.getByRole("heading", { name: "Current stage: Assessment. Step 2 of 6." })).toBe(document.activeElement);
     expect(screen.getByRole("status", { name: "Stage completion receipt" }).textContent).toContain("Assessment is now available from refreshed obligation detail.");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
