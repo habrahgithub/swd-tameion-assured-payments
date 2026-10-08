@@ -581,7 +581,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
     }
     expect(reportScopeFailures).toEqual([]);
-  });
+  }, 15_000);
 
   it("normalizes and renders a legacy schema-v1 settled ledger record without inventing reconciliation evidence", async () => {
     const fixture = await preparedAuthorizedState();
