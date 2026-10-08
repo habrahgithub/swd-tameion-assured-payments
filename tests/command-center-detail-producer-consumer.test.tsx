@@ -902,7 +902,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main: preparedMain } = await renderProducerJson(preparedDetail, [], preparedQueue);
     navigateStage("Assessment");
     expect(preparedMain.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("This obligation is the selected payment candidate");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("Selected payment candidate");
     expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
@@ -944,7 +944,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.getByTestId("assessment-result-card").textContent).toContain(candidateLabel);
     expect(screen.getByTestId("assessment-result-card").textContent).not.toContain(selectedCandidateId);
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("earliest effective due date among PAY recommendations");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("View the selected payment candidate");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("View selected payment candidate");
     expect(screen.getByRole("button", { name: "View selected payment candidate" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
@@ -980,7 +980,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
     expect(screen.getByTestId("payment-eligibility").textContent).toContain("assessment coverage is incomplete");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Return to obligations");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Back to obligations");
     expect(screen.getByRole("button", { name: "Back to obligations" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
@@ -1084,7 +1084,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
     navigateStage("Assessment");
     const card = screen.getByRole("region", { name: "Assessment result" });
-    expect(screen.getByTestId("assessment-provenance").textContent).toMatch(/produced using live AI/i);
+    expect(screen.getByTestId("assessment-provenance").textContent).toMatch(/live AI.*advisory/i);
     expect(card.textContent).toContain("Capability boundary");
     expect(card.textContent).toContain("This assessment does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.");
     expect(card.textContent).toContain(fixture.body.current_assessment.race.result.decision_summary);
@@ -1145,7 +1145,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       {
         label: "blocked external provider",
         edit: (assessment: Record<string, any>) => { assessment.provider_mode = "BLOCKED_EXTERNAL"; },
-        expected: /blocked external.*not confirmed as a live AI response/i,
+        expected: /external provider blocked.*live AI is unconfirmed/i,
       },
     ];
 
@@ -1353,7 +1353,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const expectedOwner = decision === "HOLD" ? race.remediation[0]?.owner_role
       : decision === "ESCALATE" ? race.remediation[0]?.escalation_target
         : "Authorized operator";
-    if (expectedOwner) expect(card.textContent).toContain(`Next owner/role: ${expectedOwner}`);
+    const hasPrimaryAssessmentAction = Boolean(card.querySelector('button[data-primary-action="true"]'));
+    if (expectedOwner && !hasPrimaryAssessmentAction) expect(card.textContent).toContain(`Next owner/role: ${expectedOwner}`);
     else expect(card.textContent).not.toContain("Next owner/role:");
     expect(card.textContent).not.toContain(assessment.assessment_id);
     expect(card.textContent).not.toContain(assessment.assessment_hash);
