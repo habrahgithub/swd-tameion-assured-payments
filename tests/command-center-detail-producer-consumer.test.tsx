@@ -12,7 +12,7 @@ import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
 import { POST as postAssessment } from "../app/api/obligations/[id]/assess/route";
-import { CommandCenter, useExecutionConfirmation, workflowState } from "../app/command-center";
+import { CommandCenter, SourceObligationLineage, useExecutionConfirmation, workflowState } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -1664,6 +1664,124 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(unavailableHistory.textContent).not.toContain("October 7, 2026");
   });
 
+  it("renders the genuine source lineage separately from its prepared OBL-J0C-001 testnet instruction", async () => {
+    const fixture = await proxyPreparedWithoutCurrentAssessment(true);
+    expect(fixture.selectedId).toBe("OBL-J0C-001");
+    const body = await detailJson(fixture.state, fixture.selectedId);
+    const sourceRecord = fixture.state.getRecord(fixture.selectedId)! as typeof fixture.state.liveUsageRecords[number] & {
+      counterparty_id: string;
+      source_evidence: Array<{ evidence_id: string; source_type: string; provenance_class: string; content_sha256?: string }>;
+    };
+    const prepared = body.settlement_proxy.preflight;
+
+    expect(sourceRecord).toMatchObject({
+      obligation_id: "OBL-J0C-001",
+      counterparty_id: "CP-J0C-001",
+      amount: "5760.00",
+      currency: "AED",
+      state_at_event_baseline: "OUTSTANDING",
+    });
+    expect((sourceRecord.source_evidence as Array<{ evidence_id: string; source_type: string; provenance_class: string }>).map((evidence) => ({
+      evidence_id: evidence.evidence_id,
+      source_type: evidence.source_type,
+      provenance_class: evidence.provenance_class,
+    }))).toEqual([{
+      evidence_id: "EVID-J0C-001-A",
+      source_type: "PDF_PROFORMA_INVOICE",
+      provenance_class: "USER_SUPPLIED_SOURCE_DOCUMENT",
+    }]);
+    expect(prepared).toMatchObject({
+      organization_id: DEMO_ORGANIZATION_ID,
+      obligation_id: "OBL-J0C-001",
+      source_amount: "5760.00",
+      source_currency: "AED",
+      amount: "1568.413887",
+      asset: "USDC",
+      network: "ARC_TESTNET",
+      source_evidence_ids: ["EVID-J0C-001-A"],
+      business_payment_instruction: {
+        payer: { organization_id: DEMO_ORGANIZATION_ID },
+        commercial: {
+          obligation_id: "OBL-J0C-001",
+          source_amount: "5760.00",
+          source_currency: "AED",
+          settlement_amount: "1568.413887",
+          source_evidence_ids: ["EVID-J0C-001-A"],
+        },
+      },
+    });
+    expect(body.aggregate.counterparty_id).not.toBe(sourceRecord.counterparty_id);
+
+    const queue = await listJson(fixture.state);
+    const { main } = await renderProducerJson(body, [], queue);
+    navigateStage("Assessment");
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    navigateStage("Authorization");
+
+    const packet = screen.getByRole("region", { name: "Approver decision packet" });
+    const sourceLineage = within(packet).getByRole("region", { name: "Source obligation lineage" });
+    const proxyIdentity = within(packet).getByRole("region", { name: "Controlled Arc Testnet proxy" });
+    expect(sourceLineage.textContent).toContain("OBL-J0C-001");
+    expect(sourceLineage.textContent).toContain("5760.00 AED");
+    expect(sourceLineage.textContent).toContain("OUTSTANDING");
+    expect(sourceLineage.textContent).toContain("CP-J0C-001");
+    expect(sourceLineage.textContent).toContain("EVID-J0C-001-A");
+    expect(sourceLineage.textContent).not.toContain(body.aggregate.counterparty_id);
+    expect(sourceLineage.textContent).not.toContain("DEST-J0C-001");
+    expect(sourceLineage.textContent).not.toContain("EVID-TEST-1");
+    expect(sourceLineage.textContent).not.toMatch(/beneficiary_name|syntheticEvidenceHash/i);
+    expect(within(sourceLineage).getByText("Private-source catalog metadata").closest("details")?.open).toBe(false);
+    expect(proxyIdentity.textContent).toContain("Controlled Arc Testnet proxy, not the source supplier.");
+    expect(proxyIdentity.textContent).toContain("ORG-DEMO-001");
+    expect(proxyIdentity.textContent).toContain("OBL-J0C-001");
+    expect(proxyIdentity.textContent).toContain("1568.413887 USDC");
+    expect(proxyIdentity.textContent).toContain("ARC_TESTNET");
+    expect(proxyIdentity.textContent).toContain(prepared.beneficiary_id);
+    expect(proxyIdentity.textContent).not.toContain("0.000001");
+    expect(screen.getByRole("button", { name: "Authorize payment" })).toBeTruthy();
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+    expect(fixture.api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps source identity references tied to each of the five real detail records", async () => {
+    const state = new DemoState();
+    expect(state.liveUsageRecords).toHaveLength(5);
+    for (const rawSource of state.liveUsageRecords) {
+      const source = rawSource as typeof rawSource & {
+        counterparty_id: string;
+        source_evidence: Array<{ evidence_id: string; source_type: string; provenance_class: string; content_sha256?: string }>;
+      };
+      const body = await detailJson(state, source.obligation_id);
+      expect(body.record).toMatchObject({
+        obligation_id: source.obligation_id,
+        counterparty_id: source.counterparty_id,
+        amount: source.amount,
+        currency: source.currency,
+        state_at_event_baseline: "OUTSTANDING",
+      });
+      const sourceView = render(<SourceObligationLineage
+        record={body.record}
+        payableState={body.source_payable_state}
+        selectedObligationId={source.obligation_id}
+      />);
+      const lineage = screen.getByRole("region", { name: "Source obligation lineage" });
+      expect(lineage.textContent).toContain(source.obligation_id);
+      expect(lineage.textContent).toContain(source.counterparty_id);
+      expect(lineage.textContent).toContain(`${source.amount} ${source.currency}`);
+      expect(lineage.textContent).toContain("OUTSTANDING");
+      expect(lineage.textContent).toContain(source.source_evidence[0].evidence_id);
+      expect(lineage.textContent).toContain(source.source_evidence[0].source_type);
+      expect(lineage.textContent).toContain(source.source_evidence[0].provenance_class);
+      expect(lineage.textContent).toContain(source.commercial_terms);
+      expect(lineage.textContent).toContain("Supplier name is not included in this public demo record");
+      expect(lineage.textContent).not.toContain("syntheticEvidenceHash");
+      expect(lineage.textContent).not.toContain("DEST-J0C-001");
+      expect(within(lineage).getByText("Private-source catalog metadata").closest("details")?.open).toBe(false);
+      sourceView.unmount();
+    }
+  });
+
   it("shows a compact approver decision packet with the source payable and proxy as separate identities", async () => {
     const fixture = await preparedAuthorizedState();
     const body = await detailJson(fixture.state, fixture.selectedId);
@@ -1679,8 +1797,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(packet.textContent).not.toContain("No current assessment is available in this detail");
     expect(packet.textContent).toContain("Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.");
     expect(packet.textContent).toContain("Approved instruction is sealed for the Arc Testnet settlement proxy.");
-    expect(packet.textContent).toContain("Source obligation amount");
-    expect(packet.textContent).toContain("Exact testnet settlement");
+    expect(packet.textContent).toContain("Original amount · payable status");
+    expect(packet.textContent).toContain("Exact source → settlement amount");
+    expect(packet.textContent).toContain("Privacy-safe source counterparty reference");
+    expect(packet.textContent).toContain("Proxy beneficiary reference");
     expect(packet.textContent).toMatch(/Arc Testnet settlement proxy · 0x[0-9a-f]{4}…[0-9a-f]{4}/i);
     expect(packet.textContent).not.toContain(body.settlement_proxy.preflight.destination_wallet.address);
     expect(packet.closest("main")?.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);

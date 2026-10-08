@@ -102,9 +102,24 @@ interface ObligationDetail {
       obligation_id: string;
       source_amount: string;
       source_currency: string;
+      source_evidence_ids?: string[];
       amount: string;
       asset: string;
       network: string;
+      beneficiary_id?: string;
+      business_payment_instruction?: {
+        payer?: { organization_id?: string };
+        beneficiary?: { beneficiary_id?: string; destination_wallet_id?: string };
+        commercial?: {
+          obligation_id?: string;
+          source_amount?: string;
+          source_currency?: string;
+          settlement_amount?: string;
+          settlement_asset?: string;
+          source_evidence_id?: string;
+          source_evidence_ids?: string[];
+        };
+      };
       source_wallet: { id: string; address: string };
       destination_wallet: { id: string; address: string; name?: string };
       captured_at: string;
@@ -162,6 +177,137 @@ function sourceServiceContext(record: Record<string, unknown>): string | null {
 function sourcePayableState(detail: ObligationDetail): string {
   const state = detail.source_payable_state ?? detail.truth.source_truth.obligation_state;
   return typeof state === "string" && state.trim() ? state : "Not reported";
+}
+
+type SourceEvidenceReference = {
+  evidence_id: string;
+  source_type?: string;
+  provenance_class?: string;
+  content_sha256?: string;
+};
+
+function sourceEvidenceReferences(record: ObligationDetail["record"]): SourceEvidenceReference[] {
+  if (!Array.isArray(record.source_evidence)) return [];
+  return record.source_evidence.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    if (typeof value.evidence_id !== "string" || !value.evidence_id.trim()) return [];
+    return [{
+      evidence_id: value.evidence_id,
+      ...(typeof value.source_type === "string" ? { source_type: value.source_type } : {}),
+      ...(typeof value.provenance_class === "string" ? { provenance_class: value.provenance_class } : {}),
+      ...(typeof value.content_sha256 === "string" ? { content_sha256: value.content_sha256 } : {}),
+    }];
+  });
+}
+
+function isPreparedInstructionBoundToSource(
+  record: ObligationDetail["record"],
+  selectedObligationId: string,
+  preflight: NonNullable<ObligationDetail["settlement_proxy"]>["preflight"] | undefined,
+): boolean {
+  if (!preflight) return false;
+  const evidenceIds = sourceEvidenceReferences(record).map((item) => item.evidence_id);
+  const instruction = preflight.business_payment_instruction;
+  const commercial = instruction?.commercial;
+  return Boolean(instruction && commercial &&
+    record.obligation_id === selectedObligationId &&
+    preflight.obligation_id === record.obligation_id &&
+    preflight.source_amount === record.amount &&
+    preflight.source_currency === record.currency &&
+    JSON.stringify(preflight.source_evidence_ids ?? []) === JSON.stringify(evidenceIds) &&
+    instruction.payer?.organization_id === preflight.organization_id &&
+    commercial.obligation_id === record.obligation_id &&
+    commercial.source_amount === record.amount &&
+    commercial.source_currency === record.currency &&
+    commercial.settlement_amount === preflight.amount &&
+    commercial.settlement_asset === preflight.asset &&
+    JSON.stringify(commercial.source_evidence_ids ?? []) === JSON.stringify(evidenceIds) &&
+    commercial.source_evidence_id === evidenceIds[0] &&
+    instruction.beneficiary?.beneficiary_id === preflight.beneficiary_id &&
+    instruction.beneficiary?.destination_wallet_id === preflight.destination_wallet.id);
+}
+
+export function SourceObligationLineage({
+  record,
+  payableState,
+  selectedObligationId,
+  preflight,
+}: {
+  record: ObligationDetail["record"];
+  payableState: string;
+  selectedObligationId: string;
+  preflight?: NonNullable<ObligationDetail["settlement_proxy"]>["preflight"];
+}) {
+  const evidence = sourceEvidenceReferences(record);
+  const sourceEvidenceIds = evidence.map((item) => item.evidence_id);
+  const boundToSource = isPreparedInstructionBoundToSource(record, selectedObligationId, preflight);
+  const terms = sourceText(record, "commercial_terms");
+
+  return (
+    <section aria-label="Source obligation lineage" className="space-y-2 rounded border border-[var(--color-border)] px-3 py-2">
+      <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Source business obligation</h4>
+      <dl className="grid gap-x-5 sm:grid-cols-2">
+        <Field label="Source obligation" value={record.obligation_id === selectedObligationId ? record.obligation_id : "Source identity reference unavailable / not established"} />
+        <Field label="Original amount · payable status" value={`${record.amount} ${record.currency} · ${payableState}`} />
+        <Field label="Privacy-safe source counterparty reference" value={sourceText(record, "counterparty_id") === "Not captured" ? "Source identity reference unavailable / not established" : sourceText(record, "counterparty_id")} />
+      </dl>
+      <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">Supplier name is not included in this public demo record; the recorded counterparty ID is used. This does not verify legal name or ownership.</p>
+      {terms !== "Not captured" && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">Source particulars: {terms}</p>}
+      {evidence.length ? (
+        <ul aria-label="Original source evidence references" className="space-y-1 text-[12px] text-[var(--color-ink-muted)]">
+          {evidence.map((item) => <li key={item.evidence_id}>
+            Original source evidence: <bdi dir="ltr" className="font-medium text-[var(--color-ink)]">{item.evidence_id}</bdi>
+            {item.source_type ? ` · ${item.source_type}` : ""}{item.provenance_class ? ` · ${item.provenance_class}` : ""}
+          </li>)}
+        </ul>
+      ) : <p className="text-[12px] text-[var(--color-warning)]">Source identity reference unavailable / not established.</p>}
+      {evidence.some((item) => item.content_sha256) && <details className="rounded border border-[var(--color-border)] px-2 py-1.5">
+        <summary className="min-h-11 cursor-pointer py-2 text-[12px] text-[var(--color-ink-muted)]">Private-source catalog metadata</summary>
+        <ul className="space-y-1 pb-2 text-[11px] text-[var(--color-ink-muted)]">
+          {evidence.filter((item) => item.content_sha256).map((item) => <li key={item.evidence_id}>{item.evidence_id} · private-source catalog content hash: <bdi dir="ltr" className="break-all">{item.content_sha256}</bdi></li>)}
+        </ul>
+      </details>}
+      {preflight && !boundToSource && <p role="status" className="text-[12px] text-[var(--color-warning)]">Source identity reference unavailable / not established for the prepared instruction.</p>}
+    </section>
+  );
+}
+
+function ControlledProxyLineage({
+  record,
+  selectedObligationId,
+  preflight,
+  payableState,
+}: {
+  record: ObligationDetail["record"];
+  selectedObligationId: string;
+  preflight: NonNullable<ObligationDetail["settlement_proxy"]>["preflight"];
+  payableState: string;
+}) {
+  const sourceEvidenceIds = sourceEvidenceReferences(record).map((item) => item.evidence_id);
+  const boundToSource = isPreparedInstructionBoundToSource(record, selectedObligationId, preflight);
+
+  return (
+    <section aria-label="Controlled Arc Testnet proxy" className="space-y-2 rounded border border-[var(--color-border)] px-3 py-2">
+      <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Controlled Arc Testnet proxy, not the source supplier.</h4>
+      <dl className="grid gap-x-5 sm:grid-cols-2">
+        <Field label="Recorded testnet organization reference" value={preflight.organization_id || "Source identity reference unavailable / not established"} />
+        <Field label="Recorded testnet instruction obligation" value={preflight.obligation_id || "Source identity reference unavailable / not established"} />
+        <Field label="Recorded proxy settlement amount" value={`${preflight.amount} ${preflight.asset}`} />
+        <Field label="Testnet network" value={preflight.network} />
+        <Field label="Controlled source wallet" value={compactProxyDestination("Arc Testnet controlled source", preflight.source_wallet.address)} />
+        <Field label="Proxy beneficiary reference" value={preflight.beneficiary_id ?? "Source identity reference unavailable / not established"} />
+        <Field label="Proxy destination wallet" value={compactProxyDestination(preflight.destination_wallet.name ?? "Arc Testnet settlement proxy", preflight.destination_wallet.address)} />
+      </dl>
+      {boundToSource
+        ? <>
+          <p className="text-[12px] text-[var(--color-ink-muted)]">Prepared source obligation and evidence: <bdi dir="ltr">{record.obligation_id} · {sourceEvidenceIds.join(", ")}</bdi></p>
+          <p className="text-[12px] font-medium text-[var(--color-ink)]">Exact source → settlement amount: <bdi dir="ltr" className="tabular">{record.amount} {record.currency} → {preflight.amount} {preflight.asset}</bdi></p>
+        </>
+        : <p role="status" className="text-[12px] text-[var(--color-warning)]">Source identity reference unavailable / not established for this prepared testnet instruction. No source-to-proxy binding is asserted.</p>}
+      <p className="text-[12px] text-[var(--color-warning)]">Testnet settlement does not discharge the real-world source payable; its recorded state remains {payableState}.</p>
+    </section>
+  );
 }
 
 function sourceDateProvenance(record: Record<string, unknown>): string {
@@ -2697,17 +2843,18 @@ export function CommandCenter() {
                       : detail.aggregate.state === "AUTHORIZED"
                         ? <p className="text-[13px] font-semibold text-[var(--color-ink)]">Authorization is recorded. Assurance failed or is blocked; no usable PAE or execution is available.</p>
                         : <p className="text-[13px] font-semibold text-[var(--color-ink)]">AI did not authorize this payment. You are approving this exact instruction.</p>}
-                    <dl className="grid gap-x-5 sm:grid-cols-2">
-                      <Field label="Payee / source obligation" value={sourceText(detail.record, "beneficiary_name")} />
-                      <Field label="Source obligation amount" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
-                    </dl>
-                    {detail.settlement_proxy ? (
-                      <dl className="grid gap-x-5 sm:grid-cols-2">
-                        <Field label="Exact testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
-                        <Field label="Testnet source wallet" value={compactProxyDestination("Arc Testnet controlled source", detail.settlement_proxy.preflight.source_wallet.address)} />
-                        <Field label="Testnet proxy destination" value={compactProxyDestination(detail.settlement_proxy.preflight.destination_wallet.name, detail.settlement_proxy.preflight.destination_wallet.address)} />
-                      </dl>
-                    ) : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
+                    <SourceObligationLineage
+                      record={detail.record}
+                      payableState={sourcePayableState(detail)}
+                      selectedObligationId={selectedId}
+                      preflight={detail.settlement_proxy?.preflight}
+                    />
+                    {detail.settlement_proxy ? <ControlledProxyLineage
+                      record={detail.record}
+                      selectedObligationId={selectedId}
+                      preflight={detail.settlement_proxy.preflight}
+                      payableState={sourcePayableState(detail)}
+                    /> : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
                     <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.</p>
                     {!detail.pae_sealed && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
                     {workspaceAction?.label === "Authorize payment" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>Authorize payment</PrimaryButton>}
