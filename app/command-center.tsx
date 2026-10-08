@@ -733,7 +733,7 @@ function RacePanel({ race }: { race?: RaceAssessment }) {
  * as a green "go" — it is an advisory proposal that still requires human
  * authorization and Safety Kernel PASS before any release authority. */
 function decisionTone(decision: "PAY" | "HOLD" | "ESCALATE"): Tone {
-  if (decision === "ESCALATE") return "danger";
+  if (decision === "ESCALATE") return "warning";
   if (decision === "HOLD") return "warning";
   // PAY is advisory-only — never styled as a green "go" success signal.
   return "neutral";
@@ -883,9 +883,7 @@ function AdvisoryAssessmentCard({
               <li key={finding.code} className="flex items-baseline justify-between gap-2">
                 <span className="text-[12px]">{finding.reason}</span>
                 <span
-                  className={`text-[11px] font-semibold ${
-                    finding.severity === "ESCALATE" ? "text-[var(--status-blocked-text)]" : "text-[var(--status-hold-text)]"
-                  }`}
+                  className="text-[11px] font-semibold text-[var(--status-hold-text)]"
                   aria-label={`Severity: ${finding.severity}`}
                 >
                   {finding.severity}
@@ -977,7 +975,7 @@ function AssessmentResultCard({
   const decisionToneClass = assessment.decision === "HOLD"
     ? "text-[var(--status-hold-text)]"
     : assessment.decision === "ESCALATE"
-      ? "text-[var(--status-blocked-text)]"
+      ? "text-[var(--status-hold-text)]"
       : "text-[var(--color-ink)]";
 
   return (
@@ -2267,7 +2265,7 @@ export function CommandCenter() {
               const workflowRecorded = Boolean(o.pae_sealed || o.aggregate_state === "AUTHORIZED" || o.execution_status);
               const statusColor = o.assessed
                 ? o.decision === "ESCALATE"
-                  ? "var(--status-blocked-text)"
+                  ? "var(--status-hold-text)"
                   : o.decision === "HOLD"
                     ? "var(--status-hold-text)"
                     : o.decision === "PAY"
@@ -2801,7 +2799,7 @@ export function CommandCenter() {
                       className="border-s-[3px] ps-3 py-2"
                       style={{
                         borderInlineStartColor: report.decision === "ESCALATE"
-                          ? "var(--status-blocked-border)"
+                          ? "var(--status-hold-border)"
                           : report.decision === "PAY" ? "var(--color-border)" : "var(--status-hold-border)",
                       }}
                     >
@@ -2813,7 +2811,7 @@ export function CommandCenter() {
                           className="text-[11px] font-semibold uppercase"
                           style={{
                             color: report.decision === "ESCALATE"
-                              ? "var(--status-blocked-text)"
+                              ? "var(--status-hold-text)"
                               : report.decision === "PAY" ? "var(--color-ink-muted)" : "var(--status-hold-text)",
                           }}
                           aria-label={reportDecisionLabel(report)}

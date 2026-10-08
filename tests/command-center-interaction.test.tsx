@@ -44,7 +44,7 @@ type Obligation = {
   due_date: string;
   commercial_terms: string;
   assessed: boolean;
-  decision: "HOLD" | null;
+  decision: "PAY" | "HOLD" | "ESCALATE" | null;
   provider_mode: "NOT_LIVE_AI" | null;
 };
 
@@ -997,7 +997,10 @@ describe("Command Center mounted Operational Report", () => {
     ["HOLD"],
     ["ESCALATE"],
   ] as const)("keeps a current %s assessment locked even after all five obligations are assessed", async (decision) => {
-    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => obligation(id, true));
+    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => ({
+      ...obligation(id, true),
+      decision: id === "OBL-A" ? decision : "HOLD" as const,
+    }));
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations }))
       : Promise.resolve(response(assessedDetail("OBL-A", decision))));
@@ -1009,6 +1012,10 @@ describe("Command Center mounted Operational Report", () => {
     expect(workspace.textContent).not.toContain(`Advisory — ${decision}`);
     navigateStage("Assessment");
     expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
+    const decisionHeading = screen.getByText(`Advisory — ${decision}`);
+    expect(decisionHeading.className).toContain("text-[var(--status-hold-text)]");
+    expect(obligationRow("OBL-A").querySelector("span.text-end")?.getAttribute("style"))
+      .toContain("--status-hold-text");
     const assessmentStage = screen.getByRole("region", { name: "Assessment result" });
     expect(assessmentStage.textContent).toContain(decision === "HOLD" ? "Source evidence is incomplete." : "Controller review is required.");
     expect(assessmentStage.textContent).toContain("Review the finding.");
