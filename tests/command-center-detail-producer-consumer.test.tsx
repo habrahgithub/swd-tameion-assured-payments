@@ -563,6 +563,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       const reportText = screen.getByRole("main").textContent ?? "";
       const report = screen.getByRole("region", { name: /Operational report for/ });
       try {
+        expect(reportText, `${scenario.name} summary currentness`).not.toContain("still requires separate assurance and human authorization");
         expect(report.textContent, `${scenario.name} report scope`).toContain("Assessment-scope advisory — PAY is outside the HOLD/ESCALATE report scope.");
         expect(report.textContent, `${scenario.name} report scope`).not.toMatch(/has not been settled or authorized/i);
         expect(report.textContent, `${scenario.name} report status`).toContain("Assessment · CURRENT");

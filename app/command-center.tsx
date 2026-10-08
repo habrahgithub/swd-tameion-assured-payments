@@ -355,7 +355,7 @@ export function queueCompletionLabel(summary: HoldEscalateSummary): string {
     return `Incomplete assessment — ${summary.total - summary.unassessed} of ${summary.total} assessed. No candidate determination yet.`;
   }
   if (summary.pay > 0) {
-    return `Assessment complete — ${summary.pay} PAY recommendation${summary.pay === 1 ? "" : "s"} (advisory; still requires separate assurance and human authorization).`;
+    return `Assessment complete — ${summary.pay} PAY recommendation${summary.pay === 1 ? "" : "s"}. PAY recommendations are advisory; payment requires separate assurance and human authorization.`;
   }
   return "Assessment complete — no PAY candidate; all obligations assessed as HOLD or ESCALATE.";
 }

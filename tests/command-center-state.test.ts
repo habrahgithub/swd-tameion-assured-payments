@@ -145,6 +145,13 @@ describe("Command Center operational report availability", () => {
     expect(operationalReportSummaryLabel("ready", { ...summary, total: 2, unassessed: 2 })).toContain("Incomplete");
   });
 
+  it("describes PAY assurance and authorization as separate gates, not a current missing state", () => {
+    const label = operationalReportSummaryLabel("ready", { total: 3, hold: 0, escalate: 0, unassessed: 0, pay: 3 });
+    expect(label).toContain("PAY recommendations are advisory");
+    expect(label).toContain("payment requires separate assurance and human authorization");
+    expect(label).not.toContain("still requires");
+  });
+
   it("does not describe a selected but unresolved detail as no selection", () => {
     expect(operationalReportDetailPrompt("none")).toContain("Select an obligation");
     expect(operationalReportDetailPrompt("loading")).toContain("loading");
