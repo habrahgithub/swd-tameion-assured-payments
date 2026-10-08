@@ -938,7 +938,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Payment eligibility");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("not the selected payment candidate for the demo");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Not the selected payment candidate.");
     const candidateSummary = queue.obligations.find((item: { obligation_id: string }) => item.obligation_id === selectedCandidateId);
     const candidateLabel = candidateSummary.service_category.replaceAll("_", " ").toLowerCase();
     expect(screen.getByTestId("assessment-result-card").textContent).toContain(candidateLabel);

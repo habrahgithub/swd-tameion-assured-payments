@@ -1252,7 +1252,8 @@ describe("guided lifecycle navigation", () => {
     const rail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
     fireEvent.click(within(rail).getByRole("button", { name: "Reconciliation" }));
     expect(await screen.findByRole("heading", { name: "Current stage: Reconciliation. Step 6 of 6." })).toBeTruthy();
-    fireEvent.click(within(rail).getByRole("button", { name: "Obligation" }));
+    const refreshedRail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
+    fireEvent.click(within(refreshedRail).getByRole("button", { name: "Obligation" }));
 
     expect(screen.getByRole("heading", {
       name: "Viewed stage: Obligation. Current lifecycle position: Reconciliation. Step 1 of 6.",

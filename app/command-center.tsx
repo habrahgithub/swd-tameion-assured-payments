@@ -979,10 +979,10 @@ function AssessmentResultCard({
       : "text-[var(--color-ink)]";
 
   return (
-    <section aria-label="Assessment result" className="space-y-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3 sm:space-y-3 sm:p-4" data-testid="assessment-result-card">
+    <section aria-label="Assessment result" className="space-y-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5 sm:space-y-3 sm:p-4" data-testid="assessment-result-card">
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--color-border)] pb-1 sm:pb-2">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Finance Agent · advisory result</p>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">AI recommendation · advisory</p>
           <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className={`mt-0.5 text-[21px] font-semibold ${decisionToneClass}`}>Advisory — {assessment.decision}</h3>
           <p aria-label="Assessment provenance" className="mt-0.5 text-[12px] leading-4 text-[var(--color-ink-muted)]" data-testid="assessment-provenance">
             {assessmentProvenanceCopy(assessment)}
@@ -990,16 +990,16 @@ function AssessmentResultCard({
         </div>
       </header>
 
-      <p className="text-[15px] leading-6 text-[var(--color-ink)]">{summary}</p>
+      <p className="text-[14px] leading-5 text-[var(--color-ink)]">{summary}</p>
 
       <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">What this means:</strong> {meaning}</p>
 
       {paymentEligibility && (
         <section aria-label="Payment eligibility" className="border-t border-[var(--color-border)] pt-1" data-testid="payment-eligibility">
           <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
-            <strong className="text-[var(--color-ink)]">Payment eligibility:</strong> {paymentEligibility.summary}
-            {paymentEligibility.candidate && <> Selected candidate: <strong className="text-[var(--color-ink)]">{paymentEligibility.candidate}</strong>.</>}
-            {paymentEligibility.reason && <> {paymentEligibility.reason}</>}
+            <strong className="text-[var(--color-ink)]">Payment eligibility:</strong> {paymentEligibility.candidate
+              ? <>Not the selected payment candidate. Selected: <strong className="text-[var(--color-ink)]">{paymentEligibility.candidate}</strong>. Rule: {paymentEligibility.reason}</>
+              : paymentEligibility.summary}
           </p>
         </section>
       )}
@@ -1265,7 +1265,8 @@ function DeterministicAssuranceSummary({ detail, continueToPayment }: { detail: 
   const current = evidence?.state === "AVAILABLE_CURRENT_BINDING";
   const controls = available ? evidence.control_results : [];
   const failedControls = current ? controls.filter((control) => control.result !== "PASS") : [];
-  const status = detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
+  const assuranceRecordedBlocked = detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution;
+  const status = assuranceRecordedBlocked
     ? "Authorization recorded · Assurance failed/blocked; no PASS assurance, usable PAE, or execution is available."
     : assuranceStateSummary(evidence);
 
@@ -1274,6 +1275,7 @@ function DeterministicAssuranceSummary({ detail, continueToPayment }: { detail: 
       <div>
         <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Deterministic assurance</h3>
         <p className="mt-1 text-[14px] font-semibold text-[var(--color-ink)]">{status}</p>
+        {assuranceRecordedBlocked && <p data-testid="assurance-no-action-guidance" className="mt-1 text-[12px] font-semibold text-[var(--color-ink-muted)]">No further product action is available in this state.</p>}
       </div>
       <p className="text-[12px] text-[var(--color-ink-muted)]">Deterministic controls, not AI, grant or deny release authority.</p>
       <p className="text-[13px] text-[var(--color-ink-muted)]">Payment instruction state: {currentPaeDisplay(detail)}{detail.pae_sealed ? ". Current release checks still apply." : "."}</p>
@@ -1658,7 +1660,9 @@ export function CommandCenter() {
       detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION"));
   const state = useMemo(() => detailState === "stale"
     ? { label: "Last-known state — stale", tone: "warning" as const, explanation: "Control and execution truth is not freshly verified. Retry detail before relying on it." }
-    : workflowState(detailState === "loaded" ? detail : null, routeAssuranceReady), [detail, detailState, routeAssuranceReady]);
+    : detailState === "failed"
+      ? { label: "Unavailable", tone: "danger" as const, explanation: "Current obligation detail could not be loaded; its state is not verified." }
+      : workflowState(detailState === "loaded" ? detail : null, routeAssuranceReady), [detail, detailState, routeAssuranceReady]);
   const aggregateVersion = detail?.aggregate?.aggregate_version;
   const currentAssessment = assessmentReviewSnapshot(detail?.current_assessment);
   const simulatedTrustFixture = detail ? hasSimulatedTrustFixture(detail.demo_arc_trust_simulated, detail.aggregate.source_wallet_ref) : false;
@@ -2138,6 +2142,8 @@ export function CommandCenter() {
       <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Next owner:</strong> {recoveryOwner}</p>
     </section>
   ) : null;
+  const historicalAssessmentRecoveryIsSecondary = Boolean(detailState === "loaded" && viewedStage === "Assessment" &&
+    currentLifecycleStage === "Assurance" && detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution);
   const stageCompletionReceiptView = stageCompletionReceipt?.obligationId === selectedId ? (
     <p role="status" aria-label="Stage completion receipt" aria-live="polite" className="rounded border border-[var(--color-success)] px-3 py-2 text-[12px] text-[var(--color-success)]">
       {stageCompletionReceipt.message}
@@ -2336,17 +2342,23 @@ export function CommandCenter() {
         <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
-            <section aria-label="Selected source obligation" className="grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+            <section aria-label="Selected source obligation" className={viewedStage === "Assessment"
+              ? "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-[var(--color-border)] pb-2 sm:gap-3 sm:pb-3"
+              : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected obligation</p>
-                <h2 className="mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]">
+                <h2 className={viewedStage === "Assessment"
+                  ? "mt-1 break-words text-[18px] font-semibold leading-6 text-[var(--color-ink)] md:text-[25px]"
+                  : "mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]"}>
                   {detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured"
                     ? sourceText(detail.record, "beneficiary_name")
                     : selected.service_category.replaceAll("_", " ").toLowerCase()}
                 </h2>
               </div>
-              <div className="sm:text-end">
-                  <p className="tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
+              <div className={viewedStage === "Assessment" ? "text-end" : "sm:text-end"}>
+                  <p className={viewedStage === "Assessment"
+                    ? "tabular text-[17px] font-semibold leading-6 text-[var(--color-ink)] md:text-[23px] md:leading-7"
+                    : "tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"}><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
                 </div>
               <div className="sm:col-span-2">
                 {detailState === "loaded" && detail && (
@@ -2403,31 +2415,8 @@ export function CommandCenter() {
             </div>
           )}
 
-          {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Assessment" ? "border-b border-[var(--color-border)] pb-2" : "space-y-2 border-b border-[var(--color-border)] pb-2"}>
-            <div className="rounded border border-[var(--color-border)] px-3 py-2">
-              {viewedStage === "Assessment" ? <>
-              <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · current position ${currentLifecycleStage}`}</p>
-              </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                <div className="h-1.5 min-w-12 flex-1 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Viewed step progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
-                  <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
-                </div>
-                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
-                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
-                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages"
-                  onClick={() => setMobileStagesOpen((open) => !open)}
-                  className="min-h-11 py-2 text-[12px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">
-                  View all stages
-                </button>
-              </div>
-              <nav id="all-payment-stages" aria-label="Payment lifecycle navigation" hidden={!mobileStagesOpen}>
-                <ol aria-label="Payment lifecycle" className="grid gap-1 border-t border-[var(--color-border)] pt-2 md:grid-cols-2 lg:grid-cols-3">
-                  {PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage))}
-                </ol>
-              </nav>
-              </> : <>
+          {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Obligation" ? "space-y-2 border-b border-[var(--color-border)] pb-2" : "border-b border-[var(--color-border)] pb-1 md:space-y-2 md:pb-2"}>
+            {viewedStage === "Obligation" ? <div className="rounded border border-[var(--color-border)] px-3 py-2">
               <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
               <p className="mt-0.5 text-[11px] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · current position ${currentLifecycleStage}`}</p>
               <div className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Viewed step progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
@@ -2438,19 +2427,32 @@ export function CommandCenter() {
                 {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
               </div>
               <div className="mt-2">
-                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages"
-                  onClick={() => setMobileStagesOpen((open) => !open)}
-                  className="min-h-11 py-2 text-[12px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">
-                  View all stages
-                </button>
+                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 py-2 text-[12px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
                 <nav id="all-payment-stages" aria-label="Payment lifecycle navigation" hidden={!mobileStagesOpen}>
                   <ol aria-label="Payment lifecycle" className="grid gap-1 border-t border-[var(--color-border)] pt-2 md:grid-cols-2 lg:grid-cols-3">
                     {PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage))}
                   </ol>
                 </nav>
               </div>
-              </>}
-            </div>
+            </div> : <div className="rounded border border-[var(--color-border)] px-2 py-1 md:px-3 md:py-2">
+              <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+                <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
+                <p className="text-[11px] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? "Current stage" : `Viewing ${viewedStage} · current position ${currentLifecycleStage}`}</p>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <div className="h-1.5 min-w-8 flex-1 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Viewed step progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
+                  <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
+                </div>
+                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-[11px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-[11px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 shrink-0 px-1 text-[11px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
+              </div>
+              <nav id="all-payment-stages" aria-label="Payment lifecycle navigation" hidden={!mobileStagesOpen}>
+                <ol aria-label="Payment lifecycle" className="grid gap-1 border-t border-[var(--color-border)] pt-2 md:grid-cols-2 lg:grid-cols-3">
+                  {PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage))}
+                </ol>
+              </nav>
+            </div>}
           </section>}
 
           {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
@@ -2493,7 +2495,17 @@ export function CommandCenter() {
                   </label>
                 )}
               </div>
-              {exceptionRecoveryCard}
+              {exceptionRecoveryCard && (historicalAssessmentRecoveryIsSecondary
+                ? <details className="rounded border border-[var(--color-border)] px-3 py-1" data-testid="historical-current-recovery-disclosure">
+                    <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Current Assurance recovery details</summary>
+                    {exceptionRecoveryCard}
+                  </details>
+                : detailState === "failed"
+                  ? <details className="rounded border border-[var(--color-border)] px-3 py-1" data-testid="unavailable-detail-recovery-disclosure">
+                      <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Unavailable detail and submission evidence</summary>
+                      {exceptionRecoveryCard}
+                    </details>
+                : exceptionRecoveryCard)}
               {showContinueToAuthorization && (
                 <PrimaryButton onClick={() => showStage("Authorization")} disabled={busy}>Continue to Authorization</PrimaryButton>
               )}

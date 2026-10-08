@@ -19,12 +19,12 @@ const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: 
 const queueItem = (page: Page, id: string) => page.locator(`button[data-obligation-id="${id}"]`);
 
 async function expandLifecycleStages(page: Page) {
-  const disclosure = page.getByText("View all stages", { exact: true });
+  const disclosure = page.getByRole("button", { name: "View all stages", exact: true });
   if (await disclosure.count() && await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
 }
 
 async function collapseLifecycleStages(page: Page) {
-  const disclosure = page.getByText("View all stages", { exact: true });
+  const disclosure = page.getByRole("button", { name: "View all stages", exact: true });
   if (await disclosure.count() && await disclosure.getAttribute("aria-expanded") === "true") await disclosure.click();
 }
 
@@ -87,14 +87,32 @@ test("genuine first view keeps the payable, current stage, reason and legal next
       primary.evaluate((element) => element.getBoundingClientRect().bottom),
     ]);
     expect(firstViewport.every((bottom) => bottom <= viewportHeight), JSON.stringify(firstViewport)).toBe(true);
+    const actionBounds = await primary.evaluate((element) => ({
+      top: element.getBoundingClientRect().top,
+      bottom: element.getBoundingClientRect().bottom,
+      scrollY: window.scrollY,
+    }));
     const widths = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
     expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+    console.log("GENUINE_OBLIGATION_FIRST_VIEWPORT", JSON.stringify({
+      viewport: await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: window.innerHeight })),
+      obligationId: expected.record.obligation_id,
+      businessName: expectedBusinessName,
+      state: "unassessed · source OUTSTANDING",
+      actionLabel: "Run AI Assessment",
+      actionCount: await page.locator('main button[data-primary-action="true"]:not(:disabled)').count(),
+      actionBounds,
+      scrollY: actionBounds.scrollY,
+      disclosureOpen: await page.getByRole("main").locator("details[open]").count() > 0,
+      navigationMutationCount: writes.length,
+      documentWidth: widths.document,
+    }));
   };
 
-  await page.setViewportSize({ width: 1280, height: 760 });
+  await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
-  await assertGenuineFirstView(760);
+  await assertGenuineFirstView(751);
   await page.screenshot({ path: testInfo.outputPath("genuine-desktop-first-view.png") });
 
   const fifthResponse = await page.request.get("/api/obligations/OBL-J0C-005");
@@ -481,7 +499,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
-  await page.getByText("View all stages").click();
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
   const mobileCard = page.getByRole("region", { name: "Assessment result" });
   await expect(mobileCard.getByRole("heading", { name: "Current stage: Assessment. Step 2 of 6." })).toBeVisible();
@@ -620,6 +638,9 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       fixture.payDetailById,
       fixture.selectedCandidateId,
     );
+    // Match the Lenovo audit's observed fallback font rather than relying on
+    // the writer host's default font metrics when checking first-view bounds.
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
 
     for (const scenario of [
       { selectedId: "OBL-J0C-001", action: "Prepare Arc Testnet settlement proxy" },
@@ -643,7 +664,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       const action = card.getByRole("button", { name: scenario.action, exact: true });
       const identity = selectedSource.locator("h2");
       const stage = page.getByText("Step 2 of 6 · Assessment", { exact: true });
-      const currentStage = page.getByText("Current stage · Assessment", { exact: true });
+      const currentStage = page.getByText("Current stage", { exact: true });
       const viewportScrollY = await page.evaluate(() => window.scrollY);
       expect(viewportScrollY, `${scenario.selectedId} ${viewport.label} should remain at the top after navigation`).toBe(0);
       await expect(selectedSource).toBeVisible();
@@ -660,7 +681,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
         await expect(eligibility).toContainText("Selected payment candidate;");
         await expect(eligibility).toContainText("current payment-route assurance is not ready");
       } else {
-        await expect(eligibility).toContainText("PAY is recorded; this is not the selected payment candidate for the demo.");
+        await expect(eligibility).toContainText("Not the selected payment candidate.");
         const winner = fixture.queue.find((item) => item.obligation_id === fixture.selectedCandidateId)!;
         const winnerLabel = `${winner.service_category.replaceAll("_", " ").toLowerCase()} · ${winner.amount} ${winner.currency}`;
         await expect(eligibility).toContainText(winnerLabel);
@@ -731,7 +752,7 @@ test("non-winner PAY Assessment explains the authoritative candidate and navigat
     const card = page.getByRole("region", { name: "Assessment result" });
     await expect(card).toContainText("Advisory — PAY");
     await expect(card.getByTestId("payment-eligibility")).toBeVisible();
-    await expect(card).toContainText("not the selected payment candidate for the demo");
+    await expect(card).toContainText("Not the selected payment candidate.");
     await expect(card).toContainText("software services · 125.00 USD");
     await expect(card).toContainText("earliest effective due date among PAY recommendations");
     await expect(card).not.toContainText("OBL-UAT-01");
@@ -764,7 +785,7 @@ test("non-winner PAY Assessment explains the authoritative candidate and navigat
 test("fresh PAY after proxy preparation does not show stale PAE recovery on desktop or mobile", async ({ browser }, testInfo) => {
   const freshPay = postProxyFreshPayWithAggregateRevoked();
 
-  for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+  for (const viewport of [{ width: 1173, height: 751, label: "desktop-1173x751" }, { width: 390, height: 844, label: "mobile-390x844" }]) {
     const page = await browser.newPage({ viewport });
     const unexpectedWrites = await openFixture(page, freshPay);
     await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
@@ -773,10 +794,32 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
     expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-1-${viewport.label}.png`), fullPage: true });
     await page.getByRole("button", { name: "View Assessment" }).click();
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
     await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Advisory — PAY");
     await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Assessment result" }).getByRole("button", { name: "Review current PAY assessment" })).toBeVisible();
+    const assessmentCard = page.getByRole("region", { name: "Assessment result" });
+    const review = assessmentCard.getByRole("button", { name: "Review current PAY assessment" });
+    await expect(review).toBeVisible();
     await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("What to do next");
+    await expect(page.getByText(`Step 2 of 6 · Assessment`, { exact: true })).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const currentPosition = page.getByText("Current stage", { exact: true });
+    const sourceIdentity = page.getByRole("region", { name: "Selected source obligation" }).locator("h2");
+    const payResult = assessmentCard.getByText("Advisory — PAY", { exact: true });
+    const assessmentReason = assessmentCard.getByText(freshPay.current_assessment.race.result.decision_summary, { exact: true });
+    const measured = await Promise.all([sourceIdentity, page.getByText("Step 2 of 6 · Assessment", { exact: true }), currentPosition, payResult, assessmentReason, review].map(async (locator) => ({
+      label: await locator.innerText(),
+      ...await locator.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY })),
+    })));
+    const reviewBounds = measured.at(-1)!;
+    console.log("FRESH_PAY_REVIEW_FIRST_VIEWPORT", JSON.stringify({
+      viewport,
+      measured,
+      primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+      mutationCount: unexpectedWrites.length,
+    }));
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-assessment-first-view-${viewport.label}.png`), fullPage: false });
+    expect(measured.every((item) => item.scrollY === 0 && item.top >= 0 && item.bottom <= viewport.height), JSON.stringify({ viewport, measured })).toBe(true);
     expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-2-before-review-${viewport.label}.png`), fullPage: true });
     await page.getByRole("region", { name: "Assessment result" }).getByRole("button", { name: "Review current PAY assessment" }).click();
@@ -798,7 +841,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   const unexpectedWrites = await openFixture(page);
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
   await expect(queueItem(page, "OBL-UAT-01")).toContainText("PAY recommendation (advisory)");
-  await expect(page.getByText("View all stages", { exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("button", { name: "View all stages", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" })).toHaveCount(0);
   await expect(page.getByText("No payment intent created")).toBeHidden();
   const developerEvidence = page.getByText("Developer & audit evidence");
@@ -1063,7 +1106,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   const mobileBack = page.getByRole("button", { name: "Back" });
   await expect(mobileBack).toBeVisible();
   expect(await mobileBack.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
-  await page.getByText("View all stages").click();
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
   const lifecycle = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
   await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
@@ -1089,7 +1132,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("125.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
-  await page.getByText("View all stages").click();
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
   const dimensions = await page.evaluate(() => ({
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
@@ -1111,22 +1154,129 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   expect(unexpectedWrites).toEqual([]);
 });
 
-test("mobile Continue is a 44px read-only navigation control when Assurance is current", async ({ page }) => {
+test("Assurance Continue is a 44px read-only navigation control in the first viewport", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  for (const viewport of viewports) {
+    const page = await browser.newPage({ viewport });
+    const writes = await openFixture(page, proxyLifecycleDetail("AUTHORIZED"));
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+    await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+    await collapseLifecycleStages(page);
+    await expect(page.getByText("Step 4 of 6 · Assurance")).toBeVisible();
+    const continueButton = page.getByRole("button", { name: "Continue to Payment" }).last();
+    await expect(continueButton).toBeVisible();
+    expect(await continueButton.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    const continueBounds = await continueButton.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+    const selectedIdentity = page.getByRole("region", { name: "Selected source obligation" }).locator("h2");
+    await expect(selectedIdentity).toBeVisible();
+    await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("ASSURANCE PASSED");
+    console.log("ASSURANCE_CONTINUE_FIRST_VIEWPORT", JSON.stringify({ viewport, continueBounds }));
+    await page.screenshot({ path: testInfo.outputPath(`assurance-continue-first-viewport-${viewport.label}.png`), fullPage: false });
+    expect(continueBounds.scrollY).toBe(0);
+    expect(continueBounds.bottom).toBeLessThanOrEqual(viewport.height);
+    const before = writes.length;
+    await continueButton.click();
+    await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
+    expect(writes.slice(before)).toEqual([]);
+    expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
+    await page.close();
+  }
+});
+
+test("blocked Assurance and historical Assessment keep truthful no-action guidance in the mobile first viewport", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const writes = await openFixture(page, proxyLifecycleDetail("AUTHORIZED"));
-  await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+  const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
+  const writes = await openFixture(page, postApprovalNPlusOneDetail(false), queue);
+  await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+
   await expandLifecycleStages(page);
-  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance", exact: true }).click();
   await collapseLifecycleStages(page);
-  await expect(page.getByText("Step 4 of 6 · Assurance")).toBeVisible();
-  const continueButton = page.getByRole("button", { name: "Continue to Payment" }).last();
-  await expect(continueButton).toBeVisible();
-  expect(await continueButton.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
-  const before = writes.length;
-  await continueButton.click();
-  await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
-  expect(writes.slice(before)).toEqual([]);
-  expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
+  const assurance = page.getByRole("region", { name: "Deterministic assurance result" });
+  const noAction = assurance.getByTestId("assurance-no-action-guidance");
+  await expect(assurance).toContainText("Authorization recorded · Assurance failed/blocked");
+  await expect(noAction).toContainText("No further product action is available in this state.");
+  await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  const assuranceBounds = await noAction.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  console.log("BLOCKED_ASSURANCE_GUIDANCE_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...assuranceBounds,
+    primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+    mutationCount: writes.length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("blocked-assurance-first-viewport-mobile.png"), fullPage: false });
+  expect(assuranceBounds.scrollY).toBe(0);
+  expect(assuranceBounds.bottom).toBeLessThanOrEqual(844);
+
+  await expandLifecycleStages(page);
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment", exact: true }).click();
+  await collapseLifecycleStages(page);
+  const assessmentStatus = page.getByRole("region", { name: "Assessment result" }).getByRole("status");
+  await expect(assessmentStatus).toContainText("Authorization is recorded. Assurance failed or is blocked");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+  const assessmentBounds = await assessmentStatus.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  console.log("HISTORICAL_ASSESSMENT_GUIDANCE_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...assessmentBounds,
+    primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+    mutationCount: writes.length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("historical-assessment-guidance-first-viewport-mobile.png"), fullPage: false });
+  expect(assessmentBounds.scrollY).toBe(0);
+  expect(assessmentBounds.bottom).toBeLessThanOrEqual(844);
+  const currentRecovery = page.getByTestId("historical-current-recovery-disclosure");
+  await expect(currentRecovery).not.toHaveAttribute("open", "");
+  await currentRecovery.locator("summary").click();
+  await expect(currentRecovery.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test("failed 503 detail is presented as Unavailable, never as still Loading", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const requests: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const { pathname } = new URL(route.request().url());
+    requests.push(`${route.request().method()} ${pathname}`);
+    if (pathname === "/api/obligations" && route.request().method() === "GET") {
+      return route.fulfill({ json: { obligations: [{ ...obligation, assessed: false, decision: null }], assessed_count: 0, total_count: 1 } });
+    }
+    if (pathname === "/api/obligations/OBL-UAT-01" && route.request().method() === "GET") {
+      return route.fulfill({ status: 503, json: { error: "Mocked current detail unavailable" } });
+    }
+    return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
+  });
+  await page.goto("/");
+  await expect(page.getByRole("region", { name: "Selected obligation details" })).toBeVisible();
+  await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+  const unavailable = page.getByText("Unavailable", { exact: true }).first();
+  await expect(unavailable).toBeVisible();
+  await expect(page.getByText("Loading", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Source and control details are unavailable; no current action is inferred.")).toBeVisible();
+  const primaryActions = page.locator('main button[data-primary-action="true"]');
+  const refresh = page.getByRole("button", { name: "Refresh current status", exact: true });
+  await expect(refresh).toBeVisible();
+  await expect(primaryActions).toHaveCount(1);
+  const recoveryDetails = page.getByTestId("unavailable-detail-recovery-disclosure");
+  await expect(recoveryDetails).not.toHaveAttribute("open", "");
+  const unavailableBounds = await unavailable.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  const refreshBounds = await refresh.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom }));
+  console.log("UNAVAILABLE_503_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...unavailableBounds,
+    primaryActionCount: await primaryActions.count(),
+    actionLabel: "Refresh current status",
+    actionBounds: refreshBounds,
+    mutationCount: requests.filter((request) => !request.startsWith("GET ")).length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("failed-503-unavailable-first-viewport-mobile.png"), fullPage: false });
+  expect(unavailableBounds.scrollY).toBe(0);
+  expect(refreshBounds.bottom).toBeLessThanOrEqual(844);
+  await recoveryDetails.locator("summary").click();
+  await expect(recoveryDetails.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  expect(requests.filter((request) => request.startsWith("POST"))).toEqual([]);
 });
 
 test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {
@@ -1185,10 +1335,12 @@ test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in
     for (const stage of ["Payment", "Reconciliation"] as const) {
       const page = await browser.newPage({ viewport });
       const writes = await openFixture(page, proxyLifecycleDetail("UNKNOWN"));
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
       await expandLifecycleStages(page);
       await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
         .getByRole("button", { name: stage, exact: true }).click();
       await collapseLifecycleStages(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
 
       const region = page.getByRole("region", { name: stage === "Payment" ? "Payment status" : "Reconciliation receipt" });
       const action = page.getByRole("main").locator('button[data-primary-action="true"]');
@@ -1199,8 +1351,8 @@ test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in
         : region.locator("p").first();
       const stagePosition = page.getByText(`Step ${stage === "Payment" ? 5 : 6} of 6 · ${stage}`, { exact: true });
       const currentViewedLabel = stage === "Payment"
-        ? page.getByText("Viewing Payment · current position Reconciliation", { exact: true })
-        : page.getByText("Current stage · Reconciliation", { exact: true });
+        ? page.locator('[aria-label="Guided lifecycle"] p:visible').filter({ hasText: "Viewing Payment · current position Reconciliation" })
+        : page.locator('[aria-label="Guided lifecycle"] p:visible').filter({ hasText: "Current stage" });
 
       await expect(region).toBeVisible();
       await expect(stagePosition).toHaveCount(1);
