@@ -736,7 +736,36 @@ test("SETTLED evidence classification stays explicit in native desktop/mobile re
       await additional.click();
       await page.getByRole("button", { name: "Operational Report (secondary)" }).click();
       await page.evaluate(() => window.scrollTo(0, 0));
-      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report.png`), fullPage: true });
+      const reportState = await page.evaluate(() => {
+        const primary = [...document.querySelectorAll<HTMLElement>('main button[data-primary-action="true"]')];
+        return {
+          browser: navigator.userAgent,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          openDisclosureCount: document.querySelectorAll("main details[open]").length,
+          primary: primary.map((element) => {
+            const bounds = element.getBoundingClientRect();
+            return { label: element.innerText, bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right } };
+          }),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        };
+      });
+      expect(reportState.scrollY).toBe(0);
+      expect(reportState.primary.length).toBeLessThanOrEqual(1);
+      expect(reportState.horizontalOverflow).toBe(false);
+      const reportCapture = {
+        fixture: scenario.name,
+        view: "Operational Report panel · viewport-only scrollY=0",
+        detailSource: "existing producer-shaped mocked detail route; proxyLifecycleDetail('SETTLED') with explicit evidence override",
+        runtime: "LIVE read-model fixture label only; no live provider calls",
+        font: "DejaVu Sans forced for audit geometry",
+        ...reportState,
+        navigationMutationCount: writes.length,
+      };
+      captures.push(reportCapture);
+      console.log("F7_REPORT_CAPTURE", JSON.stringify(reportCapture));
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report-scroll0.png`), fullPage: false });
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report-full.png`), fullPage: true });
       expect(writes).toEqual([]);
       await page.close();
     }

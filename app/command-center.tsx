@@ -2936,11 +2936,12 @@ export function CommandCenter() {
                     {/* Supplier / source reference */}
                     <div className="space-y-1 border-s-2 border-[var(--color-ink)] ps-3">
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-                        Supplier / source reference
+                        Source-system reference
                       </h3>
-                      <Field label="Record ID" value={report.supplier_reference.record_id} />
-                      <Field label="Source approval" value={report.supplier_reference.approval_state} />
-                      <Field label="Execution authority" value={report.supplier_reference.execution_authority} />
+                      <Field label="Source-system record ID" value={report.supplier_reference.record_id} />
+                      <Field label="Source-system approval" value={report.supplier_reference.approval_state} />
+                      <Field label="Source-system execution authority" value={report.supplier_reference.execution_authority} />
+                      <p className="text-[11px] text-[var(--color-ink-muted)]">These source-system fields do not state Tameion approval or testnet execution status.</p>
                     </div>
 
                     {/* Amount */}
@@ -2973,14 +2974,13 @@ export function CommandCenter() {
                           }}
                           aria-label={reportDecisionLabel(report)}
                         >
-                          {report.status}
+                          Assessment · {report.status}
                           {report.fail_closed && " · fail-closed"}
                         </span>
                       </div>
                       {!report.in_scope && (
                         <p className="text-[12px] text-[var(--color-ink-muted)]">
-                          Advisory only — PAY is outside the HOLD/ESCALATE report scope and has
-                          not been settled or authorized.
+                          Assessment-scope advisory — PAY is outside the HOLD/ESCALATE report scope. This report describes the assessment only; current authorization and execution status are shown separately in the lifecycle status above.
                         </p>
                       )}
                                         </div>
@@ -2990,7 +2990,7 @@ export function CommandCenter() {
                       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
                         Assessment truth
                       </h3>
-                      <Field label="Status" value={report.status} />
+                      <Field label="Assessment status" value={report.status} />
                     </div>
 
                     {/* Reasons */}

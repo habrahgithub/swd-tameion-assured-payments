@@ -457,6 +457,11 @@ describe("real detail GET producer-consumer packet controls", () => {
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
     process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    const approvedAggregate = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, fixture.selectedId, approvedAggregate.aggregate_version, {
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+    });
     const produced = await detailJson(fixture.state, fixture.selectedId);
     const exactPacket = produced.execution_packet.packet;
     const expectedAmount = exactPacket.settlement_amount as string;
@@ -512,6 +517,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       { name: "instruction identity cannot be rebound", body: (() => { const body = asSettled(exactEvidence); body.sealed_pae_instruction_hash = "f".repeat(64); return body; })(), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
     ];
 
+    const reportScopeFailures: string[] = [];
     for (const scenario of cases) {
       cleanup();
       fetchMock.mockClear();
@@ -555,10 +561,25 @@ describe("real detail GET producer-consumer packet controls", () => {
       fireEvent.click(within(screen.getByRole("main")).getByText("Additional tools"));
       fireEvent.click(within(screen.getByRole("main")).getByRole("button", { name: "Operational Report (secondary)" }));
       const reportText = screen.getByRole("main").textContent ?? "";
+      const report = screen.getByRole("region", { name: /Operational report for/ });
+      try {
+        expect(report.textContent, `${scenario.name} report scope`).toContain("Assessment-scope advisory — PAY is outside the HOLD/ESCALATE report scope.");
+        expect(report.textContent, `${scenario.name} report scope`).not.toMatch(/has not been settled or authorized/i);
+        expect(report.textContent, `${scenario.name} report status`).toContain("Assessment · CURRENT");
+        expect(report.textContent, `${scenario.name} source approval scope`).toContain("Source-system approval");
+        expect(report.textContent, `${scenario.name} source approval value`).toContain("Source-system approvalNOT_ASSERTED");
+        expect(report.textContent, `${scenario.name} source authority scope`).toContain("Source-system execution authority");
+        expect(report.textContent, `${scenario.name} source authority value`).toContain("Source-system execution authorityNONE");
+        expect(report.textContent, `${scenario.name} source authority scope`).toContain("These source-system fields do not state Tameion approval or testnet execution status.");
+        expect(reportText, `${scenario.name} current lifecycle`).toContain(scenario.expected);
+      } catch (error) {
+        reportScopeFailures.push(`${scenario.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (scenario.forbidden) expect(reportText, `${scenario.name} report`).not.toMatch(scenario.forbidden);
       else expect(reportText).toContain("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
     }
+    expect(reportScopeFailures).toEqual([]);
   });
 
   it("normalizes and renders a legacy schema-v1 settled ledger record without inventing reconciliation evidence", async () => {
