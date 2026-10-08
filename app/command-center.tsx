@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { decimalToAtomic } from "../src/domain/numeric";
 import type { RaceAssessment } from "../src/agent/schema";
 import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary";
 import {
@@ -76,6 +77,7 @@ interface ObligationDetail {
   demo_arc_trust_simulated: boolean;
   pae_sealed: boolean;
   execution: {
+    obligation_id?: string;
     status: string;
     provider_ref: string | null;
     idempotency_key?: string;
@@ -419,7 +421,7 @@ export function reconciliationLeadLine(state: DetailState, execution: unknown, h
   if (execution && typeof execution === "object" && typeof (execution as { status?: unknown }).status === "string") {
     const record = execution as { status: string; provider_ref?: unknown; provider_evidence?: unknown };
     const status = record.status;
-    if (hasSettlementProxy && status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION · source payable remains ${sourceState}.`;
+    if (hasSettlementProxy && status === "SETTLED") return `Recorded as SETTLED — reconciliation evidence unavailable. Exact provider amount and destination verification cannot be established from the stored record. Source payable remains ${sourceState}.`;
     if (hasSettlementProxy && (status === "UNKNOWN" || status === "SUBMITTING")) return "TESTNET outcome is UNKNOWN — perform read-only reconciliation for this same intent; resubmission is blocked.";
     if (hasSettlementProxy && status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourceState}.`;
     if (hasSettlementProxy && status === "BLOCKED" && !record.provider_ref && !record.provider_evidence) return `Arc Testnet execution is blocked. No provider reference is recorded for this instruction; external provider status is not established by this record. Source payable remains ${sourceState}.`;
@@ -547,6 +549,111 @@ async function postJson(url: string, body?: unknown, headers: Record<string, str
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
 type ExecutionConfirmation = { identity: string; value: string } | null;
 
+type SettledEvidenceClassification = {
+  state: "verified" | "unavailable" | "mismatch";
+  summary: string;
+  explanation: string;
+  amountMatch: string;
+  destinationMatch: string;
+};
+
+/** Read-only presentation classification. A recorded ledger status is not
+ * provider proof: success requires CONFIRMED evidence bound to the exact
+ * selected, sealed instruction and its exact amount/destination. */
+function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClassification {
+  const unavailable = (amountMatch = "not established from stored provider evidence", destinationMatch = "not established from stored provider evidence"): SettledEvidenceClassification => ({
+    state: "unavailable",
+    summary: "Recorded as SETTLED — reconciliation evidence unavailable",
+    explanation: "Exact provider amount and destination verification cannot be established from the stored record. Evidence review required; do not resubmit.",
+    amountMatch,
+    destinationMatch,
+  });
+  const mismatch = (amountMatch = "review required", destinationMatch = "review required"): SettledEvidenceClassification => ({
+    state: "mismatch",
+    summary: "Reconciliation evidence mismatch — review required",
+    explanation: "Stored provider evidence does not match the exact selected payment instruction. The execution ledger remains recorded as SETTLED. Evidence review required; do not resubmit.",
+    amountMatch,
+    destinationMatch,
+  });
+  const record = detail.execution;
+  if (!record || record.status !== "SETTLED") return unavailable();
+  if (detail.truth.settlement_truth.runtime === "SIMULATED") return unavailable();
+  const evidence = record.provider_evidence;
+  if (!evidence) return unavailable();
+  if (typeof evidence.status === "string" && evidence.status !== "CONFIRMED") return mismatch();
+  if (!evidence.status) return unavailable();
+
+  const packet = detail.execution_packet?.packet;
+  const pae = packet?.pae as Record<string, unknown> | undefined;
+  const token = packet?.provider_token as Record<string, unknown> | undefined;
+  const instruction = packet?.circle_arc_execution_instruction as Record<string, unknown> | undefined;
+  const proxy = detail.settlement_proxy?.preflight;
+  if (!packet || !detail.pae_sealed || !detail.sealed_pae_instruction_hash ||
+      packet.obligation_id !== detail.record.obligation_id ||
+      pae?.instruction_hash !== detail.sealed_pae_instruction_hash ||
+      pae?.idempotency_key !== record.idempotency_key ||
+      (record.obligation_id !== undefined && record.obligation_id !== detail.record.obligation_id) ||
+      !proxy || proxy.obligation_id !== detail.record.obligation_id ||
+      packet.organization_id !== proxy.organization_id ||
+      packet.aggregate_version !== detail.aggregate.aggregate_version ||
+      packet.settlement_amount !== proxy.amount || packet.settlement_amount !== detail.aggregate.amount) {
+    return unavailable();
+  }
+
+  const amount = packet.settlement_amount;
+  const decimals = token?.decimals;
+  const destination = instruction?.destination_address;
+  if (typeof amount !== "string" || !Number.isSafeInteger(decimals) || (decimals as number) < 0 ||
+      typeof destination !== "string" || !destination ||
+      typeof instruction.amount !== "string" || !Number.isSafeInteger(instruction.decimals) ||
+      typeof packet.asset !== "string" || typeof packet.network !== "string") return unavailable();
+  if (destination.toLowerCase() !== proxy.destination_wallet.address.toLowerCase() ||
+      instruction.amount !== amount || instruction.decimals !== decimals ||
+      packet.asset !== "USDC" || packet.network !== "ARC_TESTNET") return mismatch();
+  let expectedAtomic: string;
+  try {
+    expectedAtomic = decimalToAtomic(amount, decimals as number);
+  } catch {
+    return unavailable();
+  }
+
+  const evidenceAtomic = evidence.atomic_amount ?? evidence.atomicAmount;
+  const evidenceDestination = evidence.destination_address ?? evidence.destinationAddress;
+  const amountMatch = typeof evidenceAtomic !== "string"
+    ? "not established from stored provider evidence"
+    : evidenceAtomic === expectedAtomic ? "confirmed" : "mismatch recorded";
+  const destinationMatch = typeof evidenceDestination !== "string"
+    ? "not established from stored provider evidence"
+    : evidenceDestination.toLowerCase() === destination.toLowerCase() ? "confirmed" : "mismatch recorded";
+  if (amountMatch === "mismatch recorded" || destinationMatch === "mismatch recorded" ||
+      (typeof record.atomic_amount === "string" && record.atomic_amount !== expectedAtomic) ||
+      (typeof record.destination_address === "string" && record.destination_address.toLowerCase() !== destination.toLowerCase())) {
+    return mismatch(amountMatch, destinationMatch);
+  }
+  if (amountMatch !== "confirmed" || destinationMatch !== "confirmed" || detail.aggregate.state !== "RECONCILED") {
+    return unavailable(amountMatch, destinationMatch);
+  }
+  return {
+    state: "verified",
+    summary: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION",
+    explanation: `Stored CONFIRMED provider evidence matches the exact testnet amount and destination; source payable remains ${sourcePayableState(detail)}.`,
+    amountMatch,
+    destinationMatch,
+  };
+}
+
+function settledEvidenceSummary(detail: ObligationDetail): string {
+  if (detail.truth.settlement_truth.runtime === "SIMULATED") return "Simulated record — no Arc settlement";
+  return classifySettledEvidence(detail).summary;
+}
+
+function settledEvidenceExplanation(detail: ObligationDetail): string {
+  if (detail.truth.settlement_truth.runtime === "SIMULATED") {
+    return `This simulated execution record does not establish Arc provider settlement. Exact provider amount and destination verification cannot be established from the stored record. Source payable remains ${sourcePayableState(detail)}.`;
+  }
+  return classifySettledEvidence(detail).explanation;
+}
+
 export function useExecutionConfirmation(identity: string | null) {
   const [confirmation, setConfirmation] = useState<ExecutionConfirmation>(null);
   useLayoutEffect(() => {
@@ -579,11 +686,19 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
   const { aggregate, execution, truth } = detail;
   const releaseAuthority = truth.tameion_control_truth.execution_release_authority;
 
-  if (execution?.status === "SETTLED" && aggregate.state === "RECONCILED") {
+  if (execution?.status === "SETTLED") {
     if (detail.truth.settlement_truth.runtime === "SIMULATED") {
       return { label: "Simulated record — no Arc settlement", tone: "neutral", explanation: "The stored execution result used a simulated adapter and does not represent a vendor payment." };
     }
-    return { label: "Reconciled", tone: "success", explanation: "Settlement matches the authorized obligation exactly." };
+    const evidence = classifySettledEvidence(detail);
+    if (evidence.state === "verified") {
+      return { label: "Reconciled", tone: "success", explanation: "Stored CONFIRMED provider evidence matches the exact testnet amount and destination." };
+    }
+    return {
+      label: evidence.summary,
+      tone: evidence.state === "mismatch" ? "warning" : "neutral",
+      explanation: evidence.explanation,
+    };
   }
   if (execution?.status === "UNKNOWN") {
     return {
@@ -1313,7 +1428,9 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   if (detail.execution?.status === "UNKNOWN") return "Outcome unknown. Reconcile this same instruction read-only; do not retry or resubmit.";
   if (detail.execution?.status === "SUBMITTING") return "Submission is in progress. Wait for read-only reconciliation; do not resubmit.";
   if (detail.execution?.status === "SUBMITTED") return "Submission is recorded and awaiting reconciliation. Do not resubmit.";
-  if (detail.execution?.status === "SETTLED") return "Testnet execution is reconciled. The real-world payable remains outstanding in the source record.";
+  if (detail.execution?.status === "SETTLED") return detail.truth.settlement_truth.runtime === "SIMULATED"
+    ? "Simulated record — no Arc settlement. The real-world payable remains outstanding in the source record."
+    : `${settledEvidenceSummary(detail)}. The real-world payable remains outstanding in the source record.`;
   if (detail.execution?.status === "FAILED") return "The provider attempt failed. Review current evidence; no retry is available from this instruction.";
   if (detail.execution?.status === "BLOCKED") return "Execution is blocked. No successful settlement is established by this record.";
   if (detail.execution_kill_switched) return "A payment stop is active. No execution is permitted.";
@@ -1760,7 +1877,7 @@ export function CommandCenter() {
         if (hasCurrentPayAssessment && routeAssuranceReady) return "Final assurance runs after human approval";
         return "Final assurance not run";
       case "Payment":
-        if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `Arc Testnet proxy execution reconciled; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `${settledEvidenceSummary(detail)}; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Outcome unknown — reconcile this same intent; resubmission blocked";
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return "Submitted to Arc Testnet provider; reconciliation is pending";
         if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
@@ -1780,7 +1897,7 @@ export function CommandCenter() {
         }
         return "Arc Testnet proxy not prepared for this obligation";
       case "Reconciliation":
-        if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION; source payable remains ${sourcePayableState(detail)}`;
+        if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `${settledEvidenceSummary(detail)}; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Read-only reconciliation pending; no resubmission";
         if (detail.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) return `Submission recorded; reconcile this same intent; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "FAILED") return `Arc Testnet provider attempt failed; source payable remains ${sourcePayableState(detail)}`;
@@ -1867,7 +1984,9 @@ export function CommandCenter() {
       : detail?.settlement_proxy && ["SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")
         ? `The Arc Testnet submission is recorded. Reconcile this same intent; do not resubmit. The source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution?.status === "SETTLED"
-        ? `TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION. The source payable remains ${sourcePayableState(detail)}.`
+        ? detail.truth.settlement_truth.runtime === "SIMULATED"
+          ? `Simulated record — no Arc settlement. The source payable remains ${sourcePayableState(detail)}.`
+          : `${settledEvidenceSummary(detail)}. ${settledEvidenceExplanation(detail)} Source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution?.status === "FAILED"
         ? `The Arc Testnet provider attempt failed. No successful reconciliation is recorded; the source payable remains ${sourcePayableState(detail)}.`
       : detail?.settlement_proxy && detail.execution?.status === "BLOCKED"
@@ -2709,15 +2828,18 @@ export function CommandCenter() {
                   const evidence = detail.execution?.provider_evidence;
                   const observedAmount = evidence?.atomic_amount ?? evidence?.atomicAmount;
                   const observedDestination = evidence?.destination_address ?? evidence?.destinationAddress;
-                  const amountMatch = evidence?.status === "CONFIRMED" && observedAmount && detail.execution?.atomic_amount
+                  const settledEvidence = detail.execution?.status === "SETTLED" ? classifySettledEvidence(detail) : null;
+                  const amountMatch = settledEvidence?.amountMatch ?? (evidence?.status === "CONFIRMED" && observedAmount && detail.execution?.atomic_amount
                     ? observedAmount === detail.execution.atomic_amount ? "confirmed" : "mismatch recorded"
-                    : "not established from stored provider evidence";
-                  const destinationMatch = evidence?.status === "CONFIRMED" && observedDestination && detail.execution?.destination_address
+                    : "not established from stored provider evidence");
+                  const destinationMatch = settledEvidence?.destinationMatch ?? (evidence?.status === "CONFIRMED" && observedDestination && detail.execution?.destination_address
                     ? observedDestination.toLowerCase() === detail.execution.destination_address.toLowerCase() ? "confirmed" : "mismatch recorded"
-                    : "not established from stored provider evidence";
+                    : "not established from stored provider evidence");
                   const providerState = evidence?.status ?? (detail.execution?.provider_ref ? "Provider status not included in current detail" : "No provider reference is recorded for this instruction");
                   const result = detail.execution?.status === "SETTLED"
-                    ? "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION"
+                    ? detail.truth.settlement_truth.runtime === "SIMULATED"
+                      ? "Simulated record — no Arc settlement"
+                      : settledEvidence!.summary
                     : detail.execution?.status === "UNKNOWN"
                       ? "Outcome unknown · read-only reconciliation only; do not resubmit"
                       : detail.execution?.status === "SUBMITTING"
@@ -2741,9 +2863,10 @@ export function CommandCenter() {
                         <Field label="Source payable" value={`${sourcePayableState(detail)} · remains outstanding in the source record`} />
                         <Field label="Testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
                         <Field label="Testnet proxy destination" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
-                        <Field label="Amount match" value={amountMatch} />
-                        <Field label="Destination match" value={destinationMatch} />
+                        <Field label="Exact amount verification" value={amountMatch} />
+                        <Field label="Exact destination verification" value={destinationMatch} />
                       </dl>
+                      {settledEvidence && <p className={`text-[12px] ${settledEvidence.state === "verified" ? "text-[var(--color-ink-muted)]" : "text-[var(--color-warning)]"}`}>{settledEvidenceExplanation(detail)}</p>}
                       <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">ARC TESTNET · Controlled settlement proxy · testnet execution does not discharge the real-world payable.</p>
                       {workspaceAction && !(detail.execution?.status === "UNKNOWN" && workspaceAction.label === "Reconcile this same intent") && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                       {exceptionRecoveryCard}
@@ -2751,8 +2874,10 @@ export function CommandCenter() {
                       <details className="rounded border border-[var(--color-border)] px-3 py-2">
                         <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">View reconciliation evidence</summary>
                         <dl className="border-t border-[var(--color-border)] pt-3">
-                          <Field label="Provider status" value={providerState} />
-                          <Field label="Reconciliation result" value={detail.execution?.status === "SETTLED" ? "Testnet execution reconciled to source obligation; real-world payable is unchanged." : result} />
+                          <Field label="Provider status evidence" value={providerState} />
+                          <Field label="Recorded ledger status" value={detail.execution?.status ?? "No execution record"} />
+                          <Field label="Evidence classification" value={detail.execution?.status === "SETTLED" ? settledEvidenceSummary(detail) : result} />
+                          {settledEvidence && <p role="note" className="text-[12px] text-[var(--color-ink-muted)]">{settledEvidenceExplanation(detail)}</p>}
                         </dl>
                       </details>
                     </section>
@@ -3043,7 +3168,9 @@ export function CommandCenter() {
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Reconciliation evidence</summary>
                   <div className="space-y-2 pt-2">
                     <dl>
-                      <Field label="Settlement status" value={detail.truth.settlement_truth.status} />
+                      <Field label="Recorded settlement ledger status" value={detail.truth.settlement_truth.status} />
+                      <Field label="Provider evidence classification" value={detail.execution?.status === "SETTLED" ? settledEvidenceSummary(detail) : "No SETTLED evidence classification applies"} />
+                      {detail.execution?.status === "SETTLED" && <p role="note" className="text-[12px] text-[var(--color-ink-muted)]">{settledEvidenceExplanation(detail)}</p>}
                       <Field label="Provider reconciliation time" value={detail.execution?.provider_evidence?.reconciled_at ?? "Not recorded"} />
                       <Field label="Provider evidence status" value={detail.execution?.provider_evidence?.status ?? "Not available"} />
                     </dl>

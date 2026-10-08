@@ -12,7 +12,7 @@ import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
 import { POST as postAssessment } from "../app/api/obligations/[id]/assess/route";
-import { CommandCenter, useExecutionConfirmation } from "../app/command-center";
+import { CommandCenter, useExecutionConfirmation, workflowState } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -449,6 +449,160 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(paymentStage.disabled).toBe(true);
     expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("classifies SETTLED only from stored provider evidence bound to the exact selected instruction", async () => {
+    const fixture = await preparedAuthorizedState();
+    const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    expect(packet).toBeTruthy();
+    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    const produced = await detailJson(fixture.state, fixture.selectedId);
+    const exactPacket = produced.execution_packet.packet;
+    const expectedAmount = exactPacket.settlement_amount as string;
+    const expectedDecimals = exactPacket.provider_token.decimals as number;
+    const expectedAtomic = (() => {
+      const [whole, fractional = ""] = expectedAmount.split(".");
+      return (BigInt(whole) * 10n ** BigInt(expectedDecimals) + BigInt((fractional + "0".repeat(expectedDecimals)).slice(0, expectedDecimals) || "0")).toString();
+    })();
+    const expectedDestination = exactPacket.circle_arc_execution_instruction.destination_address as string;
+    const expectedInstructionHash = exactPacket.pae.instruction_hash as string;
+    const expectedIdempotencyKey = exactPacket.pae.idempotency_key as string;
+
+    const asSettled = (evidence: Record<string, unknown> | null | undefined, evidenceMode: "set" | "omit" = "set") => {
+      const body = structuredClone(produced);
+      body.aggregate = { ...body.aggregate, state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" };
+      body.truth.tameion_control_truth = {
+        ...body.truth.tameion_control_truth,
+        aggregate_state: "RECONCILED",
+        execution_state: "SETTLED",
+        pae_state: "CONSUMED",
+      };
+      // Deliberate fixture-only mode label; no live provider was called.
+      body.truth.settlement_truth.runtime = "LIVE";
+      body.execution_gate = "EXECUTION_ALREADY_RECORDED";
+      body.execution = {
+        status: "SETTLED",
+        provider_ref: "fixture-provider-reference",
+        idempotency_key: expectedIdempotencyKey,
+        atomic_amount: expectedAtomic,
+        destination_address: expectedDestination,
+        ...(evidenceMode === "omit" ? {} : { provider_evidence: evidence }),
+      };
+      return body as any;
+    };
+    const exactEvidence = {
+      status: "CONFIRMED",
+      atomic_amount: expectedAtomic,
+      destination_address: expectedDestination,
+      reconciled_at: "2026-10-08T10:00:00.000Z",
+    };
+    const cases = [
+      { name: "evidence omitted", body: asSettled(undefined, "omit"), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "evidence null", body: asSettled(null), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "evidence incomplete", body: asSettled({ status: "CONFIRMED", atomic_amount: expectedAtomic }), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider status contradicts SETTLED", body: asSettled({ ...exactEvidence, status: "PENDING" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider amount contradicts the instruction", body: asSettled({ ...exactEvidence, atomic_amount: "1" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider destination contradicts the instruction", body: asSettled({ ...exactEvidence, destination_address: "0x1111111111111111111111111111111111111111" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "execution ledger amount contradicts the sealed instruction", body: (() => { const body = asSettled(exactEvidence); body.execution.atomic_amount = "1"; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "packet instruction amount contradicts packet settlement amount", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.amount = "1.000000"; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "packet instruction decimals contradict the token", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.decimals = 8; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "confirmed exact instruction", body: asSettled(exactEvidence), expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", forbidden: null },
+      { name: "simulated ledger record", body: (() => { const body = asSettled(exactEvidence); body.truth.settlement_truth.runtime = "SIMULATED"; return body; })(), expected: "Simulated record — no Arc settlement", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "instruction identity cannot be rebound", body: (() => { const body = asSettled(exactEvidence); body.sealed_pae_instruction_hash = "f".repeat(64); return body; })(), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+    ];
+
+    for (const scenario of cases) {
+      cleanup();
+      fetchMock.mockClear();
+      await renderProducerJson(scenario.body);
+      const workflow = workflowState(scenario.body as never);
+      if (scenario.forbidden) {
+        expect(workflow.label, scenario.name).toBe(scenario.expected);
+        expect(workflow.tone, scenario.name).not.toBe("success");
+      } else {
+        expect(workflow).toMatchObject({ label: "Reconciled", tone: "success" });
+      }
+      navigateStage("Payment");
+      const payment = screen.getByRole("region", { name: "Payment status" });
+      expect(payment.textContent, scenario.name).toContain(scenario.expected);
+      expect(payment.textContent, scenario.name).toContain("OUTSTANDING");
+      expect(screen.queryByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toBeNull();
+      expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
+
+      navigateStage("Reconciliation");
+      const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+      expect(receipt.textContent, scenario.name).toContain(scenario.expected);
+      expect(receipt.textContent, scenario.name).toContain("Source payable");
+      expect(receipt.textContent, scenario.name).toContain("OUTSTANDING · remains outstanding in the source record");
+      if (scenario.forbidden) {
+        expect(screen.getByRole("main").textContent, scenario.name).not.toMatch(scenario.forbidden);
+      } else if (scenario.name === "confirmed exact instruction") {
+        expect(receipt.textContent).toContain("Exact amount verificationconfirmed");
+        expect(receipt.textContent).toContain("Exact destination verificationconfirmed");
+      }
+
+      fireEvent.click(within(receipt).getByText("View reconciliation evidence"));
+      expect(receipt.textContent, scenario.name).toContain(scenario.expected);
+      expect(receipt.textContent, scenario.name).toContain("Evidence classification");
+      fireEvent.click(within(screen.getByRole("main")).getByText("Developer & audit evidence"));
+      const mainText = screen.getByRole("main").textContent ?? "";
+      expect(mainText, `${scenario.name} developer evidence`).toContain(scenario.expected);
+      if (scenario.forbidden) expect(mainText, scenario.name).not.toMatch(scenario.forbidden);
+      if (scenario.name.startsWith("evidence ") || scenario.name === "instruction identity cannot be rebound") {
+        expect(mainText).toContain("Exact provider amount and destination verification cannot be established from the stored record.");
+      }
+      fireEvent.click(within(screen.getByRole("main")).getByText("Additional tools"));
+      fireEvent.click(within(screen.getByRole("main")).getByRole("button", { name: "Operational Report (secondary)" }));
+      const reportText = screen.getByRole("main").textContent ?? "";
+      if (scenario.forbidden) expect(reportText, `${scenario.name} report`).not.toMatch(scenario.forbidden);
+      else expect(reportText).toContain("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
+    }
+  });
+
+  it("normalizes and renders a legacy schema-v1 settled ledger record without inventing reconciliation evidence", async () => {
+    const fixture = await preparedAuthorizedState();
+    const sealed = fixture.state.getSealedPae(fixture.selectedId)!;
+    const aggregate = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    const atomic = sealed.payload.atomic_amount;
+    const destination = sealed.payload.destination_address;
+    fixture.state.store.markSettled(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    fixture.state.store.markReconciled(DEMO_ORGANIZATION_ID, fixture.selectedId);
+    const snapshot = fixture.state.exportSnapshot() as any;
+    snapshot.schema_version = 1;
+    delete snapshot.trusted_keys;
+    delete snapshot.actor_authorities;
+    delete snapshot.actor_authority_registry_initialized;
+    snapshot.execution_ledger = [{
+      obligation_id: fixture.selectedId,
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SETTLED",
+      atomic_amount: atomic,
+      destination_address: destination,
+    }];
+    const parsed = parseDemoStateSnapshot(snapshot);
+    expect(parsed.schema_version).toBe(2);
+    const restored = new DemoState(parsed);
+    expect(restored.worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("SETTLED");
+    expect(restored.worker.getExecutionRecord(sealed.payload.idempotency_key)?.provider_evidence).toBeUndefined();
+
+    const legacyGet = await detailJson(restored, fixture.selectedId);
+    // Controlled read-model truth override: this legacy SETTLED row represents
+    // historical Arc execution; no provider call is made by the test.
+    legacyGet.truth.settlement_truth.runtime = "LIVE";
+    expect(legacyGet.execution?.status).toBe("SETTLED");
+    expect(legacyGet.execution?.provider_evidence).toBeUndefined();
+    expect(legacyGet.execution_packet).toBeNull();
+    const { main } = await renderProducerJson(legacyGet);
+    navigateStage("Reconciliation");
+    const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+    expect(receipt.textContent).toContain("Recorded as SETTLED — reconciliation evidence unavailable");
+    expect(receipt.textContent).toContain("Exact provider amount and destination verification cannot be established from the stored record.");
+    expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
+    expect(main.textContent).not.toMatch(/TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION|Settlement matches the authorized obligation exactly/i);
+    expect(screen.queryByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1568,23 +1722,33 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelectorAll('[aria-label="Exception recovery"]')).toHaveLength(1);
 
     cleanup();
+    const currentPacket = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
+    expect(currentPacket).toBeTruthy();
+    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = currentPacket!.packet_sha256;
+    const reconciliationBase = await detailJson(fixture.state, fixture.selectedId);
+    const exactPacket = reconciliationBase.execution_packet!.packet!;
+    const expectedAmount = exactPacket.settlement_amount as string;
+    const expectedDecimals = exactPacket.provider_token.decimals as number;
+    const [whole, fractional = ""] = expectedAmount.split(".");
+    const expectedAtomic = (BigInt(whole) * 10n ** BigInt(expectedDecimals) + BigInt((fractional + "0".repeat(expectedDecimals)).slice(0, expectedDecimals) || "0")).toString();
+    const expectedDestination = exactPacket.circle_arc_execution_instruction.destination_address as string;
     const reconciled = {
-      ...body,
-      aggregate: { ...body.aggregate, state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
+      ...reconciliationBase,
+      aggregate: { ...reconciliationBase.aggregate, state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
       truth: {
-        ...body.truth,
-        tameion_control_truth: { ...body.truth.tameion_control_truth, aggregate_state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
+        ...reconciliationBase.truth,
+        tameion_control_truth: { ...reconciliationBase.truth.tameion_control_truth, aggregate_state: "RECONCILED", execution_state: "SETTLED", pae_state: "CONSUMED" },
       },
       execution: {
         status: "SETTLED",
         provider_ref: "mock-provider-reference",
-        idempotency_key: "instruction-replay-key",
-        atomic_amount: "125000000",
-        destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+        idempotency_key: exactPacket.pae.idempotency_key,
+        atomic_amount: expectedAtomic,
+        destination_address: expectedDestination,
         provider_evidence: {
           status: "CONFIRMED",
-          atomic_amount: "125000000",
-          destination_address: body.settlement_proxy.preflight.destination_wallet.address,
+          atomic_amount: expectedAtomic,
+          destination_address: expectedDestination,
           reconciled_at: "2026-10-07T12:00:00.000Z",
         },
       },
@@ -1594,8 +1758,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
     expect(receipt.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset}`);
     expect(receipt.textContent).toContain("ARC_TESTNET");
-    expect(receipt.textContent).toContain("Amount matchconfirmed");
-    expect(receipt.textContent).toContain("Destination matchconfirmed");
+    expect(receipt.textContent).toContain("Exact amount verificationconfirmed");
+    expect(receipt.textContent).toContain("Exact destination verificationconfirmed");
     expect(receipt.textContent).toContain("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
     expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
   });

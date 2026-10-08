@@ -232,6 +232,9 @@ function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "
   source.settlement_proxy.preflight.obligation_id = "OBL-UAT-01";
   const settled = status === "SETTLED";
   const executionStatus = settled ? "SETTLED" : status === "AUTHORIZED" ? null : status;
+  const settledIdempotencyKey = "idem-OBL-UAT-01-SETTLED";
+  const settledAtomicAmount = "125000000";
+  const settledDestination = source.settlement_proxy.preflight.destination_wallet.address;
   return {
     ...source,
     assurance_evidence: status === "AUTHORIZED" ? {
@@ -276,9 +279,36 @@ function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "
     },
     pae_sealed: true,
     execution_gate: status === "AUTHORIZED" ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_AFTER_SUBMISSION",
-    execution_packet: status === "AUTHORIZED" ? { packet_sha256: "e".repeat(64), packet: { obligation_id: "OBL-UAT-01" } } : null,
+    execution_packet: status === "AUTHORIZED" ? { packet_sha256: "e".repeat(64), packet: { obligation_id: "OBL-UAT-01" } } : settled ? {
+      packet_sha256: "f".repeat(64),
+      packet: {
+        organization_id: "ORG-UAT",
+        obligation_id: "OBL-UAT-01",
+        aggregate_version: 2,
+        settlement_amount: "125.000000",
+        asset: "USDC",
+        network: "ARC_TESTNET",
+        provider_token: { decimals: 6 },
+        circle_arc_execution_instruction: { amount: "125.000000", decimals: 6, destination_address: settledDestination },
+        pae: { instruction_hash: "d".repeat(64), idempotency_key: settledIdempotencyKey },
+      },
+    } : null,
     sealed_pae_instruction_hash: "d".repeat(64),
-    execution: executionStatus ? { status: executionStatus, provider_ref: "MOCK-ARC-REFERENCE" } : null,
+    execution: executionStatus ? {
+      status: executionStatus,
+      provider_ref: "MOCK-ARC-REFERENCE",
+      ...(settled ? {
+        idempotency_key: settledIdempotencyKey,
+        atomic_amount: settledAtomicAmount,
+        destination_address: settledDestination,
+        provider_evidence: {
+          status: "CONFIRMED",
+          atomic_amount: settledAtomicAmount,
+          destination_address: settledDestination,
+          reconciled_at: "2026-10-07T12:00:00.000Z",
+        },
+      } : {}),
+    } : null,
   };
 }
 
@@ -618,6 +648,103 @@ test("Screens 2–6 render as truthful, read-only producer-shaped stages on desk
       await page.close();
     }
   }
+});
+
+test("SETTLED evidence classification stays explicit in native desktop/mobile receipt captures", async ({ browser }, testInfo) => {
+  const verified = proxyLifecycleDetail("SETTLED");
+  const unavailable = structuredClone(verified);
+  delete unavailable.execution.provider_evidence;
+  unavailable.execution_packet = null;
+  const mismatch = structuredClone(verified);
+  mismatch.execution.provider_evidence.destination_address = "0x1111111111111111111111111111111111111111";
+  const cases = [
+    { name: "unavailable", detail: unavailable, expected: "Recorded as SETTLED — reconciliation evidence unavailable", noSuccess: true },
+    { name: "mismatch", detail: mismatch, expected: "Reconciliation evidence mismatch — review required", noSuccess: true },
+    { name: "verified", detail: verified, expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", noSuccess: false },
+  ] as const;
+  const captures: Array<Record<string, unknown>> = [];
+
+  for (const viewport of [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ]) {
+    for (const scenario of cases) {
+      const page = await browser.newPage({ viewport });
+      const writes = await openFixture(page, scenario.detail);
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      await expandLifecycleStages(page);
+      const stageNavigator = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
+      await expect(stageNavigator.getByRole("button", { name: "Reconciliation", exact: true })).toBeVisible();
+      await stageNavigator.getByRole("button", { name: "Reconciliation", exact: true }).click();
+      await collapseLifecycleStages(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+
+      const receipt = page.getByRole("region", { name: "Reconciliation receipt" });
+      await expect(receipt).toContainText(scenario.expected);
+      await expect(receipt).toContainText("OUTSTANDING · remains outstanding in the source record");
+      await expect(page.getByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toHaveCount(0);
+      await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
+      if (scenario.noSuccess) {
+        await expect(page.getByRole("main")).not.toContainText(/TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i);
+      } else {
+        await expect(receipt).toContainText("Exact amount verificationconfirmed");
+        await expect(receipt).toContainText("Exact destination verificationconfirmed");
+      }
+
+      const screenState = await page.evaluate(() => {
+        const primary = [...document.querySelectorAll<HTMLElement>('main button[data-primary-action="true"]')];
+        return {
+          browser: navigator.userAgent,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          disclosureOpen: document.querySelectorAll("main details[open]").length !== 0,
+          primary: primary.map((element) => {
+            const bounds = element.getBoundingClientRect();
+            return { label: element.innerText, bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right } };
+          }),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        };
+      });
+      expect(screenState.scrollY).toBe(0);
+      expect(screenState.disclosureOpen).toBe(false);
+      expect(screenState.primary.length).toBeLessThanOrEqual(1);
+      expect(screenState.horizontalOverflow).toBe(false);
+      const capture = {
+        fixture: scenario.name,
+        detailSource: "existing producer-shaped mocked detail route; proxyLifecycleDetail('SETTLED') with explicit evidence override",
+        runtime: "LIVE read-model fixture label only; no live provider calls",
+        font: "DejaVu Sans forced for audit geometry",
+        ...screenState,
+        navigationMutationCount: writes.length,
+      };
+      captures.push(capture);
+      console.log("F7_SETTLED_EVIDENCE_CAPTURE", JSON.stringify(capture));
+      await page.screenshot({
+        path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-scroll0-closed.png`),
+        fullPage: false,
+      });
+
+      await receipt.getByText("View reconciliation evidence").click();
+      await expect(receipt).toContainText(`Evidence classification${scenario.expected}`);
+      if (scenario.name !== "verified") await expect(receipt).toContainText("Recorded ledger statusSETTLED");
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-evidence-open-full.png`), fullPage: true });
+      const developerEvidence = page.getByText("Developer & audit evidence", { exact: true });
+      await developerEvidence.click();
+      await expect(page.getByRole("main")).toContainText(scenario.expected);
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-developer-evidence.png`), fullPage: true });
+      const additional = page.getByText("Additional tools", { exact: true });
+      await additional.click();
+      await page.getByRole("button", { name: "Operational Report (secondary)" }).click();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report.png`), fullPage: true });
+      expect(writes).toEqual([]);
+      await page.close();
+    }
+  }
+  await testInfo.attach("f7-settled-evidence-browser-manifest.json", {
+    body: Buffer.from(JSON.stringify(captures, null, 2)),
+    contentType: "application/json",
+  });
 });
 
 test("Assessment PAY dispositions and legal actions fit the audited first viewport for genuine source identities", async ({ browser }, testInfo) => {
