@@ -1172,3 +1172,87 @@ test("revoked release authority overrides retained packet and exact gate on desk
     await page.close();
   }
 });
+
+test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in the first viewport", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  const results: Array<Record<string, unknown>> = [];
+  const violations: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const stage of ["Payment", "Reconciliation"] as const) {
+      const page = await browser.newPage({ viewport });
+      const writes = await openFixture(page, proxyLifecycleDetail("UNKNOWN"));
+      await expandLifecycleStages(page);
+      await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
+        .getByRole("button", { name: stage, exact: true }).click();
+      await collapseLifecycleStages(page);
+
+      const region = page.getByRole("region", { name: stage === "Payment" ? "Payment status" : "Reconciliation receipt" });
+      const action = page.getByRole("main").locator('button[data-primary-action="true"]');
+      const selectedIdentity = page.getByRole("region", { name: "Selected source obligation" }).locator("h2");
+      const status = stage === "Payment" ? region.locator("h3") : region.locator("p").first();
+      const noRetry = stage === "Payment"
+        ? region.getByRole("status")
+        : region.locator("p").first();
+      const stagePosition = page.getByText(`Step ${stage === "Payment" ? 5 : 6} of 6 · ${stage}`, { exact: true });
+      const currentViewedLabel = stage === "Payment"
+        ? page.getByText("Viewing Payment · current position Reconciliation", { exact: true })
+        : page.getByText("Current stage · Reconciliation", { exact: true });
+
+      await expect(region).toBeVisible();
+      await expect(stagePosition).toHaveCount(1);
+      await expect(currentViewedLabel).toHaveCount(1);
+      await expect(status).toContainText("Outcome unknown");
+      await expect(noRetry).toContainText(/no blind retry|do not resubmit|no resubmission/i);
+      await expect(action).toHaveCount(1);
+      await expect(action).toHaveText("Reconcile this same intent");
+      expect(await action.first().evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
+
+      const measurement = await page.evaluate(() => {
+        const find = (selector: string) => document.querySelector(selector);
+        const lifecycleParagraphs = document.querySelectorAll('[aria-label="Guided lifecycle"] p');
+        const boxes = [
+          ["selected obligation identity", find('[aria-label="Selected source obligation"] h2')],
+          ["viewed stage and step", lifecycleParagraphs[0] ?? null],
+          ["current/viewed context", lifecycleParagraphs[1] ?? null],
+          ["UNKNOWN stage status", find('[aria-label="Payment status"] h3') ?? find('[aria-label="Reconciliation receipt"] p')],
+          ["no-resubmission guidance", find('[aria-label="Payment status"] [role="status"]') ?? find('[aria-label="Reconciliation receipt"] p')],
+          ["reconciliation action", find('main button[data-primary-action="true"]')],
+        ] as const;
+        return {
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          documentWidth: document.documentElement.scrollWidth,
+          boxes: boxes.map(([name, element]) => {
+            const rect = element?.getBoundingClientRect();
+            return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null, left: rect?.left ?? null, right: rect?.right ?? null };
+          }),
+          primaryActionCount: document.querySelectorAll('main button[data-primary-action="true"]').length,
+          primaryActionHeight: document.querySelector('main button[data-primary-action="true"]')?.getBoundingClientRect().height ?? null,
+        };
+      });
+      const evidence = { ...measurement, navigationPostCount: writes.filter((request) => request.startsWith("POST ")).length };
+      results.push({ stage, ...viewport, ...evidence });
+      console.log("UNKNOWN_FIRST_VIEWPORT", JSON.stringify({ stage, ...viewport, ...evidence }));
+      await page.screenshot({ path: testInfo.outputPath(`unknown-${stage.toLowerCase()}-${viewport.label}.png`), fullPage: false });
+
+      expect(measurement.scrollY, `${stage} ${viewport.label} must be measured at the top`).toBe(0);
+      expect(measurement.documentWidth, `${stage} ${viewport.label} must not overflow`).toBeLessThanOrEqual(viewport.width);
+      const outOfViewport = measurement.boxes.filter((box) => !box.exists || box.top! < 0 || box.bottom! > viewport.height || box.left! < 0 || box.right! > viewport.width);
+      if (outOfViewport.length > 0) violations.push({ stage, viewport, outOfViewport });
+      expect(measurement.primaryActionCount).toBe(1);
+      expect(writes, `${stage} navigation must not issue mutations`).toEqual([]);
+      await page.close();
+    }
+  }
+
+  await testInfo.attach("unknown-first-viewport-bounds.json", {
+    body: Buffer.from(JSON.stringify(results, null, 2)),
+    contentType: "application/json",
+  });
+  expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+});

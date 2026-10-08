@@ -2618,6 +2618,8 @@ export function CommandCenter() {
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payment · Arc Testnet</p>
                     <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail, exactPacketSubmissionReady, detailState)}</h3>
                   </div>
+                  {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
+                  {detail.execution?.status === "UNKNOWN" && workspaceAction?.label === "Reconcile this same intent" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                   <dl>
                     <Field label="Testnet settlement" value={detail.settlement_proxy
                       ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`
@@ -2629,7 +2631,6 @@ export function CommandCenter() {
                     <Field label="Execution state" value={detail.execution?.status ?? "No execution has been recorded for this instruction."} />
                     <Field label="Source payable" value={`${sourcePayableState(detail)} · unchanged by testnet execution`} />
                   </dl>
-                  {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
                   {detail.execution?.status === "SETTLED" && <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">The Arc Testnet transaction does not discharge the real-world payable.</p>}
                   {detail.execution === null && exactPacketSubmissionReady && <p className="text-[12px] text-[var(--color-ink-muted)]">Confirm the exact instruction only if the current gate is open. Release and pre-send checks remain authoritative.</p>}
                   {workspaceAction?.exactConfirmation && (
@@ -2645,7 +2646,7 @@ export function CommandCenter() {
                       <span id="execution-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">The exact-packet gate and final pre-send checks must still pass.</span>
                     </label>
                   )}
-                  {workspaceAction && <PrimaryButton disabled={busy || (workspaceAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={workspaceAction.exactConfirmation} onClick={workspaceAction.run}>{workspaceAction.label}</PrimaryButton>}
+                  {workspaceAction && !(detail.execution?.status === "UNKNOWN" && workspaceAction.label === "Reconcile this same intent") && <PrimaryButton disabled={busy || (workspaceAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={workspaceAction.exactConfirmation} onClick={workspaceAction.run}>{workspaceAction.label}</PrimaryButton>}
                   {exceptionRecoveryCard}
                   {stageCompletionReceiptView}
                 </section>
@@ -2722,6 +2723,7 @@ export function CommandCenter() {
                     <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
                       <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
                       <p className="text-[13px] font-semibold text-[var(--color-ink)]">{result}</p>
+                      {detail.execution?.status === "UNKNOWN" && workspaceAction?.label === "Reconcile this same intent" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                       <dl>
                         <Field label="Source obligation" value={`${sourceText(detail.record, "beneficiary_name")} · ${detail.record.amount} ${detail.record.currency}`} />
                         <Field label="Source payable" value={`${sourcePayableState(detail)} · remains outstanding in the source record`} />
@@ -2731,7 +2733,7 @@ export function CommandCenter() {
                         <Field label="Destination match" value={destinationMatch} />
                       </dl>
                       <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">ARC TESTNET · Controlled settlement proxy · testnet execution does not discharge the real-world payable.</p>
-                      {workspaceAction && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
+                      {workspaceAction && !(detail.execution?.status === "UNKNOWN" && workspaceAction.label === "Reconcile this same intent") && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                       {exceptionRecoveryCard}
                       {stageCompletionReceiptView}
                       <details className="rounded border border-[var(--color-border)] px-3 py-2">
