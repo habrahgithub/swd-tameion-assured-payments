@@ -55,7 +55,13 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByText("Developer & audit evidence")).toHaveCount(0);
     await expect(page.getByText("Demo tools", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Operational Report/)).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Wallet funding and payment readiness" })).toContainText("USDC funding: NOT VERIFIED");
+    const funding = page.getByRole("region", { name: "Wallet funding and payment readiness" });
+    await expect(funding).toContainText("USDC funding: NOT VERIFIED");
+    const balanceRefresh = funding.getByRole("button", { name: "Refresh Wallet Balance" });
+    await expect(balanceRefresh).toBeVisible();
+    await expect(balanceRefresh).toBeDisabled();
+    await expect(balanceRefresh).toContainText("AUTH_GATE_UNVERIFIED");
+    expect(await balanceRefresh.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
     await expect(page.getByTestId("current-next-step")).not.toContainText(/Safety Kernel|PAE|provider|reconciliation/i);
     await expect(page.getByTestId("current-next-step")).toContainText("Run AI Assessment");
     await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");

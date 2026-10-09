@@ -328,6 +328,30 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
+  it("keeps wallet refresh visibly disabled until operator authentication is verified", async () => {
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-FUNDING-AUTH")] }))
+      : Promise.resolve(response(detail("OBL-FUNDING-AUTH"))));
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-FUNDING-AUTH")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-FUNDING-AUTH"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+
+    const funding = screen.getByRole("region", { name: "Wallet funding and payment readiness" });
+    const refresh = within(funding).getByRole("button", { name: "Refresh Wallet Balance" }) as HTMLButtonElement;
+    expect(refresh.disabled).toBe(true);
+    expect(funding.textContent).toContain("USDC funding: NOT VERIFIED");
+    expect(funding.textContent).toContain("AUTH_GATE_UNVERIFIED");
+    expect(funding.textContent).toContain("operator access is not verified");
+    const assessmentAction = within(screen.getByRole("region", { name: "Obligation next step" })).getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
+    expect(assessmentAction.disabled).toBe(false);
+
+    fireEvent.click(refresh);
+    expect(fetchMock.mock.calls.some(([input]) => /balance|circle/i.test(String(input)))).toBe(false);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("keeps loaded detail when the operator reselects the already-selected obligation", async () => {
     const rows = [obligation("OBL-J0C-001", true)];
     const selectedDetail = assessedDetail("OBL-J0C-001", "PAY");

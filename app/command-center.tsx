@@ -2656,11 +2656,19 @@ export function CommandCenter() {
           )}
 
           {viewedStage === "Obligation" && (
-            <section aria-label="Wallet funding and payment readiness" className="rounded border border-[var(--color-border)] px-3 py-2">
+            <section aria-label="Wallet funding and payment readiness" className="rounded border border-[var(--color-border)] px-3 py-1">
               <p className="text-[12px] font-semibold text-[var(--color-ink)]">Arc Testnet · USDC funding: NOT VERIFIED</p>
               {detailState === "loaded" && detail && detail.record.obligation_id === selectedId
-                ? <p className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">Selected settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Wallet funds, network fees, and execution readiness require a separate current selected-intent preflight.</p>
-                : <p className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">Select an obligation to show its exact settlement amount. Selection and assessment do not establish funding or payment authority.</p>}
+                ? <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">Selected settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Wallet funds, network fees, and execution readiness require a separate current selected-intent preflight.</p>
+                : null}
+              <div>
+                <button type="button" disabled aria-label="Refresh Wallet Balance" aria-describedby="wallet-balance-refresh-hold" className="inline-flex min-h-[44px] flex-col items-start justify-center rounded border border-[var(--color-border)] px-3 py-1 text-start font-semibold text-[var(--color-ink-muted)] disabled:cursor-not-allowed disabled:opacity-60">
+                  <span className="text-[12px] leading-4">Refresh Wallet Balance</span>
+                  <span id="wallet-balance-refresh-hold" className="text-[10px] leading-3">
+                    {selectedId ? "Disabled · AUTH_GATE_UNVERIFIED · operator access is not verified" : "Select an obligation for its settlement amount · AUTH_GATE_UNVERIFIED · operator access is not verified"}
+                  </span>
+                </button>
+              </div>
             </section>
           )}
 
