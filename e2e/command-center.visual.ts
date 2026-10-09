@@ -1807,3 +1807,121 @@ test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in
   });
   expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
 });
+
+test("selected OBL-J0C-003 assessment response feedback is visible on Obligation and Assessment without navigation writes", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  const outcomes = [
+    { name: "503-unavailable", status: 503, body: { code: "ASSESSMENT_UNAVAILABLE", error: "Assessment service unavailable in the controlled fixture." } },
+    { name: "202-in-progress", status: 202, body: { status: "IN_PROGRESS", message: "This assessment is reserved. Replays will not submit a second provider request." } },
+  ] as const;
+  const manifest: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const outcome of outcomes) {
+      const page = await browser.newPage({ viewport });
+      const source = await actualSourcePayFixtures(page);
+      const selectedDetail = structuredClone(source.payDetailById["OBL-J0C-003"]);
+      selectedDetail.current_assessment.provider_mode = "NOT_LIVE_AI";
+      selectedDetail.current_assessment.provider_used = "deterministic-browser-fixture";
+      const staleVersion = String(selectedDetail.aggregate.aggregate_version);
+      const responseVersion = Number(staleVersion) + 1;
+      selectedDetail.aggregate.aggregate_version = responseVersion;
+      selectedDetail.truth.tameion_control_truth.aggregate_version = responseVersion;
+      selectedDetail.current_assessment.aggregate_version = staleVersion;
+      const queue = source.queue.map((item) => ({ ...item, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" }));
+      const requests: string[] = [];
+      const mutations: string[] = [];
+      await page.route("**/api/**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        requests.push(`${request.method()} ${url.pathname}`);
+        if (request.method() !== "GET") mutations.push(`${request.method()} ${url.pathname}`);
+        if (url.pathname === "/api/obligations" && request.method() === "GET") {
+          return route.fulfill({ json: { obligations: queue, assessed_count: 5, total_count: 5, sole_pay_candidate_id: "OBL-J0C-001" } });
+        }
+        if (url.pathname === "/api/obligations/OBL-J0C-003" && request.method() === "GET") return route.fulfill({ json: selectedDetail });
+        if (url.pathname === "/api/obligations/OBL-J0C-003/assess" && request.method() === "POST") {
+          return route.fulfill({ status: outcome.status, json: outcome.body });
+        }
+        return route.fulfill({ status: 404, json: { error: "This controlled assessment feedback fixture allows no other route." } });
+      });
+
+      await page.goto("/");
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      if (viewport.width <= 768) await openMobileQueue(page);
+      await queueItem(page, "OBL-J0C-003").click();
+      await expect(page.getByRole("region", { name: "Selected source obligation" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /Viewed stage: Obligation.*Current lifecycle position: Assessment/ })).toBeVisible();
+      await page.getByRole("button", { name: "Run AI Assessment" }).click();
+      const feedback = page.getByRole("status", { name: "Assessment request status" });
+      await expect(feedback).toBeVisible();
+      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "not a current recommendation" : "Assessment result is unavailable");
+      await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+      await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+      const viewStages = ["Obligation", "Assessment"] as const;
+      for (const stage of viewStages) {
+        if (stage === "Assessment") {
+          await expandLifecycleStages(page);
+          await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment", exact: true }).click();
+        }
+        await expect(page.getByRole("status", { name: "Assessment request status" })).toBeVisible();
+        await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+        const measurement = await page.evaluate(() => {
+          const primary = document.querySelector('main button[data-primary-action="true"]');
+          const status = document.querySelector('[aria-label="Assessment request status"]');
+          const box = (element: Element | null) => {
+            const rect = element?.getBoundingClientRect();
+            return rect ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height } : null;
+          };
+          return {
+            viewport: { width: innerWidth, height: innerHeight },
+            scrollY,
+            stage: document.querySelector('[aria-label="Guided lifecycle"] [aria-live="polite"]')?.textContent ?? "Screen 1",
+            feedback: status?.textContent ?? null,
+            feedbackBounds: box(status),
+            primaryLabel: primary?.textContent?.trim() ?? null,
+            primaryBounds: box(primary),
+            primaryCount: document.querySelectorAll('main button[data-primary-action="true"]').length,
+            horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          };
+        });
+        const pngPath = testInfo.outputPath(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}.png`);
+        const png = await page.screenshot({ path: pngPath, fullPage: true });
+        const viewportPngPath = testInfo.outputPath(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}-viewport.png`);
+        const viewportPng = await page.screenshot({ path: viewportPngPath, fullPage: false });
+        const record = {
+          candidate: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+          outcome: outcome.name,
+          viewedStage: stage,
+          targetViewport: viewport,
+          source: "read-only local DemoState detail GET for source OBL-J0C-003, then controlled browser mock",
+          overrides: ["aggregate version incremented to make the existing assessment pointer stale", "all five queue advisory rows marked PAY for this isolated fixture", "assessment provenance set to NOT_LIVE_AI fixture", "assessment POST response mocked; no AI/provider request"],
+          providerMode: "NOT_LIVE_AI queue mock; no assessment provider call",
+          browserVersion: browser.version(),
+          font: "DejaVu Sans browser override",
+          ...measurement,
+          mutationRequests: mutations,
+          navigationPostCount: mutations.filter((entry) => entry.endsWith("/assess") === false).length,
+          fullPageImage: { file: pngPath, sha256: createHash("sha256").update(png).digest("hex") },
+          viewportImage: { file: viewportPngPath, sha256: createHash("sha256").update(viewportPng).digest("hex") },
+        };
+        manifest.push(record);
+        console.log("ASSESSMENT_FEEDBACK_CAPTURE", JSON.stringify(record));
+        await testInfo.attach(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}.png`, { path: pngPath, contentType: "image/png" });
+        await testInfo.attach(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}-viewport.png`, { path: viewportPngPath, contentType: "image/png" });
+        expect(measurement.horizontalOverflow).toBe(false);
+        expect(measurement.primaryCount).toBe(1);
+      }
+      expect(mutations).toEqual([`POST /api/obligations/OBL-J0C-003/assess`]);
+      await page.close();
+    }
+  }
+
+  await testInfo.attach("assessment-feedback-captures.json", {
+    body: Buffer.from(JSON.stringify(manifest, null, 2)),
+    contentType: "application/json",
+  });
+});

@@ -10,7 +10,7 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
-import { assessmentKeyDisposition, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { assessmentKeyDisposition, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
@@ -1396,6 +1396,130 @@ function PrimaryButton({
 
 type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null };
 type StageCompletionReceipt = { obligationId: string; message: string };
+type AssessmentFeedback = {
+  obligationId: string;
+  expectedVersion: string;
+  kind: "in-flight" | "pending" | "unconfirmed" | "stale" | "identity-mismatch" | "awaiting-refresh" | "durable";
+  title: string;
+  message: string;
+  durability: string;
+  nextStep: string;
+  owner: string;
+  assessmentId?: string;
+  assessmentHash?: string;
+};
+
+function assessmentFeedbackForResponse(
+  result: { status: number; data: unknown },
+  obligationId: string,
+  expectedVersion: string,
+): AssessmentFeedback {
+  const code = result.data && typeof result.data === "object" && "code" in result.data
+    ? String((result.data as { code: unknown }).code)
+    : "";
+  const serverStatus = result.data && typeof result.data === "object" && "status" in result.data
+    ? String((result.data as { status: unknown }).status)
+    : "";
+  if (result.status === 200) {
+    const identity = assessmentReceiptIdentity(result.data);
+    const receipt = assessmentReceiptSnapshot(result.data);
+    if (identity.obligation_id && identity.obligation_id !== obligationId) {
+      return {
+        obligationId, expectedVersion, kind: "identity-mismatch", title: "Assessment response identity did not match.",
+        message: "The returned assessment belongs to a different obligation, so it was not applied to this selection.",
+        durability: "No current assessment is confirmed for the selected obligation.",
+        nextStep: "Refresh the selected obligation's current status before taking another assessment action.",
+        owner: "You · read-only status review",
+      };
+    }
+    if (identity.aggregate_version && identity.aggregate_version !== expectedVersion) {
+      return {
+        obligationId, expectedVersion, kind: "stale", title: "Assessment response is for a different version.",
+        message: "The selected obligation changed while this assessment was being processed; this response is not presented as current.",
+        durability: "The response does not confirm an assessment for the current selected version.",
+        nextStep: "Refresh the selected obligation's current status before taking another assessment action.",
+        owner: "You · read-only status review",
+      };
+    }
+    if (!receipt) {
+      return {
+        obligationId, expectedVersion, kind: "unconfirmed", title: "Assessment receipt could not be verified.",
+        message: "The server response did not contain a complete assessment receipt for the selected obligation.",
+        durability: "A current assessment is not confirmed.",
+        nextStep: "Refresh the selected obligation's current status; do not send another request while the outcome is unclear.",
+        owner: "Unassigned · no recovery owner is recorded",
+      };
+    }
+    return {
+      obligationId, expectedVersion, kind: "awaiting-refresh", title: "Assessment response received.",
+      message: "Checking refreshed obligation detail before presenting this recommendation as current.",
+      durability: "A complete receipt was returned; current selected-detail confirmation is pending.",
+      nextStep: "Wait for the read-only detail refresh. The recommendation remains advisory.",
+      owner: "Finance Agent · current-detail confirmation",
+      assessmentId: receipt.assessment_id,
+      assessmentHash: receipt.assessment_hash,
+    };
+  }
+  if (result.status === 202) {
+    const recoveryPending = serverStatus === "RECOVERY_PENDING";
+    return {
+      obligationId, expectedVersion, kind: "pending",
+      title: recoveryPending ? "Assessment recovery is pending." : "Assessment is still in progress.",
+      message: recoveryPending
+        ? "HTTP 202: the provider result is durable, but the current assessment is not sealed."
+        : "HTTP 202: the operation is still running; this is not a current recommendation.",
+      durability: recoveryPending ? "Provider result recorded; current assessment not yet durable." : "Completion not confirmed; request key remains bound.",
+      nextStep: "Refresh current status before another assessment action.",
+      owner: "Unassigned · no individual recovery owner is recorded",
+    };
+  }
+  if (result.status === 0 || code === "ASM-UNKNOWN" || code === "ASM-OPERATION-UNRESOLVED") {
+    return {
+      obligationId, expectedVersion, kind: "unconfirmed", title: "Assessment outcome is not confirmed.",
+      message: result.status === 0
+        ? "No response was received, so the assessment outcome is unknown."
+        : actionErrorMessage(result.data),
+      durability: "No current receipt; existing request key retained.",
+      nextStep: "Refresh current status before another assessment action; no automatic retry was sent.",
+      owner: "Unassigned · assessment outcome is unresolved",
+    };
+  }
+  if (result.status === 409 && code === "ASM-001") {
+    return {
+      obligationId, expectedVersion, kind: "stale", title: "Assessment was not made current.",
+      message: actionErrorMessage(result.data),
+      durability: "No assessment was recorded as current for this request.",
+      nextStep: "Refresh the selected obligation's current status before deciding whether another assessment is available.",
+      owner: "You · read-only status review",
+    };
+  }
+  return {
+    obligationId, expectedVersion, kind: result.status === 409 ? "stale" : "unconfirmed",
+    title: result.status === 409 ? "Assessment was refused." : "Assessment result is unavailable.",
+    message: actionErrorMessage(result.data),
+    durability: "No current receipt; existing request key retained.",
+    nextStep: "Refresh current status before another assessment action; no automatic retry was sent.",
+    owner: "Finance Agent · individual recovery owner is not recorded",
+  };
+}
+
+function AssessmentFeedbackBanner({ feedback }: { feedback: AssessmentFeedback }) {
+  const tone = feedback.kind === "durable" ? "border-[var(--color-success)]" :
+    feedback.kind === "stale" || feedback.kind === "identity-mismatch" || feedback.kind === "unconfirmed"
+      ? "border-[var(--color-warning)]" : "border-[var(--color-border-strong)]";
+  const announcement = feedback.kind === "stale" || feedback.kind === "identity-mismatch" || feedback.kind === "unconfirmed";
+  return (
+    <section role="status" aria-live={announcement ? "assertive" : "polite"} aria-atomic="true" aria-label="Assessment request status"
+      data-testid="assessment-request-feedback" data-feedback-kind={feedback.kind}
+      className={`space-y-1 rounded border-s-4 ${tone} bg-[var(--color-surface)] px-3 py-2`}>
+      <h3 className="text-[13px] font-semibold text-[var(--color-ink)]">{feedback.title}</h3>
+      <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">{feedback.message}</p>
+      <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">Durability:</strong> {feedback.durability}</p>
+      <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">Next step:</strong> {feedback.nextStep}</p>
+      <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">Owner:</strong> {feedback.owner}</p>
+    </section>
+  );
+}
 
 function actionErrorMessage(data: unknown): string {
   if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
@@ -1684,6 +1808,7 @@ export function CommandCenter() {
   const [detailIsStale, setDetailIsStale] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
+  const [assessmentFeedback, setAssessmentFeedback] = useState<AssessmentFeedback | null>(null);
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1802,6 +1927,7 @@ export function CommandCenter() {
     setDetailIsStale(false);
     setDetailError(null);
     setStageCompletionReceipt(null);
+    setAssessmentFeedback(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -1813,7 +1939,7 @@ export function CommandCenter() {
     }
   }, [displayedAssessment, detail, selectedId]);
 
-  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>) => {
+  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string) => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
     const priorPosition = authoritativeLifecyclePosition(targetId, detailState, detail);
@@ -1823,14 +1949,29 @@ export function CommandCenter() {
     setBusy(true);
     setStageCompletionReceipt(null);
     let actionSucceeded = false;
+    let assessmentResponse: { ok: boolean; status: number; data: unknown } | null = null;
+    let assessmentReceiptConfirmed = false;
     try {
       const result = await action();
       if (!stillCurrent()) return;
-      actionSucceeded = result.ok;
+      if (label === "assess") {
+        assessmentResponse = result;
+        const receipt = assessmentReceiptSnapshot(result.data);
+        const identity = assessmentReceiptIdentity(result.data);
+        const exactResponse = result.ok && result.status === 200 && Boolean(receipt) &&
+          identity.obligation_id === targetId && identity.aggregate_version === assessmentExpectedVersion;
+        actionSucceeded = exactResponse;
+        setAssessmentFeedback(assessmentFeedbackForResponse(result, targetId, assessmentExpectedVersion ?? ""));
+      } else {
+        actionSucceeded = result.ok;
+      }
       setLastResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
     } catch {
       if (!stillCurrent()) return;
+      if (label === "assess") {
+        setAssessmentFeedback(assessmentFeedbackForResponse({ status: 0, data: { error: "No response was received." } }, targetId, assessmentExpectedVersion ?? ""));
+      }
       setLastResult({
         label,
         data: { error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again." },
@@ -1841,12 +1982,63 @@ export function CommandCenter() {
     } finally {
       if (stillCurrent()) {
         const refreshed = await refreshDetail(targetId, true);
-        if (actionSucceeded && stillCurrent() && refreshed) {
+        if (label === "assess" && assessmentResponse?.status === 200 && assessmentResponse.ok && assessmentExpectedVersion) {
+          const responseReceipt = assessmentReceiptSnapshot(assessmentResponse.data);
+          const responseIdentity = assessmentReceiptIdentity(assessmentResponse.data);
+          const refreshedReceipt = assessmentReviewSnapshot(refreshed?.current_assessment);
+          assessmentReceiptConfirmed = Boolean(refreshed && responseReceipt && refreshedReceipt &&
+            responseIdentity.obligation_id === targetId && responseIdentity.aggregate_version === assessmentExpectedVersion &&
+            refreshedReceipt.obligation_id === responseReceipt.obligation_id &&
+            refreshedReceipt.assessment_id === responseReceipt.assessment_id &&
+            refreshedReceipt.assessment_hash === responseReceipt.assessment_hash &&
+            refreshedReceipt.aggregate_version === assessmentExpectedVersion &&
+            String(refreshed.aggregate.aggregate_version) === assessmentExpectedVersion);
+          if (assessmentReceiptConfirmed) {
+            setAssessmentFeedback({
+              obligationId: targetId, expectedVersion: assessmentExpectedVersion, kind: "durable",
+              title: "Assessment is recorded for the current selected obligation.",
+              message: "Refreshed obligation detail confirms this assessment receipt and version. The recommendation remains advisory.",
+              durability: "Confirmed in refreshed selected-obligation detail.",
+              nextStep: "Review the advisory assessment; it does not approve or execute payment.",
+              owner: "You · read-only assessment review",
+              assessmentId: responseReceipt?.assessment_id,
+              assessmentHash: responseReceipt?.assessment_hash,
+            });
+          } else if (refreshed) {
+            const currentReceipt = assessmentReviewSnapshot(refreshed.current_assessment);
+            const currentIdentity = { obligation_id: currentReceipt?.obligation_id ?? null, aggregate_version: currentReceipt?.aggregate_version ?? null };
+            const responseIdentity = assessmentReceiptIdentity(assessmentResponse.data);
+            const identityMismatch = Boolean(
+              (responseIdentity.obligation_id && responseIdentity.obligation_id !== targetId) ||
+              (currentIdentity.obligation_id && currentIdentity.obligation_id !== targetId),
+            );
+            setAssessmentFeedback({
+              obligationId: targetId, expectedVersion: assessmentExpectedVersion,
+              kind: identityMismatch ? "identity-mismatch" : "stale",
+              title: identityMismatch ? "Refreshed assessment identity did not match." : "Assessment currentness was not confirmed.",
+              message: identityMismatch
+                ? "The response or refreshed detail is bound to a different obligation; it was not presented as this selection's result."
+                : "The exact response receipt is not the current assessment in refreshed detail, so it is not presented as current.",
+              durability: "A current assessment matching this response is not confirmed.",
+              nextStep: "Use refreshed selected-obligation status before taking another assessment action.",
+              owner: "You · read-only status review",
+            });
+          } else {
+            setAssessmentFeedback({
+              obligationId: targetId, expectedVersion: assessmentExpectedVersion, kind: "unconfirmed",
+              title: "Assessment response received; current status is unavailable.",
+              message: "The response cannot be treated as current until selected-obligation detail confirms the same receipt.",
+              durability: "Current selected-detail confirmation is unavailable.",
+              nextStep: "Refresh current status before any further assessment action. Do not submit another request while unresolved.",
+              owner: "Unassigned · current status is unavailable",
+            });
+          }
+        }
+        if (actionSucceeded && (label !== "assess" || assessmentReceiptConfirmed) && stillCurrent() && refreshed) {
           const confirmedPosition = authoritativeLifecyclePosition(targetId, "loaded", refreshed);
           if (confirmedPosition !== priorPosition) showCurrentStageAfterRefresh(refreshed);
-          const receiptMessage = label === "assess" && refreshed.current_assessment?.obligation_id === targetId &&
-              refreshed.current_assessment.aggregate_version === String(refreshed.aggregate.aggregate_version)
-            ? "Assessment is now available from refreshed obligation detail."
+          const receiptMessage = label === "assess"
+            ? null
             : label === "proxy preflight" && refreshed.settlement_proxy?.preflight.obligation_id === targetId
               ? "Arc Testnet settlement proxy preparation is recorded. A fresh assessment is required before authorization."
               : label === "approve" && refreshed.aggregate.state === "AUTHORIZED"
@@ -1869,6 +2061,13 @@ export function CommandCenter() {
     const generation = selectionGeneration.current;
     const expectedVersion = String(detail.aggregate.aggregate_version);
     setDisplayedAssessment(null);
+    setAssessmentFeedback({
+      obligationId, expectedVersion, kind: "in-flight", title: "Assessment request sent.",
+      message: "Waiting for a response for the selected obligation. No duplicate request has been sent.",
+      durability: "No assessment receipt has been confirmed yet.",
+      nextStep: "Wait for this request to resolve; the result remains advisory.",
+      owner: "Finance Agent · waiting for assessment response",
+    });
     return run("assess", async () => {
       const storageKey = `tameion.assessment-request.${obligationId}`;
       if (assessmentRequestKey.current?.obligationId !== obligationId) {
@@ -1917,7 +2116,7 @@ export function CommandCenter() {
         });
       }
       return result;
-    });
+    }, expectedVersion);
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
@@ -1937,6 +2136,7 @@ export function CommandCenter() {
     setSelectedId(obligationId);
     setViewedStage("Obligation");
     setLastResult(null);
+    setAssessmentFeedback(null);
     setDisplayedAssessment(null);
     setStageCompletionReceipt(null);
     setMobileQueueOpen(false);
@@ -2302,6 +2502,10 @@ export function CommandCenter() {
   ));
 
   const currentResult = lastResult && lastResult.obligationId === selectedId ? lastResult : null;
+  const selectedAssessmentFeedbackView = assessmentFeedback?.obligationId === selectedId &&
+    (viewedStage === "Obligation" || viewedStage === "Assessment")
+    ? <AssessmentFeedbackBanner feedback={assessmentFeedback} />
+    : null;
   // This affects Recovery copy only. A current PAY assessment can establish
   // that the aggregate's preauthorization REVOKED marker is not a current
   // exception before the human's local Review acknowledgement; action and
@@ -2340,7 +2544,9 @@ export function CommandCenter() {
       ["HOLD", "ESCALATE"].includes(currentAssessment?.decision ?? "") ||
       (detail?.settlement_proxy && !routeAssuranceReady && !detail.pae_sealed && !detail.execution),
     ));
-  const showExceptionRecovery = currentException && exceptionStageVisible;
+  const assessmentFeedbackOwnsRecoveryCopy = assessmentFeedback?.obligationId === selectedId &&
+    (viewedStage === "Obligation" || viewedStage === "Assessment");
+  const showExceptionRecovery = currentException && exceptionStageVisible && !assessmentFeedbackOwnsRecoveryCopy;
   const activityItems = detail && detailState === "loaded" ? availableEvidenceItems(detail) : [];
   const assessmentCurrentState = !detail || detailState !== "loaded"
     ? "Assessment state is not currently verified."
@@ -2809,9 +3015,9 @@ export function CommandCenter() {
                 </PrimaryButton>
               )}
               {stageCompletionReceiptView}
+              {!assessmentOwnsCurrentStage && selectedAssessmentFeedbackView}
             </div>
           </section>}
-          {isInitialObligationScreen && currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
 
           <div>
             {panel === "assessment" && (
@@ -2842,12 +3048,12 @@ export function CommandCenter() {
                     {detailState !== "loaded" && <RuntimeBadge mode={selected?.provider_mode ?? null} />}
                   </section>
                 )}
-                {currentResult?.label === "assess" && <ActionResultBanner result={currentResult} />}
                 {assessmentOwnsCurrentStage && stageCompletionReceipt?.obligationId === selectedId && (
                   <p role="status" aria-label="Stage completion receipt" aria-live="polite" className="mt-3 rounded border border-[var(--color-success)] px-3 py-2 text-[12px] text-[var(--color-success)]">
                     {stageCompletionReceipt.message}
                   </p>
                 )}
+                {assessmentOwnsCurrentStage && selectedAssessmentFeedbackView}
               </div>
             )}
 
