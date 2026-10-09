@@ -843,6 +843,145 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBeforeNavigation);
   });
 
+  it("does not let a 200 response without a complete receipt become stale-currentness feedback", async () => {
+    const ids = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"];
+    const rows = ids.map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
+    const current = staleAssessmentDetail("OBL-J0C-003");
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: rows }));
+      if (url === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST") return Promise.resolve(response({ accepted: true }));
+      if (url === "/api/obligations/OBL-J0C-003") return Promise.resolve(response(structuredClone(current)));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    const feedback = await screen.findByRole("status", { name: "Assessment request status" });
+    await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("unconfirmed"));
+    expect(feedback.textContent).toContain("did not contain a complete assessment receipt");
+    expect(feedback.textContent).not.toContain("Assessment currentness was not confirmed");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("offers a safe queue-summary observation for pending feedback without retrying or reading provider detail", async () => {
+    const ids = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"];
+    const rows = ids.map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
+    const current = staleAssessmentDetail("OBL-J0C-003");
+    let queueReads = 0;
+    let detailReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") {
+        queueReads += 1;
+        return Promise.resolve(response({ obligations: rows }));
+      }
+      if (url === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST") return Promise.resolve(response({ status: "IN_PROGRESS" }, 202));
+      if (url === "/api/obligations/OBL-J0C-003") {
+        detailReads += 1;
+        return Promise.resolve(response(structuredClone(current)));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    const feedback = await screen.findByRole("status", { name: "Assessment request status" });
+    await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
+    const detailReadsBeforeObservation = detailReads;
+    const queueReadsBeforeObservation = queueReads;
+    const postsBeforeObservation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh queue summary (read-only)" }));
+    await waitFor(() => expect(queueReads).toBe(queueReadsBeforeObservation + 1));
+    expect(detailReads).toBe(detailReadsBeforeObservation);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBeforeObservation);
+    expect(localStorage.getItem("tameion.assessment-request.OBL-J0C-003")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Assessment request status" }).textContent).toContain("does not confirm this request's exact receipt or completion");
+  });
+
+  it("does not let an assessment receipt refresh from a prior 003 selection generation replace the current 003 view", async () => {
+    const delayedOldRefresh = deferred<Response>();
+    const rows = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"]
+      .map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
+    const before = staleAssessmentDetail("OBL-J0C-003");
+    const receipt = {
+      assessment_id: "ASM-OBL-J0C-003-V2",
+      assessment_hash: "b".repeat(64),
+      aggregate_version: "2",
+      decision: { obligation_id: "OBL-J0C-003", decision: "PAY", reasons: ["Current PAY recommendation; advisory only."] },
+    };
+    let reads003 = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: rows }));
+      if (url === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST") return Promise.resolve(response(receipt));
+      if (url === "/api/obligations/OBL-J0C-003") {
+        reads003 += 1;
+        if (reads003 === 2) return delayedOldRefresh.promise;
+        return Promise.resolve(response(structuredClone(before)));
+      }
+      if (url === "/api/obligations/OBL-J0C-001") return Promise.resolve(response(detail("OBL-J0C-001")));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    await waitFor(() => expect(reads003).toBe(2));
+    fireEvent.click(obligationRow("OBL-J0C-001"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    await act(async () => { delayedOldRefresh.resolve(response(structuredClone(before))); });
+    await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
+    expect(screen.queryByRole("status", { name: "Assessment request status" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("shows current recovery after a successful response is superseded by a newer aggregate version", async () => {
+    const rows = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"]
+      .map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
+    const version2 = staleAssessmentDetail("OBL-J0C-003");
+    const version3 = structuredClone(version2);
+    version3.aggregate.aggregate_version = 3;
+    version3.truth.tameion_control_truth.aggregate_version = 3;
+    version3.current_assessment.aggregate_version = "2";
+    const receipt = {
+      assessment_id: "ASM-OBL-J0C-003-V2",
+      assessment_hash: "c".repeat(64),
+      aggregate_version: "2",
+      decision: { obligation_id: "OBL-J0C-003", decision: "PAY", reasons: ["Current PAY recommendation; advisory only."] },
+    };
+    let detailReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: rows }));
+      if (url === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST") return Promise.resolve(response(receipt));
+      if (url === "/api/obligations/OBL-J0C-003") {
+        detailReads += 1;
+        return Promise.resolve(response(structuredClone(detailReads === 1 ? version2 : version3)));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    navigateStage("Assessment");
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    await waitFor(() => expect(detailReads).toBe(2));
+    expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Exception recovery" })).toBeTruthy();
+    expect(screen.queryByText(/Assessment is recorded for the current selected obligation/)).toBeNull();
+    expect(screen.getByRole("region", { name: "Exception recovery" }).textContent).toContain("Run AI Assessment");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
   it.each([
     ["wrong obligation", { assessment_id: "ASM-WRONG", assessment_hash: "e".repeat(64), aggregate_version: "2", decision: { obligation_id: "OBL-J0C-001", decision: "PAY", reasons: ["Advisory."] } }, "identity-mismatch"],
     ["stale aggregate version", { assessment_id: "ASM-STALE", assessment_hash: "f".repeat(64), aggregate_version: "1", decision: { obligation_id: "OBL-J0C-003", decision: "PAY", reasons: ["Advisory."] } }, "stale"],

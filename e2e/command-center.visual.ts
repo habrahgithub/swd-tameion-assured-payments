@@ -1914,6 +1914,15 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
         await testInfo.attach(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}-viewport.png`, { path: viewportPngPath, contentType: "image/png" });
         expect(measurement.horizontalOverflow).toBe(false);
         expect(measurement.primaryCount).toBe(1);
+        if (stage === "Assessment") {
+          const queueReadsBefore = requests.filter((entry) => entry === "GET /api/obligations").length;
+          const detailReadsBefore = requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003").length;
+          await feedback.getByRole("button", { name: "Refresh queue summary (read-only)" }).click();
+          await expect(feedback).toContainText("read-only queue summary was refreshed");
+          expect(requests.filter((entry) => entry === "GET /api/obligations")).toHaveLength(queueReadsBefore + 1);
+          expect(requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003")).toHaveLength(detailReadsBefore);
+          expect(mutations).toEqual([`POST /api/obligations/OBL-J0C-003/assess`]);
+        }
       }
       expect(mutations).toEqual([`POST /api/obligations/OBL-J0C-003/assess`]);
       await page.close();

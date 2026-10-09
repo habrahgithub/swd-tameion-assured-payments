@@ -7,6 +7,7 @@ vi.mock("../src/server/demo-state", async (importOriginal) => {
 });
 
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
+import { AuthorityStore } from "../src/authority/aggregate";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
 import { getCurrentSettlementProxyPacket } from "../src/server/settlement-proxy-packet";
@@ -15,6 +16,7 @@ import { ExecutionBlockedError } from "../src/execution/worker";
 import { DemoStateConflictError, type SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
 import { sealTestAssessment, currentAssessmentReview } from "./test-support/seal-assessment";
 import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
+import { POST as executeObligation } from "../app/api/obligations/[id]/execute/route";
 
 function selectCandidate(state: DemoState): string {
   const record = state.liveUsageRecords.find((candidate) => Boolean(
@@ -27,9 +29,10 @@ function selectCandidate(state: DemoState): string {
 }
 const SIGNING_KEY_ID = "IDENTITY-INTEGRATION-TEST-KEY";
 
-function circleClient(options: { loseCreateResponse?: boolean } = {}) {
+function circleClient(options: { loseCreateResponse?: boolean; pendingStatusReads?: number } = {}) {
   let transaction: Record<string, unknown> | null = null;
   let createCount = 0;
+  let statusReadCount = 0;
   const client: J2aCircleClient = {
     getWallet: vi.fn(async ({ id }) => ({ data: { wallet: {
       id,
@@ -44,7 +47,12 @@ function circleClient(options: { loseCreateResponse?: boolean } = {}) {
     }] } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
     listTransactions: vi.fn(async () => ({ data: { transactions: transaction ? [transaction] : [] } })),
-    getTransaction: vi.fn(async ({ id }) => ({ data: { transaction: transaction?.id === id ? transaction : undefined } })),
+    getTransaction: vi.fn(async ({ id }) => {
+      if (transaction?.id !== id) return { data: { transaction: undefined } };
+      statusReadCount += 1;
+      const state = statusReadCount <= (options.pendingStatusReads ?? 0) ? "PENDING" : "COMPLETE";
+      return { data: { transaction: { ...transaction, state } } };
+    }),
     createTransaction: vi.fn(async (input) => {
       createCount += 1;
       transaction = {
@@ -77,9 +85,9 @@ function assessEveryFrozenObligation(state: DemoState, selectedId: string, selec
   }
 }
 
-async function authorizedSnapshot() {
+async function authorizedSnapshot(selectedOverride?: string) {
   const state = new DemoState();
-  const selectedId = selectCandidate(state);
+  const selectedId = selectedOverride ?? selectCandidate(state);
   assessEveryFrozenObligation(state, selectedId);
   const source = structuredClone(state.getRecord(selectedId));
   const provider = circleClient();
@@ -113,6 +121,20 @@ async function authorizedSnapshot() {
   return { snapshot: state.exportSnapshot(), sealed: authorized.sealed, provider, selectedId };
 }
 
+async function proxyPreparedPreauthorizationState(selectedId = "OBL-J0C-003") {
+  const state = new DemoState();
+  assessEveryFrozenObligation(state, selectedId);
+  const preflight = await runJ2aReadOnlyPreflight(
+    circleClient().client,
+    () => new Date("2026-10-06T18:00:00.000Z"),
+    state.createSettlementProxyIntent(selectedId),
+  );
+  expect(preflight.readiness).toBe("READY");
+  if (preflight.readiness !== "READY") throw new Error("mocked Circle preflight did not return READY");
+  state.bindSettlementProxy(preflight, 1);
+  return { state, selectedId };
+}
+
 function restoredWithCircle(snapshot: ReturnType<DemoState["exportSnapshot"]>, provider: ReturnType<typeof circleClient>) {
   let state: DemoState;
   const adapter = new ArcCircleProviderAdapter(provider.client, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
@@ -121,6 +143,183 @@ function restoredWithCircle(snapshot: ReturnType<DemoState["exportSnapshot"]>, p
 }
 
 describe("selected genuine obligation to Arc Testnet proxy integration", () => {
+  it("allows one fresh v2 reservation when REVOKED is only the preauthorization material-change marker", async () => {
+    const { state, selectedId } = await proxyPreparedPreauthorizationState();
+    const aggregate = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    expect(aggregate).toMatchObject({ aggregate_version: 2, state: "APPROVAL_PENDING", pae_state: "REVOKED" });
+    expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(state.getAuthorizationArtifacts(selectedId)).toBeUndefined();
+    expect(state.exportSnapshot().execution_ledger).toEqual([]);
+    expect(state.hasLivePaeAuthority(selectedId)).toBe(false);
+
+    const reserved = state.reserveAssessmentOperation("assessment-v2-marker-only", selectedId, 2);
+    expect(reserved).toMatchObject({ status: "RESERVED", obligation_id: selectedId, aggregate_version: 2 });
+    expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).pae_state).toBe("REVOKED");
+  });
+
+  it("keeps real revoked and expired signed PAE history closed after a later material change", async () => {
+    const { snapshot, selectedId } = await authorizedSnapshot("OBL-J0C-003");
+    const state = restoredWithCircle(snapshot, circleClient());
+    const authorized = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    state.store.applyMaterialChange(DEMO_ORGANIZATION_ID, selectedId, authorized.aggregate_version, {
+      destination_operational_status: "ON_HOLD",
+    });
+    const revoked = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    expect(revoked).toMatchObject({ state: "APPROVAL_PENDING", pae_state: "REVOKED" });
+    expect(state.getSealedPae(selectedId)).toBeDefined();
+    expect(state.getAuthorizationArtifacts(selectedId)).toBeDefined();
+    expect(state.hasLivePaeAuthority(selectedId)).toBe(true);
+    expect(() => state.reserveAssessmentOperation("assessment-after-real-revocation", selectedId, revoked.aggregate_version))
+      .toThrow(/authorization or PAE creation/i);
+
+    state.store.seed({ ...revoked, pae_state: "EXPIRED" });
+    expect(state.hasLivePaeAuthority(selectedId)).toBe(true);
+    expect(() => state.reserveAssessmentOperation("assessment-after-expiry", selectedId, revoked.aggregate_version))
+      .toThrow(/authorization or PAE creation/i);
+  });
+
+  it("rejects a persisted authorization history whose required current sealed PAE pointer is missing", async () => {
+    const { snapshot, selectedId } = await authorizedSnapshot("OBL-J0C-003");
+    const withoutCurrentPaePointer = { ...snapshot, sealed_paes: [] };
+    expect(() => parseDemoStateSnapshot(withoutCurrentPaePointer)).toThrow(/missing its current sealed PAE pointer/i);
+    expect(snapshot.authorization_history.some((entry) => entry.sealed_pae.payload.obligation_ids[0] === selectedId)).toBe(true);
+  });
+
+  it.each(["SUBMITTING", "UNKNOWN", "SETTLED"] as const)(
+    "keeps a persisted execution-ledger %s record closed even without a PAE pointer",
+    async (status) => {
+      const { state: prepared, selectedId } = await proxyPreparedPreauthorizationState();
+      const snapshot = prepared.exportSnapshot();
+      snapshot.execution_ledger = [{
+        obligation_id: selectedId,
+        idempotency_key: `execution-${status.toLowerCase()}`,
+        provider_ref: status === "SUBMITTING" ? null : "provider-recorded-reference",
+        status,
+        atomic_amount: "5000000",
+        destination_address: "0x1111111111111111111111111111111111111111",
+      }];
+      const state = new DemoState(parseDemoStateSnapshot(snapshot));
+      expect(state.getSealedPae(selectedId)).toBeUndefined();
+      expect(state.worker.exportSnapshot()).toHaveLength(1);
+      expect(state.hasLivePaeAuthority(selectedId)).toBe(true);
+      expect(() => state.reserveAssessmentOperation(`assessment-after-${status.toLowerCase()}`, selectedId, 2))
+        .toThrow(/authorization or PAE creation/i);
+    },
+  );
+
+  it("preserves assessment operation identity, replay, and UNKNOWN closure on the v2 marker-only path", async () => {
+    const { state, selectedId } = await proxyPreparedPreauthorizationState();
+    const first = state.reserveAssessmentOperation("assessment-v2-marker-only", selectedId, 2);
+    expect(state.reserveAssessmentOperation("assessment-v2-marker-only", selectedId, 2)).toEqual(first);
+    expect(() => state.reserveAssessmentOperation("assessment-v2-marker-only", "OBL-J0C-001", 1))
+      .toThrow(/bound to a different assessment request/i);
+    expect(() => state.reserveAssessmentOperation("assessment-v2-wrong-version", selectedId, 1))
+      .toThrow(/aggregate changed/i);
+
+    expect(state.markAssessmentUnknown(first.idempotency_key)).toMatchObject({ status: "UNKNOWN" });
+    expect(state.reserveAssessmentOperation(first.idempotency_key, selectedId, 2)).toMatchObject({ status: "UNKNOWN" });
+    expect(() => state.reserveAssessmentOperation("assessment-v2-no-duplicate", selectedId, 2))
+      .toThrow(/another assessment operation is unresolved/i);
+    expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).pae_state).toBe("REVOKED");
+  });
+
+  it("completes the mocked selected-003 v2 assessment, separate approval/assurance/PAE, one exact-gated submit, and same-intent read", async () => {
+    let state: DemoState;
+    const provider = circleClient({ pendingStatusReads: 1 });
+    const adapter = new ArcCircleProviderAdapter(provider.client, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
+    state = new DemoState(undefined, undefined, undefined, adapter);
+    const selectedId = "OBL-J0C-003";
+    assessEveryFrozenObligation(state, selectedId);
+    const sourceBeforeProxy = structuredClone(state.getRecord(selectedId));
+    const preflight = await runJ2aReadOnlyPreflight(provider.client, () => new Date("2026-10-06T18:00:00.000Z"), state.createSettlementProxyIntent(selectedId));
+    expect(preflight.readiness).toBe("READY");
+    if (preflight.readiness !== "READY") throw new Error("mocked Circle preflight did not return READY");
+    state.bindSettlementProxy(preflight, 1);
+    const prepared = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+    expect(prepared).toMatchObject({ aggregate_version: 2, state: "APPROVAL_PENDING", pae_state: "REVOKED" });
+
+    const operationKey = "ASSESSMENT-V2-OBL-J0C-003";
+    state.reserveAssessmentOperation(operationKey, selectedId, prepared.aggregate_version);
+    const fixtureStore = AuthorityStore.fromSnapshot(state.store.exportSnapshot());
+    const fixture = sealTestAssessment(fixtureStore, DEMO_ORGANIZATION_ID, selectedId, prepared.aggregate_version, {
+      assessment_id: `ASM-${operationKey}`,
+      provider_name: "mock-live-ai-test-fixture",
+      provider_mode: "LIVE_AI",
+    });
+    expect(state.checkpointAssessmentResult(operationKey, fixture.record)).toMatchObject({ status: "PROVIDER_RESULT_DURABLE" });
+    expect(state.completeAssessmentOperation(operationKey)).toMatchObject({ status: "COMPLETED" });
+    expect(state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, selectedId)?.record).toMatchObject({
+      obligation_id: selectedId,
+      aggregate_version: "2",
+      decision: "PAY",
+      provider_mode: "LIVE_AI",
+    });
+    expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).pae_state).toBe("REVOKED");
+    expect(state.getRecord(selectedId)).toEqual(sourceBeforeProxy);
+
+    const review = currentAssessmentReview(state.store, DEMO_ORGANIZATION_ID, selectedId);
+    const approver = state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
+    const authorized = approveAndSealPae(state.store, SIGNING_KEY_ID, {
+      organizationId: DEMO_ORGANIZATION_ID,
+      obligationId: selectedId,
+      expectedVersion: 2,
+      ...review,
+      actorId: approver.actor_id,
+      actorRole: approver.actor_role,
+      authorityVersion: approver.authority_version,
+      policyVersion: prepared.policy_version,
+      reasonText: "Mocked human approval of the exact testnet proxy; source payable remains outstanding.",
+    }, state.trustedKeys);
+    state.recordAuthorization({
+      approval_record: authorized.approvalRecord.record,
+      approval_record_hash: authorized.approvalRecord.approval_record_hash,
+      assurance_record: authorized.assuranceRecord.record,
+      assurance_hash: authorized.assuranceRecord.assurance_hash,
+      sealed_pae: authorized.sealed,
+    });
+    expect(authorized.safetyKernel.overall).toBe("PASS");
+    expect(state.getSealedPae(selectedId)?.payload.approval_evidence[0]?.actor_id).toBe(approver.actor_id);
+
+    const packet = getCurrentSettlementProxyPacket(state, selectedId);
+    expect(packet).not.toBeNull();
+    if (!packet) throw new Error("mocked exact packet was not resolved");
+    const previousPacketApproval = process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
+    vi.stubEnv("J2A_EXECUTION_AUTHORIZED_PACKET_SHA256", packet.packet_sha256);
+    stateMocks.getDemoState.mockResolvedValue(state);
+    try {
+      const executeResponse = await executeObligation(new Request("http://localhost/api/obligations/OBL-J0C-003/execute", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expected_version: 3,
+          packet_sha256: packet.packet_sha256,
+          pae_instruction_hash: authorized.sealed.instruction_hash,
+          confirmation: "SUBMIT EXACT TESTNET SETTLEMENT PROXY",
+        }),
+      }), { params: Promise.resolve({ id: selectedId }) });
+      expect(executeResponse.status).toBe(202);
+      expect(await executeResponse.json()).toMatchObject({
+        execution: { status: "UNKNOWN", idempotency_key: authorized.sealed.payload.idempotency_key },
+        source_payable_state: "OUTSTANDING",
+        execution_authority: "ONE_EXACT_PACKET_PRIME_AUTHORIZED",
+      });
+      expect(provider.createCount()).toBe(1);
+      const detailResponse = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), { params: Promise.resolve({ id: selectedId }) });
+      const detailBody = await detailResponse.json();
+      expect(detailBody.execution).toMatchObject({ status: "SETTLED", obligation_id: selectedId });
+      expect(detailBody.aggregate.state).toBe("RECONCILED");
+      expect(detailBody.record.state_at_event_baseline).toBe("OUTSTANDING");
+      expect(detailBody.execution_gate).toBe("EXECUTION_ALREADY_RECORDED");
+      expect(provider.createCount()).toBe(1);
+      expect(state.getRecord(selectedId)).toEqual(sourceBeforeProxy);
+    } finally {
+      vi.unstubAllEnvs();
+      if (previousPacketApproval !== undefined) process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = previousPacketApproval;
+      else delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
+      stateMocks.getDemoState.mockReset();
+    }
+  });
+
   it("carries one genuine source identity through current LIVE_AI PAY, human assurance, cold PAE verification, and one provider submission", async () => {
     const { snapshot, sealed, provider, selectedId } = await authorizedSnapshot();
     const state = restoredWithCircle(snapshot, provider);

@@ -648,7 +648,27 @@ export class DemoState {
 
   hasLivePaeAuthority(obligationId: string): boolean {
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
-    return aggregate.state === "AUTHORIZED" || aggregate.pae_state !== "UNUSED" || Boolean(this.getSealedPae(obligationId));
+    const hasSealedPae = Boolean(this.getSealedPae(obligationId));
+    const hasAuthorizationHistory = Boolean(this.getAuthorizationArtifacts(obligationId));
+    const executionRecords = this.worker.exportSnapshot().filter((record) => record.obligation_id === obligationId);
+    const hasExecutionAuthority = aggregate.execution_state !== "NONE" || aggregate.execution_idempotency_key !== null || executionRecords.length > 0;
+    if (aggregate.state === "AUTHORIZED" || hasSealedPae || hasAuthorizationHistory || hasExecutionAuthority) return true;
+
+    // Proxy binding advances the aggregate and marks any earlier PAE state
+    // REVOKED. Before authorization, that marker records the material change;
+    // it is not proof that a signed instruction or human approval ever existed.
+    // Permit fresh assessment only when the durable proxy mapping proves this
+    // exact preauthorization transition and no current/historical authority or
+    // execution evidence exists. Keep the REVOKED marker unchanged.
+    const proxy = this.settlementProxies.get(obligationId);
+    const preauthorizationMaterialChange = aggregate.state === "APPROVAL_PENDING" &&
+      aggregate.pae_state === "REVOKED" &&
+      proxy?.preflight.obligation_id === obligationId &&
+      proxy.mapped_aggregate_version === aggregate.aggregate_version &&
+      aggregate.execution_state === "NONE" && aggregate.execution_idempotency_key === null;
+    if (preauthorizationMaterialChange) return false;
+
+    return aggregate.pae_state !== "UNUSED";
   }
 
   reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number, reservedAt = Date.now()): AssessmentOperation {
