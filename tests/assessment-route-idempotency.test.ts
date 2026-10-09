@@ -23,6 +23,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function createDurableFetch(options: {
   loseCompletionCas?: "unrelated" | "stale" | "all";
+  loseProviderCheckpointCas?: "stale" | "all";
   loseProviderResultResponse?: boolean;
   providerFailure?: boolean;
   legacyPending?: boolean;
@@ -33,6 +34,7 @@ function createDurableFetch(options: {
   let providerCalls = 0;
   let lostCompletionCas = false;
   let completionCasFailures = 0;
+  let providerCheckpointCasFailures = 0;
   let signalProviderStarted!: () => void;
   let releaseProvider!: () => void;
   const providerStarted = new Promise<void>((resolve) => { signalProviderStarted = resolve; });
@@ -66,6 +68,21 @@ function createDurableFetch(options: {
       const hasDurableProviderResult = body.p_next_snapshot.assessment_operations?.some(
         (operation: { status: string }) => operation.status === "PROVIDER_RESULT_DURABLE",
       );
+      const hasStaleOperation = body.p_next_snapshot.assessment_operations?.some(
+        (operation: { status: string }) => operation.status === "STALE",
+      );
+      if (options.loseProviderCheckpointCas && hasDurableProviderResult && providerCheckpointCasFailures === 0) {
+        providerCheckpointCasFailures += 1;
+        const competingSnapshot = structuredClone(snapshot!);
+        competingSnapshot.authority.aggregates[0].aggregate_version += 1;
+        snapshot = competingSnapshot;
+        revision += 1;
+        return jsonResponse({ accepted: false, revision });
+      }
+      if (options.loseProviderCheckpointCas === "all" && hasStaleOperation && providerCheckpointCasFailures < 5) {
+        providerCheckpointCasFailures += 1;
+        return jsonResponse({ accepted: false, revision });
+      }
       if (options.loseProviderResultResponse && hasDurableProviderResult) {
         snapshot = body.p_next_snapshot;
         revision += 1;
@@ -225,6 +242,64 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(durable.snapshot?.assessment_operations[0].status).toBe("STALE");
     expect(durable.snapshot?.assessment_operations[0].provider_result).toBeUndefined();
     expect((await getDemoState()).store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001").aggregate_version).toBe(2);
+  });
+
+  it("durably records a stale provider result after the aggregate-version CAS collision and replays without a second provider call", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const durable = createDurableFetch({ loseProviderCheckpointCas: "stale" });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const first = callAssessment();
+    await durable.providerStarted;
+    durable.releaseProvider();
+    const response = await first;
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("ASM-001");
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0]).toMatchObject({
+      idempotency_key: operationId,
+      obligation_id: "OBL-J0C-001",
+      status: "STALE",
+    });
+    expect(durable.snapshot?.authority.assessments).toHaveLength(0);
+
+    const coldReload = await getDemoState();
+    expect(coldReload.getAssessmentOperation(operationId)).toMatchObject({ idempotency_key: operationId, status: "STALE" });
+    const replay = await callAssessment();
+    expect(replay.status).toBe(409);
+    expect((await replay.json()).code).toBe("ASM-001");
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("STALE");
+  });
+
+  it("returns typed UNKNOWN when stale-state durability cannot be established and never invokes the provider again", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const durable = createDurableFetch({ loseProviderCheckpointCas: "all" });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const first = callAssessment();
+    await durable.providerStarted;
+    durable.releaseProvider();
+    const response = await first;
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ status: "UNKNOWN", code: "ASM-PERSISTENCE-UNKNOWN", idempotency_key: operationId });
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("RESERVED");
+    expect(durable.snapshot?.authority.assessments).toHaveLength(0);
+
+    const replay = await callAssessment();
+    expect(replay.status).toBe(409);
+    expect(durable.providerCalls).toBe(1);
   });
 
   it("recovers a durably checkpointed provider result on same-key replay without another provider call", async () => {

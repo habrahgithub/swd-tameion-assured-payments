@@ -6,6 +6,7 @@ import { verifySealedPae } from "../pae/sign-verify";
 import { verifyDurableApprovalRecordHash, verifyDurableAssuranceRecordHash } from "../pae/durable-records";
 import { processTrustedKeyRegistry, TrustedKeyRegistry, type TrustedKeyEntry } from "../pae/keys";
 import { ProviderPreSubmitBlockedError, type ProviderAdapter, type StatusResult } from "./provider-adapter";
+import { sameEvmAddressIdentity } from "./evm-address";
 
 export class ExecutionBlockedError extends Error {
   constructor(
@@ -675,7 +676,7 @@ export class ExecutionWorker {
       // (11) One-to-one reconciliation: settlement amount/destination must
       // exactly match the authorized obligation before marking RECONCILED.
       const amountMatches = (status.atomic_amount ?? status.atomicAmount) === record.atomic_amount;
-      const destinationMatches = (status.destination_address ?? status.destinationAddress) === record.destination_address;
+      const destinationMatches = sameEvmAddressIdentity(status.destination_address ?? status.destinationAddress, record.destination_address);
       if (!amountMatches || !destinationMatches) {
         this.store.markBlocked(organizationId, record.obligation_id, "settlement does not reconcile to authorized obligation");
         return { ...record, status: "BLOCKED", provider_evidence: status };

@@ -100,6 +100,18 @@ function existingOperationResponse(state: DemoState, operation: AssessmentOperat
   );
 }
 
+function persistenceUnknownResponse(idempotencyKey: string) {
+  return NextResponse.json(
+    {
+      status: "UNKNOWN",
+      idempotency_key: idempotencyKey,
+      error: "The assessment result was not made current, and its terminal persistence state could not be established. Do not start a new provider request; replaying this same key will never submit a second provider request.",
+      code: "ASM-PERSISTENCE-UNKNOWN",
+    },
+    { status: 503 },
+  );
+}
+
 async function markUnknownAndReply(state: DemoState, idempotencyKey: string) {
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
@@ -124,13 +136,13 @@ async function sealDurableProviderResult(idempotencyKey: string, initialState: D
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
     if (!operation) break;
-    if (operation.status !== "PROVIDER_RESULT_DURABLE") return existingOperationResponse(state, operation);
-    state.completeAssessmentOperation(idempotencyKey);
+    if (operation.status !== "PROVIDER_RESULT_DURABLE" && operation.status !== "STALE") return existingOperationResponse(state, operation);
+    const completed = operation.status === "STALE" ? operation : state.completeAssessmentOperation(idempotencyKey);
     try {
       await state.flush();
-      const completed = state.getAssessmentOperation(idempotencyKey)!;
       if (completed.status === "STALE") return existingOperationResponse(state, completed);
-      const response = responseFor(state, completed);
+      const persisted = state.getAssessmentOperation(idempotencyKey)!;
+      const response = responseFor(state, persisted);
       if (!response) throw new Error("Assessment persistence completed without a sealed result.");
       return NextResponse.json(response);
     } catch (error) {
@@ -139,10 +151,12 @@ async function sealDurableProviderResult(idempotencyKey: string, initialState: D
     }
   }
   const latest = await getDemoState();
-  const operation = latest.getAssessmentOperation(idempotencyKey);
-  return operation
-    ? existingOperationResponse(latest, operation)
-    : NextResponse.json({ error: "Durable assessment operation disappeared during recovery.", code: "ASM-RECOVERY-FAILED" }, { status: 503 });
+  const latestOperation = latest.getAssessmentOperation(idempotencyKey);
+  if (latestOperation?.status === "PROVIDER_RESULT_DURABLE" &&
+      latest.store.get(DEMO_ORGANIZATION_ID, latestOperation.obligation_id).aggregate_version === latestOperation.aggregate_version) {
+    return existingOperationResponse(latest, latestOperation);
+  }
+  return persistenceUnknownResponse(idempotencyKey);
 }
 
 async function persistProviderResult(idempotencyKey: string, assessment: DurableAssessmentRecord, initialState: DemoState) {
@@ -150,21 +164,30 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
     if (!operation) break;
-    if (operation.status === "STALE") return existingOperationResponse(state, operation);
+    if (operation.status === "STALE") {
+      try {
+        await state.flush();
+        return existingOperationResponse(state, operation);
+      } catch (error) {
+        if (!(error instanceof DemoStateConflictError)) throw error;
+        state = await getDemoState();
+        continue;
+      }
+    }
     if (operation.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
     if (operation.status !== "RESERVED") return existingOperationResponse(state, operation);
     state.checkpointAssessmentResult(idempotencyKey, assessment);
     const checkpointed = state.getAssessmentOperation(idempotencyKey)!;
-    if (checkpointed.status === "STALE") return existingOperationResponse(state, checkpointed);
     try {
       await state.flush();
+      if (checkpointed.status === "STALE") return existingOperationResponse(state, checkpointed);
       return sealDurableProviderResult(idempotencyKey, state);
     } catch (error) {
       if (!(error instanceof DemoStateConflictError)) throw error;
       state = await getDemoState();
     }
   }
-  return markUnknownAndReply(state, idempotencyKey);
+  return persistenceUnknownResponse(idempotencyKey);
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {

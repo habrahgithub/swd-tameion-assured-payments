@@ -17,6 +17,7 @@ import {
 } from "../demo/real-testnet-payment";
 import { USDC_DECIMALS, atomicToDecimal, decimalToAtomic } from "../domain/numeric";
 import { decimalToAtomicAtScale } from "../j0d-spike/intent";
+import { sameEvmAddressIdentity } from "./evm-address";
 
 /**
  * Provider adapter boundary: the only place allowed to talk to a real
@@ -169,7 +170,7 @@ function statusForCircleTransaction(
   const expectedSource = authorizedPreflight?.source_wallet.id ?? J2A_DEMO_SOURCE.id;
   const expectedDestination = authorizedPreflight?.destination_wallet.address ?? J2A_DEMO_DESTINATION.address;
   const exactIdentity = tx.id === providerRef && tx.blockchain === "ARC-TESTNET" &&
-    tx.walletId === expectedSource && tx.destinationAddress?.toLowerCase() === expectedDestination.toLowerCase() &&
+    tx.walletId === expectedSource && sameEvmAddressIdentity(tx.destinationAddress, expectedDestination) &&
     tx.tokenId === tokenId && amountMatchesIntent &&
     tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
   if (!exactIdentity) return { status: "UNKNOWN", ...evidence };

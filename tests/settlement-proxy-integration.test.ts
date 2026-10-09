@@ -29,7 +29,7 @@ function selectCandidate(state: DemoState): string {
 }
 const SIGNING_KEY_ID = "IDENTITY-INTEGRATION-TEST-KEY";
 
-function circleClient(options: { loseCreateResponse?: boolean; pendingStatusReads?: number } = {}) {
+function circleClient(options: { loseCreateResponse?: boolean; pendingStatusReads?: number; reportedDestinationAddress?: string } = {}) {
   let transaction: Record<string, unknown> | null = null;
   let createCount = 0;
   let statusReadCount = 0;
@@ -51,7 +51,11 @@ function circleClient(options: { loseCreateResponse?: boolean; pendingStatusRead
       if (transaction?.id !== id) return { data: { transaction: undefined } };
       statusReadCount += 1;
       const state = statusReadCount <= (options.pendingStatusReads ?? 0) ? "PENDING" : "COMPLETE";
-      return { data: { transaction: { ...transaction, state } } };
+      return { data: { transaction: {
+        ...transaction,
+        ...(options.reportedDestinationAddress === undefined ? {} : { destinationAddress: options.reportedDestinationAddress }),
+        state,
+      } } };
     }),
     createTransaction: vi.fn(async (input) => {
       createCount += 1;
@@ -372,6 +376,50 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(state.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
     expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).state).toBe("RECONCILED");
     expect((await state.worker.execute(sealed)).status).toBe("SETTLED");
+    expect(provider.createCount()).toBe(1);
+  });
+
+  it("reconciles a checksummed same-byte provider destination through a cold replay without another create", async () => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const checksummedDestination = "0x591A1002127b1605d9DbB51348787bbE3014b2b9";
+    const provider = circleClient({ reportedDestinationAddress: checksummedDestination, pendingStatusReads: 1 });
+    const state = restoredWithCircle(snapshot, provider);
+
+    const pending = await state.worker.execute(sealed);
+    expect(pending).toMatchObject({ status: "UNKNOWN", destination_address: J2A_DEMO_DESTINATION.address });
+    expect(provider.createCount()).toBe(1);
+
+    const coldReload = restoredWithCircle(state.exportSnapshot(), provider);
+    const settled = await coldReload.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
+    expect(settled).toMatchObject({ status: "SETTLED", destination_address: J2A_DEMO_DESTINATION.address });
+    expect(settled.provider_evidence).toMatchObject({ status: "CONFIRMED", destination_address: checksummedDestination });
+    expect(coldReload.store.get(DEMO_ORGANIZATION_ID, selectedId).state).toBe("RECONCILED");
+    expect(provider.createCount()).toBe(1);
+
+    expect(await coldReload.worker.execute(sealed)).toMatchObject({ status: "SETTLED" });
+    expect(provider.createCount()).toBe(1);
+  });
+
+  it.each([
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b8", // wrong address bytes
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b", // short
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b900", // long
+    "0x591a1002127b1605d9dbb51348787bbe3014b2bg", // nonhex
+    "591a1002127b1605d9dbb51348787bbe3014b2b9", // missing prefix
+    " 0x591a1002127b1605d9dbb51348787bbe3014b2b9", // whitespace
+    "0x591a1002127b1605d9DbB51348787bbE3014b2b9", // invalid EIP-55 checksum
+  ])("keeps an invalid destination UNKNOWN through cold replay without a second create: %s", async (reportedDestinationAddress) => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const provider = circleClient({ reportedDestinationAddress });
+    const state = restoredWithCircle(snapshot, provider);
+
+    expect(await state.worker.execute(sealed)).toMatchObject({ status: "UNKNOWN" });
+    expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).execution_state).toBe("UNKNOWN");
+    expect(provider.createCount()).toBe(1);
+
+    const coldReload = restoredWithCircle(state.exportSnapshot(), provider);
+    expect(await coldReload.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID)).toMatchObject({ status: "UNKNOWN" });
+    expect(coldReload.worker.getExecutionRecord(sealed.payload.idempotency_key)?.provider_evidence?.destination_address).toBe(reportedDestinationAddress);
     expect(provider.createCount()).toBe(1);
   });
 

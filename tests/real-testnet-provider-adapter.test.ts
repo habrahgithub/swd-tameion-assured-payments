@@ -42,6 +42,43 @@ async function statusAdapter(api: J2aCircleClient) {
 }
 
 describe("Arc Circle provider adapter for J2A", () => {
+  it("accepts a valid EIP-55 representation of the exact destination and preserves the raw provider evidence", async () => {
+    const checksummedDestination = "0x591A1002127b1605d9DbB51348787bbE3014b2b9";
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      destinationAddress: checksummedDestination, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"), networkFee: "0.001000",
+    } } })) });
+
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
+
+    expect(result.status).toBe("CONFIRMED");
+    expect(result.destination_address).toBe(checksummedDestination);
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b8", // wrong address bytes
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b", // short
+    "0x591a1002127b1605d9dbb51348787bbe3014b2b900", // long
+    "0x591a1002127b1605d9dbb51348787bbe3014b2bg", // nonhex
+    "591a1002127b1605d9dbb51348787bbe3014b2b9", // missing prefix
+    " 0x591a1002127b1605d9dbb51348787bbe3014b2b9", // whitespace
+    "0x591a1002127b1605d9DbB51348787bbE3014b2b9", // invalid EIP-55 checksum (A should be uppercase)
+  ])("keeps a malformed or nonmatching destination UNKNOWN without creating another transaction: %s", async (destinationAddress) => {
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state: "COMPLETE", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      destinationAddress, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"), networkFee: "0.001000",
+    } } })) });
+
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
+
+    expect(result.status).toBe("UNKNOWN");
+    expect(result.destination_address).toBe(destinationAddress);
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
   it("submits only the fixed intent when fresh token and fee match the authorized preflight", async () => {
     const api = createClient();
     const authorized = await runJ2aReadOnlyPreflight(api);
