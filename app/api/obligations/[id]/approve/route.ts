@@ -48,13 +48,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return NextResponse.json({ error: "Authorization requires a current LIVE_AI PAY assessment with zero missing evidence, findings, or remediation blockers." }, { status: 409 });
     }
     const unassessed = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    const soleCandidate = state.getSolePayCandidateId();
     const committedCandidate = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, id);
-    if (unassessed || soleCandidate !== id || committedCandidate) {
+    if (unassessed || committedCandidate) {
       return NextResponse.json({
         error: unassessed
           ? `Assess every genuine obligation before authorization; ${unassessed} is not current.`
-          : `The existing sole-candidate gate selected ${soleCandidate ?? "no obligation"}; authorization is blocked for this source.`,
+          : `Another obligation already has a committed proxy or live PAE: ${committedCandidate}.`,
       }, { status: 409 });
     }
     const approver = state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);

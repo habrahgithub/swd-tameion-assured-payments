@@ -106,7 +106,7 @@ async function capture(page: Page, testInfo: TestInfo, name: string, width: numb
   return metadata;
 }
 
-test("real-record Authorization lineage and 003 candidate remain distinct in desktop and mobile browser views", async ({ page, browser }, testInfo) => {
+test("real-record Authorization lineage remains bound to the manually selected obligation in desktop and mobile browser views", async ({ page, browser }, testInfo) => {
   const fixture = await genuinePreparedReadModel();
   const mutations: string[] = [];
   await page.route("**/api/obligations**", async (route) => {
@@ -128,8 +128,9 @@ test("real-record Authorization lineage and 003 candidate remain distinct in des
 
   await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
-  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await page.locator('button[data-obligation-id="OBL-J0C-001"]').click();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await gotoStage(page, "Assessment");
   const assessmentDetail = fixture.details["OBL-J0C-001"];
   expect(assessmentDetail.current_assessment.provider_mode).toBe("LIVE_AI");
@@ -170,23 +171,31 @@ test("real-record Authorization lineage and 003 candidate remain distinct in des
   console.log("IDENTITY_LINEAGE_CAPTURE", JSON.stringify({ file: "authorization-001-desktop-dejavu-full.png", image_sha256: createHash("sha256").update(desktopDejaVuFull).digest("hex"), viewport: { width: 1173, height: 751 }, full_page: true, font_mode: "DejaVu Sans test-only font override" }));
 
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
+  await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
   await gotoStage(page, "Assessment");
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("5.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
-  await expect(page.getByText(/not the selected payment candidate/i)).toBeVisible();
-  await expect(page.getByTestId("assessment-result-card")).toContainText("business license and flexi desk");
+  await expect(page.getByTestId("assessment-result-card")).toContainText("Advisory — PAY");
+  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
+  await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
+  await expect(page.getByTestId("assessment-result-card")).not.toContainText("View selected payment candidate");
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
-  await capture(page, testInfo, "assessment-003-desktop-nonwinner.png", 1173, 751, "actual DemoState detail GET; source 003; 001 authoritative earliest-due candidate; test-seeded LIVE_AI mode surrogate with no AI request; mocked preflight only for 001", "DejaVu Sans test-only font override; font installed in runner");
+  await capture(page, testInfo, "assessment-003-desktop-selected.png", 1173, 751, "actual DemoState detail GET; source 003 manually selected; test-seeded LIVE_AI PAY state; no 001 promotion; test-only mocked read-only Circle preflight; no AI request", "DejaVu Sans test-only font override; font installed in runner");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: /Switch obligation/ }).click();
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
+  await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
   await gotoStage(page, "Assessment");
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("5.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
-  await expect(page.getByText(/not the selected payment candidate/i)).toBeVisible();
-  await expect(page.getByTestId("assessment-result-card")).toContainText("business license and flexi desk");
+  await expect(page.getByTestId("assessment-result-card")).toContainText("Advisory — PAY");
+  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
+  await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
+  await expect(page.getByTestId("assessment-result-card")).not.toContainText("View selected payment candidate");
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
-  await capture(page, testInfo, "assessment-003-mobile-nonwinner.png", 390, 844, "actual DemoState detail GET; source 003; 001 authoritative earliest-due candidate; test-seeded LIVE_AI mode surrogate with no AI request; mocked preflight only for 001", "DejaVu Sans test-only font override; font installed in runner");
+  await capture(page, testInfo, "assessment-003-mobile-selected.png", 390, 844, "actual DemoState detail GET; source 003 manually selected; test-seeded LIVE_AI PAY state; no 001 promotion; test-only mocked read-only Circle preflight; no AI request", "DejaVu Sans test-only font override; font installed in runner");
   expect(mutations).toEqual([]);
-  console.log("IDENTITY_LINEAGE_BROWSER", JSON.stringify({ browser_version: browser.version(), mutations, source_ids: fixture.state.liveUsageRecords.map((record) => record.obligation_id), assessment_transport: "test-seeded LIVE_AI state; no AI request", preflight_transport: "mocked read-only Circle client; no provider request", exact_001_conversion: `${fixture.preflight.source_amount} ${fixture.preflight.source_currency} -> ${fixture.preflight.amount} ${fixture.preflight.asset}`, selected_003_candidate: "OBL-J0C-001" }));
+  console.log("IDENTITY_LINEAGE_BROWSER", JSON.stringify({ browser_version: browser.version(), mutations, source_ids: fixture.state.liveUsageRecords.map((record) => record.obligation_id), assessment_transport: "test-seeded LIVE_AI state; no AI request", preflight_transport: "mocked read-only Circle client; no provider request", exact_001_conversion: `${fixture.preflight.source_amount} ${fixture.preflight.source_currency} -> ${fixture.preflight.amount} ${fixture.preflight.asset}`, selected_id: "OBL-J0C-003", cross_record_promotion: "none" }));
 });

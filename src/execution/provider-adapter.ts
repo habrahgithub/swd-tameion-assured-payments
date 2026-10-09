@@ -36,6 +36,8 @@ export interface SubmitTransferParams {
   atomicAmount: string;
   asset: "USDC";
   network: "ARC_TESTNET";
+  /** Worker-owned current-authority recheck, called after every async preflight and immediately before provider creation. */
+  beforeProviderSend: () => Promise<void>;
 }
 
 export type ProviderTransferStatus = "SUBMITTED" | "UNKNOWN";
@@ -202,6 +204,9 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
   }
 
   async submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult> {
+    if (typeof params.beforeProviderSend !== "function") {
+      throw new ProviderPreSubmitBlockedError("Circle submission requires the execution worker's final authority check.");
+    }
     const authorized = this.authorizedPreflight?.(params.idempotencyKey);
     if (!authorized || authorized.readiness !== "READY" || params.network !== "ARC_TESTNET" || params.asset !== "USDC" ||
         params.sourceWalletRef !== authorized.source_wallet.id ||
@@ -248,6 +253,10 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         preflight.max_network_fee !== authorized.max_network_fee || preflight.max_total_debit !== authorized.max_total_debit) {
       throw new ProviderPreSubmitBlockedError("Fresh Circle token or fee evidence differs from the Prime-reviewed J2A intent.");
     }
+    // No provider operation may occur between this current-authority read and
+    // createTransaction. The worker callback is deliberately last after the
+    // awaited Circle preflight and exact token/fee/intent comparisons.
+    await params.beforeProviderSend();
     const response = await client.createTransaction({
       amount: [authorized.amount],
       destinationAddress: authorized.destination_wallet.address,

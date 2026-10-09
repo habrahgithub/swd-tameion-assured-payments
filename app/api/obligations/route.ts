@@ -34,9 +34,5 @@ export async function GET() {
     obligations,
     assessed_count: obligations.filter((o) => o.assessed).length,
     total_count: obligations.length,
-    // This is the existing deterministic gate result, including its due-date
-    // and obligation-ID tie-breaks. The client uses it only to mirror the
-    // server's selected identity; preflight and approval revalidate it.
-    sole_pay_candidate_id: state.getSolePayCandidateId(),
   });
 }

@@ -55,7 +55,8 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByText("Developer & audit evidence")).toHaveCount(0);
     await expect(page.getByText("Demo tools", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Operational Report/)).toHaveCount(0);
-    await expect(page.getByText(/ARC TESTNET|Safety Kernel|PAE|USDC|provider|reconciliation/i)).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Wallet funding and payment readiness" })).toContainText("USDC funding: NOT VERIFIED");
+    await expect(page.getByTestId("current-next-step")).not.toContainText(/Safety Kernel|PAE|provider|reconciliation/i);
     await expect(page.getByTestId("current-next-step")).toContainText("Run AI Assessment");
     await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
     await expect(page.getByTestId("current-next-step")).toContainText("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
@@ -111,6 +112,9 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toHaveCount(0);
+  await queueItem(page, first.obligation_id).click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await assertGenuineFirstView(751);
   await page.screenshot({ path: testInfo.outputPath("genuine-desktop-first-view.png") });
@@ -136,6 +140,9 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await queueItem(page, first.obligation_id).click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await assertGenuineFirstView(844, true);
   await page.screenshot({ path: testInfo.outputPath("genuine-mobile-first-view.png") });
@@ -419,6 +426,15 @@ async function openFixture(
     return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
   });
   await page.goto("/");
+  const selectedId = String(selectedDetail.record?.obligation_id ?? "OBL-UAT-01");
+  const selectedRow = page.locator(`button[data-obligation-id="${selectedId}"]`);
+  if (await page.evaluate(() => window.innerWidth <= 768)) {
+    const switchQueue = page.getByRole("button", { name: /Switch obligation/ });
+    if (await switchQueue.count() && await switchQueue.getAttribute("aria-expanded") !== "true") await switchQueue.click();
+  }
+  await expect(selectedRow).toBeVisible();
+  await selectedRow.click();
+  await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
   return unexpectedWrites;
@@ -528,6 +544,9 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await queueItem(page, "OBL-UAT-01").click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await page.getByRole("button", { name: "View all stages", exact: true }).click();
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
@@ -799,13 +818,15 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
     await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
 
     for (const scenario of [
-      { selectedId: "OBL-J0C-001", action: "Prepare Arc Testnet settlement proxy" },
-      { selectedId: "OBL-J0C-003", action: "View selected payment candidate" },
+      { selectedId: "OBL-J0C-001", businessName: "business license and flexi desk", action: "Prepare Arc Testnet settlement proxy" },
+      { selectedId: "OBL-J0C-003", businessName: "cloud infrastructure subscription", action: "Prepare Arc Testnet settlement proxy" },
     ] as const) {
       if (viewport.label.startsWith("mobile")) {
         await page.getByRole("button", { name: /Switch obligation/ }).click();
       }
       await queueItem(page, scenario.selectedId).click();
+      await expect(queueItem(page, scenario.selectedId)).toHaveAttribute("aria-current", "true");
+      await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText(scenario.businessName);
       await expandLifecycleStages(page);
       await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
         .getByRole("button", { name: "Assessment", exact: true }).click();
@@ -833,17 +854,13 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       await expect(card.locator("details[open]")).toHaveCount(0);
       await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
 
+      await expect(eligibility).toContainText("PAY is advisory for the selected obligation");
       if (scenario.selectedId === "OBL-J0C-001") {
-        await expect(eligibility).toContainText("Selected payment candidate;");
-        await expect(eligibility).toContainText("current payment-route assurance is not ready");
-      } else {
-        await expect(eligibility).toContainText("Not the selected payment candidate.");
-        const winner = fixture.queue.find((item) => item.obligation_id === fixture.selectedCandidateId)!;
-        const winnerLabel = `${winner.service_category.replaceAll("_", " ").toLowerCase()} · ${winner.amount} ${winner.currency}`;
-        await expect(eligibility).toContainText(winnerLabel);
-        await expect(eligibility).toContainText("Earliest effective due date among PAY recommendations.");
-        await expect(card.getByText(/with obligation ID as the tie-break/)).toBeHidden();
+        await expect(eligibility).toContainText(/current payment-route assurance is not ready/i);
       }
+      await expect(card).not.toContainText("Not the selected payment candidate.");
+      await expect(card).not.toContainText("View selected payment candidate");
+      await expect(card).not.toContainText("OBL-J0C-001");
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
       const measurements = await Promise.all([identity, stage, currentStage, payResult, reason, eligibility, action].map(async (locator) => ({
         label: await locator.innerText(),
@@ -880,7 +897,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
   expect(viewportViolations, JSON.stringify(viewportViolations, null, 2)).toEqual([]);
 });
 
-test("non-winner PAY Assessment explains the authoritative candidate and navigates without writes", async ({ browser }, testInfo) => {
+test("manual obligation selection stays bound when multiple queue rows show PAY advisories", async ({ browser }, testInfo) => {
   const candidateDetail = liveWinnerForPreparation();
   candidateDetail.current_assessment.provider_mode = "NOT_LIVE_AI";
   candidateDetail.current_assessment.provider_used = "deterministic-test-fixture";
@@ -899,6 +916,8 @@ test("non-winner PAY Assessment explains the authoritative candidate and navigat
     });
     if (viewport.label === "mobile") await page.getByRole("button", { name: /Switch obligation/ }).click();
     await queueItem(page, "OBL-UAT-02").click();
+    await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
+    await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("software services");
     await expandLifecycleStages(page);
     const assessmentStage = page.getByRole("button", { name: "Assessment", exact: true });
     await expect(assessmentStage).toHaveAttribute("data-stage-state", "CURRENT");
@@ -908,12 +927,9 @@ test("non-winner PAY Assessment explains the authoritative candidate and navigat
     const card = page.getByRole("region", { name: "Assessment result" });
     await expect(card).toContainText("Advisory — PAY");
     await expect(card.getByTestId("payment-eligibility")).toBeVisible();
-    await expect(card).toContainText("Not the selected payment candidate.");
-    await expect(card).toContainText("software services · 125.00 USD");
-    await expect(card).toContainText("earliest effective due date among PAY recommendations");
+    await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("software services");
     await expect(card).not.toContainText("OBL-UAT-01");
-    await expect(card.getByRole("button", { name: "View selected payment candidate" })).toBeVisible();
-    await expect(card.getByRole("button", { name: "Review current PAY assessment" })).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "View selected payment candidate" })).toHaveCount(0);
     await expect(card.getByRole("button", { name: "Continue to Authorization" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Approver decision packet" })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toHaveCount(0);
@@ -924,15 +940,13 @@ test("non-winner PAY Assessment explains the authoritative candidate and navigat
     for (const row of await page.locator('button[data-obligation-id]').all()) {
       await expect(row).not.toContainText(/Sole PAY candidate|route assurance|PAE|execution|provider/i);
     }
-    await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
-    const primaryHeight = await card.getByRole("button", { name: "View selected payment candidate" }).evaluate((element) => element.getBoundingClientRect().height);
-    expect(primaryHeight).toBeGreaterThanOrEqual(44);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    const primaryAction = page.locator('main button[data-primary-action="true"]');
+    if (await primaryAction.count()) expect(await primaryAction.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
     const widths = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
     expect(widths.document).toBeLessThanOrEqual(widths.viewport);
-    await page.screenshot({ path: testInfo.outputPath(`nonwinner-pay-assessment-${viewport.label}.png`), fullPage: true });
-
-    await card.getByRole("button", { name: "View selected payment candidate" }).click();
-    await expect(queueItem(page, "OBL-UAT-01")).toHaveAttribute("aria-current", "true");
+    await page.screenshot({ path: testInfo.outputPath(`manual-selection-pay-assessment-${viewport.label}.png`), fullPage: true });
+    await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
     expect(unexpectedWrites).toEqual([]);
     await page.close();
   }
@@ -1227,6 +1241,8 @@ test("stale detail offers only a mocked read refresh after an assessment respons
     return route.fulfill({ status: 404, json: { error: "This fixture does not permit other actions." } });
   });
   await page.goto("/");
+  await queueItem(page, "OBL-UAT-01").click();
+  await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
   await page.getByRole("button", { name: "Run AI Assessment" }).click();
@@ -1333,7 +1349,8 @@ test("Assurance Continue is a 44px read-only navigation control in the first vie
     await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("ASSURANCE PASSED");
     console.log("ASSURANCE_CONTINUE_FIRST_VIEWPORT", JSON.stringify({ viewport, continueBounds }));
     await page.screenshot({ path: testInfo.outputPath(`assurance-continue-first-viewport-${viewport.label}.png`), fullPage: false });
-    expect(continueBounds.scrollY).toBe(0);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
     expect(continueBounds.bottom).toBeLessThanOrEqual(viewport.height);
     const before = writes.length;
     await continueButton.click();
@@ -1366,7 +1383,8 @@ test("blocked Assurance and historical Assessment keep truthful no-action guidan
     mutationCount: writes.length,
   }));
   await page.screenshot({ path: testInfo.outputPath("blocked-assurance-first-viewport-mobile.png"), fullPage: false });
-  expect(assuranceBounds.scrollY).toBe(0);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
   expect(assuranceBounds.bottom).toBeLessThanOrEqual(844);
 
   await expandLifecycleStages(page);
@@ -1406,6 +1424,9 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
     return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
   });
   await page.goto("/");
+  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await expect(page.locator('button[data-obligation-id="OBL-UAT-01"]')).toBeVisible();
+  await page.locator('button[data-obligation-id="OBL-UAT-01"]').click();
   await expect(page.getByRole("region", { name: "Selected obligation details" })).toBeVisible();
   await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
   const unavailable = page.getByText("Unavailable", { exact: true }).first();

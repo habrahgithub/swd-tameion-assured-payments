@@ -54,6 +54,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       atomicAmount: "5000000",
       asset: "USDC",
       network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
     });
 
     expect(result).toEqual({ providerRef: "circle-tx-1", status: "SUBMITTED" });
@@ -92,6 +93,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       atomicAmount: "5000000",
       asset: "USDC",
       network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
     });
 
     expect(vi.mocked(api.createTransaction).mock.calls[0]?.[0]).toMatchObject({
@@ -120,6 +122,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       atomicAmount: "5000000",
       asset: "USDC",
       network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
     })).rejects.toThrow();
     expect(changedPrecisionApi.createTransaction).not.toHaveBeenCalled();
   });
@@ -153,6 +156,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     await expect(new ArcCircleProviderAdapter(api, () => changedAuthorized).submitTransfer({
       idempotencyKey: "exact-demo-key", sourceWalletRef: J2A_DEMO_SOURCE.id,
       destinationAddress: J2A_DEMO_DESTINATION.address, atomicAmount: "5000000", asset: "USDC", network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
     })).rejects.toThrow();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -182,6 +186,7 @@ describe("Arc Circle provider adapter for J2A", () => {
         atomicAmount: "5000000",
         asset: "USDC",
         network: "ARC_TESTNET",
+        beforeProviderSend: async () => {},
       })).rejects.toThrow();
       expect(api.createTransaction).not.toHaveBeenCalled();
     }
@@ -197,6 +202,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       atomicAmount: "5000000",
       asset: "USDC",
       network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
     })).rejects.toThrow();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -223,6 +229,7 @@ describe("Arc Circle provider adapter for J2A", () => {
         asset: "USDC",
         network: "ARC_TESTNET",
         ...override,
+        beforeProviderSend: async () => {},
       })).rejects.toThrow();
       expect(api.createTransaction).not.toHaveBeenCalled();
     }
@@ -356,6 +363,7 @@ describe("Arc Circle provider adapter for J2A", () => {
       await expect(new ArcCircleProviderAdapter(api, () => authorized).submitTransfer({
         idempotencyKey: "exact-demo-key", sourceWalletRef: J2A_DEMO_SOURCE.id,
         destinationAddress: J2A_DEMO_DESTINATION.address, atomicAmount: "5000000", asset: "USDC", network: "ARC_TESTNET",
+      beforeProviderSend: async () => {},
       })).rejects.toThrow();
       expect(api.createTransaction).not.toHaveBeenCalled();
     }

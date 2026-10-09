@@ -596,14 +596,9 @@ export class DemoState {
       throw new Error("Only a current LIVE_AI PAY assessment with no findings or missing evidence can prepare an Arc Testnet proxy.");
     }
     const unassessed = this.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    if (unassessed) throw new Error(`Assess every frozen genuine obligation before selecting a sole PAY candidate (${unassessed} is not current).`);
+    if (unassessed) throw new Error(`Assess every frozen genuine obligation before preparing a proxy (${unassessed} is not current).`);
     const otherCandidate = this.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, preflight.obligation_id);
-    if (otherCandidate) throw new Error(`Another genuine obligation is already the committed sole candidate (${otherCandidate}).`);
-    const solePayCandidate = this.getSolePayCandidateId();
-    if (solePayCandidate !== preflight.obligation_id) {
-      throw new Error(`The existing sole-candidate gate selected ${solePayCandidate ?? "no obligation"}; the selected source is not eligible for proxy preparation.`);
-    }
-
+    if (otherCandidate) throw new Error(`Another genuine obligation already has a committed proxy or live PAE (${otherCandidate}).`);
     const versioned = this.store.applyMaterialChange(DEMO_ORGANIZATION_ID, preflight.obligation_id, expectedVersion, {
       counterparty_id: preflight.beneficiary_id,
       counterparty_version: current.counterparty_version + 1,

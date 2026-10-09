@@ -29,13 +29,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A current LIVE_AI PAY assessment with zero findings and zero missing evidence is required." }, { status: 409 });
     }
     const unassessed = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    if (unassessed) return NextResponse.json({ error: `Assess every frozen genuine obligation first; ${unassessed} is not current.` }, { status: 409 });
-    const solePayCandidate = state.getSolePayCandidateId();
-    if (solePayCandidate !== obligationId) {
-      return NextResponse.json({ error: `The existing sole-candidate gate selected ${solePayCandidate ?? "no obligation"}; select that current PAY obligation before provider preflight.` }, { status: 409 });
-    }
+    if (unassessed) return NextResponse.json({ error: `Assess every frozen genuine obligation before proxy preparation; ${unassessed} is not current.` }, { status: 409 });
     const otherCandidate = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, obligationId);
-    if (otherCandidate) return NextResponse.json({ error: `Another obligation is already the sole PAY candidate: ${otherCandidate}.` }, { status: 409 });
+    if (otherCandidate) return NextResponse.json({ error: `Another obligation already has a committed proxy or live PAE: ${otherCandidate}.` }, { status: 409 });
     if (state.hasLivePaeAuthority(obligationId) || state.getSettlementProxy(obligationId)) {
       return NextResponse.json({ error: "This selected intent already has proxy or authorization authority; reconcile its existing identity." }, { status: 409 });
     }

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
 
 const stateMocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
 vi.mock("../src/server/demo-state", async (importOriginal) => {
@@ -16,7 +16,7 @@ import { CommandCenter, SourceObligationLineage, useExecutionConfirmation, workf
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
-import { J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
+import { deriveJ2aCircleRefId, J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
 import { getCurrentSettlementProxyPacket } from "../src/server/settlement-proxy-packet";
 import { projectAssuranceEvidence } from "../src/server/assurance-evidence-projection";
 import { sealDurableAssuranceRecord } from "../src/pae/durable-records";
@@ -54,7 +54,7 @@ function navigateStage(stage: string) {
   fireEvent.click(button);
 }
 
-function circleClient(): J2aCircleClient {
+function circleClient(providerDecimals = 6): J2aCircleClient {
   return {
     getWallet: vi.fn(async ({ id }) => ({ data: { wallet: {
       id,
@@ -65,7 +65,7 @@ function circleClient(): J2aCircleClient {
     } } })),
     getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
       amount: "10000.000000",
-      token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
+      token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: providerDecimals, isNative: true },
     }] } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
     listTransactions: vi.fn(async () => ({ data: { transactions: [] } })),
@@ -74,8 +74,8 @@ function circleClient(): J2aCircleClient {
   };
 }
 
-async function preparedAuthorizedState(now?: () => Date) {
-  const api = circleClient();
+async function preparedAuthorizedState(now?: () => Date, providerDecimals = 6) {
+  const api = circleClient(providerDecimals);
   let state: DemoState;
   const provider = new ArcCircleProviderAdapter(api, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
   state = new DemoState(undefined, undefined, undefined, provider);
@@ -238,7 +238,12 @@ function assuranceProjectionInput(
   };
 }
 
-async function renderProducerJson(body: Record<string, unknown>, additionalBodies: Record<string, unknown>[] = [], queueResponse?: Record<string, unknown>) {
+async function renderProducerJson(
+  body: Record<string, unknown>,
+  additionalBodies: Record<string, unknown>[] = [],
+  queueResponse?: Record<string, unknown>,
+  options: { selectInitial?: boolean } = {},
+) {
   const bodies = new Map([body, ...additionalBodies].map((entry) => {
     const record = entry.record as { obligation_id: string };
     return [record.obligation_id, entry] as const;
@@ -276,8 +281,15 @@ async function renderProducerJson(body: Record<string, unknown>, additionalBodie
     const responseBody = bodies.get(obligationId);
     return Promise.resolve(new Response(JSON.stringify(responseBody ?? { error: "Unknown fixture identity." }), { status: responseBody ? 200 : 404 }));
   });
-  render(<CommandCenter />);
-  await screen.findByRole("region", { name: "Genuine obligation workspace" });
+  rtlRender(<CommandCenter />);
+  await waitFor(() => expect(screen.getByRole("main").querySelectorAll("button[data-obligation-id]").length).toBeGreaterThan(0));
+  if (options.selectInitial !== false) {
+    const selectedRecord = body.record as { obligation_id: string };
+    await waitFor(() => expect(obligationRow(selectedRecord.obligation_id)).toBeTruthy());
+    fireEvent.click(obligationRow(selectedRecord.obligation_id));
+    await waitFor(() => expect(obligationRow(selectedRecord.obligation_id).getAttribute("aria-current")).toBe("true"));
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+  }
   return {
     main: screen.getByRole("main"),
     setDetailBody: (entry: Record<string, unknown>) => bodies.set((entry.record as { obligation_id: string }).obligation_id, entry),
@@ -297,6 +309,35 @@ describe("real detail GET producer-consumer packet controls", () => {
     vi.useRealTimers();
     if (originalPrimePacketHash === undefined) delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
     else process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = originalPrimePacketHash;
+  });
+
+  it("starts with no selected obligation, then keeps an explicit 003 choice despite the older queue candidate field", async () => {
+    const state = new DemoState();
+    for (const record of state.liveUsageRecords) {
+      const aggregate = state.store.get(DEMO_ORGANIZATION_ID, record.obligation_id);
+      sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, record.obligation_id, aggregate.aggregate_version, {
+        provider_mode: "LIVE_AI",
+        decision: record.obligation_id === "OBL-J0C-001" || record.obligation_id === "OBL-J0C-003" ? "PAY" : "HOLD",
+        reasons: [`Current advisory for ${record.obligation_id}.`],
+      });
+    }
+    const queue = await listJson(state);
+    const bodies = await Promise.all(state.liveUsageRecords.map((record) => detailJson(state, record.obligation_id)));
+    const [firstBody, ...otherBodies] = bodies;
+    if (!firstBody) throw new Error("The genuine source set is empty.");
+
+    const { main } = await renderProducerJson(firstBody, otherBodies, queue, { selectInitial: false });
+    expect(main.querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
+    expect(main.textContent).toContain("Select an obligation");
+    expect(state.liveUsageRecords).toHaveLength(5);
+
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
+    expect(main.textContent).toContain("Current advisory for OBL-J0C-003.");
+    expect(main.textContent).not.toContain("Selected payment candidate: software services");
+    expect(main.textContent).not.toContain("View selected payment candidate");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("consumes the real GET shape for an expired PAE without inventing EXPIRED authority or Prime as next actor", async () => {
@@ -502,6 +543,13 @@ describe("real detail GET producer-consumer packet controls", () => {
       destination_address: expectedDestination,
       reconciled_at: "2026-10-08T10:00:00.000Z",
     };
+    const exactEighteenDecimalEvidenceBody = asSettled({
+      ...exactEvidence,
+      provider_atomic_amount: (BigInt(expectedAtomic) * 1_000_000_000_000n).toString(),
+      provider_token_decimals: 18,
+    });
+    exactEighteenDecimalEvidenceBody.execution_packet.packet.provider_token.decimals = 18;
+    exactEighteenDecimalEvidenceBody.execution_packet.packet.circle_arc_execution_instruction.decimals = 18;
     const cases = [
       { name: "evidence omitted", body: asSettled(undefined, "omit"), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "evidence null", body: asSettled(null), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
@@ -513,6 +561,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       { name: "packet instruction amount contradicts packet settlement amount", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.amount = "1.000000"; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "packet instruction decimals contradict the token", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.decimals = 8; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "confirmed exact instruction", body: asSettled(exactEvidence), expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", forbidden: null },
+      { name: "18-decimal provider evidence keeps canonical six-decimal ledger scale", body: exactEighteenDecimalEvidenceBody, expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", forbidden: null },
       { name: "simulated ledger record", body: (() => { const body = asSettled(exactEvidence); body.truth.settlement_truth.runtime = "SIMULATED"; return body; })(), expected: "Simulated record — no Arc settlement", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "instruction identity cannot be rebound", body: (() => { const body = asSettled(exactEvidence); body.sealed_pae_instruction_hash = "f".repeat(64); return body; })(), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
     ];
@@ -582,6 +631,113 @@ describe("real detail GET producer-consumer packet controls", () => {
     }
     expect(reportScopeFailures).toEqual([]);
   }, 15_000);
+
+  it("keeps 18-decimal Circle evidence separate from the canonical six-decimal amount through GET and receipt", async () => {
+    const fixture = await preparedAuthorizedState(undefined, 18);
+    const sealed = fixture.sealed;
+    fixture.api.getTransaction = vi.fn(async ({ id }) => ({ data: { transaction: {
+      id,
+      state: "COMPLETE",
+      blockchain: "ARC-TESTNET",
+      walletId: sealed.payload.source_wallet_ref,
+      sourceAddress: J2A_DEMO_SOURCE.address,
+      destinationAddress: sealed.payload.destination_address,
+      amounts: [sealed.payload.amount],
+      tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId(sealed.payload.idempotency_key),
+      networkFee: "0.001000",
+      operation: "TRANSFER",
+      txHash: `0x${"b".repeat(64)}`,
+    } } }));
+
+    const execution = await fixture.state.worker.execute(sealed);
+    expect(execution).toMatchObject({ status: "SETTLED", atomic_amount: sealed.payload.atomic_amount });
+    expect(execution.provider_evidence).toMatchObject({
+      status: "CONFIRMED",
+      atomic_amount: sealed.payload.atomic_amount,
+      provider_token_decimals: 18,
+      provider_atomic_amount: (BigInt(sealed.payload.atomic_amount) * 1_000_000_000_000n).toString(),
+    });
+    const produced = await detailJson(fixture.state, fixture.selectedId);
+    expect(produced.execution_packet.packet.provider_token.decimals).toBe(18);
+
+    const scenarios = [
+      { name: "exact provider and ledger precision", body: produced, expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION" },
+      { name: "missing provider-native precision", body: (() => {
+        const body = structuredClone(produced);
+        delete body.execution.provider_evidence.provider_atomic_amount;
+        return body;
+      })(), expected: "Recorded as SETTLED — reconciliation evidence unavailable" },
+      { name: "mismatched provider-native precision", body: (() => {
+        const body = structuredClone(produced);
+        body.execution.provider_evidence.provider_atomic_amount = "1";
+        return body;
+      })(), expected: "Reconciliation evidence mismatch — review required" },
+    ];
+    for (const scenario of scenarios) {
+      cleanup();
+      await renderProducerJson(scenario.body);
+      navigateStage("Reconciliation");
+      const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+      expect(receipt.textContent, scenario.name).toContain(scenario.expected);
+      expect(receipt.textContent, scenario.name).toContain("OUTSTANDING");
+      if (scenario.expected !== "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION") {
+        expect(receipt.textContent, scenario.name).not.toContain("Settlement matches the authorized obligation exactly");
+      }
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
+    }
+    expect(fixture.api.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["expiry", "signer revocation"] as const)(
+    "retains cryptographically bound historical evidence after current PAE %s without reopening submission",
+    async (invalidation) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
+      const fixture = await preparedAuthorizedState(() => new Date());
+      const sealed = fixture.sealed;
+      fixture.api.getTransaction = vi.fn(async ({ id }) => ({ data: { transaction: {
+        id,
+        state: "COMPLETE",
+        blockchain: "ARC-TESTNET",
+        walletId: sealed.payload.source_wallet_ref,
+        destinationAddress: sealed.payload.destination_address,
+        amounts: [sealed.payload.amount],
+        tokenId: "native-arc-usdc",
+        refId: deriveJ2aCircleRefId(sealed.payload.idempotency_key),
+        networkFee: "0.001000",
+        operation: "TRANSFER",
+      } } }));
+      const executed = await fixture.state.worker.execute(sealed);
+      expect(executed.status).toBe("SETTLED");
+      expect(fixture.api.createTransaction).toHaveBeenCalledTimes(1);
+
+      if (invalidation === "expiry") {
+        vi.setSystemTime(new Date(Date.parse(sealed.payload.expiry) + 1));
+      } else {
+        fixture.state.trustedKeys.revoke(sealed.payload.signing_key_id);
+      }
+      let cold: DemoState;
+      const coldAdapter = new ArcCircleProviderAdapter(fixture.api, (key) => cold?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
+      cold = new DemoState(parseDemoStateSnapshot(fixture.state.exportSnapshot()), undefined, undefined, coldAdapter);
+      expect(getCurrentSettlementProxyPacket(cold, fixture.selectedId)).toBeNull();
+      const body = await detailJson(cold, fixture.selectedId);
+      expect(body.settlement_evidence_binding).toMatchObject({ state: "AVAILABLE_HISTORICAL" });
+      expect(body.execution).toMatchObject({ status: "SETTLED", idempotency_key: sealed.payload.idempotency_key });
+      expect(body.source_payable_state).toBe("OUTSTANDING");
+
+      cleanup();
+      await renderProducerJson(body);
+      navigateStage("Reconciliation");
+      const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
+      expect(receipt.textContent).toMatch(/historical/i);
+      expect(receipt.textContent).toContain("CONFIRMED");
+      expect(receipt.textContent).toContain("OUTSTANDING");
+      expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+      expect(fixture.api.createTransaction).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("normalizes and renders a legacy schema-v1 settled ledger record without inventing reconciliation evidence", async () => {
     const fixture = await preparedAuthorizedState();
@@ -1015,10 +1171,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(projectAssuranceEvidence(assuranceProjectionInput(cold, second.selectedId)).state).toBe("AVAILABLE_CURRENT_BINDING");
   });
 
-  it("renders the authoritative sole candidate and post-proxy fresh-assessment state from real GET producers", async () => {
+  it("renders advisory queue decisions without promoting an execution winner and preserves post-proxy fresh-assessment state", async () => {
     const eligible = livePayAssessedState();
     const queue = await listJson(eligible.state);
-    expect(queue.sole_pay_candidate_id).toBe(eligible.selectedId);
+    expect(queue).not.toHaveProperty("sole_pay_candidate_id");
     expect(queue.obligations.find((item: { obligation_id: string }) => item.obligation_id === eligible.selectedId)).toMatchObject({
       aggregate_state: "APPROVAL_PENDING",
       assessed: true,
@@ -1066,7 +1222,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps a current non-winner PAY advisory distinct from the authoritative candidate disposition", async () => {
+  it("keeps explicitly selected 003 bound despite a separate earlier-due 001 PAY recommendation", async () => {
     const preparedWinner = await proxyPreparedWithoutCurrentAssessment(true);
     const preparedQueue = await listJson(preparedWinner.state);
     const preparedDetail = await detailJson(preparedWinner.state, preparedWinner.selectedId);
@@ -1078,8 +1234,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main: preparedMain } = await renderProducerJson(preparedDetail, [], preparedQueue);
     navigateStage("Assessment");
     expect(preparedMain.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("Selected payment candidate");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("PAY is advisory for the selected obligation");
+    expect(screen.getByTestId("payment-eligibility").textContent).not.toMatch(/selected payment candidate|earliest effective due/i);
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
     cleanup();
@@ -1100,7 +1256,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const queue = await listJson(fixture.state);
     const payRecommendations = queue.obligations.filter((item: { decision: string | null }) => item.decision === "PAY");
     expect(payRecommendations).toHaveLength(2);
-    expect(queue.sole_pay_candidate_id).toBe(selectedCandidateId);
+    expect(queue).not.toHaveProperty("sole_pay_candidate_id");
     const candidateBody = await detailJson(fixture.state, selectedCandidateId);
     const body = await detailJson(fixture.state, nonCandidateId);
     expect(body.current_assessment.decision).toBe("PAY");
@@ -1112,26 +1268,21 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Assessment");
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Payment eligibility");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Not the selected payment candidate.");
-    const candidateSummary = queue.obligations.find((item: { obligation_id: string }) => item.obligation_id === selectedCandidateId);
-    const candidateLabel = candidateSummary.service_category.replaceAll("_", " ").toLowerCase();
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain(candidateLabel);
-    expect(screen.getByTestId("assessment-result-card").textContent).not.toContain(selectedCandidateId);
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("earliest effective due date among PAY recommendations");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("View selected payment candidate");
-    expect(screen.getByRole("button", { name: "View selected payment candidate" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("PAY is advisory for the selected obligation");
+    expect(screen.getByTestId("assessment-result-card").textContent).not.toMatch(/selected payment candidate|earliest effective due date/i);
+    expect(screen.queryByRole("button", { name: "View selected payment candidate" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "View selected payment candidate" }));
-    await waitFor(() => expect(main.querySelector('[data-obligation-id="OBL-J0C-001"]')?.getAttribute("aria-current")).toBe("true"));
+    expect(main.textContent).toContain("OBL-J0C-003");
+    expect(main.textContent).not.toContain("The previous PAY candidate");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps a current PAY recommendation advisory when assessment coverage leaves the winner unknown", async () => {
+  it("keeps a manually selected PAY assessment visible while the independent all-assessed gate remains incomplete", async () => {
     const state = new DemoState();
     const nonCandidateId = "OBL-J0C-003";
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, nonCandidateId);
@@ -1143,7 +1294,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     });
     const queue = await listJson(state);
     expect(queue.assessed_count).toBeLessThan(queue.total_count);
-    expect(queue.sole_pay_candidate_id).toBeNull();
+    expect(queue).not.toHaveProperty("sole_pay_candidate_id");
     const firstBody = await detailJson(state, queue.obligations[0].obligation_id);
     const body = await detailJson(state, nonCandidateId);
     const { main } = await renderProducerJson(firstBody, [body], queue);
@@ -1154,11 +1305,11 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Assessment");
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
+    expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("assessment coverage is incomplete");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Back to obligations");
-    expect(screen.getByRole("button", { name: "Back to obligations" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Review current PAY assessment" })).toBeNull();
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("Business eligibility, wallet funding, and payment authority are separate checks");
+    expect(screen.getByTestId("assessment-result-card").textContent).not.toContain("Back to obligations");
+    expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     expect(main.querySelectorAll("details[open]")).toHaveLength(0);
@@ -1166,7 +1317,6 @@ describe("real detail GET producer-consumer packet controls", () => {
       expect(row.textContent).not.toMatch(/Sole PAY candidate|route assurance|PAE|execution|provider/i);
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to obligations" }));
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1760,7 +1910,7 @@ describe("real detail GET producer-consumer packet controls", () => {
         currency: source.currency,
         state_at_event_baseline: "OUTSTANDING",
       });
-      const sourceView = render(<SourceObligationLineage
+      const sourceView = rtlRender(<SourceObligationLineage
         record={body.record}
         payableState={body.source_payable_state}
         selectedObligationId={source.obligation_id}

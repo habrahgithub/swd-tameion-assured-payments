@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { AuthorityError } from "../../../../src/authority/aggregate";
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
 import { buildPaymentTruthLayers } from "../../../../src/domain/payment-control-boundary";
-import { getCurrentSettlementProxyPacket } from "../../../../src/server/settlement-proxy-packet";
+import { getCurrentSettlementProxyPacket, getSettlementEvidenceBinding } from "../../../../src/server/settlement-proxy-packet";
 import { DemoStateConflictError, DemoStatePersistenceError } from "../../../../src/server/supabase-demo-state-repository";
 import { projectAssuranceEvidence } from "../../../../src/server/assurance-evidence-projection";
 
@@ -92,6 +92,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
     executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
     executionPacket = getCurrentSettlementProxyPacket(state, id);
+    const settlementEvidenceBinding = getSettlementEvidenceBinding(state, id, executionPacket);
     if (!record || !canonicalObligation) {
       return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
     }
@@ -153,6 +154,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       source_settlement_disclosure: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
       source_payable_state: record.state_at_event_baseline,
       execution_packet: executionPacket,
+      settlement_evidence_binding: settlementEvidenceBinding,
       sealed_pae_instruction_hash: sealed?.instruction_hash ?? null,
       execution_gate: execution
         ? execution.status === "UNKNOWN" || execution.status === "SUBMITTING" ? "RECONCILIATION_ONLY" : "EXECUTION_ALREADY_RECORDED"

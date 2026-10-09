@@ -339,8 +339,30 @@ export class ExecutionWorker {
         atomicAmount: payload.atomic_amount,
         asset: payload.asset,
         network: payload.network,
+        beforeProviderSend: () => this.validateAtProviderSendBoundary(sealed),
       });
     } catch (error) {
+      if (error instanceof ExecutionBlockedError) {
+        const beforeRefusal = this.store.get(payload.organization_id, obligationId);
+        this.store.markBlocked(payload.organization_id, obligationId, "final provider-send authority check failed");
+        const blocked: ExecutionRecord = {
+          obligation_id: obligationId,
+          idempotency_key: payload.idempotency_key,
+          provider_ref: null,
+          status: "BLOCKED",
+          atomic_amount: payload.atomic_amount,
+          destination_address: payload.destination_address,
+        };
+        this.executionLedger.set(payload.idempotency_key, blocked);
+        try {
+          await this.onDurableStateChange?.();
+        } catch (persistenceError) {
+          this.store.restoreAggregateSnapshot(beforeRefusal);
+          this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+          throw persistenceError;
+        }
+        throw error;
+      }
       if (error instanceof ProviderPreSubmitBlockedError) {
         this.store.markBlocked(payload.organization_id, obligationId, error.message);
         const record: ExecutionRecord = {
@@ -405,8 +427,97 @@ export class ExecutionWorker {
       payload.organization_id,
     );
     this.executionLedger.set(payload.idempotency_key, finalRecord);
-    await this.onDurableStateChange?.();
+    try {
+      await this.onDurableStateChange?.();
+    } catch (persistenceError) {
+      // A persistence conflict after provider submission cannot cancel the
+      // external effect. Restore only the last durable in-flight marker so a
+      // follow-up resolves UNKNOWN/read-only rather than claiming cancellation
+      // or permitting a second submit.
+      this.store.restoreAggregateSnapshot(preSubmitAggregate);
+      this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+      throw persistenceError;
+    }
     return finalRecord;
+  }
+
+  /**
+   * Last worker-owned authority check, invoked by the provider adapter only
+   * after its awaited read-only Circle preflight and exact intent comparison.
+   * No provider operation may be awaited between this check and create.
+   */
+  private async validateAtProviderSendBoundary(sealed: SealedPae): Promise<void> {
+    const { payload } = sealed;
+    const obligationId = payload.obligation_ids[0];
+    let durableContext: Awaited<ReturnType<NonNullable<ExecutionWorkerOptions["reloadDurableExecutionContext"]>>> | undefined;
+    try {
+      durableContext = await this.options.reloadDurableExecutionContext?.(payload.organization_id, obligationId);
+    } catch {
+      throw new ExecutionBlockedError("Current durable execution authority could not be reloaded after provider preflight", "AUTH-001");
+    }
+    if (this.adapter.name === "arc-circle-live" && !durableContext) {
+      throw new ExecutionBlockedError("Current durable execution authority is unavailable at the provider-send boundary", "AUTH-001");
+    }
+
+    const latestAggregate = durableContext?.aggregate ?? this.store.get(payload.organization_id, obligationId);
+    if (durableContext) {
+      try {
+        const currentTrustedKeys = new TrustedKeyRegistry();
+        currentTrustedKeys.restore(durableContext.trustedKeys);
+        verifySealedPae(sealed, currentTrustedKeys);
+      } catch {
+        throw new ExecutionBlockedError("PAE signer trust was revoked or changed during provider preflight", "PAE-015");
+      }
+    }
+    this.validateCurrentExecutionAuthority(
+      sealed,
+      latestAggregate,
+      durableContext ? durableContext.authorization ?? null : undefined,
+      durableContext
+        ? durableContext.actorAuthorities.find((record) =>
+          record.organization_id === payload.organization_id && record.actor_id === payload.approval_evidence[0]?.actor_id,
+        ) ?? null
+        : undefined,
+    );
+
+    if (latestAggregate.aggregate_version !== Number(payload.aggregate_version)) {
+      throw new ExecutionBlockedError("Aggregate version changed during provider preflight", "PAE-011");
+    }
+    const [whole, fractional] = latestAggregate.amount.split(".");
+    const expectedAtomic = /^\d+\.\d{6}$/.test(latestAggregate.amount)
+      ? (BigInt(whole!) * 1_000_000n + BigInt(fractional!)).toString(10)
+      : null;
+    if (!expectedAtomic || payload.amount !== latestAggregate.amount || payload.atomic_amount !== expectedAtomic ||
+        payload.asset !== latestAggregate.asset || payload.network !== latestAggregate.network ||
+        payload.counterparty_id !== latestAggregate.counterparty_id ||
+        Number(payload.counterparty_version) !== latestAggregate.counterparty_version) {
+      throw new ExecutionBlockedError("Exact PAE amount, asset, network, or counterparty binding changed during provider preflight", "PAE-011");
+    }
+    const killSwitchActive = durableContext
+      ? durableContext.executionKillSwitched
+      : this.store.isExecutionKillSwitched(payload.organization_id, obligationId);
+    if (killSwitchActive) {
+      throw new ExecutionBlockedError("Durable kill switch became active during provider preflight", "WDG-001");
+    }
+    const destinationCurrent = payload.destination_ref === latestAggregate.destination_ref &&
+      Number(payload.destination_version) === latestAggregate.destination_version &&
+      payload.destination_address === latestAggregate.destination_address &&
+      latestAggregate.destination_verification_status === "VERIFIED" &&
+      latestAggregate.destination_operational_status === "ACTIVE";
+    const sourceCurrent = payload.source_wallet_ref === latestAggregate.source_wallet_ref &&
+      Number(payload.source_wallet_version) === latestAggregate.source_wallet_version &&
+      latestAggregate.source_wallet_status === "ACTIVE";
+    if (!destinationCurrent || !sourceCurrent) {
+      throw new ExecutionBlockedError("Source wallet or proxy destination changed during provider preflight", "PAE-011");
+    }
+
+    // Time is sampled after the durable reload and synchronous binding checks,
+    // so equality at expiry refuses before createTransaction.
+    const expiry = Date.parse(payload.expiry);
+    const now = (this.options.now?.() ?? new Date()).getTime();
+    if (!Number.isFinite(expiry) || expiry <= now) {
+      throw new ExecutionBlockedError("PAE expired during provider preflight; the reserved instruction was refused", "EXP-001");
+    }
   }
 
   private validateCurrentExecutionAuthority(

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { decimalToAtomic } from "../src/domain/numeric";
+import { decimalToAtomic, USDC_DECIMALS } from "../src/domain/numeric";
 import type { RaceAssessment } from "../src/agent/schema";
 import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary";
 import {
@@ -132,6 +132,10 @@ interface ObligationDetail {
   source_settlement_disclosure?: string;
   source_payable_state?: string;
   execution_packet?: { packet_sha256: string; packet?: Record<string, unknown> } | null;
+  settlement_evidence_binding?: {
+    state: "AVAILABLE_CURRENT_BINDING" | "AVAILABLE_HISTORICAL" | "UNAVAILABLE" | "INVALID";
+    packet?: { packet_sha256: string; packet?: Record<string, unknown> };
+  };
   sealed_pae_instruction_hash?: string | null;
   execution_gate?: string;
   execution_kill_switched: boolean;
@@ -697,9 +701,11 @@ type ExecutionConfirmation = { identity: string; value: string } | null;
 
 type SettledEvidenceClassification = {
   state: "verified" | "unavailable" | "mismatch";
+  historical: boolean;
   summary: string;
   explanation: string;
   amountMatch: string;
+  providerAmountMatch: string;
   destinationMatch: string;
 };
 
@@ -707,18 +713,23 @@ type SettledEvidenceClassification = {
  * provider proof: success requires CONFIRMED evidence bound to the exact
  * selected, sealed instruction and its exact amount/destination. */
 function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClassification {
-  const unavailable = (amountMatch = "not established from stored provider evidence", destinationMatch = "not established from stored provider evidence"): SettledEvidenceClassification => ({
+  const historical = detail.settlement_evidence_binding?.state === "AVAILABLE_HISTORICAL";
+  const unavailable = (amountMatch = "not established from stored provider evidence", destinationMatch = "not established from stored provider evidence", providerAmountMatch = "not established from stored provider evidence"): SettledEvidenceClassification => ({
     state: "unavailable",
-    summary: "Recorded as SETTLED — reconciliation evidence unavailable",
+    historical,
+    summary: historical ? "Historical SETTLED record — reconciliation evidence unavailable" : "Recorded as SETTLED — reconciliation evidence unavailable",
     explanation: "Exact provider amount and destination verification cannot be established from the stored record. Evidence review required; do not resubmit.",
     amountMatch,
+    providerAmountMatch,
     destinationMatch,
   });
-  const mismatch = (amountMatch = "review required", destinationMatch = "review required"): SettledEvidenceClassification => ({
+  const mismatch = (amountMatch = "review required", destinationMatch = "review required", providerAmountMatch = "review required"): SettledEvidenceClassification => ({
     state: "mismatch",
-    summary: "Reconciliation evidence mismatch — review required",
+    historical,
+    summary: historical ? "Historical reconciliation evidence mismatch — review required" : "Reconciliation evidence mismatch — review required",
     explanation: "Stored provider evidence does not match the exact selected payment instruction. The execution ledger remains recorded as SETTLED. Evidence review required; do not resubmit.",
     amountMatch,
+    providerAmountMatch,
     destinationMatch,
   });
   const record = detail.execution;
@@ -729,7 +740,8 @@ function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClass
   if (typeof evidence.status === "string" && evidence.status !== "CONFIRMED") return mismatch();
   if (!evidence.status) return unavailable();
 
-  const packet = detail.execution_packet?.packet;
+  const packet = detail.execution_packet?.packet ??
+    (historical ? detail.settlement_evidence_binding?.packet?.packet : undefined);
   const pae = packet?.pae as Record<string, unknown> | undefined;
   const token = packet?.provider_token as Record<string, unknown> | undefined;
   const instruction = packet?.circle_arc_execution_instruction as Record<string, unknown> | undefined;
@@ -749,7 +761,7 @@ function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClass
   const amount = packet.settlement_amount;
   const decimals = token?.decimals;
   const destination = instruction?.destination_address;
-  if (typeof amount !== "string" || !Number.isSafeInteger(decimals) || (decimals as number) < 0 ||
+  if (typeof amount !== "string" || !Number.isSafeInteger(decimals) || (decimals as number) < USDC_DECIMALS || (decimals as number) > 36 ||
       typeof destination !== "string" || !destination ||
       typeof instruction.amount !== "string" || !Number.isSafeInteger(instruction.decimals) ||
       typeof packet.asset !== "string" || typeof packet.network !== "string") return unavailable();
@@ -758,7 +770,9 @@ function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClass
       packet.asset !== "USDC" || packet.network !== "ARC_TESTNET") return mismatch();
   let expectedAtomic: string;
   try {
-    expectedAtomic = decimalToAtomic(amount, decimals as number);
+    // The instruction/ledger amount is canonical USDC at six decimals.
+    // Circle-native token units are verified separately below.
+    expectedAtomic = decimalToAtomic(amount, USDC_DECIMALS);
   } catch {
     return unavailable();
   }
@@ -768,22 +782,42 @@ function classifySettledEvidence(detail: ObligationDetail): SettledEvidenceClass
   const amountMatch = typeof evidenceAtomic !== "string"
     ? "not established from stored provider evidence"
     : evidenceAtomic === expectedAtomic ? "confirmed" : "mismatch recorded";
+  const evidenceProviderDecimals = evidence.provider_token_decimals;
+  const providerAtomic = evidence.provider_atomic_amount;
+  let providerAmountMatch = "not established from stored provider evidence";
+  if (evidenceProviderDecimals !== undefined && evidenceProviderDecimals !== decimals) {
+    providerAmountMatch = "mismatch recorded";
+  } else if (typeof evidenceProviderDecimals === "number" && typeof providerAtomic === "string") {
+    const expectedProviderAtomic = evidenceProviderDecimals >= USDC_DECIMALS && evidenceProviderDecimals <= 36
+      ? (BigInt(expectedAtomic) * 10n ** BigInt(evidenceProviderDecimals - USDC_DECIMALS)).toString(10)
+      : null;
+    providerAmountMatch = expectedProviderAtomic === null
+      ? "not established from stored provider evidence"
+      : providerAtomic === expectedProviderAtomic ? "confirmed" : "mismatch recorded";
+  } else if ((decimals as number) === USDC_DECIMALS && evidenceProviderDecimals === undefined && providerAtomic === undefined) {
+    // Older canonical six-decimal adapters recorded only the ledger scale.
+    providerAmountMatch = "confirmed";
+  }
   const destinationMatch = typeof evidenceDestination !== "string"
     ? "not established from stored provider evidence"
     : evidenceDestination.toLowerCase() === destination.toLowerCase() ? "confirmed" : "mismatch recorded";
-  if (amountMatch === "mismatch recorded" || destinationMatch === "mismatch recorded" ||
+  if (amountMatch === "mismatch recorded" || providerAmountMatch === "mismatch recorded" || destinationMatch === "mismatch recorded" ||
       (typeof record.atomic_amount === "string" && record.atomic_amount !== expectedAtomic) ||
       (typeof record.destination_address === "string" && record.destination_address.toLowerCase() !== destination.toLowerCase())) {
-    return mismatch(amountMatch, destinationMatch);
+    return mismatch(amountMatch, destinationMatch, providerAmountMatch);
   }
-  if (amountMatch !== "confirmed" || destinationMatch !== "confirmed" || detail.aggregate.state !== "RECONCILED") {
-    return unavailable(amountMatch, destinationMatch);
+  if (amountMatch !== "confirmed" || providerAmountMatch !== "confirmed" || destinationMatch !== "confirmed" || detail.aggregate.state !== "RECONCILED") {
+    return unavailable(amountMatch, destinationMatch, providerAmountMatch);
   }
   return {
     state: "verified",
-    summary: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION",
-    explanation: `Stored CONFIRMED provider evidence matches the exact testnet amount and destination; source payable remains ${sourcePayableState(detail)}.`,
+    historical,
+    summary: historical ? "Historical testnet execution — exact settlement evidence verified" : "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION",
+    explanation: historical
+      ? `Archived CONFIRMED provider evidence matches the exact prior testnet instruction. Current release authority is not restored; source payable remains ${sourcePayableState(detail)}.`
+      : `Stored CONFIRMED provider evidence matches the exact testnet amount and destination; source payable remains ${sourcePayableState(detail)}.`,
     amountMatch,
+    providerAmountMatch,
     destinationMatch,
   };
 }
@@ -838,7 +872,7 @@ export function workflowState(detail: ObligationDetail | null, routeAssuranceRea
     }
     const evidence = classifySettledEvidence(detail);
     if (evidence.state === "verified") {
-      return { label: "Reconciled", tone: "success", explanation: "Stored CONFIRMED provider evidence matches the exact testnet amount and destination." };
+      return { label: evidence.historical ? "Historical settlement evidence verified" : "Reconciled", tone: "success", explanation: evidence.explanation };
     }
     return {
       label: evidence.summary,
@@ -1638,7 +1672,6 @@ function DemoStage({ title, value }: { title: string; value: string }) {
 
 export function CommandCenter() {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
-  const [solePayCandidateId, setSolePayCandidateId] = useState<string | null>(null);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
   const [samplePlaybackVisible, setSamplePlaybackVisible] = useState(false);
@@ -1693,17 +1726,15 @@ export function CommandCenter() {
       if (!response.ok || !data || typeof data !== "object" || !Array.isArray((data as { obligations?: unknown }).obligations)) {
         throw new Error(obligationsFetchErrorMessage(response.status, data));
       }
-      const list = data as { obligations: ObligationSummary[]; sole_pay_candidate_id?: unknown };
+      const list = data as { obligations: ObligationSummary[] };
       const fetched = list.obligations;
       setObligations(fetched);
-      setSolePayCandidateId(typeof list.sole_pay_candidate_id === "string" ? list.sole_pay_candidate_id : null);
       setObligationsStatus("ready");
       if (fetched.length === 0) setSelectedId("");
       return fetched;
     } catch (error) {
       if (!preserveLastKnown) {
         setObligations([]);
-        setSolePayCandidateId(null);
         setSelectedId("");
       }
       setObligationsStatus("error");
@@ -1713,9 +1744,7 @@ export function CommandCenter() {
   };
 
   useEffect(() => {
-    void refreshObligations(true).then((fetched) => {
-      if (fetched[0]) setSelectedId(fetched[0].obligation_id);
-    });
+    void refreshObligations(true);
   }, []);
 
   const refreshDetail = async (id: string, preserveLastKnown = false): Promise<ObligationDetail | null> => {
@@ -1885,6 +1914,26 @@ export function CommandCenter() {
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
+  const selectObligation = (obligationId: string) => {
+    if (selectedRef.current === obligationId) {
+      setMobileQueueOpen(false);
+      return;
+    }
+    // Invalidate in-flight detail/action results synchronously with the
+    // operator's selection so a fast A→B→A change cannot repaint stale data.
+    selectedRef.current = obligationId;
+    selectionGeneration.current += 1;
+    detailGeneration.current += 1;
+    setDetail(null);
+    setDetailIsStale(false);
+    setDetailError(null);
+    setSelectedId(obligationId);
+    setViewedStage("Obligation");
+    setLastResult(null);
+    setDisplayedAssessment(null);
+    setStageCompletionReceipt(null);
+    setMobileQueueOpen(false);
+  };
   const queueDueDate = (obligation: ObligationSummary) => {
     if (obligation.obligation_id === selectedId && detail?.record.obligation_id === selectedId) {
       return sourceText(detail.record, "effective_due_date") !== "Not captured"
@@ -1894,7 +1943,6 @@ export function CommandCenter() {
     return obligation.due_date ?? "Due date unavailable";
   };
   const assessedCount = obligations.filter((o) => o.assessed).length;
-  const payCandidateCount = obligations.filter((o) => o.decision === "PAY").length;
   const allAssessed = obligations.length > 0 && assessedCount === obligations.length;
   const listPresentation = obligationListState(obligationsStatus, obligationsError, obligations.length);
   const detailState: DetailState = detail && detailIsStale ? "stale" : detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
@@ -1933,42 +1981,13 @@ export function CommandCenter() {
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
-  const candidatePresentationContext = Boolean(detailState === "loaded" && detail && !detail.pae_sealed && !detail.execution &&
-    detail.aggregate.state !== "AUTHORIZED");
-  const authoritativePayCandidate = listPresentation === "ready" && solePayCandidateId
-    ? obligations.find((obligation) => obligation.obligation_id === solePayCandidateId && obligation.assessed && obligation.decision === "PAY") ?? null
-    : null;
-  const currentPayCandidateUnknown = Boolean(candidatePresentationContext && hasCurrentPayAssessment && !detailIsStale && !authoritativePayCandidate);
-  const currentPayIsNonWinner = Boolean(candidatePresentationContext && hasCurrentPayAssessment && !detailIsStale && authoritativePayCandidate && authoritativePayCandidate.obligation_id !== selectedId);
-  const currentPayIsSelectedWinner = Boolean(candidatePresentationContext && hasCurrentPayAssessment && !detailIsStale && authoritativePayCandidate?.obligation_id === selectedId);
-  const candidateBusinessLabel = authoritativePayCandidate
-    ? `${authoritativePayCandidate.service_category.replaceAll("_", " ").toLowerCase()} · ${authoritativePayCandidate.amount} ${authoritativePayCandidate.currency}${authoritativePayCandidate.due_date ? ` · due ${authoritativePayCandidate.due_date}` : ""}`
-    : undefined;
-  const assessmentPaymentEligibility = currentPayIsNonWinner && candidateBusinessLabel
+  const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
-        summary: "PAY is recorded; this is not the selected payment candidate for the demo.",
-        candidate: candidateBusinessLabel,
-        reason: "Earliest effective due date among PAY recommendations.",
-        selectionDetail: "The existing deterministic rule selects the earliest effective due date among PAY recommendations, with obligation ID as the tie-break.",
-        ...(authoritativePayCandidate?.route_assurance_status === "Route assurance not ready"
-          ? { routeNote: "Authorization is not available until the selected candidate also has current payment-route assurance." }
-          : {}),
+        summary: `PAY is advisory for the selected obligation. Business eligibility, wallet funding, and payment authority are separate checks.${routeAssuranceReady ? "" : " Current payment-route assurance is not ready; authorization remains locked."}`,
       }
-    : currentPayCandidateUnknown
-      ? {
-          summary: listPresentation !== "ready"
-            ? "The PAY recommendation is recorded, but the selected payment candidate is uncertain because the current obligation queue is unavailable."
-            : !allAssessed
-              ? "The PAY recommendation is recorded, but the selected payment candidate is not determined while assessment coverage is incomplete."
-              : "The PAY recommendation is recorded, but no selected payment candidate is confirmed in the current queue.",
-        }
-      : currentPayIsSelectedWinner && !routeAssuranceReady
-        ? {
-        summary: "Selected payment candidate; current payment-route assurance is not ready, so authorization is unavailable.",
-          }
-        : null;
+    : null;
   const proxyPreparationReady = Boolean(detailState === "loaded" && detail && selectedId && !detail.settlement_proxy && !detail.pae_sealed &&
-    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && allAssessed && solePayCandidateId === selectedId &&
+    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && allAssessed &&
     currentAssessment?.race && currentAssessment.race.result.validated_findings.length === 0 && currentAssessment.race.remediation.length === 0 &&
     currentAssessment.race.evidence.authoritative_facts.obligation_id === selectedId);
   const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
@@ -2078,7 +2097,7 @@ export function CommandCenter() {
   const canContinueToAssessment = currentLifecycleStage === "Obligation" && detailState === "loaded" &&
     Boolean(detail && hasExpectedObligationIdentity(detail, selectedId));
   const canContinueToAuthorization = currentLifecycleStage === "Assessment" && detailState === "loaded" && !detailIsStale &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && allAssessed && solePayCandidateId === selectedId &&
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && allAssessed &&
     routeAssuranceReady && Boolean(detail?.settlement_proxy) && assessmentAction === "continue";
   const showContinueToAuthorization = viewedStage === "Assessment" && canContinueToAuthorization;
   const canContinueToPayment = currentLifecycleStage === "Assurance" && detailState === "loaded" && Boolean(detail?.pae_sealed) &&
@@ -2099,7 +2118,7 @@ export function CommandCenter() {
     return "UPCOMING";
   };
   const stageLockReason = (stage: LifecycleStage): string => {
-    if (stage === "Authorization") return detailState === "loaded" ? lifecycleStatus(stage) : "Requires a current PAY review, sole-winner, proxy and route checks.";
+    if (stage === "Authorization") return detailState === "loaded" ? lifecycleStatus(stage) : "Requires a current selected-obligation PAY review, proxy, and route checks.";
     if (stage === "Assurance") return "Requires exact human authorization.";
     if (stage === "Payment") return "Requires current PASS assurance and a usable sealed PAE.";
     if (stage === "Reconciliation") return "Requires an actual provider attempt or execution record.";
@@ -2107,16 +2126,12 @@ export function CommandCenter() {
   };
   const currentBlockedReason = currentLifecycleStage === "Assessment"
     ? currentAssessment?.decision === "PAY"
-      ? `${lifecycleStatus("Assessment")} · ${!routeAssuranceReady ? "Payment-route evidence is not ready; authorization remains locked." : "Current PAY, review, sole-winner and proxy prerequisites are incomplete."}`
+      ? `${lifecycleStatus("Assessment")} · ${!routeAssuranceReady ? "Payment-route evidence is not ready; authorization remains locked." : "Current selected-obligation PAY review and proxy prerequisites are incomplete."}`
       : lifecycleStatus("Assessment")
     : lifecycleStatus(currentLifecycleStage);
 
   const currentWorkspaceGuidance = detailState === "loaded" && detail?.aggregate.state === "CANCELLED"
     ? "This obligation was cancelled. No authorization or execution action is available."
-    : currentPayIsNonWinner
-    ? "This PAY recommendation is recorded, but this obligation is not the selected payment candidate for the demo."
-    : currentPayCandidateUnknown
-      ? assessmentPaymentEligibility?.summary ?? "The selected payment candidate cannot currently be confirmed."
     : !selectedId
     ? "Choose one obligation from the queue."
     : detailState === "loading"
@@ -2339,19 +2354,6 @@ export function CommandCenter() {
     workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); } };
   } else if (viewedStage !== "Reconciliation" && detailState === "loaded" && detail?.execution?.status === "SETTLED") {
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
-  } else if (viewedStage === "Assessment" && currentPayIsNonWinner && authoritativePayCandidate) {
-    workspaceAction = { label: "View selected payment candidate", actor: "You · read-only navigation", run: () => {
-      setSelectedId(authoritativePayCandidate.obligation_id);
-      showStage("Obligation");
-      setLastResult(null);
-      setDisplayedAssessment(null);
-      setMobileQueueOpen(false);
-    } };
-  } else if (viewedStage === "Assessment" && currentPayCandidateUnknown) {
-    workspaceAction = { label: "Back to obligations", actor: "You · read-only navigation", run: () => {
-      showStage("Obligation");
-      setMobileQueueOpen(true);
-    } };
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
@@ -2418,10 +2420,6 @@ export function CommandCenter() {
   const assessmentRemediation = assessmentResult?.race?.remediation ?? [];
   const assessmentNextStep = showContinueToAuthorization
     ? "Continue to Authorization to review this exact instruction; navigation does not approve or submit it."
-    : currentPayIsNonWinner
-      ? "View the selected payment candidate for this demo. Viewing it does not change the candidate selection."
-    : currentPayCandidateUnknown
-      ? "Return to obligations while the selected payment candidate remains unconfirmed."
     : assessmentResult?.decision === "PAY"
     ? !assessmentResult.race
       ? "This recorded PAY recommendation has no review evidence in this detail; authorization remains locked."
@@ -2552,14 +2550,7 @@ export function CommandCenter() {
                 <li key={o.obligation_id}>
                   <button
                     data-obligation-id={o.obligation_id}
-                    onClick={() => {
-                      setSelectedId(o.obligation_id);
-                      if (panel === "report") setViewedStage("Obligation");
-                      else showStage("Obligation");
-                      setLastResult(null);
-                      setDisplayedAssessment(null);
-                      setMobileQueueOpen(false);
-                    }}
+                    onClick={() => selectObligation(o.obligation_id)}
                     aria-current={o.obligation_id === selectedId ? "true" : undefined}
                     className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-[var(--color-border)] px-3 py-3 text-start transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] ${
                       o.obligation_id === selectedId
@@ -2664,6 +2655,15 @@ export function CommandCenter() {
             </div>
           )}
 
+          {viewedStage === "Obligation" && (
+            <section aria-label="Wallet funding and payment readiness" className="rounded border border-[var(--color-border)] px-3 py-2">
+              <p className="text-[12px] font-semibold text-[var(--color-ink)]">Arc Testnet · USDC funding: NOT VERIFIED</p>
+              {detailState === "loaded" && detail && detail.record.obligation_id === selectedId
+                ? <p className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">Selected settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Wallet funds, network fees, and execution readiness require a separate current selected-intent preflight.</p>
+                : <p className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">Select an obligation to show its exact settlement amount. Selection and assessment do not establish funding or payment authority.</p>}
+            </section>
+          )}
+
           {selected && !detail && detailError && (
             <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-danger)]">Obligation detail is unavailable.</p>
@@ -2725,7 +2725,7 @@ export function CommandCenter() {
               <div className="min-w-0">
                 {!isInitialObligationScreen && <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>}
                 <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
-                {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && !(viewedStage === "Assessment" && (currentPayIsNonWinner || currentPayCandidateUnknown)) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
+                {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
                 {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.</p>}
                 {visibleWorkspaceAction && !showExceptionRecovery && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
               {!visibleWorkspaceAction && !showContinueToAuthorization && !showContinueToPayment && selectedId && detailState === "loaded" && !showExceptionRecovery && !isInitialObligationScreen && (
@@ -3011,6 +3011,7 @@ export function CommandCenter() {
                         <Field label="Testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
                         <Field label="Testnet proxy destination" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
                         <Field label="Exact amount verification" value={amountMatch} />
+                      <Field label="Provider-native amount verification" value={settledEvidence?.providerAmountMatch ?? "not established from stored provider evidence"} />
                         <Field label="Exact destination verification" value={destinationMatch} />
                       </dl>
                       {settledEvidence && <p className={`text-[12px] ${settledEvidence.state === "verified" ? "text-[var(--color-ink-muted)]" : "text-[var(--color-warning)]"}`}>{settledEvidenceExplanation(detail)}</p>}

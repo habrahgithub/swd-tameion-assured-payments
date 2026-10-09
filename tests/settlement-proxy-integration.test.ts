@@ -176,7 +176,76 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(provider.createCount()).toBe(1);
   });
 
-  it("blocks proxy preparation unless the current candidate is LIVE_AI PAY and the sole-candidate gate is satisfied", async () => {
+  it.each(["expiry", "signer revocation", "PAE revocation", "durable kill switch"] as const)(
+    "revalidates Worker authority after deferred Circle preflight when %s races with the read",
+    async (race) => {
+      const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+      const api = circleClient().client;
+      let enterPreflight!: () => void;
+      const preflightEntered = new Promise<void>((resolve) => { enterPreflight = resolve; });
+      let releasePreflight!: () => void;
+      const deferred = new Promise<void>((resolve) => { releasePreflight = resolve; });
+      const balanceRead = api.getWalletTokenBalance;
+      api.getWalletTokenBalance = vi.fn(async (input) => {
+        enterPreflight();
+        await deferred;
+        return balanceRead(input);
+      });
+      let state: DemoState;
+      const adapter = new ArcCircleProviderAdapter(api, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
+      let now = new Date(Date.parse(sealed.payload.expiry) - 1);
+      state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter, { now: () => now });
+
+      const executing = state.worker.execute(sealed);
+      await preflightEntered;
+      if (race === "expiry") now = new Date(sealed.payload.expiry);
+      if (race === "signer revocation") state.trustedKeys.revoke(sealed.payload.signing_key_id);
+      if (race === "PAE revocation") {
+        const current = state.store.get(DEMO_ORGANIZATION_ID, selectedId);
+        state.store.applyMaterialChange(DEMO_ORGANIZATION_ID, selectedId, current.aggregate_version, {
+          destination_operational_status: "ON_HOLD",
+        });
+      }
+      if (race === "durable kill switch") state.store.activateKillSwitch("GLOBAL_EXECUTION_DISABLED");
+      releasePreflight();
+
+      await expect(executing).rejects.toBeInstanceOf(ExecutionBlockedError);
+      expect(api.createTransaction).not.toHaveBeenCalled();
+      expect(state.worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("BLOCKED");
+      expect(state.store.get(DEMO_ORGANIZATION_ID, selectedId).execution_state).toBe("BLOCKED");
+    },
+  );
+
+  it("keeps the authorized deferred-preflight positive path and calls Circle create exactly once", async () => {
+    const { snapshot, sealed } = await authorizedSnapshot();
+    const api = circleClient().client;
+    let enterPreflight!: () => void;
+    const preflightEntered = new Promise<void>((resolve) => { enterPreflight = resolve; });
+    let releasePreflight!: () => void;
+    const deferred = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const balanceRead = api.getWalletTokenBalance;
+    api.getWalletTokenBalance = vi.fn(async (input) => {
+      enterPreflight();
+      await deferred;
+      return balanceRead(input);
+    });
+    let state: DemoState;
+    const adapter = new ArcCircleProviderAdapter(api, (key) => state?.getSettlementProxyByIdempotencyKey(key)?.preflight ?? null);
+    state = new DemoState(parseDemoStateSnapshot(snapshot), undefined, undefined, adapter);
+
+    const executing = state.worker.execute(sealed);
+    await preflightEntered;
+    releasePreflight();
+    await expect(executing).resolves.toMatchObject({ status: "SETTLED", idempotency_key: sealed.payload.idempotency_key });
+    expect(api.createTransaction).toHaveBeenCalledTimes(1);
+    expect(api.createTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      amount: [sealed.payload.amount],
+      destinationAddress: sealed.payload.destination_address,
+      walletId: sealed.payload.source_wallet_ref,
+    }));
+  });
+
+  it("blocks proxy preparation unless the manually selected obligation is current LIVE_AI PAY with all assessments present", async () => {
     const state = new DemoState();
     const selectedId = selectCandidate(state);
     assessEveryFrozenObligation(state, selectedId, "HOLD");
@@ -194,11 +263,16 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     const twoPayState = new DemoState();
     const soleCandidate = selectCandidate(twoPayState);
     assessEveryFrozenObligation(twoPayState, soleCandidate);
-    const secondPay = twoPayState.liveUsageRecords.find((record) => record.obligation_id !== soleCandidate)!;
+    const secondPay = twoPayState.getRecord("OBL-J0C-003")!;
     sealTestAssessment(twoPayState.store, DEMO_ORGANIZATION_ID, secondPay.obligation_id, 1, { provider_mode: "LIVE_AI", decision: "PAY" });
-    const twoPayPreflight = await runJ2aReadOnlyPreflight(circleClient().client, undefined, twoPayState.createSettlementProxyIntent(soleCandidate));
+    expect(twoPayState.getSolePayCandidateId()).toBe(soleCandidate);
+    const twoPayPreflight = await runJ2aReadOnlyPreflight(circleClient().client, undefined, twoPayState.createSettlementProxyIntent(secondPay.obligation_id));
     expect(twoPayPreflight.readiness).toBe("READY");
-    if (twoPayPreflight.readiness === "READY") expect(() => twoPayState.bindSettlementProxy(twoPayPreflight, 1)).toThrow(/existing sole-candidate gate selected/i);
+    if (twoPayPreflight.readiness === "READY") {
+      expect(() => twoPayState.bindSettlementProxy(twoPayPreflight, 1)).not.toThrow();
+      expect(twoPayState.getSettlementProxy(secondPay.obligation_id)?.preflight.obligation_id).toBe(secondPay.obligation_id);
+      expect(twoPayState.getSettlementProxy(soleCandidate)).toBeUndefined();
+    }
   });
 
   it("blocks a destination change before the provider boundary", async () => {

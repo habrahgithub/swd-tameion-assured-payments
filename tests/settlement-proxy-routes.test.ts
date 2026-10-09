@@ -1,13 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
+const readOnlyMocks = vi.hoisted(() => ({ client: null as J2aCircleClient | null }));
 vi.mock("../src/server/demo-state", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/server/demo-state")>();
   return { ...actual, getDemoState: mocks.getDemoState };
 });
+vi.mock("../src/demo/real-testnet-payment", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/demo/real-testnet-payment")>();
+  return {
+    ...actual,
+    runJ2aReadOnlyPreflight: (client: J2aCircleClient | undefined, now: (() => Date) | undefined, intent: Parameters<typeof actual.runJ2aReadOnlyPreflight>[2]) =>
+      actual.runJ2aReadOnlyPreflight(client ?? readOnlyMocks.client ?? undefined, now, intent),
+  };
+});
 
 import { POST as approve } from "../app/api/obligations/[id]/approve/route";
 import { POST as execute } from "../app/api/obligations/[id]/execute/route";
+import { POST as prepareProxy } from "../app/api/internal/demo/real-testnet-payment/preflight/route";
 import { GET as listObligations } from "../app/api/obligations/route";
 import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
@@ -168,6 +178,7 @@ function setPrimeHash(value: string) {
 
 afterEach(() => {
   mocks.getDemoState.mockReset();
+  readOnlyMocks.client = null;
   vi.useRealTimers();
   if (originalPrimePacketHash === undefined) delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
   else process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = originalPrimePacketHash;
@@ -196,6 +207,32 @@ describe("selected genuine Arc proxy route enforcement", () => {
       authority_version: "7",
     });
     expect(state.getSealedPae(selectedId)?.payload.approval_evidence[0]?.authority_version).toBe("7");
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("prepares the manually selected 003 through the route while 001 is also current PAY", async () => {
+    const state = new DemoState();
+    const api = circleClient();
+    for (const record of state.liveUsageRecords) {
+      sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, record.obligation_id, 1, {
+        provider_mode: "LIVE_AI",
+        decision: ["OBL-J0C-001", "OBL-J0C-003"].includes(record.obligation_id) ? "PAY" : "HOLD",
+      });
+    }
+    expect(state.getSolePayCandidateId()).toBe("OBL-J0C-001");
+    readOnlyMocks.client = api;
+    mocks.getDemoState.mockResolvedValue(state);
+
+    const response = await prepareProxy(new Request("http://localhost/api/internal/demo/real-testnet-payment/preflight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ obligation_id: "OBL-J0C-003", expected_version: 1 }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ obligation_id: "OBL-J0C-003", amount: "5.000000" });
+    expect(state.getSettlementProxy("OBL-J0C-003")?.preflight.obligation_id).toBe("OBL-J0C-003");
+    expect(state.getSettlementProxy("OBL-J0C-001")).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -240,24 +277,26 @@ describe("selected genuine Arc proxy route enforcement", () => {
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("rejects authorization if the unchanged sole-candidate rule has since selected a different PAY winner", async () => {
-    const { state, selectedId, records, api } = await preparedState(-1);
+  it("approves the explicitly selected 003 while an earlier-due PAY recommendation exists for 001", async () => {
+    const { state, selectedId, records, api } = await preparedState(3);
     reassess(state, selectedId);
-    const earlierWinner = records[0];
-    if (!earlierWinner || earlierWinner.obligation_id === selectedId) throw new Error("Fixture did not provide a distinct earlier-due source.");
-    reassess(state, earlierWinner.obligation_id);
-    expect(state.getSolePayCandidateId()).toBe(earlierWinner.obligation_id);
+    const earlierDuePay = records.find((record) => record.obligation_id === "OBL-J0C-001");
+    expect(selectedId).toBe("OBL-J0C-003");
+    expect(earlierDuePay).toBeTruthy();
+    reassess(state, "OBL-J0C-001");
+    expect(state.getSolePayCandidateId()).toBe("OBL-J0C-001");
     mocks.getDemoState.mockResolvedValue(state);
 
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(409);
-    expect((await response.json()).error).toContain(earlierWinner.obligation_id);
-    expect(state.getSealedPae(selectedId)).toBeUndefined();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ sealed_pae: { payload: { obligation_ids: [selectedId] } } });
+    expect(state.getSealedPae(selectedId)?.payload.obligation_ids).toEqual([selectedId]);
+    expect(state.getSealedPae("OBL-J0C-001")).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("projects the deterministic winner when five current assessments are PAY", async () => {
+  it("exposes advisory PAY decisions without promoting a global execution winner", async () => {
     const state = new DemoState();
     const records = eligibleSources(state);
     if (records.length < 5) throw new Error("Frozen source set must retain at least five dated settlement sources for this projection test.");
@@ -267,24 +306,20 @@ describe("selected genuine Arc proxy route enforcement", () => {
         decision: records.slice(0, 5).some((candidate) => candidate.obligation_id === record.obligation_id) ? "PAY" : "HOLD",
       });
     }
-    const winner = records[0]!.obligation_id;
     mocks.getDemoState.mockResolvedValue(state);
 
     const response = await listObligations();
     const body = await response.json();
 
     expect(body.obligations.filter((item: { decision: string }) => item.decision === "PAY")).toHaveLength(5);
-    expect(body.sole_pay_candidate_id).toBe(winner);
+    expect(body).not.toHaveProperty("sole_pay_candidate_id");
 
     const api = circleClient();
-    const winningPreflight = await runJ2aReadOnlyPreflight(api, () => new Date("2026-10-06T18:00:00.000Z"), state.createSettlementProxyIntent(winner));
-    if (winningPreflight.readiness !== "READY") throw new Error("Mock winner preflight should be READY.");
-    expect(() => state.bindSettlementProxy(winningPreflight, 1)).not.toThrow();
-    reassess(state, winner);
-    const nonWinner = records[1]!.obligation_id;
-    const nonWinningPreflight = await runJ2aReadOnlyPreflight(api, () => new Date("2026-10-06T18:00:00.000Z"), state.createSettlementProxyIntent(nonWinner));
-    if (nonWinningPreflight.readiness !== "READY") throw new Error("Mock nonwinner preflight should reach the existing selection gate.");
-    expect(() => state.bindSettlementProxy(nonWinningPreflight, 1)).toThrow(/existing sole-candidate gate selected/i);
+    const manuallySelected = records.find((record) => record.obligation_id === "OBL-J0C-003")!;
+    const selectedPreflight = await runJ2aReadOnlyPreflight(api, () => new Date("2026-10-06T18:00:00.000Z"), state.createSettlementProxyIntent(manuallySelected.obligation_id));
+    if (selectedPreflight.readiness !== "READY") throw new Error("Mock selected-obligation preflight should be READY.");
+    expect(() => state.bindSettlementProxy(selectedPreflight, 1)).not.toThrow();
+    expect(state.getSettlementProxy(manuallySelected.obligation_id)?.preflight.obligation_id).toBe(manuallySelected.obligation_id);
   });
 
   it("requires exact confirmation, request hash, Prime packet hash, and current aggregate version before execute", async () => {

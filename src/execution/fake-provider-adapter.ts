@@ -59,6 +59,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   async submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult> {
+    await params.beforeProviderSend();
     const existingRef = this.refsByIdempotencyKey.get(params.idempotencyKey);
     if (existingRef) {
       // Provider-side idempotency: a retried request with the same key never

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 
 import { CommandCenter } from "../app/command-center";
 
@@ -33,6 +33,24 @@ function openAdditionalTools() {
   const summary = screen.getByText("Additional tools");
   const disclosure = summary.closest("details") as HTMLDetailsElement;
   if (!disclosure.open) fireEvent.click(summary);
+}
+
+/** Existing interaction cases exercise selected-stage behavior. They now
+ * model the operator explicitly choosing the first fixture row after the
+ * unselected entry screen has loaded. The dedicated entry test uses rtlRender
+ * directly and asserts that no row is selected by default. */
+function renderWithExplicitFirstSelection() {
+  const result = rtlRender(<CommandCenter />);
+  void waitFor(() => {
+    const main = screen.getByRole("main");
+    const row = main.querySelector<HTMLButtonElement>("button[data-obligation-id]");
+    if (row) return row;
+    if (/No genuine obligations|Genuine obligations are unavailable/.test(main.textContent ?? "")) return null;
+    throw new Error("Waiting for a genuine obligation row before explicit selection.");
+  }).then((row) => {
+    if (row && row.getAttribute("aria-current") !== "true") fireEvent.click(row);
+  }).catch(() => {});
+  return result;
 }
 
 type Obligation = {
@@ -280,6 +298,95 @@ describe("Command Center mounted Operational Report", () => {
     vi.unstubAllGlobals();
   });
 
+  it("starts unselected, lets the operator inspect all five source records, and never posts during selection", async () => {
+    const ids = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"];
+    const rows = ids.map((id, index) => ({ ...obligation(id, true), decision: index === 2 ? "PAY" as const : "HOLD" as const }));
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: rows }));
+      const id = url.split("/").at(-1)!;
+      const index = ids.indexOf(id);
+      const selectedDetail = assessedDetail(id, id === "OBL-J0C-003" ? "PAY" : "HOLD");
+      selectedDetail.record.amount = `${index + 1}.00`;
+      selectedDetail.record.beneficiary_name = `Source ${id}`;
+      return Promise.resolve(response(selectedDetail));
+    });
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(screen.getByRole("main").querySelectorAll("button[data-obligation-id]")).toHaveLength(5));
+    expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/obligations/") && String(input) !== "/api/obligations")).toHaveLength(0);
+
+    for (const [index, id] of ids.entries()) {
+      fireEvent.click(obligationRow(id));
+      await waitFor(() => expect(obligationRow(id).getAttribute("aria-current")).toBe("true"));
+      const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+      await waitFor(() => expect(selectedIdentity.textContent).toContain(`Source ${id}`));
+      expect(selectedIdentity.textContent).toContain(`${index + 1}.00 USD`);
+      expect(obligationRow(id).getAttribute("aria-current")).toBe("true");
+    }
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps loaded detail when the operator reselects the already-selected obligation", async () => {
+    const rows = [obligation("OBL-J0C-001", true)];
+    const selectedDetail = assessedDetail("OBL-J0C-001", "PAY");
+    selectedDetail.record.beneficiary_name = "Stable selected source";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: rows }))
+      : Promise.resolve(response(selectedDetail)));
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-001")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-001"));
+    const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+    await waitFor(() => expect(selectedIdentity.textContent).toContain("Stable selected source"));
+    const detailReads = fetchMock.mock.calls.filter(([input]) => String(input) === "/api/obligations/OBL-J0C-001").length;
+
+    fireEvent.click(obligationRow("OBL-J0C-001"));
+
+    expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Stable selected source");
+    expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/obligations/OBL-J0C-001")).toHaveLength(detailReads);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("discards stale A→B→A detail responses and preserves the last explicit selection", async () => {
+    const firstA = deferred<Response>();
+    const onlyB = deferred<Response>();
+    const currentA = deferred<Response>();
+    let aRequests = 0;
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
+      const id = url.split("/").at(-1);
+      if (id === "OBL-A") return ++aRequests === 1 ? firstA.promise : currentA.promise;
+      return onlyB.promise;
+    });
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-B")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-A"));
+    fireEvent.click(obligationRow("OBL-B"));
+    fireEvent.click(obligationRow("OBL-A"));
+    await waitFor(() => expect(aRequests).toBe(2));
+
+    const staleA = detail("OBL-A");
+    staleA.record.beneficiary_name = "Stale first A";
+    const staleB = detail("OBL-B");
+    staleB.record.beneficiary_name = "Stale B";
+    const latestA = detail("OBL-A");
+    latestA.record.beneficiary_name = "Current final A";
+    onlyB.resolve(response(staleB));
+    firstA.resolve(response(staleA));
+    currentA.resolve(response(latestA));
+
+    const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+    await waitFor(() => expect(selectedIdentity.textContent).toContain("Current final A"));
+    expect(selectedIdentity.textContent).not.toContain("Stale");
+    expect(obligationRow("OBL-A").getAttribute("aria-current")).toBe("true");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("keeps reports absent from Screen 1 until loaded assessment truth makes the secondary utility available", async () => {
     const list = deferred<Response>();
     const selectedDetail = deferred<Response>();
@@ -288,7 +395,7 @@ describe("Command Center mounted Operational Report", () => {
       return url === "/api/obligations" ? list.promise : selectedDetail.promise;
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     expect(screen.queryByText("Additional tools")).toBeNull();
     expect(screen.queryByText(/Operational Report/)).toBeNull();
 
@@ -310,7 +417,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
       : selectedDetail.promise);
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
     expect(screen.queryByText("Additional tools")).toBeNull();
     expect(screen.queryByText(/Operational Report/)).toBeNull();
@@ -325,7 +432,7 @@ describe("Command Center mounted Operational Report", () => {
       .mockResolvedValueOnce(response(null, 503))
       .mockResolvedValueOnce(response({ obligations: [] }));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     expect(await screen.findByText(/Genuine obligations are unavailable/)).toBeTruthy();
     expect(screen.queryByText("Additional tools")).toBeNull();
     expect(screen.queryByText(/Operational Report/)).toBeNull();
@@ -342,7 +449,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
       : selectedDetail.promise);
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
     expect(screen.queryByText("Additional tools")).toBeNull();
     selectedDetail.resolve(response(null, 502));
@@ -361,7 +468,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A", false, "AED")] }))
       : Promise.resolve(response(aedDetail)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
     const main = screen.getByRole("main");
@@ -394,7 +501,7 @@ describe("Command Center mounted Operational Report", () => {
       if (url.endsWith("/assess") && init?.method === "POST") return Promise.resolve(response({ error: "Assessment unavailable." }, 503));
       return Promise.resolve(response(detail("OBL-A")));
     });
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Current stage: Obligation. Step 1 of 6." })).toBeTruthy();
@@ -413,7 +520,7 @@ describe("Command Center mounted Operational Report", () => {
         sole_pay_candidate_id: "OBL-ASSURANCE-NOT-READY",
       }))
       : Promise.resolve(response(pay)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     expect(obligationRow("OBL-ASSURANCE-NOT-READY").textContent).toContain("PAY recommendation (advisory)");
@@ -438,7 +545,7 @@ describe("Command Center mounted Operational Report", () => {
       if (url === "/api/obligations/OBL-A") return Promise.resolve(response(assessed));
       return Promise.resolve(response({ error: "Unexpected request." }, 404));
     });
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
     fireEvent.click(screen.getByText("Demo tools"));
@@ -468,7 +575,7 @@ describe("Command Center mounted Operational Report", () => {
       return Promise.resolve(response(assessed));
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
@@ -482,7 +589,7 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-ONE-ACTION")] }))
       : Promise.resolve(response(detail("OBL-ONE-ACTION"))));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     const main = screen.getByRole("main");
     const primaryActions = Array.from(main.querySelectorAll<HTMLButtonElement>('button[data-primary-action="true"]'));
@@ -510,7 +617,7 @@ describe("Command Center mounted Operational Report", () => {
       return Promise.resolve(response({ error: "Unexpected request." }, 404));
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Authorization");
     expect(await screen.findByText(/Authorization records approval only/)).toBeTruthy();
@@ -545,7 +652,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
       : selectedDetail.promise);
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status.");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
@@ -566,7 +673,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [] }))
       : Promise.resolve(response(null, 404)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByText("Genuine obligations are not selected.");
     expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the queue.");
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
@@ -579,7 +686,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-PAY-BLOCKED", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }], sole_pay_candidate_id: "OBL-PAY-BLOCKED" }))
       : Promise.resolve(response(pay)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     const primary = () => Array.from(screen.getByRole("main").querySelectorAll<HTMLButtonElement>('button[data-primary-action="true"]'))
       .filter((button) => !button.disabled);
@@ -590,7 +697,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(primary()[0]);
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
+    expect(screen.getByTestId("payment-eligibility").textContent).toMatch(/current payment-route assurance is not ready/i);
     expect(primary()).toHaveLength(0);
     expect(screen.queryByRole("button", { name: /Authorization locked — prepare the testnet proxy/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Run AI Assessment again" })).toBeTruthy();
@@ -606,7 +713,7 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-SEALED-PAE", true), decision: "PAY", route_assurance_status: "Route assurance ready" }] }))
       : Promise.resolve(response(authorized)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
@@ -631,7 +738,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-SEALED-PROXY", true)] }))
       : Promise.resolve(response(authorized)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByText(/Approved instruction is sealed for the Arc Testnet settlement proxy/)).toBeNull();
     navigateStage("Authorization");
@@ -693,7 +800,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation(id, true)] }))
       : Promise.resolve(response(terminal)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
@@ -720,7 +827,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-ASSURANCE-BLOCKED-AFTER-APPROVAL", true)] }))
       : Promise.resolve(response(authorized)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     navigateStage("Assurance");
@@ -740,7 +847,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation(id, false)] }))
       : Promise.resolve(response(authorized)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     navigateStage("Assurance");
@@ -774,7 +881,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation(id, false)] }))
       : Promise.resolve(response(sealed)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
@@ -815,7 +922,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-J0C-003", true)] }))
       : Promise.resolve(response(assessed)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(workspace.textContent).not.toContain("Advisory — HOLD");
     navigateStage("Assessment");
@@ -859,7 +966,7 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-DATE-PROVENANCE", true)] }))
       : Promise.resolve(response(assessed)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
     fireEvent.click(screen.getByText("Developer & audit evidence"));
@@ -884,7 +991,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-ASSURANCE-NOT-READY", true), decision: "PAY", route_assurance_status: "Route assurance not ready" }], sole_pay_candidate_id: "OBL-ASSURANCE-NOT-READY" }))
       : Promise.resolve(response(pay)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const lifecycle = await screen.findByRole("list", { name: "Payment lifecycle" });
@@ -906,7 +1013,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("region", { name: "Assessment result" }).textContent).toContain("PAY");
 
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("current payment-route assurance is not ready");
+    expect(screen.getByTestId("payment-eligibility").textContent).toMatch(/current payment-route assurance is not ready/i);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
@@ -920,7 +1027,7 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-EXACT-INTENT", true), decision: "PAY", route_assurance_status: "Route assurance ready" }], sole_pay_candidate_id: "OBL-EXACT-INTENT" }))
       : Promise.resolve(response(pay)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const sourceSummary = await screen.findByRole("region", { name: "Selected source obligation" });
@@ -952,7 +1059,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(executionEvidence?.textContent).toContain("Destination address");
   });
 
-  it("uses the server winner projection when five current PAY candidates exist", async () => {
+  it("does not auto-promote the earlier-due PAY obligation when the operator selects another source", async () => {
     const fivePay = ["PAY-QUEUE-E", "PAY-QUEUE-C", "PAY-QUEUE-A", "PAY-QUEUE-D", "PAY-QUEUE-B"]
       .map((id, index) => ({
         ...obligation(id, true),
@@ -967,7 +1074,6 @@ describe("Command Center mounted Operational Report", () => {
         obligations: fivePay,
         assessed_count: fivePay.length,
         total_count: fivePay.length,
-        sole_pay_candidate_id: winner.obligation_id,
       }));
       const id = url.split("/").at(-1)!;
       const current = assessedDetail(id, "PAY");
@@ -977,19 +1083,24 @@ describe("Command Center mounted Operational Report", () => {
       return Promise.resolve(response(current));
     });
 
-    render(<CommandCenter />);
+    rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow(winner.obligation_id)).toBeTruthy());
+    expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/obligations/") && String(input) !== "/api/obligations")).toBe(false);
+    const explicitlySelected = fivePay.find((item) => item.obligation_id !== winner.obligation_id)!;
+    fireEvent.click(obligationRow(explicitlySelected.obligation_id));
     await waitFor(() => expect(screen.getByRole("main").querySelector('nav[aria-label="Payment lifecycle navigation"]')).not.toBeNull());
     openStageNavigator();
     await waitFor(() => expect(screen.getByRole("navigation", { name: "Payment lifecycle navigation" })).toBeTruthy());
     expect(obligationRow(winner.obligation_id).textContent).toContain("PAY recommendation (advisory)");
     expect(obligationRow(winner.obligation_id).textContent).not.toMatch(/Sole PAY candidate|route assurance|PAE|execution/i);
-    expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
-
-    const nonwinner = fivePay.find((item) => item.obligation_id !== winner.obligation_id)!;
-    fireEvent.click(obligationRow(nonwinner.obligation_id));
+    expect(obligationRow(explicitlySelected.obligation_id).getAttribute("aria-current")).toBe("true");
+    navigateStage("Assessment");
+    expect(screen.getByRole("main").textContent).toContain(explicitlySelected.obligation_id);
+    expect(screen.getByRole("main").textContent).not.toContain("View selected payment candidate");
+    expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     await waitFor(() => expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true));
-    expect(screen.queryByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/preflight") && init?.method === "POST")).toBe(false);
   });
 
@@ -1005,7 +1116,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations }))
       : Promise.resolve(response(assessedDetail("OBL-A", decision))));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByText("Awaiting human authorization")).toBeNull();
     const workspace = screen.getByRole("region", { name: "Genuine obligation workspace" });
@@ -1043,7 +1154,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations, sole_pay_candidate_id: "OBL-A" }))
       : Promise.resolve(response(pay)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
     navigateStage("Assessment");
@@ -1072,7 +1183,7 @@ describe("Command Center mounted Operational Report", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     const assess = await screen.findByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     await waitFor(() => expect(assess.disabled).toBe(false));
@@ -1127,7 +1238,7 @@ describe("Command Center mounted Operational Report", () => {
       throw new Error(`Unexpected request: ${url}`);
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-B")).toBeTruthy());
     const assessA = await screen.findByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     await waitFor(() => expect(assessA.disabled).toBe(false));
@@ -1165,7 +1276,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
       : selectedDetail.promise);
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
@@ -1184,7 +1295,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A")] }))
       : Promise.resolve(response(payload)));
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     expect(await screen.findByText(/Obligation detail is unavailable/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
@@ -1203,7 +1314,7 @@ describe("Command Center mounted Operational Report", () => {
       return url.endsWith("OBL-A") ? firstDetail.promise : secondDetail.promise;
     });
 
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-B")).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
     expect(screen.queryByText("Additional tools")).toBeNull();
@@ -1232,7 +1343,7 @@ describe("guided lifecycle navigation", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-A11Y-EQUAL")] }))
       : Promise.resolve(response(source)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
 
     expect(screen.getByRole("heading", { name: "Current stage: Obligation. Step 1 of 6." })).toBeTruthy();
@@ -1246,7 +1357,7 @@ describe("guided lifecycle navigation", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-A11Y-DIFFERENT", true)] }))
       : Promise.resolve(response(source)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
     const rail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
@@ -1265,7 +1376,7 @@ describe("guided lifecycle navigation", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-GUIDED-01", true)] }))
       : Promise.resolve(response(source)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
     const rail = openStageNavigator();
     expect(screen.queryByRole("navigation", { name: "Command Center surfaces" })).toBeNull();
@@ -1295,7 +1406,7 @@ describe("guided lifecycle navigation", () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [{ ...obligation("OBL-GUIDED-PAY", true), decision: "PAY", provider_mode: "LIVE_AI" }], sole_pay_candidate_id: "OBL-GUIDED-PAY" }))
       : Promise.resolve(response(pay)));
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
@@ -1325,7 +1436,7 @@ describe("guided lifecycle navigation", () => {
       }
       return Promise.resolve(response({ error: "Unexpected mutation." }, 404));
     });
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("button", { name: "Run AI Assessment" });
     fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
@@ -1350,7 +1461,7 @@ describe("guided lifecycle navigation", () => {
       }
       return Promise.resolve(response({ error: "Unexpected mutation." }, 404));
     });
-    render(<CommandCenter />);
+    renderWithExplicitFirstSelection();
     await screen.findByRole("button", { name: "Run AI Assessment" });
     fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
