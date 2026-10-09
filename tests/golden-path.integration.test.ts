@@ -40,28 +40,28 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       liveUsageSet.records.map((record) => assessObligation(buildFinanceAgentContext(record), provider)),
     );
 
-    // (14) none of the 5 genuine obligations may be defaulted to PAY without
-    // complete evidence + a known due date + a ready destination.
+    // Obligation assessment cannot default to PAY without complete evidence
+    // and a valid effective due date. Payment-route assurance is evaluated separately.
     for (const decision of decisions) {
       if (decision.decision === "PAY") {
         expect(decision.missing_evidence).toHaveLength(0);
       }
     }
 
-    const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.due_date]));
+    const dueDates = Object.fromEntries(liveUsageSet.records.map((r) => [r.obligation_id, r.effective_due_date ?? null]));
     const selection = selectSoleCandidate(decisions, dueDates);
 
-    // This unit-level path intentionally uses only the immutable J0-C source
-    // snapshot, whose historical destination field remains pending. The live
-    // assessment route separately supplies the current aggregate overlay.
-    expect(selection.selected_obligation_id).toBeNull();
+    // The immutable J0-C source snapshot has pending historical destination
+    // readiness, which does not suppress an otherwise eligible assessment.
+    expect(selection.selected_obligation_id).toBe("OBL-J0C-001");
 
     // Prove the rest of the pipeline (approval -> Safety Kernel -> PAE ->
     // execution -> reconciliation) against a clearly test-only fixture with
     // current product-trust provenance set explicitly for this valid path.
-    const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === "OBL-J0C-003")!;
+    const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === selection.selected_obligation_id)!;
     const [wholePart, fractionalPart] = candidateRecord.amount.split(".");
     const sixDpAmount = `${wholePart}.${fractionalPart.padEnd(6, "0")}`;
+    const settlementAmount = candidateRecord.currency === "AED" ? "1568.413887" : sixDpAmount;
 
     const store = new AuthorityStore();
     const aggregate: AuthorityAggregate = {
@@ -69,13 +69,13 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
       obligation_id: candidateRecord.obligation_id,
       aggregate_version: 1,
       state: "APPROVAL_PENDING",
-      amount: sixDpAmount,
+      amount: settlementAmount,
       asset: "USDC",
       network: "ARC_TESTNET",
-      counterparty_id: "CP-J0C-003",
+      counterparty_id: `CP-${candidateRecord.obligation_id.slice(-3)}`,
       counterparty_version: 1,
       counterparty_status: "VERIFIED",
-      destination_ref: "DEST-J0C-003-SEEDED",
+      destination_ref: `DEST-${candidateRecord.obligation_id.slice(-3)}-SEEDED`,
       destination_version: 1,
       product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
       // Test-only destination value; the test exercises the trusted path and
@@ -104,7 +104,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     // continue exercising a valid approval/PAE/worker path.
     sealTestAssessment(store, "ORG-DEMO-001", candidateRecord.obligation_id, 1);
 
-    const { sealed } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
+    const { sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, "GOLDEN-PATH-TEST-KEY", {
       organizationId: "ORG-DEMO-001",
       obligationId: candidateRecord.obligation_id,
       expectedVersion: 1,
@@ -117,7 +117,25 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
 
     const adapter = new FakeProviderAdapter();
     adapter.queueOutcome("CONFIRMED");
-    const worker = new ExecutionWorker(store, adapter);
+    const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+      loadAuthorizationArtifacts: () => ({
+        approval_record: approvalRecord.record,
+        approval_record_hash: approvalRecord.approval_record_hash,
+        assurance_record: assuranceRecord.record,
+        assurance_hash: assuranceRecord.assurance_hash,
+        sealed_pae: sealed,
+      }),
+      resolveActorAuthority: (actorId) => actorId === approvalRecord.record.actor_id ? {
+        organization_id: approvalRecord.record.organization_id,
+        actor_id: approvalRecord.record.actor_id,
+        actor_role: approvalRecord.record.actor_role,
+        authority_version: approvalRecord.record.authority_version,
+        status: "ACTIVE",
+        permissions: ["T1_SINGLE_APPROVAL"],
+        valid_from: "2020-01-01T00:00:00.000Z",
+        expires_at: null,
+      } : undefined,
+    });
     const record = await worker.execute(sealed);
 
     expect(record.status).toBe("SETTLED");

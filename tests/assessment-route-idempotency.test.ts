@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST } from "../app/api/obligations/[id]/assess/route";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, getDemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
+import { DemoStatePersistenceError } from "../src/server/supabase-demo-state-repository";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const originalFetch = globalThis.fetch;
@@ -22,6 +23,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function createDurableFetch(options: {
   loseCompletionCas?: "unrelated" | "stale" | "all";
+  loseProviderCheckpointCas?: "stale" | "all";
   loseProviderResultResponse?: boolean;
   providerFailure?: boolean;
   legacyPending?: boolean;
@@ -32,6 +34,7 @@ function createDurableFetch(options: {
   let providerCalls = 0;
   let lostCompletionCas = false;
   let completionCasFailures = 0;
+  let providerCheckpointCasFailures = 0;
   let signalProviderStarted!: () => void;
   let releaseProvider!: () => void;
   const providerStarted = new Promise<void>((resolve) => { signalProviderStarted = resolve; });
@@ -65,6 +68,21 @@ function createDurableFetch(options: {
       const hasDurableProviderResult = body.p_next_snapshot.assessment_operations?.some(
         (operation: { status: string }) => operation.status === "PROVIDER_RESULT_DURABLE",
       );
+      const hasStaleOperation = body.p_next_snapshot.assessment_operations?.some(
+        (operation: { status: string }) => operation.status === "STALE",
+      );
+      if (options.loseProviderCheckpointCas && hasDurableProviderResult && providerCheckpointCasFailures === 0) {
+        providerCheckpointCasFailures += 1;
+        const competingSnapshot = structuredClone(snapshot!);
+        competingSnapshot.authority.aggregates[0].aggregate_version += 1;
+        snapshot = competingSnapshot;
+        revision += 1;
+        return jsonResponse({ accepted: false, revision });
+      }
+      if (options.loseProviderCheckpointCas === "all" && hasStaleOperation && providerCheckpointCasFailures < 5) {
+        providerCheckpointCasFailures += 1;
+        return jsonResponse({ accepted: false, revision });
+      }
       if (options.loseProviderResultResponse && hasDurableProviderResult) {
         snapshot = body.p_next_snapshot;
         revision += 1;
@@ -176,7 +194,7 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(completedData.runtime_config_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(repeatedData.assessment_hash).toBe(completedData.assessment_hash);
     expect(repeatedData.runtime_config_sha256).toBe(completedData.runtime_config_sha256);
-    expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(completedData.race.result.validated_findings.map((finding: { code: string }) => finding.code)).not.toContain("DESTINATION_NOT_READY");
     expect(completedData.race.evidence.authoritative_facts.destination_status).toBe("NOT_READY_SIMULATED_FIXTURE");
     expect(completedData.race.evidence.authoritative_facts.destination_readiness_source).toBe("SIMULATED_DEMO_FIXTURE");
     expect(repeatedData.race).toEqual(completedData.race);
@@ -226,6 +244,64 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect((await getDemoState()).store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001").aggregate_version).toBe(2);
   });
 
+  it("durably records a stale provider result after the aggregate-version CAS collision and replays without a second provider call", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const durable = createDurableFetch({ loseProviderCheckpointCas: "stale" });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const first = callAssessment();
+    await durable.providerStarted;
+    durable.releaseProvider();
+    const response = await first;
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("ASM-001");
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0]).toMatchObject({
+      idempotency_key: operationId,
+      obligation_id: "OBL-J0C-001",
+      status: "STALE",
+    });
+    expect(durable.snapshot?.authority.assessments).toHaveLength(0);
+
+    const coldReload = await getDemoState();
+    expect(coldReload.getAssessmentOperation(operationId)).toMatchObject({ idempotency_key: operationId, status: "STALE" });
+    const replay = await callAssessment();
+    expect(replay.status).toBe(409);
+    expect((await replay.json()).code).toBe("ASM-001");
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("STALE");
+  });
+
+  it("returns typed UNKNOWN when stale-state durability cannot be established and never invokes the provider again", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only-service-role";
+    process.env.NVIDIA_API_KEY = "test-only-nvidia-key";
+    const durable = createDurableFetch({ loseProviderCheckpointCas: "all" });
+    globalThis.fetch = durable.fetcher as typeof fetch;
+
+    const first = callAssessment();
+    await durable.providerStarted;
+    durable.releaseProvider();
+    const response = await first;
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ status: "UNKNOWN", code: "ASM-PERSISTENCE-UNKNOWN", idempotency_key: operationId });
+    expect(durable.providerCalls).toBe(1);
+    expect(durable.snapshot?.assessment_operations[0].status).toBe("RESERVED");
+    expect(durable.snapshot?.authority.assessments).toHaveLength(0);
+
+    const replay = await callAssessment();
+    expect(replay.status).toBe(409);
+    expect(durable.providerCalls).toBe(1);
+  });
+
   it("recovers a durably checkpointed provider result on same-key replay without another provider call", async () => {
     process.env.VERCEL_ENV = "preview";
     process.env.VERCEL_GIT_PULL_REQUEST_ID = "10";
@@ -248,7 +324,7 @@ describe("assessment request idempotency across durable CAS races", () => {
     expect(durable.snapshot?.authority.assessments).toHaveLength(1);
     expect(durable.snapshot?.assessment_operations[0].status).toBe("COMPLETED");
     const recovered = await replay.json();
-    expect(recovered.race.result.validated_findings.map((finding: { code: string }) => finding.code)).toContain("DESTINATION_NOT_READY");
+    expect(recovered.race.result.validated_findings.map((finding: { code: string }) => finding.code)).not.toContain("DESTINATION_NOT_READY");
   });
 
   it("blocks a different key while an assessment operation is unresolved", async () => {
@@ -374,7 +450,9 @@ describe("assessment request idempotency across durable CAS races", () => {
     const first = callAssessment();
     await durable.providerStarted;
     durable.releaseProvider();
-    await expect(first).rejects.toThrow("simulated committed provider-result checkpoint with lost response");
+    const lostResponse = await first.catch((error: unknown) => error);
+    expect(lostResponse).toBeInstanceOf(DemoStatePersistenceError);
+    expect((lostResponse as DemoStatePersistenceError).cause).toMatchObject({ message: "simulated committed provider-result checkpoint with lost response" });
     expect(durable.snapshot?.assessment_operations[0].status).toBe("PROVIDER_RESULT_DURABLE");
 
     const replay = await callAssessment();

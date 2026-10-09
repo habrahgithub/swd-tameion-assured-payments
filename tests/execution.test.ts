@@ -2,11 +2,39 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
-import { ExecutionWorker, ExecutionBlockedError } from "../src/execution/worker";
+import { ExecutionWorker as BaseExecutionWorker, ExecutionBlockedError, type ExecutionWorkerOptions, type WorkerAuthorizationArtifacts } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
+import { ProviderPreSubmitBlockedError } from "../src/execution/provider-adapter";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
+const authorizationByIdentity = new Map<string, WorkerAuthorizationArtifacts>();
+
+class ExecutionWorker extends BaseExecutionWorker {
+  constructor(
+    store: AuthorityStore,
+    adapter: ConstructorParameters<typeof BaseExecutionWorker>[1],
+    onDurableStateChange?: () => Promise<void>,
+  ) {
+    const options: ExecutionWorkerOptions = {
+      loadAuthorizationArtifacts: (organizationId, obligationId) => authorizationByIdentity.get(`${organizationId}/${obligationId}`),
+      resolveActorAuthority: (actorId, organizationId) => {
+        const approval = authorizationByIdentity.get(`${organizationId}/OBL-J0C-002`)?.approval_record;
+        return approval?.actor_id === actorId ? {
+          organization_id: approval.organization_id,
+          actor_id: approval.actor_id,
+          actor_role: approval.actor_role,
+          authority_version: approval.authority_version,
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        } : undefined;
+      },
+    };
+    super(store, adapter, onDurableStateChange, undefined, options);
+  }
+}
 
 function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAggregate {
   return {
@@ -45,11 +73,11 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
   };
 }
 
-function setupAuthorizedFixture() {
+function setupAuthorizedFixture(paeState: AuthorityAggregate["pae_state"] = "UNUSED") {
   const store = new AuthorityStore();
-  store.seed(baseAggregate());
+  store.seed(baseAggregate({ pae_state: paeState }));
   sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
-  const { aggregate, sealed } = approveAndSealPae(store, SIGNING_KEY_ID, {
+  const { aggregate, sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIGNING_KEY_ID, {
     organizationId: "ORG-DEMO-001",
     obligationId: "OBL-J0C-002",
     expectedVersion: 3,
@@ -59,15 +87,26 @@ function setupAuthorizedFixture() {
     policyVersion: "POLICY-P0-1",
     reasonText: "Reviewed and approved for testnet product payment.",
   });
+  const artifacts: WorkerAuthorizationArtifacts = {
+    approval_record: approvalRecord.record,
+    approval_record_hash: approvalRecord.approval_record_hash,
+    assurance_record: assuranceRecord.record,
+    assurance_hash: assuranceRecord.assurance_hash,
+    sealed_pae: sealed,
+  };
+  authorizationByIdentity.set("ORG-DEMO-001/OBL-J0C-002", artifacts);
   return { store, aggregate, sealed };
 }
 
 describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
   it("binds reviewed N and atomically creates authorized N+1", () => {
-    const { store, aggregate } = setupAuthorizedFixture();
+    const { store, aggregate } = setupAuthorizedFixture("REVOKED");
     expect(aggregate.aggregate_version).toBe(4);
     expect(aggregate.state).toBe("AUTHORIZED");
-    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").aggregate_version).toBe(4);
+    const persisted = store.get("ORG-DEMO-001", "OBL-J0C-002");
+    expect(persisted.aggregate_version).toBe(4);
+    expect(aggregate.pae_state).toBe(persisted.pae_state);
+    expect(aggregate.pae_state).toBe("UNUSED");
   });
 
   it("refuses to seal a PAE when the Safety Kernel does not PASS", () => {
@@ -195,6 +234,117 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(adapter.getSubmissionCount()).toBe(1);
   });
 
+  it("keeps a provider PENDING response UNKNOWN with its reference for read-only reconciliation", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let status: "PENDING" | "CONFIRMED" = "PENDING";
+    let submissions = 0;
+    const adapter = {
+      name: "pending-provider-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        return { providerRef: "circle-transaction-1", status: "SUBMITTED" as const };
+      },
+      async getStatus() {
+        return status === "PENDING"
+          ? { status: "PENDING" as const }
+          : { status: "CONFIRMED" as const, destinationAddress: baseAggregate().destination_address, atomicAmount: "21000000" };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const first = await worker.execute(sealed);
+    expect(first).toMatchObject({ status: "UNKNOWN", provider_ref: "circle-transaction-1" });
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+    expect(submissions).toBe(1);
+
+    status = "CONFIRMED";
+    const reconciled = await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+    expect(reconciled.status).toBe("SETTLED");
+    expect(submissions).toBe(1);
+  });
+
+  it("retains provider reconciliation evidence in the durable execution record", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = {
+      name: "circle-evidence-test-adapter",
+      async submitTransfer() { return { providerRef: "circle-tx-evidence", status: "SUBMITTED" as const }; },
+      async getStatus(_providerRef: string, idempotencyKey?: string) {
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+          transaction_id: "circle-tx-evidence",
+          transaction_state: "COMPLETE",
+          tx_hash: "0xabc123",
+          wallet_id: baseAggregate().source_wallet_ref,
+          token_id: "native-arc-usdc",
+          network: "ARC-TESTNET",
+          amounts: ["21.000000"],
+          operation: "TRANSFER",
+          ref_id: idempotencyKey,
+          network_fee: "0.001000",
+          provider_created_at: "2026-10-04T10:00:00.000Z",
+          provider_updated_at: "2026-10-04T10:01:00.000Z",
+          reconciled_at: "2026-10-04T10:02:00.000Z",
+        };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+    const record = await worker.execute(sealed);
+
+    expect(record.status).toBe("SETTLED");
+    expect(record.provider_evidence).toMatchObject({
+      transaction_id: "circle-tx-evidence",
+      transaction_state: "COMPLETE",
+      tx_hash: "0xabc123",
+      network_fee: "0.001000",
+      provider_created_at: "2026-10-04T10:00:00.000Z",
+      provider_updated_at: "2026-10-04T10:01:00.000Z",
+      reconciled_at: "2026-10-04T10:02:00.000Z",
+    });
+    expect(worker.exportSnapshot()[0]?.provider_evidence).toEqual(record.provider_evidence);
+  });
+
+  it("recovers persisted SUBMITTING as UNKNOWN through a read-only path without provider submission", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+    worker.restoreSnapshot([{
+      obligation_id: sealed.payload.obligation_ids[0],
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING",
+      atomic_amount: sealed.payload.atomic_amount,
+      destination_address: sealed.payload.destination_address,
+    }]);
+
+    const recovered = await worker.recoverSubmittingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+
+    expect(recovered?.status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("UNKNOWN");
+  });
+
+  it("marks a typed pre-submit provider refusal BLOCKED without classifying it as UNKNOWN", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissions = 0;
+    const adapter = {
+      name: "pre-submit-block-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        throw new ProviderPreSubmitBlockedError("fresh route evidence changed");
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const result = await worker.execute(sealed);
+
+    expect(result.status).toBe("BLOCKED");
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("BLOCKED");
+    expect(submissions).toBe(1);
+  });
+
   it("records a thrown provider submission as UNKNOWN and never resubmits it", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     let submissionCount = 0;
@@ -217,6 +367,45 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
 
     const replay = await worker.execute(sealed);
     expect(replay).toEqual(first);
+    expect(submissionCount).toBe(1);
+  });
+
+  it("reconciles an accepted-but-lost provider response after restart by the same idempotency key", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissionCount = 0;
+    let acceptedIdempotencyKey: string | undefined;
+    const adapter = {
+      name: "accepted-lost-response-test-adapter",
+      async submitTransfer(request: { idempotencyKey: string }) {
+        submissionCount += 1;
+        acceptedIdempotencyKey = request.idempotencyKey;
+        throw new Error("provider accepted request but response was lost");
+      },
+      async getStatusByIdempotencyKey(idempotencyKey: string) {
+        expect(idempotencyKey).toBe(acceptedIdempotencyKey);
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+        };
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const firstWorker = new ExecutionWorker(store, adapter);
+    const first = await firstWorker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(submissionCount).toBe(1);
+
+    const restartedStore = AuthorityStore.fromSnapshot(store.exportSnapshot());
+    const restartedWorker = new ExecutionWorker(restartedStore, adapter);
+    restartedWorker.restoreSnapshot(firstWorker.exportSnapshot());
+    const recovered = await restartedWorker.reconcilePendingByIdempotencyKey(
+      sealed.payload.idempotency_key,
+      sealed.payload.organization_id,
+    );
+
+    expect(recovered.status).toBe("SETTLED");
+    expect(acceptedIdempotencyKey).toBe(sealed.payload.idempotency_key);
     expect(submissionCount).toBe(1);
   });
 

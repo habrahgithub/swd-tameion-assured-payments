@@ -73,15 +73,22 @@ export const raceAssessmentSchema = z.object({
       aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
       amount: z.string().min(1),
       currency: z.string().regex(/^[A-Z]{3}$/),
+      issue_date: z.string().nullable().optional(),
       due_date: z.string().nullable(),
       due_date_status: z.enum(["STATED_ON_SOURCE", "NOT_STATED_ON_SOURCE"]),
+      effective_due_date: z.string().nullable().optional(),
+      effective_due_date_basis: z.literal("INVOICE_DATE_CASH_TERM").nullable().optional(),
+      effective_due_date_provenance: z.discriminatedUnion("provenance_class", [
+        z.object({ provenance_class: z.literal("SOURCE_INVOICE_DATE"), evidence_id: z.string().min(1) }).strict(),
+        z.object({ provenance_class: z.literal("AUTHORIZED_OPERATOR_ATTESTATION"), authority_reference: z.string().min(1) }).strict(),
+      ]).nullable().optional(),
       due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
       as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       state_at_event_baseline: z.literal("OUTSTANDING"),
       business_purpose_confirmed: z.boolean(),
       source_evidence_present: z.boolean(),
       destination_status: z.string().min(1),
-      destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
+      destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
     }).strict(),
   }).strict(),
   remediation: z.array(remediationItemSchema),
@@ -117,17 +124,45 @@ export const raceAssessmentSchema = z.object({
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
   };
   if (!validDate(facts.as_of_date)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "as_of_date must be a valid calendar date" });
-  const expectedDuePosition = facts.due_date_status === "NOT_STATED_ON_SOURCE" && facts.due_date === null
-    ? "NOT_STATED"
-    : facts.due_date_status !== "STATED_ON_SOURCE" || !facts.due_date || !validDate(facts.due_date)
+  const hasEffectiveDateContract = facts.issue_date !== undefined || facts.effective_due_date !== undefined ||
+    facts.effective_due_date_basis !== undefined || facts.effective_due_date_provenance !== undefined;
+  const rawDueDateConsistent = facts.due_date_status === "NOT_STATED_ON_SOURCE"
+    ? facts.due_date === null
+    : facts.due_date_status === "STATED_ON_SOURCE" && !!facts.due_date && validDate(facts.due_date);
+  let effectiveDateContractValid = false;
+  if (hasEffectiveDateContract) {
+    const provenance = facts.effective_due_date_provenance;
+    const provenanceValid = facts.due_date === facts.issue_date && facts.due_date_status === "STATED_ON_SOURCE"
+      ? provenance?.provenance_class === "SOURCE_INVOICE_DATE" && provenance.evidence_id.length > 0
+      : provenance?.provenance_class === "AUTHORIZED_OPERATOR_ATTESTATION" && provenance.authority_reference.length > 0;
+    effectiveDateContractValid = !!facts.issue_date && validDate(facts.issue_date) &&
+      !!facts.effective_due_date && validDate(facts.effective_due_date) &&
+      facts.effective_due_date === facts.issue_date &&
+      facts.effective_due_date_basis === "INVOICE_DATE_CASH_TERM" && provenanceValid;
+  }
+  const expectedDuePosition = hasEffectiveDateContract
+    ? !rawDueDateConsistent || !effectiveDateContractValid
       ? "INVALID"
-      : facts.due_date < facts.as_of_date
+      : facts.effective_due_date! < facts.as_of_date
         ? "OVERDUE"
-        : facts.due_date === facts.as_of_date
+        : facts.effective_due_date === facts.as_of_date
           ? "DUE_TODAY"
-          : "FUTURE";
+          : "FUTURE"
+    : facts.due_date_status === "NOT_STATED_ON_SOURCE" && facts.due_date === null
+      ? "NOT_STATED"
+      : facts.due_date_status !== "STATED_ON_SOURCE" || !facts.due_date || !validDate(facts.due_date)
+        ? "INVALID"
+        : facts.due_date < facts.as_of_date
+          ? "OVERDUE"
+          : facts.due_date === facts.as_of_date
+            ? "DUE_TODAY"
+            : "FUTURE";
   if (facts.due_date_position !== expectedDuePosition) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "due_date_position must match the application-derived calendar dates" });
+  }
+  if (facts.effective_due_date_provenance?.provenance_class === "SOURCE_INVOICE_DATE" &&
+      !race.evidence.evidence_ids.includes(facts.effective_due_date_provenance.evidence_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "source invoice-date provenance must reference supplied evidence" });
   }
   for (const proposedCode of race.caveats.model_proposed_findings ?? []) {
     const applicationPredicateProvesProposal = proposedCode === "NORMALIZATION_REVIEW_REQUIRED" && facts.due_date_position === "INVALID";
@@ -171,8 +206,15 @@ export const financeAgentContextSchema = z
     currency: z.string().regex(/^[A-Z]{3}$/),
     service_category: z.string(),
     recurrence: z.enum(["MONTHLY", "YEARLY", "ONE_TIME"]),
+    issue_date: z.string().nullable().optional(),
     due_date: z.string().nullable(),
     due_date_status: z.enum(["STATED_ON_SOURCE", "NOT_STATED_ON_SOURCE"]),
+    effective_due_date: z.string().nullable().optional(),
+    effective_due_date_basis: z.literal("INVOICE_DATE_CASH_TERM").nullable().optional(),
+    effective_due_date_provenance: z.discriminatedUnion("provenance_class", [
+      z.object({ provenance_class: z.literal("SOURCE_INVOICE_DATE"), evidence_id: z.string().min(1) }).strict(),
+      z.object({ provenance_class: z.literal("AUTHORIZED_OPERATOR_ATTESTATION"), authority_reference: z.string().min(1) }).strict(),
+    ]).nullable().optional(),
     state_at_event_baseline: z.literal("OUTSTANDING"),
     business_purpose_confirmed: z.boolean(),
     commercial_terms: z.string(),
@@ -180,9 +222,15 @@ export const financeAgentContextSchema = z
     evidence_present: z.boolean(),
     destination_ready: z.boolean(),
     destination_status: z.string(),
-    destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
+    destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
       due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
   })
   .strict();
 
 export type FinanceAgentContext = z.infer<typeof financeAgentContextSchema>;
+
+/** Finance Agent model input excludes payment-route facts, which belong to Assurance & Authorization. */
+export type FinanceAgentModelContext = Omit<
+  FinanceAgentContext,
+  "destination_ready" | "destination_status" | "destination_readiness_source"
+>;

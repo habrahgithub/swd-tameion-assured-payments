@@ -49,6 +49,37 @@ export function createCircleArcPriorOutboundReadClient() {
 }
 
 /**
+ * Read-only Circle capability for the isolated J2A real-testnet demo.
+ * Kept separate from J0-D so the demo lane cannot inherit J0-D execution
+ * methods or expose wallet creation/faucet operations.
+ */
+export function createCircleArcJ2aReadOnlyClient() {
+  const client = createCircleArcSpikeClient();
+  return {
+    getWallet: client.getWallet.bind(client),
+    getWalletTokenBalance: client.getWalletTokenBalance.bind(client),
+    estimateTransferFee: client.estimateTransferFee.bind(client),
+    listTransactions: client.listTransactions.bind(client),
+  };
+}
+
+/**
+ * Narrow transaction capability for J2A. The fixed demo adapter resolves
+ * the wallet/token itself and receives no wallet creation or faucet method.
+ */
+export function createCircleArcJ2aExecutionClient() {
+  const client = createCircleArcSpikeClient();
+  return {
+    getWallet: client.getWallet.bind(client),
+    getWalletTokenBalance: client.getWalletTokenBalance.bind(client),
+    estimateTransferFee: client.estimateTransferFee.bind(client),
+    listTransactions: client.listTransactions.bind(client),
+    getTransaction: client.getTransaction.bind(client),
+    createTransaction: client.createTransaction.bind(client),
+  };
+}
+
+/**
  * Intent-bound execution capability for the J0-D spike (#26). Exposes the
  * three read-only preflight operations (so provider truth can be re-read
  * immediately before submission), a read-only transaction listing/lookup for

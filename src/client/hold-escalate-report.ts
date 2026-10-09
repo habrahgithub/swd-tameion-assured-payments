@@ -251,3 +251,14 @@ export function buildHoldEscalateSummary(
   }
   return summary;
 }
+
+/** Decision wording that never presents a default fail-closed block as a
+ * model HOLD. Unassessed and stale lines are default blocking; only a current
+ * sealed assessment yields a formal HOLD. */
+export function reportDecisionLabel(line: HoldEscalateReportLine): string {
+  if (line.status === "UNASSESSED") return "Default blocking — unassessed (no sealed assessment)";
+  if (line.status === "STALE") return "Default blocking — stale assessment (aggregate changed)";
+  if (line.decision === "HOLD") return "Formal HOLD (current sealed assessment)";
+  if (line.decision === "ESCALATE") return "Formal ESCALATE (current sealed assessment)";
+  return "PAY recommendation — advisory, outside HOLD/ESCALATE scope";
+}

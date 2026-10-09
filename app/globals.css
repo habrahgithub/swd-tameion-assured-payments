@@ -80,9 +80,13 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 /* Cryptographic digests, signature envelopes, provider/tx identifiers. */
 .mono {
   font-family: var(--font-mono);
+  direction: ltr;
+  unicode-bidi: isolate;
 }

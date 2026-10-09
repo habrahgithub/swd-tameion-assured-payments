@@ -3,15 +3,16 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { NvidiaProvider } from "../../../../../src/agent/ai-provider";
-import { runJ1dCapabilitySmoke } from "../../../../../src/agent/j1d-capability-smoke";
+import { runJ1dCapabilitySmoke, runSyntheticEvaluation } from "../../../../../src/agent/j1d-capability-smoke";
 
 export const runtime = "nodejs";
 export const maxDuration = 65;
 
 const CONFIRMATION = "RUN_SYNTHETIC_NVIDIA_CAPABILITY_SMOKE";
+const EVALUATION_CONFIRMATION = "RUN_SYNTHETIC_NVIDIA_EVALUATION_BATCH";
 const MIN_SECRET_BYTES = 32;
 const MAX_TOKEN_BYTES = 4096;
-const requestSchema = z.object({ confirm: z.literal(CONFIRMATION) }).strict();
+const requestSchema = z.object({ confirm: z.enum([CONFIRMATION, EVALUATION_CONFIRMATION]) }).strict();
 const noStoreHeaders = {
   "Cache-Control": "no-store, max-age=0",
   Pragma: "no-cache",
@@ -57,6 +58,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return reply({ status: "BLOCKED", code: "MALFORMED_REQUEST" }, 400);
+  }
+
+  if (parsed.data.confirm === EVALUATION_CONFIRMATION) {
+    const evaluation = await runSyntheticEvaluation(new NvidiaProvider());
+    if (evaluation.status === "BLOCKED") return reply(evaluation, 502);
+    return reply(evaluation, 200);
   }
 
   const result = await runJ1dCapabilitySmoke(new NvidiaProvider());

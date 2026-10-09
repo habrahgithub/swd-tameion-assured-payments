@@ -47,11 +47,13 @@ export function wasProviderCallFailure(decision: FinanceAgentDecision): boolean 
 export async function assessObligation(
   context: FinanceAgentContext,
   provider: AiProvider,
+  options: { signal?: AbortSignal } = {},
 ): Promise<FinanceAgentDecision> {
   let rawOutput: unknown;
   try {
-    rawOutput = await provider.assess(context);
+    rawOutput = await provider.assess(context, options);
   } catch {
+    if (options.signal?.aborted) throw new Error("Assessment cancelled");
     return normalizeFailure(context, "PROVIDER_UNAVAILABLE", provider);
   }
 
@@ -93,7 +95,6 @@ function deterministicFindings(context: FinanceAgentContext): Set<FindingCode> {
   if (!context.evidence_present || context.evidence_ids.length === 0) findings.add("SOURCE_EVIDENCE_MISSING");
   if (context.due_date_position === "INVALID") findings.add("NORMALIZATION_REVIEW_REQUIRED");
   else if (context.due_date_position === "NOT_STATED") findings.add("DUE_DATE_NOT_STATED");
-  if (!context.destination_ready) findings.add("DESTINATION_NOT_READY");
   if (!isSettleableCurrency(context.currency)) findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
   if (!context.business_purpose_confirmed) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
   return findings;
@@ -156,8 +157,8 @@ function normalize(
       summary: "The application checked supplied evidence references and deterministic obligation readiness facts.",
       checks: [
         "Supplied evidence identifiers were checked against the obligation context.",
-        "Due-date source status and currentness were derived from the application context.",
-        "Business-purpose confirmation and destination readiness were checked as application-owned facts.",
+        "Raw source due-date truth and effective due date with provenance were checked from the application context.",
+        "Business-purpose confirmation was checked as an application-owned obligation fact.",
       ],
     },
     caveats: {
@@ -175,8 +176,12 @@ function normalize(
         aggregate_version: context.aggregate_version,
         amount: context.amount,
         currency: context.currency,
+        issue_date: context.issue_date,
         due_date: context.due_date,
         due_date_status: context.due_date_status,
+        effective_due_date: context.effective_due_date,
+        effective_due_date_basis: context.effective_due_date_basis,
+        effective_due_date_provenance: context.effective_due_date_provenance,
         due_date_position: context.due_date_position,
         as_of_date: context.as_of_date,
         state_at_event_baseline: context.state_at_event_baseline,
@@ -226,6 +231,6 @@ export function selectSoleCandidate(
     selected_obligation_id: winner.obligation_id,
     rationale: payCandidates.length === 1
       ? `Sole PAY decision among ${decisions.length} assessed obligations.`
-      : `${payCandidates.length} obligations received PAY; selected ${winner.obligation_id} by earliest stated due date, then lowest obligation_id as tie-break.`,
+      : `${payCandidates.length} obligations received PAY; selected ${winner.obligation_id} by earliest effective due date, then lowest obligation_id as tie-break.`,
   };
 }

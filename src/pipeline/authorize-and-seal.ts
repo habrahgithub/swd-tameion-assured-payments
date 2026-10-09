@@ -4,7 +4,7 @@ import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate"
 import { AuthorityError } from "../authority/aggregate";
 import { runSafetyKernel, SAFETY_KERNEL_VERSION, type SafetyKernelResult } from "../safety-kernel/kernel";
 import { hashApprovalReason, sealDurableApprovalRecord, sealDurableAssuranceRecord } from "../pae/durable-records";
-import { loadServerSigningKey } from "../pae/keys";
+import { loadServerSigningKey, processTrustedKeyRegistry, type TrustedKeyRegistry } from "../pae/keys";
 import { sealPae } from "../pae/sign-verify";
 import type { ControlResult, PaeUnsignedPayload, SealedPae } from "../domain/schemas";
 
@@ -30,6 +30,7 @@ export interface ApprovalInput {
   reviewedAssessmentHash: string;
   actorId: string;
   actorRole: string;
+  authorityVersion?: string;
   policyVersion: string;
   reasonText: string;
   now?: () => Date;
@@ -50,6 +51,7 @@ export function approveAndSealPae(
   store: AuthorityStore,
   signingKeyId: string,
   input: ApprovalInput,
+  trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry,
 ): {
   aggregate: AuthorityAggregate;
   sealed: SealedPae;
@@ -84,7 +86,7 @@ export function approveAndSealPae(
     actor_id: input.actorId,
     actor_role: input.actorRole,
     action: "APPROVE",
-    authority_version: "1",
+    authority_version: input.authorityVersion ?? "1",
     reviewed_aggregate_version: String(input.expectedVersion),
     authorized_aggregate_version: String(aggregate.aggregate_version),
     policy_version: input.policyVersion,
@@ -117,9 +119,9 @@ export function approveAndSealPae(
     control_results: safetyResult.controlResults,
   });
 
-  store.markPaeSealed(input.organizationId, input.obligationId, aggregate.aggregate_version);
+  const postSealAggregate = store.markPaeSealed(input.organizationId, input.obligationId, aggregate.aggregate_version);
 
-  const { privateKey } = loadServerSigningKey(signingKeyId);
+  const { privateKey } = loadServerSigningKey(signingKeyId, trustedKeys);
   const expiry = new Date(now().getTime() + 30 * 60 * 1000).toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
 
   const unsignedPayload: PaeUnsignedPayload = {
@@ -153,7 +155,7 @@ export function approveAndSealPae(
         obligation_id: input.obligationId,
         actor_id: input.actorId,
         actor_role: input.actorRole,
-        authority_version: "1",
+        authority_version: approvalRecord.authority_version,
         reviewed_aggregate_version: String(input.expectedVersion),
         authorized_aggregate_version: String(aggregate.aggregate_version),
         approved_at: isoNow,
@@ -172,7 +174,7 @@ export function approveAndSealPae(
 
   const sealed = sealPae(unsignedPayload, privateKey);
   return {
-    aggregate,
+    aggregate: postSealAggregate,
     sealed,
     safetyKernel: safetyResult,
     approvalRecord: { record: approvalRecord, approval_record_hash },

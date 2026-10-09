@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   runSimulatedHappyPath,
   runSimulatedBlockedVariant,
+  runSimulatedAttackVariant,
   SimulatedDemoGuardError,
   SIMULATED_HAPPY_PATH_OBLIGATION_ID,
   SIMULATED_BLOCKED_OBLIGATION_ID,
@@ -29,6 +30,18 @@ describe("#44 simulated happy path (isolated synthetic prototype slice)", () => 
     expect(result.safety_kernel_overall).toBe("PASS");
     expect(result.execution.status).toBe("SETTLED");
     expect(result.aggregate_state).toBe("RECONCILED");
+    expect(result.obligation.obligation_id).toBe(SIMULATED_HAPPY_PATH_OBLIGATION_ID);
+    expect(result.obligation.state).toBe("APPROVAL_PENDING");
+    expect(result.assessment.decision).toBe("PAY");
+    expect(result.assessment.provider_mode).toBe("NOT_LIVE_AI");
+    expect(result.human_authorization.state).toBe("AUTHORIZED");
+    expect(result.assurance.pae_state).toBe("CONSUMED");
+    expect(result.assurance.safety_kernel_overall).toBe("PASS");
+    expect(result.execution.provider_label).toBe(FAKE_PROVIDER_LABEL);
+    expect(result.reconciliation.aggregate_state).toBe("RECONCILED");
+    expect(result.obligation_id).not.toMatch(/^OBL-J0C-/);
+    expect(result.label).toBe("SIMULATED_HAPPY_PATH");
+    expect(result.vendor_notice).toBe("NOT_VENDOR_PAYMENT");
 
     // Exactly one fake-provider submission on the happy path.
     expect(result.provider_submission_count).toBe(1);
@@ -61,6 +74,17 @@ describe("#44 simulated happy path (isolated synthetic prototype slice)", () => 
     // Zero provider submissions: the FakeProviderAdapter instantiated for
     // this variant must never have been invoked.
     expect(result.provider_submission_count).toBe(0);
+  });
+
+  it("blocks a changed destination after synthetic authorization before fake provider submission", async () => {
+    const result = await runSimulatedAttackVariant();
+    expect(result.obligation_id).toBe("DEMO-SIMULATED-ATTACK-001");
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("aggregate_version");
+    expect(result.worker_calls).toBe(1);
+    expect(result.provider_submissions).toBe(0);
+    expect(result.provider_label).toBe(FAKE_PROVIDER_LABEL);
+    expect(result.vendor_notice).toBe(NOT_VENDOR_PAYMENT_LABEL);
   });
 
   it("exports a guard error class usable to detect a genuine-obligation-id collision attempt", () => {

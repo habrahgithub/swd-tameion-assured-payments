@@ -2,7 +2,7 @@ import { type KeyObject, sign as nodeSign, verify as nodeVerify } from "node:cry
 
 import { paeUnsignedPayloadSchema, type PaeUnsignedPayload, type SealedPae } from "../domain/schemas";
 import { canonicalBytes, sha256Hex } from "./canonicalize";
-import { resolveTrustedPublicKey } from "./keys";
+import { importPublicKeySpkiBase64Url, processTrustedKeyRegistry, resolveTrustedPublicKey, type TrustedKeyRegistry } from "./keys";
 
 export class PaeVerificationError extends Error {
   constructor(
@@ -41,7 +41,7 @@ export function sealPae(unsignedPayload: PaeUnsignedPayload, privateKey: KeyObje
  * never trust a pre-computed instruction_hash/signature without recomputing
  * both from the payload bytes.
  */
-export function verifySealedPae(sealed: SealedPae): void {
+export function verifySealedPae(sealed: SealedPae, trustedKeys: TrustedKeyRegistry = processTrustedKeyRegistry): void {
   const parseResult = paeUnsignedPayloadSchema.safeParse(sealed.payload);
   if (!parseResult.success) {
     throw new PaeVerificationError(
@@ -60,11 +60,34 @@ export function verifySealedPae(sealed: SealedPae): void {
     );
   }
 
-  const publicKey = resolveTrustedPublicKey(validated.signing_key_id, validated.signing_algorithm);
+  const publicKey = resolveTrustedPublicKey(validated.signing_key_id, validated.signing_algorithm, trustedKeys);
   const digest = Buffer.from(sealed.instruction_hash, "hex");
   const signature = Buffer.from(sealed.signature, "hex");
   const signatureValid = nodeVerify(null, digest, publicKey, signature);
   if (!signatureValid) {
     throw new PaeVerificationError("PAE signature verification failed", "PAE-003");
+  }
+}
+
+/**
+ * Verifies only the cryptographic integrity of an archived PAE using its
+ * retained public key. This does not consult or change current trust status
+ * and must never be used to authorize execution.
+ */
+export function verifyHistoricalPaeSignature(sealed: SealedPae, publicKeySpkiBase64Url: string): void {
+  const parsed = paeUnsignedPayloadSchema.safeParse(sealed.payload);
+  if (!parsed.success) throw new PaeVerificationError("Historical PAE payload schema is invalid", "PAE-002");
+  const recomputedHash = sha256Hex(canonicalBytes(parsed.data));
+  if (recomputedHash !== sealed.instruction_hash) {
+    throw new PaeVerificationError("Historical PAE canonical payload does not match its stored instruction hash", "PAE-014");
+  }
+  try {
+    const publicKey = importPublicKeySpkiBase64Url(publicKeySpkiBase64Url);
+    if (publicKey.asymmetricKeyType !== "ed25519" ||
+        !nodeVerify(null, Buffer.from(sealed.instruction_hash, "hex"), publicKey, Buffer.from(sealed.signature, "hex"))) {
+      throw new Error("signature mismatch");
+    }
+  } catch {
+    throw new PaeVerificationError("Historical PAE signature integrity could not be verified", "PAE-003");
   }
 }

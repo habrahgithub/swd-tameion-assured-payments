@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { AuthorityStore, type AuthorityAggregate, type ObligationState } from "../authority/aggregate";
 import { approveAndSealPae, AssuranceFailedError } from "../pipeline/authorize-and-seal";
-import { ExecutionWorker, type ExecutionRecord } from "../execution/worker";
+import { ExecutionBlockedError, ExecutionWorker, type ExecutionRecord } from "../execution/worker";
 import { FakeProviderAdapter } from "../execution/fake-provider-adapter";
 import type { ControlResult, DurableAssessmentRecord } from "../domain/schemas";
 import type { RaceAssessment } from "../agent/schema";
@@ -23,6 +23,7 @@ export const NOT_VENDOR_PAYMENT_LABEL = "NOT_VENDOR_PAYMENT" as const;
 
 export const SIMULATED_HAPPY_PATH_OBLIGATION_ID = "DEMO-SIMULATED-HAPPY-001";
 export const SIMULATED_BLOCKED_OBLIGATION_ID = "DEMO-SIMULATED-BLOCKED-001";
+export const SIMULATED_ATTACK_OBLIGATION_ID = "DEMO-SIMULATED-ATTACK-001";
 export const SIMULATED_ORGANIZATION_ID = "ORG-DEMO-SIMULATED";
 
 /** Logical PAE signing key id for this isolated demo slice only; resolved
@@ -129,8 +130,12 @@ function buildAssessmentRecord(obligationId: string, aggregateVersion: number): 
         aggregate_version: String(aggregateVersion),
         amount: "10.00",
         currency: "USD",
+        issue_date: "2099-01-01",
         due_date: "2099-01-01",
         due_date_status: "STATED_ON_SOURCE",
+        effective_due_date: "2099-01-01",
+        effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+        effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-DEMO-SIMULATED-1" },
         due_date_position: "FUTURE",
         as_of_date: "2026-01-01",
         state_at_event_baseline: "OUTSTANDING",
@@ -167,9 +172,28 @@ export interface SimulatedHappyPathResult {
   vendor_notice: typeof NOT_VENDOR_PAYMENT_LABEL;
   organization_id: string;
   obligation_id: string;
+  obligation: {
+    obligation_id: string;
+    state: ObligationState;
+  };
   aggregate_state: ObligationState;
+  assessment: {
+    decision: DurableAssessmentRecord["decision"];
+    provider_mode: DurableAssessmentRecord["provider_mode"];
+  };
+  human_authorization: {
+    state: string;
+  };
+  assurance: {
+    pae_state: AuthorityAggregate["pae_state"];
+    safety_kernel_overall: "PASS" | "HOLD" | "BLOCK";
+  };
+  reconciliation: {
+    aggregate_state: ObligationState;
+    execution_status: ExecutionRecord["status"];
+  };
   safety_kernel_overall: "PASS" | "HOLD" | "BLOCK";
-  execution: ExecutionRecord;
+  execution: ExecutionRecord & { provider_label: typeof FAKE_PROVIDER_LABEL };
   provider_submission_count: number;
 }
 
@@ -191,6 +215,7 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
       destinationVerified: true,
     }),
   );
+  const seededObligation = store.get(SIMULATED_ORGANIZATION_ID, obligationId);
   store.sealAssessment(buildAssessmentRecord(obligationId, 1));
 
   const current = store.getCurrentAssessment(SIMULATED_ORGANIZATION_ID, obligationId);
@@ -198,7 +223,7 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     throw new SimulatedDemoGuardError("Failed to seal the synthetic happy-path assessment fixture", "DEMO-002");
   }
 
-  const { aggregate, sealed, safetyKernel } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+  const { aggregate, sealed, safetyKernel, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
     organizationId: SIMULATED_ORGANIZATION_ID,
     obligationId,
     expectedVersion: 1,
@@ -212,7 +237,28 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
 
   const adapter = new FakeProviderAdapter();
   adapter.queueOutcome("CONFIRMED");
-  const worker = new ExecutionWorker(store, adapter);
+  const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+    loadAuthorizationArtifacts: () => ({
+      approval_record: approvalRecord.record,
+      approval_record_hash: approvalRecord.approval_record_hash,
+      assurance_record: assuranceRecord.record,
+      assurance_hash: assuranceRecord.assurance_hash,
+      sealed_pae: sealed,
+    }),
+    resolveActorAuthority: (actorId, organizationId) =>
+      actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
+        ? {
+          organization_id: organizationId,
+          actor_id: actorId,
+          actor_role: "FINANCE_APPROVER",
+          authority_version: "1",
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        }
+        : undefined,
+  });
   const execution = await worker.execute(sealed);
 
   return {
@@ -221,11 +267,117 @@ export async function runSimulatedHappyPath(): Promise<SimulatedHappyPathResult>
     vendor_notice: NOT_VENDOR_PAYMENT_LABEL,
     organization_id: SIMULATED_ORGANIZATION_ID,
     obligation_id: obligationId,
+    obligation: {
+      obligation_id: seededObligation.obligation_id,
+      state: seededObligation.state,
+    },
     aggregate_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).state,
+    assessment: {
+      decision: current.record.decision,
+      provider_mode: current.record.provider_mode,
+    },
+    human_authorization: {
+      state: approvalRecord.record.new_state,
+    },
+    assurance: {
+      pae_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).pae_state,
+      safety_kernel_overall: safetyKernel.overall,
+    },
+    reconciliation: {
+      aggregate_state: store.get(SIMULATED_ORGANIZATION_ID, obligationId).state,
+      execution_status: execution.status,
+    },
     safety_kernel_overall: safetyKernel.overall,
-    execution,
+    execution: { ...execution, provider_label: FAKE_PROVIDER_LABEL },
     provider_submission_count: adapter.getSubmissionCount(),
   };
+}
+
+export interface SimulatedAttackVariantResult {
+  label: "SIMULATED_CHANGED_DESTINATION_ATTACK";
+  provider_label: typeof FAKE_PROVIDER_LABEL;
+  vendor_notice: typeof NOT_VENDOR_PAYMENT_LABEL;
+  obligation_id: string;
+  blocked: true;
+  reason: string;
+  worker_calls: 1;
+  provider_submissions: 0;
+}
+
+/** Isolated post-authorization changed-destination demonstration. The sealed
+ * synthetic PAE is checked by the real worker against mutated in-memory state;
+ * the fake adapter must receive zero calls. */
+export async function runSimulatedAttackVariant(): Promise<SimulatedAttackVariantResult> {
+  const obligationId = SIMULATED_ATTACK_OBLIGATION_ID;
+  assertSyntheticObligationId(obligationId);
+  const store = new AuthorityStore();
+  store.seed(buildSeedAggregate(obligationId, {
+    destinationRef: "DEST-DEMO-ATTACK-001-SEEDED",
+    sourceWalletRef: "WALLET-SOURCE-DEMO-ATTACK-001",
+    destinationVerified: true,
+  }));
+  store.sealAssessment(buildAssessmentRecord(obligationId, 1));
+  const current = store.getCurrentAssessment(SIMULATED_ORGANIZATION_ID, obligationId);
+  if (!current) throw new SimulatedDemoGuardError("Failed to seal the synthetic attack assessment fixture", "DEMO-002");
+  const { sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIMULATED_SIGNING_KEY_ID, {
+    organizationId: SIMULATED_ORGANIZATION_ID,
+    obligationId,
+    expectedVersion: 1,
+    reviewedAssessmentId: current.record.assessment_id,
+    reviewedAssessmentHash: current.hash,
+    actorId: "USR-DEMO-SIMULATED-OPERATOR",
+    actorRole: "FINANCE_APPROVER",
+    policyVersion: "POLICY-DEMO-SIMULATED-1",
+    reasonText: `Synthetic changed-destination attack demonstration for ${obligationId}; no genuine obligation or payment provider is used.`,
+  });
+  const authorized = store.get(SIMULATED_ORGANIZATION_ID, obligationId);
+  store.applyMaterialChange(SIMULATED_ORGANIZATION_ID, obligationId, authorized.aggregate_version, {
+    destination_ref: `DEST-${obligationId}-ATTACKER`,
+    destination_version: authorized.destination_version + 1,
+    destination_address: `0x${"e".repeat(40)}`,
+    destination_verification_status: "PENDING_VERIFICATION",
+  });
+  const adapter = new FakeProviderAdapter();
+  const worker = new ExecutionWorker(store, adapter, undefined, undefined, {
+    loadAuthorizationArtifacts: () => ({
+      approval_record: approvalRecord.record,
+      approval_record_hash: approvalRecord.approval_record_hash,
+      assurance_record: assuranceRecord.record,
+      assurance_hash: assuranceRecord.assurance_hash,
+      sealed_pae: sealed,
+    }),
+    resolveActorAuthority: (actorId, organizationId) =>
+      actorId === "USR-DEMO-SIMULATED-OPERATOR" && organizationId === SIMULATED_ORGANIZATION_ID
+        ? {
+          organization_id: organizationId,
+          actor_id: actorId,
+          actor_role: "FINANCE_APPROVER",
+          authority_version: "1",
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        }
+        : undefined,
+  });
+  try {
+    await worker.execute(sealed);
+  } catch (error) {
+    if (!(error instanceof ExecutionBlockedError)) throw error;
+    const providerSubmissions = adapter.getSubmissionCount();
+    if (providerSubmissions !== 0) throw new SimulatedDemoGuardError("Synthetic changed-destination attack reached the fake provider", "DEMO-004");
+    return {
+      label: "SIMULATED_CHANGED_DESTINATION_ATTACK",
+      provider_label: FAKE_PROVIDER_LABEL,
+      vendor_notice: NOT_VENDOR_PAYMENT_LABEL,
+      obligation_id: obligationId,
+      blocked: true,
+      reason: error.message,
+      worker_calls: 1,
+      provider_submissions: 0,
+    };
+  }
+  throw new SimulatedDemoGuardError("Synthetic changed-destination attack unexpectedly passed worker verification", "DEMO-003");
 }
 
 export interface SimulatedBlockedVariantResult {

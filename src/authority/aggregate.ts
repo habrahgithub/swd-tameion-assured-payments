@@ -341,6 +341,14 @@ export class AuthorityStore {
     return { ...found };
   }
 
+  /** Restore an aggregate from the latest durable read after a failed CAS write. */
+  restoreAggregateSnapshot(snapshot: AuthorityAggregate): void {
+    this.aggregates.set(this.key(snapshot.organization_id, snapshot.obligation_id), {
+      ...snapshot,
+      evidence_hashes: [...snapshot.evidence_hashes],
+    });
+  }
+
   private killSwitchKey(scope: KillSwitchScope, targetId?: string): string {
     return targetId ? `${scope}:${targetId}` : scope;
   }

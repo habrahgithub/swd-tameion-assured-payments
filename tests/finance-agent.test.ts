@@ -11,8 +11,12 @@ function record(overrides: Partial<LiveUsageObligationRecord> = {}): LiveUsageOb
     obligation_id: "OBL-J0C-002",
     service_category: "AI_SOFTWARE_SUBSCRIPTION_A",
     recurrence: "MONTHLY",
+    issue_date: "2026-08-14",
     due_date: "2026-08-14",
     due_date_status: "STATED_ON_SOURCE",
+    effective_due_date: "2026-08-14",
+    effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
+    effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-J0C-002-A" },
     amount: "21.00",
     currency: "USD",
     state_at_event_baseline: "OUTSTANDING",
@@ -120,7 +124,7 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     expect(wasProviderCallFailure(failedCallDecision)).toBe(true);
 
     const genuineHoldDecision = await assessObligation(
-      trustedTestContext(record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" })),
+      trustedTestContext(record({ issue_date: null, due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", effective_due_date: null, effective_due_date_basis: null, effective_due_date_provenance: null })),
       new DeterministicFallbackProvider(),
     );
     expect(genuineHoldDecision.decision).toBe("HOLD");
@@ -165,17 +169,82 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     }
   });
 
-  it("rejects PAY when deterministic readiness facts are unmet", async () => {
+  it("rejects PAY when obligation due-date or business-purpose facts are unmet", async () => {
     const records = [
-      record({ due_date: null, due_date_status: "NOT_STATED_ON_SOURCE" }),
+      record({ issue_date: null, due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", effective_due_date: null, effective_due_date_basis: null, effective_due_date_provenance: null }),
       record({ business_purpose_confirmed: false }),
-      record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } }),
     ];
     for (const input of records) {
       const context = buildFinanceAgentContext(input);
       const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
       expect(decision.decision).toBe("HOLD");
     }
+  });
+
+  it("keeps payment-route readiness out of the Finance Agent decision while retaining it as context", async () => {
+    const input = record({ candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" } });
+    const context = buildFinanceAgentContext(input);
+    const decision = await assessObligation(context, new StaticProvider(payOutput(context.obligation_id)));
+
+    expect(context.destination_ready).toBe(false);
+    expect(context.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DESTINATION_NOT_READY");
+    expect(decision.race.remediation.map((item) => item.finding_code)).not.toContain("DESTINATION_NOT_READY");
+  });
+
+  it("does not let the deterministic fallback HOLD solely because payment-route readiness is absent", async () => {
+    const context = buildFinanceAgentContext(record({
+      candidate_readiness: { arc_product_destination_status: "PENDING_J0_D_TRUST_SEED" },
+    }));
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.destination_ready).toBe(false);
+    expect(context.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.evidence.authoritative_facts.destination_status).toBe("PENDING_J0_D_TRUST_SEED");
+    expect(decision.race.evidence.authoritative_facts.destination_readiness_source).toBe("IMMUTABLE_SOURCE_EVIDENCE");
+  });
+
+  it("does not HOLD an otherwise clean overdue obligation", async () => {
+    const overdue = record({ issue_date: "2026-08-14", due_date: "2026-08-14", effective_due_date: "2026-08-14" });
+    const context = buildFinanceAgentContext(overdue, 1, "2026-09-29");
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.due_date_position).toBe("OVERDUE");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.result.validated_findings).toEqual([]);
+  });
+
+  it("retains a genuine obligation blocker when an invoice is overdue", async () => {
+    const overdue = record({
+      issue_date: "2026-08-14",
+      due_date: "2026-08-14",
+      effective_due_date: "2026-08-14",
+      business_purpose_confirmed: false,
+    });
+    const context = buildFinanceAgentContext(overdue, 1, "2026-09-29");
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.due_date_position).toBe("OVERDUE");
+    expect(decision.decision).toBe("HOLD");
+    expect(decision.race.result.validated_findings.map((finding) => finding.code)).toContain("BUSINESS_PURPOSE_UNCONFIRMED");
+  });
+
+  it("the deterministic fallback holds when invoice/effective-date normalization is invalid", async () => {
+    const context = buildFinanceAgentContext(record({
+      issue_date: null,
+      due_date: null,
+      due_date_status: "NOT_STATED_ON_SOURCE",
+      effective_due_date: null,
+      effective_due_date_basis: null,
+      effective_due_date_provenance: null,
+    }), 1, "2026-09-29");
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.due_date_position).toBe("INVALID");
+    expect(decision.decision).toBe("HOLD");
+    expect(decision.race.result.validated_findings.map((finding) => finding.code)).toContain("NORMALIZATION_REVIEW_REQUIRED");
   });
 
   it("blocks unsupported settlement currencies (e.g. EUR) via the currency blocker outside model prose", async () => {
