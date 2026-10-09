@@ -1,4 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const obligation = {
@@ -17,6 +20,12 @@ const obligation = {
 const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" };
 const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: "125.00", due_date: "2026-10-15" };
 const queueItem = (page: Page, id: string) => page.locator(`button[data-obligation-id="${id}"]`);
+const mobileQueueToggle = (page: Page) => page.getByRole("complementary").getByRole("button", { name: /^(?:Choose an obligation|Switch obligation(?: ·.*)?)$/ });
+async function openMobileQueue(page: Page) {
+  await expect.poll(() => mobileQueueToggle(page).count()).toBe(1);
+  const toggle = mobileQueueToggle(page);
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+}
 
 async function expandLifecycleStages(page: Page) {
   const disclosure = page.getByRole("button", { name: "View all stages", exact: true });
@@ -147,12 +156,12 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await openMobileQueue(page);
   await queueItem(page, first.obligation_id).click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await assertGenuineFirstView(844, true);
   await page.screenshot({ path: testInfo.outputPath("genuine-mobile-first-view.png") });
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await openMobileQueue(page);
   await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
   const fifthMobileSource = page.getByRole("region", { name: "Selected source obligation" });
   await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
@@ -435,8 +444,7 @@ async function openFixture(
   const selectedId = String(selectedDetail.record?.obligation_id ?? "OBL-UAT-01");
   const selectedRow = page.locator(`button[data-obligation-id="${selectedId}"]`);
   if (await page.evaluate(() => window.innerWidth <= 768)) {
-    const switchQueue = page.getByRole("button", { name: /Switch obligation/ });
-    if (await switchQueue.count() && await switchQueue.getAttribute("aria-expanded") !== "true") await switchQueue.click();
+    await openMobileQueue(page);
   }
   await expect(selectedRow).toBeVisible();
   await selectedRow.click();
@@ -551,7 +559,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await openMobileQueue(page);
   await queueItem(page, "OBL-UAT-01").click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
   await page.getByRole("button", { name: "View all stages", exact: true }).click();
@@ -828,7 +836,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       { selectedId: "OBL-J0C-003", businessName: "cloud infrastructure subscription", action: "Prepare Arc Testnet settlement proxy" },
     ] as const) {
       if (viewport.label.startsWith("mobile")) {
-        await page.getByRole("button", { name: /Switch obligation/ }).click();
+        await openMobileQueue(page);
       }
       await queueItem(page, scenario.selectedId).click();
       await expect(queueItem(page, scenario.selectedId)).toHaveAttribute("aria-current", "true");
@@ -920,7 +928,7 @@ test("manual obligation selection stays bound when multiple queue rows show PAY 
       "OBL-UAT-01": candidateDetail,
       "OBL-UAT-02": nonWinnerDetail,
     });
-    if (viewport.label === "mobile") await page.getByRole("button", { name: /Switch obligation/ }).click();
+    if (viewport.label === "mobile") await openMobileQueue(page);
     await queueItem(page, "OBL-UAT-02").click();
     await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
     await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("software services");
@@ -1263,13 +1271,13 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
-  await expect(page.getByRole("button", { name: /Switch obligation/ })).toBeVisible();
+  await expect(mobileQueueToggle(page)).toBeVisible();
   const assertMobileTarget = async (locator: ReturnType<typeof page.getByRole> | ReturnType<typeof page.locator>, label: string) => {
     expect(await locator.evaluate((element) => element.getBoundingClientRect().height), `${label} mobile target`).toBeGreaterThanOrEqual(44);
   };
-  await assertMobileTarget(page.getByRole("button", { name: /Switch obligation/ }), "Switch obligation");
+  await assertMobileTarget(mobileQueueToggle(page), "Obligation queue toggle");
   await expect(queueItem(page, "OBL-UAT-01")).toBeHidden();
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await openMobileQueue(page);
   await expect(queueItem(page, "OBL-UAT-01")).toBeVisible();
   await assertMobileTarget(queueItem(page, "OBL-UAT-01"), "Queue obligation");
   await page.getByRole("button", { name: "Close obligation list" }).click();
@@ -1430,7 +1438,7 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
     return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
   });
   await page.goto("/");
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await openMobileQueue(page);
   await expect(page.locator('button[data-obligation-id="OBL-UAT-01"]')).toBeVisible();
   await page.locator('button[data-obligation-id="OBL-UAT-01"]').click();
   await expect(page.getByRole("region", { name: "Selected obligation details" })).toBeVisible();
@@ -1460,6 +1468,214 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
   await recoveryDetails.locator("summary").click();
   await expect(recoveryDetails.getByRole("region", { name: "Exception recovery" })).toBeVisible();
   expect(requests.filter((request) => request.startsWith("POST"))).toEqual([]);
+});
+
+test("Stage 1 queue states stay truthful with no default selection at desktop and mobile", async ({ browser, page }, testInfo) => {
+  test.setTimeout(120_000);
+  const oracle = await page.request.get("/api/obligations");
+  expect(oracle.ok()).toBe(true);
+  const sourceQueue = await oracle.json() as Record<string, any>;
+  expect(sourceQueue.obligations).toHaveLength(5);
+  expect(sourceQueue.obligations.map((row: Record<string, unknown>) => row.obligation_id)).toContain("OBL-J0C-003");
+  const detailOracle = await page.request.get("/api/obligations/OBL-J0C-003");
+  expect(detailOracle.ok()).toBe(true);
+  const source003Detail = await detailOracle.json() as Record<string, any>;
+  expect(source003Detail.record.obligation_id).toBe("OBL-J0C-003");
+  const selected003DetailFixture = structuredClone(source003Detail);
+  const selected003Assessment = {
+    obligation_id: "OBL-J0C-003",
+    assessment_id: "TEST-ONLY-OBL-J0C-003-ASSESSMENT",
+    assessment_hash: createHash("sha256").update("isolated-stage1-003-assessment-fixture").digest("hex"),
+    aggregate_version: String(selected003DetailFixture.aggregate.aggregate_version),
+    decision: "PAY",
+    reasons: ["Isolated producer-shaped PAY advisory for explicitly selected source obligation 003."],
+    provider_used: "Deterministic test fixture",
+    provider_mode: "NOT_LIVE_AI",
+  };
+  selected003DetailFixture.current_assessment = selected003Assessment;
+  const selected003QueueFixture = {
+    ...sourceQueue,
+    obligations: sourceQueue.obligations.map((row: Record<string, any>) => row.obligation_id === "OBL-J0C-003"
+      ? { ...row, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" }
+      : row),
+  };
+
+  const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const captureDir = testInfo.outputPath("stage1-initial-state-captures");
+  await mkdir(captureDir, { recursive: true });
+  const viewports = [
+    { label: "desktop-1173x751", width: 1173, height: 751 },
+    { label: "mobile-390x844", width: 390, height: 844 },
+  ] as const;
+  const states = ["loading", "loaded-none", "true-empty", "error", "selected-003"] as const;
+  const manifest: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const stateName of states) {
+      const statePage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const observedRequests: string[] = [];
+      let releaseLoading!: () => void;
+      const delayedQueue = new Promise<void>((resolve) => { releaseLoading = resolve; });
+      await statePage.route("**/api/**", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        observedRequests.push(`${request.method()} ${url.pathname}`);
+        if (url.pathname === "/api/obligations" && request.method() === "GET") {
+          if (stateName === "loading") {
+            await delayedQueue;
+            return route.fulfill({ json: sourceQueue });
+          }
+          if (stateName === "true-empty") return route.fulfill({ json: { ...sourceQueue, obligations: [] } });
+          if (stateName === "error") return route.fulfill({ status: 503, json: { error: "Mocked genuine queue unavailable" } });
+          return route.fulfill({ json: stateName === "selected-003" ? selected003QueueFixture : sourceQueue });
+        }
+        if (url.pathname === "/api/obligations/OBL-J0C-003" && request.method() === "GET" && stateName === "selected-003") {
+          return route.fulfill({ json: selected003DetailFixture });
+        }
+        return route.fulfill({ status: 404, json: { error: "Read-only queue-state fixture; no other route is enabled." } });
+      });
+      await statePage.goto("/");
+      await statePage.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      await statePage.evaluate(() => document.fonts.ready.then(() => true));
+
+      if (stateName === "loading") {
+        await expect(statePage.getByRole("main").getByRole("status")).toContainText("Loading genuine obligations");
+        await expect(statePage.getByRole("main").getByText(/no genuine obligations|open demo mode|choose one obligation/i)).toHaveCount(0);
+        await expect(statePage.getByRole("main").locator('button[data-obligation-id]')).toHaveCount(0);
+      } else if (stateName === "loaded-none") {
+        await expect(statePage.locator('button[data-obligation-id]')).toHaveCount(5);
+        await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("Choose an obligation");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Choose one obligation from the genuine queue");
+        await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
+      } else if (stateName === "true-empty") {
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("No genuine obligations");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Refresh the genuine queue to check again");
+        await expect(statePage.getByRole("main")).not.toContainText(/open demo mode|loading genuine obligations/i);
+      } else if (stateName === "error") {
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("Genuine obligations unavailable");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Retry the queue before selecting");
+        if (viewport.width >= 768) {
+          await expect(statePage.getByRole("main").getByRole("alert")).toContainText("Genuine obligations are unavailable");
+          await expect(statePage.getByRole("button", { name: "Retry genuine obligations" })).toBeVisible();
+        } else {
+          await expect(statePage.getByRole("button", { name: "Open queue to retry" })).toBeVisible();
+        }
+        await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
+      } else {
+        if (viewport.width < 768) await statePage.getByRole("complementary").getByRole("button", { name: "Choose an obligation", exact: true }).click();
+        await statePage.locator('button[data-obligation-id="OBL-J0C-003"]').click();
+        await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+        await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(1);
+        await expect(statePage.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
+        const selectedGuidance = statePage.getByTestId("current-next-step");
+        await expect(selectedGuidance).not.toContainText(/001|Selected payment candidate/);
+        await expect(selectedGuidance).toContainText("A current PAY advisory assessment");
+      }
+
+      await statePage.evaluate(() => window.scrollTo(0, 0));
+      const measurement = await statePage.evaluate(() => {
+        const primary = Array.from(document.querySelectorAll<HTMLButtonElement>('main button[data-primary-action="true"]'));
+        const rect = (element?: Element) => {
+          if (!element) return null;
+          const box = element.getBoundingClientRect();
+          return { x: box.x, y: box.y, width: box.width, height: box.height, bottom: box.bottom };
+        };
+        const stageToggle = document.querySelector<HTMLButtonElement>('button[aria-controls="all-payment-stages"]');
+        return {
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          primaryActionCount: primary.filter((button) => !button.disabled).length,
+          primaryActions: primary.map((button) => ({ label: button.innerText.trim(), disabled: button.disabled, bounds: rect(button) })),
+          rowCount: document.querySelectorAll('button[data-obligation-id]').length,
+          selectedIds: Array.from(document.querySelectorAll<HTMLButtonElement>('button[data-obligation-id][aria-current="true"]')).map((row) => row.dataset.obligationId),
+          openDetails: document.querySelectorAll('main details[open]').length,
+          navigatorExpanded: stageToggle?.getAttribute("aria-expanded") ?? null,
+          documentWidth: document.documentElement.scrollWidth,
+          fontFamily: getComputedStyle(document.body).fontFamily,
+          userAgent: navigator.userAgent,
+          queueHeading: document.querySelector('[data-testid="current-next-step"] h3')?.textContent ?? null,
+          stageAnnouncement: document.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label") ?? null,
+          providerMode: null,
+        };
+      });
+      expect(measurement.scrollY).toBe(0);
+      expect(measurement.documentWidth).toBeLessThanOrEqual(viewport.width);
+      expect(measurement.openDetails).toBe(0);
+      expect(measurement.navigatorExpanded).not.toBe("true");
+      expect(observedRequests.filter((request) => !request.startsWith("GET /api/obligations"))).toEqual([]);
+      expect(observedRequests.some((request) => request.startsWith("POST "))).toBe(false);
+
+      const filename = `stage1-${stateName}-${viewport.label}.png`;
+      const screenshotPath = testInfo.outputPath(`stage1-initial-state-captures/${filename}`);
+      const png = await statePage.screenshot({ path: screenshotPath, fullPage: false });
+      const mode = stateName === "selected-003" ? "NOT_LIVE_AI (test overlay; not live provider evidence)" : null;
+      const record = {
+        candidateSha,
+        filename,
+        sha256: createHash("sha256").update(png).digest("hex"),
+        state: stateName,
+        viewport: `${viewport.width}x${viewport.height}`,
+        scrollY: measurement.scrollY,
+        disclosuresOpen: measurement.openDetails,
+        navigatorExpanded: measurement.navigatorExpanded,
+        sourceProvenance: stateName === "true-empty" || stateName === "error"
+          ? "Test-only queue response override; based on real producer queue, no financial calls."
+          : stateName === "loading"
+            ? "Real local /api/obligations producer response intentionally delayed by mocked transport."
+            : stateName === "selected-003"
+              ? "Real local source queue/detail GETs replayed through an isolated route; only the current 003 PAY assessment is a producer-shaped NOT_LIVE_AI test overlay, not a provider result."
+              : "Real local GET /api/obligations response replayed through an isolated read-only browser route.",
+        assessmentProviderMode: mode,
+        browser: measurement.userAgent,
+        font: measurement.fontFamily,
+        queueHeading: measurement.queueHeading,
+        stageAnnouncement: measurement.stageAnnouncement,
+        rowCount: measurement.rowCount,
+        selectedIds: measurement.selectedIds,
+        actionCount: measurement.primaryActionCount,
+        actions: measurement.primaryActions,
+        navigationPostCount: observedRequests.filter((request) => request.startsWith("POST ")).length,
+        providerRouteCount: observedRequests.filter((request) => /balance|preflight|provider|circle|execute/i.test(request)).length,
+      };
+      manifest.push(record);
+      await testInfo.attach(filename, { path: screenshotPath, contentType: "image/png" });
+      if (stateName === "selected-003") {
+        const viewAssessment = statePage.getByRole("button", { name: "View Assessment", exact: true });
+        await expect(viewAssessment).toHaveCount(1);
+        await viewAssessment.click();
+        await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+        await expect(statePage.getByRole("main")).toContainText("Advisory — PAY");
+        expect(observedRequests.filter((request) => request.startsWith("POST "))).toEqual([]);
+        await statePage.evaluate(() => window.scrollTo(0, 0));
+        const assessmentFilename = `stage1-selected-003-assessment-${viewport.label}.png`;
+        const assessmentPath = testInfo.outputPath(`stage1-initial-state-captures/${assessmentFilename}`);
+        const assessmentPng = await statePage.screenshot({ path: assessmentPath, fullPage: false });
+        manifest.push({
+          ...record,
+          filename: assessmentFilename,
+          sha256: createHash("sha256").update(assessmentPng).digest("hex"),
+          state: "selected-003-assessment",
+          queueHeading: "Advisory — PAY",
+          sourceProvenance: "Actual OBL-J0C-003 source record and local detail GET; isolated NOT_LIVE_AI PAY assessment overlay only.",
+          assessmentProviderMode: mode,
+          selectedIds: ["OBL-J0C-003"],
+          navigationPostCount: 0,
+        });
+        await testInfo.attach(assessmentFilename, { path: assessmentPath, contentType: "image/png" });
+      }
+      if (stateName === "loading") {
+        releaseLoading();
+        await expect(statePage.locator('button[data-obligation-id]')).toHaveCount(5);
+      }
+      await statePage.close();
+    }
+  }
+
+  const manifestPath = testInfo.outputPath("stage1-initial-state-captures/manifest.json");
+  await writeFile(manifestPath, JSON.stringify({ candidateSha, source: "Local read-only application GET producer data; only empty/error states are overridden", entries: manifest }, null, 2));
+  await testInfo.attach("stage1-initial-state-manifest.json", { path: manifestPath, contentType: "application/json" });
+  console.log("STAGE1_INITIAL_STATE_CAPTURE_MANIFEST", JSON.stringify(manifest));
 });
 
 test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {

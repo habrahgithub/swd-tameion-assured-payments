@@ -329,12 +329,14 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main } = await renderProducerJson(firstBody, otherBodies, queue, { selectInitial: false });
     expect(main.querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
-    expect(main.textContent).toContain("Select an obligation");
+    expect(main.textContent).toContain("Choose one obligation from the genuine queue");
+    expect(main.textContent).not.toMatch(/no genuine obligations|demo mode|loading/i);
     expect(state.liveUsageRecords).toHaveLength(5);
 
     fireEvent.click(obligationRow("OBL-J0C-003"));
     await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
     expect(main.textContent).toContain("Current advisory for OBL-J0C-003.");
+    expect(main.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label")).toContain("Current lifecycle position: Assessment");
     expect(main.textContent).not.toContain("Selected payment candidate: software services");
     expect(main.textContent).not.toContain("View selected payment candidate");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);

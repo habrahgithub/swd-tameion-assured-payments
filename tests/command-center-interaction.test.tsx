@@ -315,6 +315,12 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(screen.getByRole("main").querySelectorAll("button[data-obligation-id]")).toHaveLength(5));
     expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
+    expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose an obligation");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the genuine queue");
+    expect(screen.getByTestId("current-next-step").textContent).not.toMatch(/no genuine obligations|demo mode|loading/i);
+    expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
+    expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
+    expect(screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/obligations/") && String(input) !== "/api/obligations")).toHaveLength(0);
 
     for (const [index, id] of ids.entries()) {
@@ -326,6 +332,87 @@ describe("Command Center mounted Operational Report", () => {
       expect(obligationRow(id).getAttribute("aria-current")).toBe("true");
     }
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows loading progress only until a genuine queue response arrives", async () => {
+    const list = deferred<Response>();
+    fetchMock.mockReturnValue(list.promise);
+
+    rtlRender(<CommandCenter />);
+    expect(screen.getAllByRole("status").every((status) => status.textContent?.includes("Loading genuine obligations"))).toBe(true);
+    expect(screen.queryByText("Choose an obligation", { selector: "h3" })).toBeNull();
+    expect(screen.queryByText("No genuine obligations", { selector: "h3" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose an obligation" })).toBeNull();
+    expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode/i);
+    expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
+
+    list.resolve(response({ obligations: [obligation("OBL-A")] }));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose an obligation"));
+    expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows a genuine empty-queue state only after a successful empty response", async () => {
+    fetchMock.mockResolvedValue(response({ obligations: [] }));
+
+    rtlRender(<CommandCenter />);
+    expect(await screen.findByText("No genuine obligations", { selector: "h3" })).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the genuine queue to check again");
+    expect(screen.getByRole("main").textContent).not.toMatch(/demo mode|loading genuine obligations/i);
+    expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id]')).toHaveLength(0);
+    expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps an unavailable genuine queue distinct from loading and empty", async () => {
+    fetchMock.mockResolvedValue(response({ error: "Queue read unavailable" }, 503));
+
+    rtlRender(<CommandCenter />);
+    expect(await screen.findByText("Genuine obligations unavailable", { selector: "h3" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Genuine obligations are unavailable");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Retry the queue");
+    expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode|loading/i);
+    expect(screen.queryByText("Choose an obligation", { selector: "h3" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("does not let an old selected-action refresh clear a newer manual selection", async () => {
+    const assessment = deferred<Response>();
+    let listReads = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations" && init?.method !== "POST") {
+        listReads += 1;
+        return Promise.resolve(response({ obligations: listReads === 1 ? [obligation("OBL-A"), obligation("OBL-B")] : [] }));
+      }
+      if (url === "/api/obligations/OBL-A/assess") return assessment.promise;
+      if (url === "/api/obligations/OBL-A" || url === "/api/obligations/OBL-B") {
+        const selectedDetail = detail(url.split("/").at(-1)!);
+        selectedDetail.record.beneficiary_name = `Source ${selectedDetail.record.obligation_id}`;
+        return Promise.resolve(response(selectedDetail));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    renderWithExplicitFirstSelection();
+    await waitFor(() => expect(obligationRow("OBL-A").getAttribute("aria-current")).toBe("true"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+    const assess = await screen.findByRole("button", { name: "Run AI Assessment" });
+    fireEvent.click(assess);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
+
+    const writesBeforeNavigation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
+    fireEvent.click(obligationRow("OBL-B"));
+    await waitFor(() => expect(obligationRow("OBL-B").getAttribute("aria-current")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Source OBL-B"));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(writesBeforeNavigation);
+
+    assessment.resolve(response({ error: "Assessment unavailable" }, 503));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(obligationRow("OBL-B").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Source OBL-B");
+    expect(listReads).toBe(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(writesBeforeNavigation);
   });
 
   it("keeps wallet refresh visibly disabled until operator authentication is verified", async () => {
@@ -692,14 +779,15 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
   });
 
-  it("does not show actionable authorization prerequisites with no selected obligation", async () => {
+  it("shows a true empty queue without turning the no-selection state into a demo-mode blocker", async () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [] }))
       : Promise.resolve(response(null, 404)));
 
     renderWithExplicitFirstSelection();
-    await screen.findByText("Genuine obligations are not selected.");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the queue.");
+    await screen.findByText("No genuine obligations", { selector: "h3" });
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the genuine queue to check again");
+    expect(screen.getByRole("main").textContent).not.toMatch(/open demo mode/i);
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
   });
@@ -1241,7 +1329,6 @@ describe("Command Center mounted Operational Report", () => {
   it("keeps the internal active-run counter positive until all dispatched callbacks settle", async () => {
     const actionA = deferred<Response>();
     const actionB = deferred<Response>();
-    const staleActionListRefresh = deferred<Response>();
     let listReads = 0;
     let detailBReads = 0;
     fetchMock.mockImplementation((input, init) => {
@@ -1249,7 +1336,6 @@ describe("Command Center mounted Operational Report", () => {
       if (url === "/api/obligations" && init?.method !== "POST") {
         listReads += 1;
         if (listReads === 1) return Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
-        if (listReads === 2) return staleActionListRefresh.promise;
         return Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
       }
       if (url.endsWith("/OBL-A/assess")) return actionA.promise;
@@ -1281,15 +1367,13 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual(expect.arrayContaining([["/api/obligations/OBL-B/assess", "POST"]]));
 
     actionA.resolve(response({ error: "Assessment unavailable" }, 503));
-    await waitFor(() => expect(listReads).toBe(2));
-    await act(async () => {
-      staleActionListRefresh.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }));
-      await actionACompletion;
-    });
+    await act(async () => { await actionACompletion; });
+    expect(listReads).toBe(1);
     expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(true);
 
     actionB.resolve(response({ error: "Assessment unavailable" }, 503));
     await act(async () => { await actionBCompletion; });
+    expect(listReads).toBe(2);
     expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByText("Additional tools")).toBeNull();
   });

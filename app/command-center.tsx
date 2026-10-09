@@ -1688,6 +1688,7 @@ export function CommandCenter() {
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const activeRunCount = useRef(0);
+  const obligationsRequestGeneration = useRef(0);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
@@ -1712,7 +1713,11 @@ export function CommandCenter() {
     stageHeadingRef.current?.focus();
   }, [viewedStage, panel]);
 
-  const refreshObligations = async (showLoading = false, preserveLastKnown = false) => {
+  const refreshObligations = async (showLoading = false, preserveLastKnown = false, expectedSelectionGeneration?: number) => {
+    if (expectedSelectionGeneration !== undefined && expectedSelectionGeneration !== selectionGeneration.current) return [];
+    const requestId = ++obligationsRequestGeneration.current;
+    const isCurrent = () => requestId === obligationsRequestGeneration.current &&
+      (expectedSelectionGeneration === undefined || expectedSelectionGeneration === selectionGeneration.current);
     if (showLoading) setObligationsStatus("loading");
     setObligationsError(null);
     try {
@@ -1728,11 +1733,13 @@ export function CommandCenter() {
       }
       const list = data as { obligations: ObligationSummary[] };
       const fetched = list.obligations;
+      if (!isCurrent()) return fetched;
       setObligations(fetched);
       setObligationsStatus("ready");
       if (fetched.length === 0) setSelectedId("");
       return fetched;
     } catch (error) {
+      if (!isCurrent()) return [];
       if (!preserveLastKnown) {
         setObligations([]);
         setSelectedId("");
@@ -1850,7 +1857,7 @@ export function CommandCenter() {
           if (receiptMessage) setStageCompletionReceipt({ obligationId: targetId, message: receiptMessage });
         }
       }
-      await refreshObligations(false, true);
+      await refreshObligations(false, true, generation);
       activeRunCount.current = Math.max(0, activeRunCount.current - 1);
       setBusy(activeRunCount.current > 0);
     }
@@ -2133,7 +2140,13 @@ export function CommandCenter() {
   const currentWorkspaceGuidance = detailState === "loaded" && detail?.aggregate.state === "CANCELLED"
     ? "This obligation was cancelled. No authorization or execution action is available."
     : !selectedId
-    ? "Choose one obligation from the queue."
+    ? listPresentation === "loading"
+      ? "Loading genuine obligations. Selection is not available yet."
+      : listPresentation === "error"
+        ? "The genuine source queue could not be loaded. Retry the queue before selecting an obligation."
+        : listPresentation === "empty"
+          ? "No genuine obligations are currently available. Refresh the genuine queue to check again."
+          : "Choose one obligation from the genuine queue to review its current status."
     : detailState === "loading"
       ? "Loading current obligation status."
       : detailState === "failed"
@@ -2342,8 +2355,10 @@ export function CommandCenter() {
 
   type WorkspaceAction = { label: string; actor: string; run: () => void; exactConfirmation?: boolean };
   let workspaceAction: WorkspaceAction | null = null;
-  if (!selectedId && obligations.length > 0) {
+  if (!selectedId && listPresentation === "ready" && obligations.length > 0) {
     workspaceAction = { label: "Choose an obligation", actor: "You", run: () => setMobileQueueOpen(true) };
+  } else if (!selectedId && listPresentation === "empty") {
+    workspaceAction = { label: "Refresh genuine obligations", actor: "You · read-only refresh", run: () => { void refreshObligations(true); } };
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
@@ -2522,12 +2537,21 @@ export function CommandCenter() {
         <aside className="order-1 min-w-0 md:order-1 md:border-e md:pe-4">
           <button
             type="button"
+            disabled={listPresentation === "loading"}
             aria-expanded={mobileQueueOpen}
             aria-controls="genuine-obligation-queue"
             onClick={() => setMobileQueueOpen((open) => !open)}
             className="mb-3 min-h-11 w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-start text-[13px] font-semibold text-[var(--color-ink)] md:hidden"
           >
-            {mobileQueueOpen ? "Close obligation list" : `Switch obligation${viewedStage !== "Assessment" && selected ? ` · ${selected.service_category.replaceAll("_", " ").toLowerCase()}` : ""}`}
+            {mobileQueueOpen ? "Close obligation list" : listPresentation === "loading"
+              ? "Loading genuine obligations…"
+              : listPresentation === "error"
+                ? "Open queue to retry"
+                : listPresentation === "empty"
+                  ? "No genuine obligations"
+                  : selected
+                    ? `Switch obligation${viewedStage !== "Assessment" ? ` · ${selected.service_category.replaceAll("_", " ").toLowerCase()}` : ""}`
+                    : "Choose an obligation"}
           </button>
           <div id="genuine-obligation-queue" className={mobileQueueOpen ? "block" : "hidden md:block"}>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
@@ -2588,7 +2612,7 @@ export function CommandCenter() {
               </>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
                 <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">The genuine lane remains empty; Demo Mode above is separate and never treated as payable.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">The source queue is currently empty. Refresh to check for new genuine records.</p>
               </>}
             </div>
           )}
@@ -2596,6 +2620,7 @@ export function CommandCenter() {
         </aside>
 
         <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
+          {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading genuine obligations…</p>}
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
             <section aria-label="Selected source obligation" className={viewedStage === "Assessment"
@@ -2640,19 +2665,6 @@ export function CommandCenter() {
               </div>
             </section>
           </section>
-          )}
-
-          {!selected && (
-            <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
-              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Genuine obligations are not selected.</p>
-              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
-                {obligationsStatus === "loading"
-                  ? "The genuine source list is loading."
-                  : obligationsStatus === "error"
-                    ? "The genuine source list is unavailable. Retry it or open Demo Mode above for a separate synthetic workflow."
-                    : "There are no genuine obligations to show. Open Demo Mode above for a separate workflow that is never payable."}
-              </p>
-            </div>
           )}
 
           {viewedStage === "Obligation" && (
@@ -2728,11 +2740,13 @@ export function CommandCenter() {
             </div>}
           </section>}
 
-          {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
+          {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && (selectedId || listPresentation !== "loading") && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 {!isInitialObligationScreen && <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>}
-                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
+                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{!selectedId
+                  ? listPresentation === "ready" ? "Choose an obligation" : listPresentation === "empty" ? "No genuine obligations" : "Genuine obligations unavailable"
+                  : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
                 {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
                 {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.</p>}
                 {visibleWorkspaceAction && !showExceptionRecovery && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
