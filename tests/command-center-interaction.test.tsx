@@ -945,6 +945,58 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
+  it("keeps current 003 detail and assessment result when its stale first response arrives last", async () => {
+    const staleFirst003 = deferred<Response>();
+    const currentFinal003 = deferred<Response>();
+    const rows = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"]
+      .map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
+    const staleDetail = assessedDetail("OBL-J0C-003", "HOLD");
+    staleDetail.record.beneficiary_name = "Stale first 003";
+    staleDetail.current_assessment.reasons = ["Stale first 003 HOLD assessment."];
+    staleDetail.current_assessment.race.result.decision_summary = "Stale first 003 HOLD assessment.";
+    const currentDetail = assessedDetail("OBL-J0C-003", "PAY");
+    currentDetail.record.beneficiary_name = "Current final 003";
+    currentDetail.current_assessment.reasons = ["Current final 003 PAY assessment."];
+    currentDetail.current_assessment.race.result.decision_summary = "Current final 003 PAY assessment.";
+    let reads003 = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: rows }));
+      if (url === "/api/obligations/OBL-J0C-003") {
+        reads003 += 1;
+        if (reads003 === 1) return staleFirst003.promise;
+        if (reads003 === 2) return currentFinal003.promise;
+        throw new Error("Only the two A→B→A detail requests are expected.");
+      }
+      if (url === "/api/obligations/OBL-J0C-001") return Promise.resolve(response(detail("OBL-J0C-001")));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    fireEvent.click(obligationRow("OBL-J0C-001"));
+    fireEvent.click(obligationRow("OBL-J0C-003"));
+    await waitFor(() => expect(reads003).toBe(2));
+
+    currentFinal003.resolve(response(structuredClone(currentDetail)));
+    const selectedIdentity = await screen.findByRole("region", { name: "Selected source obligation" });
+    await waitFor(() => expect(selectedIdentity.textContent).toContain("Current final 003"));
+    navigateStage("Assessment");
+    const assessmentResult = await screen.findByRole("region", { name: "Assessment result" });
+    expect(assessmentResult.textContent).toContain("Current final 003 PAY assessment.");
+    expect(selectedIdentity.textContent).toContain("Current final 003");
+
+    await act(async () => { staleFirst003.resolve(response(structuredClone(staleDetail))); });
+
+    await waitFor(() => expect(selectedIdentity.textContent).toContain("Current final 003"));
+    expect(selectedIdentity.textContent).not.toContain("Stale first 003");
+    expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByRole("region", { name: "Assessment result" }).textContent).toContain("Current final 003 PAY assessment.");
+    expect(screen.getByRole("region", { name: "Assessment result" }).textContent).not.toContain("Stale first 003 HOLD assessment.");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("shows current recovery after a successful response is superseded by a newer aggregate version", async () => {
     const rows = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"]
       .map((id) => ({ ...obligation(id, true), decision: "PAY" as const }));
