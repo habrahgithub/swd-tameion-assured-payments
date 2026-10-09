@@ -892,6 +892,8 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
+    expect(feedback.textContent).toContain("Refresh the read-only queue summary for any newer record");
+    expect(feedback.textContent).toContain("it does not confirm this operation's exact receipt or completion");
     const detailReadsBeforeObservation = detailReads;
     const queueReadsBeforeObservation = queueReads;
     const postsBeforeObservation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;

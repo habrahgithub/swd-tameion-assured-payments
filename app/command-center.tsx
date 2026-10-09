@@ -1471,7 +1471,7 @@ function assessmentFeedbackForResponse(
         ? "HTTP 202: the provider result is durable, but the current assessment is not sealed."
         : "HTTP 202: the operation is still running; this is not a current recommendation.",
       durability: recoveryPending ? "Provider result recorded; current assessment not yet durable." : "Completion not confirmed; request key remains bound.",
-      nextStep: "Refresh current status before another assessment action.",
+      nextStep: "Refresh the read-only queue summary for any newer record; it does not confirm this operation's exact receipt or completion.",
       owner: "Unassigned · no individual recovery owner is recorded",
     };
   }
@@ -1482,7 +1482,7 @@ function assessmentFeedbackForResponse(
         ? "No response was received, so the assessment outcome is unknown."
         : actionErrorMessage(result.data),
       durability: "No current receipt; existing request key retained.",
-      nextStep: "Refresh current status before another assessment action; no automatic retry was sent.",
+      nextStep: "Refresh the read-only queue summary for any newer record; this does not confirm the operation. No automatic retry was sent.",
       owner: "Unassigned · assessment outcome is unresolved",
     };
   }
@@ -1491,7 +1491,7 @@ function assessmentFeedbackForResponse(
       obligationId, expectedVersion, selectionGeneration, kind: "stale", title: "Assessment was not made current.",
       message: actionErrorMessage(result.data),
       durability: "No assessment was recorded as current for this request.",
-      nextStep: "Refresh the selected obligation's current status before deciding whether another assessment is available.",
+      nextStep: "Refresh the read-only queue summary for any newer record; it does not confirm this operation's exact receipt or completion.",
       owner: "You · read-only status review",
     };
   }
@@ -1500,7 +1500,7 @@ function assessmentFeedbackForResponse(
     title: result.status === 409 ? "Assessment was refused." : "Assessment result is unavailable.",
     message: actionErrorMessage(result.data),
     durability: "No current receipt; existing request key retained.",
-    nextStep: "Refresh current status before another assessment action; no automatic retry was sent.",
+    nextStep: "Refresh the read-only queue summary for any newer record; this does not confirm the operation. No automatic retry was sent.",
     owner: "Finance Agent · individual recovery owner is not recorded",
   };
 }
