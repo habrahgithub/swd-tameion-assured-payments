@@ -2,8 +2,7 @@ import { syntheticSourceRecords } from "../tests/test-support/synthetic-source-r
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
-import { GET as getObligationList } from "../app/api/obligations/route";
+import { projectObligationDetail, projectObligationList } from "../src/server/obligation-read-model";
 import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
 import { J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
 import type { J2aCircleClient } from "../src/execution/provider-adapter";
@@ -55,17 +54,13 @@ async function genuinePreparedReadModel() {
     reasons: ["Controlled browser fixture: test-seeded LIVE_AI state for the existing proxy-preparation gate; no live AI call was made."],
   });
 
-  (globalThis as typeof globalThis & { __tameionDemoState?: DemoState }).__tameionDemoState = state;
-  const listResponse = await getObligationList();
-  if (!listResponse.ok) throw new Error("Actual obligation list GET failed in the isolated browser fixture.");
+  const listResponse = projectObligationList(state);
+  if (!listResponse.ok) throw new Error("Production list projection failed in the isolated browser fixture.");
   const list = await listResponse.json();
   const details: Record<string, any> = {};
   for (const record of state.liveUsageRecords) {
-    const response = await getObligationDetail(
-      new Request(`http://localhost/api/obligations/${record.obligation_id}`),
-      { params: Promise.resolve({ id: record.obligation_id }) },
-    );
-    if (!response.ok) throw new Error(`Actual detail GET failed for ${record.obligation_id}.`);
+    const response = projectObligationDetail(state, record.obligation_id);
+    if (!response.ok) throw new Error(`Production detail projection failed for ${record.obligation_id}.`);
     details[record.obligation_id] = await response.json();
   }
   return { state, list, details, preflight };

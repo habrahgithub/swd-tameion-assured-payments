@@ -59,3 +59,23 @@ Generated builds, reports, local receipts and artifacts are not committed.
 Historical source exposure, secret triage, runtime advisories, independent
 review, scenario UAT and release strategy remain separate gates. This candidate
 claims no public release, merge, deployment, financial execution or submission.
+
+## Private withdrawal safety boundary
+
+Current source admission is checked before direct authorization and again at
+execution and the final provider-send boundary. Restoring historical approvals,
+PAEs or aggregates cannot admit a withdrawn source. Missing or unverifiable
+eligibility blocks new authorization/submission; recorded evidence is retained.
+
+Approval and both kill-switch HTTP mutations are disabled with
+`REQUESTER_UNVERIFIED` before durable state access. No verified requester boundary
+exists here: caller identity fields and a designated approver are not authentication.
+This is a fail-closed demonstrator, not a usable live payment workflow.
+
+Obligation-detail GET projects recorded evidence only. It does not recover an
+in-flight marker, reconcile/persist state or query a provider. An unresolved recorded
+outcome remains unresolved; this candidate supplies no live reconciliation workflow.
+
+Withdrawn list/detail and approval-packet reads short-circuit before state hydration, whose legacy
+durable loader can seed or migrate records. No database read-path extraction or
+live reconciliation is introduced by this correction.

@@ -308,6 +308,8 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
         execution_authority: "ONE_EXACT_PACKET_PRIME_AUTHORIZED",
       });
       expect(provider.createCount()).toBe(1);
+      // Explicit mock-only reconciliation; HTTP detail is purely observational.
+      await state.worker.reconcilePendingByIdempotencyKey(authorized.sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
       const detailResponse = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), { params: Promise.resolve({ id: selectedId }) });
       const detailBody = await detailResponse.json();
       expect(detailBody.execution).toMatchObject({ status: "SETTLED", obligation_id: selectedId });
@@ -587,13 +589,16 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(restarted.getRecord(selectedId)?.state_at_event_baseline).toBe("OUTSTANDING");
   });
 
-  it("returns one post-reconciliation authority read after GET resolves a persisted UNKNOWN", async () => {
+  it("projects previously recorded reconciliation without resolving UNKNOWN during GET", async () => {
     const { snapshot, sealed, provider, selectedId } = await authorizedSnapshot();
     const acceptingThenLosingResponse = circleClient({ loseCreateResponse: true });
     const state = restoredWithCircle(snapshot, acceptingThenLosingResponse);
     expect((await state.worker.execute(sealed)).status).toBe("UNKNOWN");
     expect(acceptingThenLosingResponse.createCount()).toBe(1);
 
+    // Mock-only explicit worker reconciliation retains the financial proof;
+    // the GET below only projects its already-recorded result.
+    await state.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
     stateMocks.getDemoState.mockResolvedValue(state);
     try {
       const response = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
@@ -621,7 +626,7 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     }
   });
 
-  it("does not publish a locally reconciled success when attached durable CAS rejects, then permits a safe read-only follow-up", async () => {
+  it("does not publish CAS-rejected reconciliation through GET; explicit mock reconciliation retains no-resubmit safety", async () => {
     const { snapshot, sealed, selectedId } = await authorizedSnapshot();
     const acceptingThenLosingResponse = circleClient({ loseCreateResponse: true });
     const staleWriter = restoredWithCircle(snapshot, acceptingThenLosingResponse);
@@ -651,17 +656,20 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     reloadedAuthority.attachRepository(repository, "identity-integration-reconcile-cas", 2);
     stateMocks.getDemoState.mockResolvedValueOnce(staleWriter).mockResolvedValue(reloadedAuthority);
 
+    await expect(staleWriter.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID))
+      .rejects.toBeInstanceOf(DemoStateConflictError);
+    // Use durable authority after the failed writer; GET cannot repair a CAS.
+    stateMocks.getDemoState.mockReset().mockResolvedValue(reloadedAuthority);
     const firstResponse = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
       params: Promise.resolve({ id: selectedId }),
     });
-    expect(firstResponse.status).toBe(409);
+    expect(firstResponse.status).toBe(200);
     const firstBody = await firstResponse.json();
-    expect(firstBody.code).toBe("OPS-002");
-    expect(firstBody.provider_observation).toMatchObject({ status: "CONFIRMED", durably_recorded: false });
-    expect(firstBody.authoritative_state).toMatchObject({ execution_status: "UNKNOWN", source_payable_state: "OUTSTANDING" });
-    expect(firstBody.execution).toBeUndefined();
-    expect(firstBody.truth).toBeUndefined();
+    expect(firstBody.execution.status).toBe("UNKNOWN");
+    expect(firstBody.aggregate.execution_state).toBe("UNKNOWN");
     expect(acceptingThenLosingResponse.createCount()).toBe(1);
+    expect(repository.compareAndSet).toHaveBeenCalledTimes(1);
+    await reloadedAuthority.worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, DEMO_ORGANIZATION_ID);
 
     const followUp = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
       params: Promise.resolve({ id: selectedId }),
@@ -675,4 +683,24 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(acceptingThenLosingResponse.createCount()).toBe(1);
     expect(repository.compareAndSet).toHaveBeenCalledTimes(2);
   });
+  it.each(["UNKNOWN", "SUBMITTING", "SETTLED"] as const)("detail GET observes historical %s without provider query or state mutation", async status => {
+    const { snapshot, sealed, selectedId } = await authorizedSnapshot();
+    const api = circleClient({ loseCreateResponse: true });
+    const state = restoredWithCircle(snapshot, api);
+    await state.worker.execute(sealed);
+    state.worker.restoreSnapshot(state.worker.exportSnapshot().map(record => ({ ...record, status })));
+    const before = state.exportSnapshot();
+    const query = vi.spyOn(state.providerAdapter, "getStatus");
+    const reconcile = vi.spyOn(state.worker, "reconcilePendingByIdempotencyKey");
+    stateMocks.getDemoState.mockResolvedValue(state);
+    const response = await getObligationDetail(new Request(`http://localhost/api/obligations/${selectedId}`), {
+      params: Promise.resolve({ id: selectedId }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).execution.status).toBe(status);
+    expect(state.exportSnapshot()).toEqual(before);
+    expect(query).not.toHaveBeenCalled(); expect(reconcile).not.toHaveBeenCalled();
+    expect(api.createCount()).toBe(1);
+  });
+
 });

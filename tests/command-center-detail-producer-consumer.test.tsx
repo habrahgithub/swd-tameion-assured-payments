@@ -1741,7 +1741,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("consumes the actual 422 assurance refusal with N+1 and no sealed PAE as NOT_CREATED evidence", async () => {
+  it("keeps HTTP approval disabled and consumes direct synthetic assurance refusal as NOT_CREATED evidence", async () => {
     const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     const assessment = fixture.state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, fixture.selectedId)!;
@@ -1756,7 +1756,15 @@ describe("real detail GET producer-consumer packet controls", () => {
         reviewed_assessment_hash: assessment.hash,
       }),
     }), { params: Promise.resolve({ id: fixture.selectedId }) });
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(403);
+    expect(fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId).state).toBe("APPROVAL_PENDING");
+    expect(() => approveAndSealPae(fixture.state.store, signingKeyId, {
+      organizationId: DEMO_ORGANIZATION_ID, obligationId: fixture.selectedId,
+      expectedVersion: current.aggregate_version,
+      reviewedAssessmentId: assessment.record.assessment_id, reviewedAssessmentHash: assessment.hash,
+      actorId: "USR-DEMO-OPERATOR", actorRole: "FINANCE_APPROVER",
+      policyVersion: current.policy_version, reasonText: "Mock-only safety kernel refusal proof.",
+    }, fixture.state.trustedKeys)).toThrow(expect.objectContaining({ overall: "BLOCK" }));
 
     const body = await detailJson(fixture.state, fixture.selectedId);
     expect(body.aggregate.state).toBe("AUTHORIZED");

@@ -1,3 +1,4 @@
+import { isCurrentSourceEligible } from "../src/server/source-records";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
@@ -420,6 +421,67 @@ describe("ExecutionWorker final authority gates", () => {
     await expect(fixture.worker({ resolveActorAuthority: undefined }).execute(fixture.sealed))
       .rejects.toMatchObject({ code: "ACT-002", message: expect.stringContaining("actor authority source") });
     expect(fixture.store.get(ORG, OBLIGATION).pae_state).toBe("UNUSED");
+    expect(fixture.adapter.getSubmissionCount()).toBe(0);
+  });
+});
+
+
+describe("withdrawn source authority boundaries", () => {
+  it("refuses direct authorization of a restored otherwise-valid assessed obligation before mutation", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ reviewed_aggregate_version: null }));
+    sealTestAssessment(store, ORG, OBLIGATION, 3);
+    const before = store.exportSnapshot();
+    vi.mocked(isCurrentSourceEligible).mockReturnValue(false);
+    expect(() => approveAndSealPae(store, SIGNING_KEY_ID, {
+      organizationId: ORG, obligationId: OBLIGATION, expectedVersion: 3,
+      ...currentAssessmentReview(store, ORG, OBLIGATION),
+      actorId: "USR-OPERATOR-001", actorRole: "FINANCE_APPROVER",
+      policyVersion: "POLICY-P0-1", reasonText: "Restored synthetic authority must not restore source admission.",
+    })).toThrow(expect.objectContaining({ code: "SRC-001" }));
+    expect(store.exportSnapshot()).toEqual(before);
+  });
+
+  it.each([false, undefined, "unavailable"] as const)("refuses restored valid PAE with current eligibility %s before reservation", async (eligibility) => {
+    const fixture = authorizedFixture();
+    const restored = AuthorityStore.fromSnapshot(fixture.store.exportSnapshot());
+    vi.mocked(isCurrentSourceEligible).mockImplementation(() => {
+      if (eligibility === "unavailable") throw new Error("Source unavailable");
+      return eligibility as boolean;
+    });
+    const worker = new ExecutionWorker(restored, fixture.adapter, undefined, undefined, {
+      loadAuthorizationArtifacts: () => fixture.authorization,
+      resolveActorAuthority: () => fixture.actorAuthority,
+    });
+    const before = restored.exportSnapshot();
+    await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "SRC-001" });
+    expect(restored.exportSnapshot()).toEqual(before);
+    expect(worker.exportSnapshot()).toEqual([]);
+    expect(fixture.adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it.each(["reservation", "durable reload", "provider preflight"] as const)("refuses withdrawal during %s before provider send", async (point) => {
+    const fixture = authorizedFixture();
+    const originalSubmit = fixture.adapter.submitTransfer.bind(fixture.adapter);
+    if (point === "provider preflight") vi.spyOn(fixture.adapter, "submitTransfer").mockImplementation(async params => {
+      await Promise.resolve();
+      vi.mocked(isCurrentSourceEligible).mockReturnValue(false);
+      return originalSubmit(params);
+    });
+    const worker = new ExecutionWorker(fixture.store, fixture.adapter, async () => {
+      if (point === "reservation") vi.mocked(isCurrentSourceEligible).mockReturnValue(false);
+    }, undefined, {
+      loadAuthorizationArtifacts: () => fixture.authorization,
+      resolveActorAuthority: () => fixture.actorAuthority,
+      reloadDurableExecutionContext: async () => {
+        if (point === "durable reload") vi.mocked(isCurrentSourceEligible).mockReturnValue(false);
+        return { authorization: fixture.authorization, aggregate: fixture.store.get(ORG, OBLIGATION),
+          trustedKeys: processTrustedKeyRegistry.export(), actorAuthorities: [fixture.actorAuthority], executionKillSwitched: false };
+      },
+    });
+    await expect(worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "SRC-001" });
+    expect(fixture.store.get(ORG, OBLIGATION)).toMatchObject({ pae_state: "REVOKED", execution_state: "BLOCKED" });
+    expect(worker.getExecutionRecord(fixture.sealed.payload.idempotency_key)?.status).toBe("BLOCKED");
     expect(fixture.adapter.getSubmissionCount()).toBe(0);
   });
 });

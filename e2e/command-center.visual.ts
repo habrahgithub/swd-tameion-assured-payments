@@ -1705,7 +1705,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
   }
 
   const manifestPath = testInfo.outputPath("stage1-initial-state-captures/manifest.json");
-  await writeFile(manifestPath, JSON.stringify({ candidateSha, source: "Local read-only application GET producer data; only empty/error states are overridden", entries: manifest }, null, 2));
+  await writeFile(manifestPath, JSON.stringify({ candidateSha, source: "Production read-model projection with synthetic fixture; only empty/error states are overridden", entries: manifest }, null, 2));
   await testInfo.attach("stage1-initial-state-manifest.json", { path: manifestPath, contentType: "application/json" });
   console.log("STAGE1_INITIAL_STATE_CAPTURE_MANIFEST", JSON.stringify(manifest));
 });
@@ -1929,7 +1929,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
           outcome: outcome.name,
           viewedStage: stage,
           targetViewport: viewport,
-          source: "read-only local DemoState detail GET for source OBL-J0C-003, then controlled browser mock",
+          source: "production detail projection with synthetic source OBL-J0C-003, then controlled browser mock",
           overrides: ["aggregate version incremented to make the existing assessment pointer stale", "all five queue advisory rows marked PAY for this isolated fixture", "assessment provenance set to NOT_LIVE_AI fixture", "assessment POST response mocked; no AI/provider request"],
           providerMode: "NOT_LIVE_AI queue mock; no assessment provider call",
           browserVersion: browser.version(),

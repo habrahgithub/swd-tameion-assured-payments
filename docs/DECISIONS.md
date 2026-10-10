@@ -37,3 +37,17 @@ timeouts, image tolerances and assertions. Disabled wallet-readiness guidance
 wraps within its container at zoom; its wording, disabled state and authority
 boundary remain unchanged. Font or image-baseline changes require separate
 review of baseline provenance.
+
+## 2026-10-10 — Private withdrawal and requester boundary correction
+
+Under the existing writer admission, current source eligibility is required in the
+authorization pipeline and worker, including its post-await provider-send guard.
+Historical valid records cannot restore source eligibility. Existing signature,
+expiry, packet binding, idempotency and durable authority checks are retained.
+
+Approval and both kill-switch HTTP mutations fail closed before state access until
+a verified requester boundary is separately admitted. No authentication architecture
+or caller/server-selected actor fallback is introduced. Detail GET is observational
+only; mock-only worker reconciliation tests preserve financial safety proofs.
+Remaining design-derived commentary is withdrawn with its original retained privately.
+No baseline replacement, dependency uplift, public action or live operation is admitted.

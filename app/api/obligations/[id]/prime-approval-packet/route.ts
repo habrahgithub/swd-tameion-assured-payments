@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { buildJ2PrimeApprovalPacket, renderJ2PrimeApprovalPacketText } from "../../../../../src/pipeline/prime-approval-packet";
-import { getDemoState } from "../../../../../src/server/demo-state";
+import { isCurrentSourceEligible } from "../../../../../src/server/source-records";
+import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../../src/server/demo-state";
 
 /**
  * Renders the exact-intent disclosure Prime must approve before any real J2
@@ -11,6 +12,9 @@ import { getDemoState } from "../../../../../src/server/demo-state";
  */
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
+  if (isCurrentSourceEligible(DEMO_ORGANIZATION_ID, id) !== true) {
+    return NextResponse.json({ error: "Obligation source record not found", code: "SRC-001" }, { status: 404 });
+  }
   const state = await getDemoState();
   const sealed = state.getSealedPae(id);
   if (!sealed) {

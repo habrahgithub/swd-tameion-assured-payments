@@ -8,3 +8,16 @@ export function loadPublicSourceRecords(): LiveUsageObligationRecord[] {
   }
   return [];
 }
+
+/** Current source admission is independent of restored aggregates or PAEs.
+ * This withdrawn demonstrator has no admitted source records. A future source
+ * admission policy requires separate authority; historical IDs cannot revive it.
+ */
+export function isCurrentSourceEligible(organizationId: string, obligationId: string): boolean {
+  try {
+    return organizationId === "ORG-DEMO-001" &&
+      loadPublicSourceRecords().some(record => record.obligation_id === obligationId);
+  } catch {
+    return false;
+  }
+}

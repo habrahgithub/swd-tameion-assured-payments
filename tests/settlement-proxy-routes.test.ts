@@ -185,7 +185,7 @@ afterEach(() => {
 });
 
 describe("selected genuine Arc proxy route enforcement", () => {
-  it("selects the current designated approver from durable authority, ignoring request actor identity", async () => {
+  it("refuses a forged requester even when a designated approver exists", async () => {
     const { state, selectedId, api } = await preparedState();
     reassess(state, selectedId);
     const designated = state.actorAuthorities.export()[0]!;
@@ -200,13 +200,10 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(request, { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(200);
-    expect(state.getAuthorizationArtifacts(selectedId)?.approval_record).toMatchObject({
-      actor_id: "USR-DEMO-OPERATOR",
-      actor_role: "FINANCE_APPROVER",
-      authority_version: "7",
-    });
-    expect(state.getSealedPae(selectedId)?.payload.approval_evidence[0]?.authority_version).toBe("7");
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "REQUESTER_UNVERIFIED" });
+    expect(state.getAuthorizationArtifacts(selectedId)).toBeUndefined();
+    expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -245,39 +242,39 @@ describe("selected genuine Arc proxy route enforcement", () => {
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
     const body = await response.json();
 
-    expect(response.status).toBe(409);
-    expect(body.code).toBe("ACT-002");
+    expect(response.status).toBe(403);
+    expect(body.code).toBe("REQUESTER_UNVERIFIED");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("rejects authorization after proxy preparation when the current assessment is stale", async () => {
+  it("rejects unauthenticated authorization before considering a stale assessment", async () => {
     const { state, selectedId, api } = await preparedState();
     const stale = { reviewedAssessmentId: "stale-review", reviewedAssessmentHash: "a".repeat(64) };
     mocks.getDemoState.mockResolvedValue(state);
 
     const response = await approve(approvalRequest(state, selectedId, stale), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(409);
-    expect((await response.json()).error).toMatch(/current LIVE_AI PAY assessment/i);
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("rejects authorization when the post-binding assessment is not LIVE_AI", async () => {
+  it("rejects unauthenticated authorization before considering assessment provider mode", async () => {
     const { state, selectedId, api } = await preparedState();
     reassess(state, selectedId, { provider_mode: "NOT_LIVE_AI" });
     mocks.getDemoState.mockResolvedValue(state);
 
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(409);
-    expect((await response.json()).error).toMatch(/current LIVE_AI PAY assessment/i);
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("approves the explicitly selected 003 while an earlier-due PAY recommendation exists for 001", async () => {
+  it("retains direct synthetic pipeline selected-identity proof while HTTP authorization stays disabled", async () => {
     const { state, selectedId, records, api } = await preparedState(2);
     reassess(state, selectedId);
     const earlierDuePay = records.find((record) => record.obligation_id === "OBL-J0C-001");
@@ -289,8 +286,10 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ sealed_pae: { payload: { obligation_ids: [selectedId] } } });
+    expect(response.status).toBe(403);
+    expect(state.getSealedPae(selectedId)).toBeUndefined();
+    const sealed = sealAuthorization(state, selectedId);
+    expect(sealed.payload.obligation_ids).toEqual([selectedId]);
     expect(state.getSealedPae(selectedId)?.payload.obligation_ids).toEqual([selectedId]);
     expect(state.getSealedPae("OBL-J0C-001")).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();

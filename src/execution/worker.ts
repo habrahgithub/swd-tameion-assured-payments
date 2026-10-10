@@ -1,3 +1,4 @@
+import { isCurrentSourceEligible } from "../server/source-records";
 import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
 import { T1_SINGLE_APPROVAL, type ActorAuthorityRecord } from "../authority/actor-authority";
 import { AuthorityError } from "../authority/aggregate";
@@ -519,6 +520,15 @@ export class ExecutionWorker {
     if (!Number.isFinite(expiry) || expiry <= now) {
       throw new ExecutionBlockedError("PAE expired during provider preflight; the reserved instruction was refused", "EXP-001");
     }
+    this.requireCurrentSourceEligibility(payload.organization_id, obligationId);
+  }
+
+  private requireCurrentSourceEligibility(organizationId: string, obligationId: string): void {
+    let eligible = false;
+    try { eligible = isCurrentSourceEligible(organizationId, obligationId) === true; } catch { /* fail closed */ }
+    if (!eligible) {
+      throw new ExecutionBlockedError("Current source is withdrawn, missing, or unverifiable; provider submission refused", "SRC-001");
+    }
   }
 
   private validateCurrentExecutionAuthority(
@@ -529,6 +539,7 @@ export class ExecutionWorker {
   ): void {
     const { payload } = sealed;
     const obligationId = payload.obligation_ids[0];
+    this.requireCurrentSourceEligibility(payload.organization_id, obligationId);
     if (!this.options.loadAuthorizationArtifacts) {
       throw new ExecutionBlockedError("Current durable approval and assurance source is unavailable; no provider submission was made", "AUTH-001");
     }

@@ -1,3 +1,4 @@
+import { isCurrentSourceEligible } from "../server/source-records";
 import { randomUUID } from "node:crypto";
 
 import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
@@ -59,6 +60,11 @@ export function approveAndSealPae(
   approvalRecord: ReturnType<typeof sealDurableApprovalRecord>;
   assuranceRecord: ReturnType<typeof sealDurableAssuranceRecord>;
 } {
+  let sourceEligible = false;
+  try { sourceEligible = isCurrentSourceEligible(input.organizationId, input.obligationId) === true; } catch { /* unavailable is ineligible */ }
+  if (!sourceEligible) {
+    throw new AuthorityError("Current source is withdrawn, missing, or unverifiable; authorization refused", "SRC-001");
+  }
   const now = input.now ?? (() => new Date());
   const isoNow = now().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
   const current = store.get(input.organizationId, input.obligationId);

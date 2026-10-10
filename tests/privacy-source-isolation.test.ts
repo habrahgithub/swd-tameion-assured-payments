@@ -1,3 +1,4 @@
+import { isCurrentSourceEligible } from "../src/server/source-records";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { DemoState } from "../src/server/demo-state";
@@ -12,6 +13,12 @@ function json(relativePath: string) {
 }
 
 describe("public candidate privacy boundary", () => {
+  it("never treats a historical or caller-supplied identity as current source admission", () => {
+    expect(isCurrentSourceEligible("ORG-DEMO-001", "OBL-J0C-001")).toBe(false);
+    expect(isCurrentSourceEligible("ORG-OTHER", "OBL-J0C-001")).toBe(false);
+    expect(isCurrentSourceEligible("ORG-DEMO-001", "UNKNOWN")).toBe(false);
+  });
+
   it("withdraws genuine records and evidence rather than relabeling them synthetic", () => {
     for (const name of ["LIVE_USAGE_SET", "SOURCE_EVIDENCE_LEDGER"]) {
       const document = json(`../data/live-usage/${name}.json`);
