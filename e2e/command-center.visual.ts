@@ -1280,6 +1280,25 @@ test("stale detail offers only a mocked read refresh after an assessment respons
   expect(requests.filter((request) => request.startsWith("POST"))).toEqual(["POST /api/obligations/OBL-UAT-01/assess"]);
 });
 
+test("disabled wallet funding hold stays readable without overflow at 200% mobile zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
+  const refresh = page.getByRole("button", { name: "Refresh Wallet Balance", exact: true });
+  await expect(refresh).toBeDisabled();
+  await expect(refresh).toHaveAttribute("aria-describedby", "wallet-balance-refresh-hold");
+  await expect(page.locator("#wallet-balance-refresh-hold")).toHaveText("Disabled · AUTH_GATE_UNVERIFIED · operator access is not verified");
+  await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
+  const dimensions = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+    hold: document.getElementById("wallet-balance-refresh-hold")!.getBoundingClientRect().toJSON(),
+  }));
+  expect(dimensions.document, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewport);
+  expect(dimensions.hold.right).toBeLessThanOrEqual(dimensions.viewport);
+  await expect(refresh).toBeDisabled();
+  expect(unexpectedWrites).toEqual([]);
+});
+
 test("Command Center mobile layout and review image", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());

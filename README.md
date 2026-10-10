@@ -38,6 +38,12 @@ success is not authorization for live AI, database, wallet, provider or payment
 activity. The separate synthetic demonstration uses the existing isolated fake
 provider lane; it cannot confer authority on genuine obligations.
 
+Browser verification builds and serves the production candidate with the
+Chromium revision recorded by Playwright. It starts its own local server;
+an unrelated running server is not reused. Image comparisons require the
+reviewed baseline's browser and font environment; do not replace baselines
+solely to clear an environment mismatch.
+
 ## Safety and release boundary
 
 The upstream business system remains the source of obligation facts. Source

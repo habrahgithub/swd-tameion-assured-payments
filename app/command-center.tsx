@@ -2924,9 +2924,9 @@ export function CommandCenter() {
                 ? <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">Selected settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Wallet funds, network fees, and execution readiness require a separate current selected-intent preflight.</p>
                 : null}
               <div>
-                <button type="button" disabled aria-label="Refresh Wallet Balance" aria-describedby="wallet-balance-refresh-hold" className="inline-flex min-h-[44px] flex-col items-start justify-center rounded border border-[var(--color-border)] px-3 py-1 text-start font-semibold text-[var(--color-ink-muted)] disabled:cursor-not-allowed disabled:opacity-60">
+                <button type="button" disabled aria-label="Refresh Wallet Balance" aria-describedby="wallet-balance-refresh-hold" className="inline-flex min-h-[44px] max-w-full flex-col items-start justify-center rounded border border-[var(--color-border)] px-3 py-1 text-start font-semibold text-[var(--color-ink-muted)] disabled:cursor-not-allowed disabled:opacity-60">
                   <span className="text-[12px] leading-4">Refresh Wallet Balance</span>
-                  <span id="wallet-balance-refresh-hold" className="text-[10px] leading-3">
+                  <span id="wallet-balance-refresh-hold" className="max-w-full text-[10px] leading-3 [overflow-wrap:anywhere]">
                     {selectedId ? "Disabled · AUTH_GATE_UNVERIFIED · operator access is not verified" : "Select an obligation for its settlement amount · AUTH_GATE_UNVERIFIED · operator access is not verified"}
                   </span>
                 </button>

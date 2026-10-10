@@ -30,3 +30,10 @@ does not authorize live AI, database, wallet, provider or payment activity.
 Current-tree withdrawal cannot erase historical public exposure. History,
 credential triage, runtime advisories, independent review and release decisions
 remain separate gates. No public push, deployment or release is implied.
+
+Browser compatibility checks serve a fresh production build using Playwright's
+recorded Chromium channel and a dedicated local server. They retain existing
+timeouts, image tolerances and assertions. Disabled wallet-readiness guidance
+wraps within its container at zoom; its wording, disabled state and authority
+boundary remain unchanged. Font or image-baseline changes require separate
+review of baseline provenance.
