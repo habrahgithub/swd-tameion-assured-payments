@@ -1,0 +1,206 @@
+{
+  "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+  "notice": "Independently invented test records. OBL-J0C identifiers are compatibility aliases for existing regression cases only; no source facts or private evidence are reproduced. Never load this file in application runtime.",
+  "records": [
+    {
+      "obligation_id": "OBL-J0C-001",
+      "counterparty_id": "CP-SYNTHETIC-001",
+      "synthetic": true,
+      "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      "service_category": "SYNTHETIC_SERVICE_001",
+      "recurrence": "MONTHLY",
+      "issue_date": "2020-01-01",
+      "due_date": null,
+      "due_date_status": "NOT_STATED_ON_SOURCE",
+      "effective_due_date": "2020-01-01",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "AUTHORIZED_OPERATOR_ATTESTATION",
+        "authority_reference": "SYNTHETIC_TEST_ATTESTATION_001"
+      },
+      "amount": "367.25",
+      "currency": "AED",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Invented monthly service 001; synthetic test only, not a vendor payment.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-SYNTHETIC-001",
+          "content_sha256": "0288ee33f23f155878eb6a3c334d44962e88ca3eac1384f0ba607a18e03c95b6",
+          "provenance_class": "SYNTHETIC_TEST_FIXTURE",
+          "retention": "NO_PRIVATE_SOURCE",
+          "source_type": "SYNTHETIC_TEST_RECORD"
+        }
+      ],
+      "candidate_readiness": {
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_sha256": "0c63eec2ea5481d41a1b26590eb3d2f5f72b59161d5e0f38d0d606ea744bdcd7",
+        "provenance_class": "SYNTHETIC_TEST_FIXTURE"
+      },
+      "source_destination_reference_token": "DEST-SYNTHETIC-001",
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+    },
+    {
+      "obligation_id": "OBL-J0C-002",
+      "counterparty_id": "CP-SYNTHETIC-002",
+      "synthetic": true,
+      "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      "service_category": "SYNTHETIC_SERVICE_002",
+      "recurrence": "MONTHLY",
+      "issue_date": "2020-01-02",
+      "due_date": "2020-01-02",
+      "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2020-01-02",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-SYNTHETIC-002"
+      },
+      "amount": "12.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Invented monthly service 002; synthetic test only, not a vendor payment.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-SYNTHETIC-002",
+          "content_sha256": "908d0dbbc6fed7d838a37230e195e485332c01e7c15a6fe175c62e6c5187a3d9",
+          "provenance_class": "SYNTHETIC_TEST_FIXTURE",
+          "retention": "NO_PRIVATE_SOURCE",
+          "source_type": "SYNTHETIC_TEST_RECORD"
+        }
+      ],
+      "candidate_readiness": {
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_sha256": "77402884acf853cdffb3ee88cbc99178db0fddb5a35234887418ced5bf4fe217",
+        "provenance_class": "SYNTHETIC_TEST_FIXTURE"
+      },
+      "source_destination_reference_token": "DEST-SYNTHETIC-002",
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+    },
+    {
+      "obligation_id": "OBL-J0C-003",
+      "counterparty_id": "CP-SYNTHETIC-003",
+      "synthetic": true,
+      "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      "service_category": "SYNTHETIC_SERVICE_003",
+      "recurrence": "MONTHLY",
+      "issue_date": "2020-01-03",
+      "due_date": "2020-01-03",
+      "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2020-01-03",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-SYNTHETIC-003"
+      },
+      "amount": "8.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Invented monthly service 003; synthetic test only, not a vendor payment.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-SYNTHETIC-003",
+          "content_sha256": "c77998792a9f35b8b5fe1047947783c18854c4f3c512731586e9107f6b5eecaf",
+          "provenance_class": "SYNTHETIC_TEST_FIXTURE",
+          "retention": "NO_PRIVATE_SOURCE",
+          "source_type": "SYNTHETIC_TEST_RECORD"
+        }
+      ],
+      "candidate_readiness": {
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_sha256": "6fdcdee4cf238b67ce76534d4a7638d748975a7310617761cd061926550800f4",
+        "provenance_class": "SYNTHETIC_TEST_FIXTURE"
+      },
+      "source_destination_reference_token": "DEST-SYNTHETIC-003",
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+    },
+    {
+      "obligation_id": "OBL-J0C-004",
+      "counterparty_id": "CP-SYNTHETIC-004",
+      "synthetic": true,
+      "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      "service_category": "SYNTHETIC_SERVICE_004",
+      "recurrence": "MONTHLY",
+      "issue_date": "2020-01-04",
+      "due_date": "2020-01-04",
+      "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2020-01-04",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-SYNTHETIC-004"
+      },
+      "amount": "16.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Invented monthly service 004; synthetic test only, not a vendor payment.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-SYNTHETIC-004",
+          "content_sha256": "fec9dc9086a8b1b882fc2a935640137c94285cd2e74807f4350516eeeffe5d29",
+          "provenance_class": "SYNTHETIC_TEST_FIXTURE",
+          "retention": "NO_PRIVATE_SOURCE",
+          "source_type": "SYNTHETIC_TEST_RECORD"
+        }
+      ],
+      "candidate_readiness": {
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_sha256": "3b5fff40e8cb4acf6b04154a5c9c947e805a3abe0882496e46e17e79d8366f0c",
+        "provenance_class": "SYNTHETIC_TEST_FIXTURE"
+      },
+      "source_destination_reference_token": "DEST-SYNTHETIC-004",
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+    },
+    {
+      "obligation_id": "OBL-J0C-005",
+      "counterparty_id": "CP-SYNTHETIC-005",
+      "synthetic": true,
+      "classification": "SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT",
+      "service_category": "SYNTHETIC_SERVICE_005",
+      "recurrence": "MONTHLY",
+      "issue_date": "2020-01-05",
+      "due_date": "2020-01-05",
+      "due_date_status": "STATED_ON_SOURCE",
+      "effective_due_date": "2020-01-05",
+      "effective_due_date_basis": "INVOICE_DATE_CASH_TERM",
+      "effective_due_date_provenance": {
+        "provenance_class": "SOURCE_INVOICE_DATE",
+        "evidence_id": "EVID-SYNTHETIC-005"
+      },
+      "amount": "24.00",
+      "currency": "USD",
+      "state_at_event_baseline": "OUTSTANDING",
+      "business_purpose_confirmed": true,
+      "commercial_terms": "Invented monthly service 005; synthetic test only, not a vendor payment.",
+      "source_evidence": [
+        {
+          "evidence_id": "EVID-SYNTHETIC-005",
+          "content_sha256": "a38b96f28d2cfeb572176abbf056e1b854226224ec36a2098e6bc2b84851fa45",
+          "provenance_class": "SYNTHETIC_TEST_FIXTURE",
+          "retention": "NO_PRIVATE_SOURCE",
+          "source_type": "SYNTHETIC_TEST_RECORD"
+        }
+      ],
+      "candidate_readiness": {
+        "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+      },
+      "source_destination_evidence": {
+        "fingerprint_sha256": "8cf920b3068dfcae53ac73a0fada37345b38680a5f4007ca08c389843831f0db",
+        "provenance_class": "SYNTHETIC_TEST_FIXTURE"
+      },
+      "source_destination_reference_token": "DEST-SYNTHETIC-005",
+      "arc_product_destination_status": "PENDING_J0_D_TRUST_SEED"
+    }
+  ]
+}

@@ -88,7 +88,7 @@ function authorizeFixture(
   store: AuthorityStore,
   overrides: Partial<AuthorityAggregate> = {},
   assessmentCurrency: string = "AED",
-  assessmentAmount: string = "5760.00",
+  assessmentAmount: string = "367.25",
 ) {
   store.seed(baseAggregate(overrides));
   sealTestAssessment(store, DEMO_ORGANIZATION_ID, "OBL-J0C-002", 1, {
@@ -118,7 +118,7 @@ describe("F1: approval binding gap — source amount/currency match assessment",
       }),
     );
     sealTestAssessment(store, DEMO_ORGANIZATION_ID, "OBL-J0C-002", 1, {
-      race: aedRaceFacts("5760.00", "AED"),
+      race: aedRaceFacts("367.25", "AED"),
     });
 
     expect(() =>
@@ -135,12 +135,12 @@ describe("F1: approval binding gap — source amount/currency match assessment",
     ).toThrow();
   });
 
-  it("P2: assessed AED 99999.00 against aggregate source AED 5760.00 must NOT authorize", () => {
+  it("P2: assessed AED 99999.00 against aggregate source AED 367.25 must NOT authorize", () => {
     const store = new AuthorityStore();
     store.seed(
       baseAggregate({
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),
@@ -168,16 +168,16 @@ describe("F1: approval binding gap — source amount/currency match assessment",
     const result = authorizeFixture(
       store,
       {
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       },
       "AED",
-      "5760.00",
+      "367.25",
     );
     expect(result.aggregate.state).toBe("AUTHORIZED");
-    expect(result.aggregate.source_amount).toBe("5760.00");
+    expect(result.aggregate.source_amount).toBe("367.25");
     expect(result.aggregate.source_currency).toBe("AED");
   });
 
@@ -203,20 +203,20 @@ describe("F2: hydrated stale snapshot/source truth", () => {
   it("pre-change durable snapshot with AED amount=0.000000/no source fields does NOT survive", () => {
     const state = new DemoState();
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001");
-    expect(aggregate.source_amount).toBe("5760.00");
+    expect(aggregate.source_amount).toBe("367.25");
     expect(aggregate.source_currency).toBe("AED");
     expect(aggregate.settlement_conversion_rate).toBe("3.6725");
-    expect(aggregate.amount).toBe("1568.413887");
+    expect(aggregate.amount).toBe("100.000000");
   });
 
-  it("source record remains 5760.00 AED and settlement separately 1568.413887 USD", () => {
+  it("source record remains 367.25 AED and settlement separately 100.000000 USD", () => {
     const state = new DemoState();
     const record = state.getRecord("OBL-J0C-001");
-    expect(record).toMatchObject({ amount: "5760.00", currency: "AED" });
+    expect(record).toMatchObject({ amount: "367.25", currency: "AED" });
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001");
-    expect(aggregate.source_amount).toBe("5760.00");
+    expect(aggregate.source_amount).toBe("367.25");
     expect(aggregate.source_currency).toBe("AED");
-    expect(aggregate.amount).toBe("1568.413887");
+    expect(aggregate.amount).toBe("100.000000");
   });
 });
 
@@ -237,8 +237,8 @@ describe("F3: fail-open numeric/material change", () => {
     const store = new AuthorityStore();
     store.seed(
       baseAggregate({
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),
@@ -291,8 +291,8 @@ describe("F3: fail-open numeric/material change", () => {
     const store = new AuthorityStore();
     store.seed(
       baseAggregate({
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),
@@ -306,8 +306,8 @@ describe("F3: fail-open numeric/material change", () => {
     const store = new AuthorityStore();
     store.seed(
       baseAggregate({
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),
@@ -336,8 +336,8 @@ describe("F3: fail-open numeric/material change", () => {
     const store = new AuthorityStore();
     store.seed(
       baseAggregate({
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),

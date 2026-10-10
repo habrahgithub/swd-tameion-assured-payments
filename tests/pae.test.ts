@@ -62,8 +62,8 @@ function buildFixture(signingKeyId = "TEST-KEY-1") {
     organization_id: "ORG-DEMO-001",
     obligation_ids: ["OBL-J0C-002"],
     evidence_hashes: [
-      "0ef1dd4044b513998fed4b5354b9c92001f78645a2ba7603d21b58bb094227e4",
-      "156d7aea6b0c0b843426cc795eb889982f074bff86df3158688759bd8252332f",
+      "1aa967cce3b448e3de4e4c861b75e9e8bae0069fad4eabad3385e5401d456199",
+      "4e9ef92032f893a9c24e4a14d881f3b83ff737a8436e7f6daae4f08b80608a54",
     ].sort(),
     counterparty_id: "CP-J0C-002",
     counterparty_version: "1",

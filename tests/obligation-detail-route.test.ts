@@ -22,17 +22,17 @@ describe("obligation detail truth-layer API", () => {
     expect(body.truth.settlement_truth.provider_target).toBe("CIRCLE_DCW");
     expect(body.truth.settlement_truth.runtime).toBe("SIMULATED");
     expect(body.truth.settlement_truth.status).toBe("NOT_SUBMITTED");
-    // AED 5760.00 is admitted via conversion: USD = 5760 / 3.6725 = 1568.413887.
-    expect(body.truth.settlement_truth.settlement_amount).toBe("1568.413887");
-    expect(body.truth.settlement_truth.source_amount).toBe("5760.00");
+    // AED 367.25 is admitted via conversion: USD = 367.25 / 3.6725 = 100.000000.
+    expect(body.truth.settlement_truth.settlement_amount).toBe("100.000000");
+    expect(body.truth.settlement_truth.source_amount).toBe("367.25");
     expect(body.truth.settlement_truth.source_currency).toBe("AED");
     expect(body.truth.settlement_truth.settlement_conversion_rate).toBe("3.6725");
     expect(body.demo_arc_trust_simulated).toBe(true);
     expect(body.aggregate.product_trust_provenance).toBe("SIMULATED_DEMO_FIXTURE");
-    expect(body.aggregate.source_amount).toBe("5760.00");
+    expect(body.aggregate.source_amount).toBe("367.25");
     expect(body.aggregate.source_currency).toBe("AED");
     expect(body.aggregate.settlement_conversion_rate).toBe("3.6725");
-    expect(body.record).toMatchObject({ amount: "5760.00", currency: "AED" });
+    expect(body.record).toMatchObject({ amount: "367.25", currency: "AED" });
   });
 
   it("projects a transaction kill switch from server authority state into the truth layer", async () => {

@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import syntheticSourceSet from "./test-support/synthetic-source-records.json";
 import { describe, expect, it } from "vitest";
 
 import { buildFinanceAgentContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
@@ -12,9 +11,8 @@ import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 /**
- * End-to-end proof of the P0 Golden Flow using the ACTUAL genuine,
- * privacy-safe J0-C obligation dataset (data/live-usage/LIVE_USAGE_SET.json)
- * rather than synthetic test fixtures:
+ * End-to-end proof of the P0 Golden Flow using the independently invented, non-economic test records. Legacy obligation identifiers
+ * are compatibility aliases only; these cases provide no genuine-usage evidence:
  *
  *   real obligations -> Finance Agent assessment (all 5) -> sole-candidate
  *   selection -> T1 human approval N->N+1 -> Safety Kernel PASS on N+1 ->
@@ -25,13 +23,10 @@ import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal
  * credentials exist in this build environment — this test proves the
  * product logic, not live testnet connectivity.
  */
-describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)", () => {
-  const fixturePath = path.join(__dirname, "../data/live-usage/LIVE_USAGE_SET.json");
-  const liveUsageSet = JSON.parse(readFileSync(fixturePath, "utf8")) as {
-    records: LiveUsageObligationRecord[];
-  };
+describe("P0 Golden Flow — synthetic obligations end to end (mocked execution)", () => {
+  const liveUsageSet = syntheticSourceSet as { records: LiveUsageObligationRecord[] };
 
-  it("assesses all genuine obligations, selects one candidate, and authorizes+executes it", async () => {
+  it("assesses all synthetic obligations, selects one candidate, and authorizes+executes it", async () => {
     expect(liveUsageSet.records.length).toBeGreaterThanOrEqual(3);
     expect(liveUsageSet.records.length).toBeLessThanOrEqual(5);
 
@@ -61,7 +56,7 @@ describe("P0 Golden Flow — real J0-C obligations end to end (mocked execution)
     const candidateRecord = liveUsageSet.records.find((r) => r.obligation_id === selection.selected_obligation_id)!;
     const [wholePart, fractionalPart] = candidateRecord.amount.split(".");
     const sixDpAmount = `${wholePart}.${fractionalPart.padEnd(6, "0")}`;
-    const settlementAmount = candidateRecord.currency === "AED" ? "1568.413887" : sixDpAmount;
+    const settlementAmount = candidateRecord.currency === "AED" ? "100.000000" : sixDpAmount;
 
     const store = new AuthorityStore();
     const aggregate: AuthorityAggregate = {

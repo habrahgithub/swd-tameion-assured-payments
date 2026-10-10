@@ -2862,7 +2862,7 @@ export function CommandCenter() {
               </>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
                 <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
-                <p className="text-[12px] text-[var(--color-ink-muted)]">The source queue is currently empty. Refresh to check for new genuine records.</p>
+                <p className="text-[12px] text-[var(--color-ink-muted)]">Genuine records are withheld from this candidate for privacy review. No synthetic records have been added to this queue.</p>
               </>}
             </div>
           )}

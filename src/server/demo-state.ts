@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
 import { ActorAuthorityRegistry, type ActorAuthorityRecord } from "../authority/actor-authority";
@@ -10,6 +8,7 @@ import type { StatusResult } from "../execution/provider-adapter";
 import { FakeProviderAdapter, type FakeProviderAdapterSnapshot } from "../execution/fake-provider-adapter";
 import { ArcCircleProviderAdapter } from "../execution/provider-adapter";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
+import { loadPublicSourceRecords } from "./source-records";
 import { selectSoleCandidate } from "../agent/finance-agent";
 import {
   buildJ2aDemoAggregate,
@@ -374,12 +373,6 @@ function parseExecutionRecord(value: unknown): ExecutionRecord {
   return record as unknown as ExecutionRecord & { provider_evidence?: StatusResult | null };
 }
 
-function loadLiveUsageSet(): LiveUsageObligationRecord[] {
-  const fixturePath = path.join(process.cwd(), "data/live-usage/LIVE_USAGE_SET.json");
-  const parsed = JSON.parse(readFileSync(fixturePath, "utf8")) as { records: LiveUsageObligationRecord[] };
-  return parsed.records;
-}
-
 function toUsdcAmount(rawAmount: string, currency: string): string {
   // During DemoState seeding, unsupported currencies (e.g. EUR in fixtures) fail
   // closed to a zero settlement — they cannot proceed to authorization.
@@ -409,8 +402,9 @@ export class DemoState {
     revision?: number,
     adapter?: ProviderAdapter,
     workerOptions: ExecutionWorkerOptions = {},
+    sourceRecords: readonly LiveUsageObligationRecord[] = loadPublicSourceRecords(),
   ) {
-    this.liveUsageRecords = loadLiveUsageSet();
+    this.liveUsageRecords = structuredClone([...sourceRecords]);
     this.repository = repository;
     this.revision = revision;
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
@@ -1033,10 +1027,8 @@ export async function getJ2aRealTestnetDemoState(): Promise<J2aRealTestnetDemoSt
 }
 
 function syntheticEvidenceHash(evidenceId: string): string {
-  // Deterministic 64-hex placeholder derived from the evidence id, distinct
-  // per obligation. Not a real content hash — the real ones live only in
-  // data/live-usage/SOURCE_EVIDENCE_LEDGER.json and are not re-derivable
-  // without the private source documents.
+  // Deterministic placeholder for the simulated lane, not source authority.
+  // The public genuine evidence ledger is withdrawn for privacy review.
   return createHash("sha256").update(`demo-placeholder:${evidenceId}`).digest("hex");
 }
 

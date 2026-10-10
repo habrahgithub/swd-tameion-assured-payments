@@ -1602,8 +1602,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const state = new DemoState();
     const queue = await listJson(state);
     const expectedById = new Map([
-      ["OBL-J0C-001", /One-year business-license\/flexi-desk package.*proforma invoice/i],
-      ["OBL-J0C-005", /One-year productivity-suite commitment covering 2026-03-29 through 2027-03-28.*email invoice excerpt/i],
+      ["OBL-J0C-001", /Invented monthly service 001; synthetic test only/i],
+      ["OBL-J0C-005", /Invented monthly service 005; synthetic test only/i],
     ]);
     const bodies = await Promise.all([...expectedById.keys()].map((id) => detailJson(state, id)));
     const [first, fifth] = bodies;
@@ -1828,8 +1828,8 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     expect(sourceRecord).toMatchObject({
       obligation_id: "OBL-J0C-001",
-      counterparty_id: "CP-J0C-001",
-      amount: "5760.00",
+      counterparty_id: "CP-SYNTHETIC-001",
+      amount: "367.25",
       currency: "AED",
       state_at_event_baseline: "OUTSTANDING",
     });
@@ -1838,27 +1838,27 @@ describe("real detail GET producer-consumer packet controls", () => {
       source_type: evidence.source_type,
       provenance_class: evidence.provenance_class,
     }))).toEqual([{
-      evidence_id: "EVID-J0C-001-A",
-      source_type: "PDF_PROFORMA_INVOICE",
-      provenance_class: "USER_SUPPLIED_SOURCE_DOCUMENT",
+      evidence_id: "EVID-SYNTHETIC-001",
+      source_type: "SYNTHETIC_TEST_RECORD",
+      provenance_class: "SYNTHETIC_TEST_FIXTURE",
     }]);
     expect(prepared).toMatchObject({
       organization_id: DEMO_ORGANIZATION_ID,
       obligation_id: "OBL-J0C-001",
-      source_amount: "5760.00",
+      source_amount: "367.25",
       source_currency: "AED",
-      amount: "1568.413887",
+      amount: "100.000000",
       asset: "USDC",
       network: "ARC_TESTNET",
-      source_evidence_ids: ["EVID-J0C-001-A"],
+      source_evidence_ids: ["EVID-SYNTHETIC-001"],
       business_payment_instruction: {
         payer: { organization_id: DEMO_ORGANIZATION_ID },
         commercial: {
           obligation_id: "OBL-J0C-001",
-          source_amount: "5760.00",
+          source_amount: "367.25",
           source_currency: "AED",
-          settlement_amount: "1568.413887",
-          source_evidence_ids: ["EVID-J0C-001-A"],
+          settlement_amount: "100.000000",
+          source_evidence_ids: ["EVID-SYNTHETIC-001"],
         },
       },
     });
@@ -1874,10 +1874,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     const sourceLineage = within(packet).getByRole("region", { name: "Source obligation lineage" });
     const proxyIdentity = within(packet).getByRole("region", { name: "Controlled Arc Testnet proxy" });
     expect(sourceLineage.textContent).toContain("OBL-J0C-001");
-    expect(sourceLineage.textContent).toContain("5760.00 AED");
+    expect(sourceLineage.textContent).toContain("367.25 AED");
     expect(sourceLineage.textContent).toContain("OUTSTANDING");
-    expect(sourceLineage.textContent).toContain("CP-J0C-001");
-    expect(sourceLineage.textContent).toContain("EVID-J0C-001-A");
+    expect(sourceLineage.textContent).toContain("CP-SYNTHETIC-001");
+    expect(sourceLineage.textContent).toContain("EVID-SYNTHETIC-001");
     expect(sourceLineage.textContent).not.toContain(body.aggregate.counterparty_id);
     expect(sourceLineage.textContent).not.toContain("DEST-J0C-001");
     expect(sourceLineage.textContent).not.toContain("EVID-TEST-1");
@@ -1886,7 +1886,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(proxyIdentity.textContent).toContain("Controlled Arc Testnet proxy, not the source supplier.");
     expect(proxyIdentity.textContent).toContain("ORG-DEMO-001");
     expect(proxyIdentity.textContent).toContain("OBL-J0C-001");
-    expect(proxyIdentity.textContent).toContain("1568.413887 USDC");
+    expect(proxyIdentity.textContent).toContain("100.000000 USDC");
     expect(proxyIdentity.textContent).toContain("ARC_TESTNET");
     expect(proxyIdentity.textContent).toContain(prepared.beneficiary_id);
     expect(proxyIdentity.textContent).not.toContain("0.000001");

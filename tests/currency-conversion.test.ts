@@ -32,19 +32,19 @@ describe("currency conversion", () => {
   });
 
   describe("convertSourceToSettlement — AED to USD", () => {
-    it("converts AED 5760.00 to USD 1568.413887 at rate 3.6725 (round-half-up)", () => {
-      const result = convertSourceToSettlement("5760.00", "AED");
+    it("converts AED 1234.56 to USD 336.163376 at rate 3.6725 (round-half-up)", () => {
+      const result = convertSourceToSettlement("1234.56", "AED");
       expect(result.isAdmitted).toBe(true);
-      expect(result.sourceAmount).toBe("5760.00");
+      expect(result.sourceAmount).toBe("1234.56");
       expect(result.sourceCurrency).toBe("AED");
       expect(result.conversionRate).toBe("3.6725");
-      expect(result.settlementAmount).toBe("1568.413887");
-      expect(result.settlementAtomic).toBe("1568413887");
+      expect(result.settlementAmount).toBe("336.163376");
+      expect(result.settlementAtomic).toBe("336163376");
     });
 
     it("preserves source amount/currency evidence exactly", () => {
-      const result = convertSourceToSettlement("5760.00", "AED");
-      expect(result.sourceAmount).toBe("5760.00");
+      const result = convertSourceToSettlement("1234.56", "AED");
+      expect(result.sourceAmount).toBe("1234.56");
       expect(result.sourceCurrency).toBe("AED");
     });
 
@@ -55,11 +55,11 @@ describe("currency conversion", () => {
       expect(result.settlementAtomic).toBe("100000000");
     });
 
-    it("rounds half-up at the 7th decimal (1568.41388699... -> 1568.413887)", () => {
-      const result = convertSourceToSettlement("5760.00", "AED");
-      // 5760 / 3.6725 = 1568.413886997958...
-      // 7th decimal digit is 9 (>5), so 6th digit rounds up: .413886 -> .413887
-      expect(result.settlementAmount).toBe("1568.413887");
+    it("applies half-up rounding at the 7th decimal (336.16337644... -> 336.163376)", () => {
+      const result = convertSourceToSettlement("1234.56", "AED");
+      // 1234.56 / 3.6725 = 336.163376446562...
+      // 7th decimal digit is 4 (<5), so the 6th digit remains unchanged
+      expect(result.settlementAmount).toBe("336.163376");
     });
 
     it("truncates (floor) for positive amounts when rounding down", () => {
@@ -71,7 +71,7 @@ describe("currency conversion", () => {
     });
 
     it("produces a canonical 6-decimal USDC settlement amount", () => {
-      const result = convertSourceToSettlement("5760.00", "AED");
+      const result = convertSourceToSettlement("1234.56", "AED");
       expect(result.settlementAmount).toMatch(/^(0|[1-9][0-9]*)\.[0-9]{6}$/);
     });
   });
@@ -116,7 +116,7 @@ describe("currency conversion", () => {
 
   describe("toUsdcSettlementAmount", () => {
     it("returns the 6-decimal USDC amount for AED", () => {
-      expect(toUsdcSettlementAmount("5760.00", "AED")).toBe("1568.413887");
+      expect(toUsdcSettlementAmount("1234.56", "AED")).toBe("336.163376");
     });
 
     it("returns the 6-decimal USDC amount for USD", () => {

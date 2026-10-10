@@ -9,20 +9,20 @@ import type { FinanceAgentContext } from "../src/agent/schema";
 function record(overrides: Partial<LiveUsageObligationRecord> = {}): LiveUsageObligationRecord {
   return {
     obligation_id: "OBL-J0C-002",
-    service_category: "AI_SOFTWARE_SUBSCRIPTION_A",
+    service_category: "SYNTHETIC_SERVICE_002",
     recurrence: "MONTHLY",
-    issue_date: "2026-08-14",
-    due_date: "2026-08-14",
+    issue_date: "2020-01-02",
+    due_date: "2020-01-02",
     due_date_status: "STATED_ON_SOURCE",
-    effective_due_date: "2026-08-14",
+    effective_due_date: "2020-01-02",
     effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
-    effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-J0C-002-A" },
-    amount: "21.00",
+    effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-SYNTHETIC-002" },
+    amount: "12.00",
     currency: "USD",
     state_at_event_baseline: "OUTSTANDING",
     business_purpose_confirmed: true,
-    commercial_terms: "Monthly AI software subscription.",
-    source_evidence: [{ evidence_id: "EVID-J0C-002-A" }],
+    commercial_terms: "Invented monthly service 002; synthetic test only.",
+    source_evidence: [{ evidence_id: "EVID-SYNTHETIC-002" }],
     candidate_readiness: { arc_product_destination_status: "READY" },
     ...overrides,
   };
@@ -93,7 +93,7 @@ class StaticProvider implements AiProvider {
   }
 }
 
-function payOutput(obligationId: string, evidenceIds: string[] = ["EVID-J0C-002-A"]) {
+function payOutput(obligationId: string, evidenceIds: string[] = ["EVID-SYNTHETIC-002"]) {
   return {
     obligation_id: obligationId,
     decision: "PAY",
@@ -207,7 +207,7 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
   });
 
   it("does not HOLD an otherwise clean overdue obligation", async () => {
-    const overdue = record({ issue_date: "2026-08-14", due_date: "2026-08-14", effective_due_date: "2026-08-14" });
+    const overdue = record({ issue_date: "2020-01-02", due_date: "2020-01-02", effective_due_date: "2020-01-02" });
     const context = buildFinanceAgentContext(overdue, 1, "2026-09-29");
     const decision = await assessObligation(context, new DeterministicFallbackProvider());
 
@@ -218,9 +218,9 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
 
   it("retains a genuine obligation blocker when an invoice is overdue", async () => {
     const overdue = record({
-      issue_date: "2026-08-14",
-      due_date: "2026-08-14",
-      effective_due_date: "2026-08-14",
+      issue_date: "2020-01-02",
+      due_date: "2020-01-02",
+      effective_due_date: "2020-01-02",
       business_purpose_confirmed: false,
     });
     const context = buildFinanceAgentContext(overdue, 1, "2026-09-29");

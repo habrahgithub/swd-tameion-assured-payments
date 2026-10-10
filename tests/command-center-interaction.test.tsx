@@ -579,9 +579,9 @@ describe("Command Center mounted Operational Report", () => {
 
   it("makes assessment the genuine obligation action and omits demo/report/technical surfaces from Screen 1", async () => {
     const aedDetail = detail("OBL-A");
-    aedDetail.record.amount = "5760.00";
+    aedDetail.record.amount = "367.25";
     aedDetail.record.currency = "AED";
-    aedDetail.aggregate.amount = "1568.413887";
+    aedDetail.aggregate.amount = "100.000000";
     aedDetail.demo_arc_trust_simulated = true;
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-A", false, "AED")] }))

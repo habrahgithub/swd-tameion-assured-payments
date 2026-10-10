@@ -96,13 +96,13 @@ describe("ERP-native payment control boundary", () => {
     expect(deriveExecutionReleaseAuthority(input)).toBe(expected);
   });
 
-  it("labels the current genuine dataset adapter as direct evidence, not ERP", () => {
+  it("labels the direct-evidence adapter using invented test input as direct evidence, not ERP", () => {
     const adapted = adaptDirectEvidenceObligation({
       obligation_id: "OBL-J0C-001",
-      amount: "5760.00",
+      amount: "367.25",
       currency: "AED",
       due_date: null,
-      source_evidence: [{ evidence_id: "EVID-J0C-001-A" }],
+      source_evidence: [{ evidence_id: "EVID-SYNTHETIC-001" }],
     });
 
     expect(adapted.source.source_kind).toBe("DIRECT_EVIDENCE");

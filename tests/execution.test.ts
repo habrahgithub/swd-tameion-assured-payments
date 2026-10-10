@@ -57,7 +57,7 @@ function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAg
     source_wallet_ref: "WALLET-SOURCE-P0-1",
     source_wallet_version: 1,
     source_wallet_status: "ACTIVE",
-    evidence_hashes: ["156d7aea6b0c0b843426cc795eb889982f074bff86df3158688759bd8252332f"],
+    evidence_hashes: ["4e9ef92032f893a9c24e4a14d881f3b83ff737a8436e7f6daae4f08b80608a54"],
     policy_version: "POLICY-P0-1",
     business_hold: false,
     security_freeze: false,

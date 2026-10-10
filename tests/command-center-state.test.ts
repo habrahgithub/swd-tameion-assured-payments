@@ -176,14 +176,14 @@ describe("Command Center decision-specific authorization state", () => {
 
 describe("Command Center settlement display (AED source keeps derived settlement truth)", () => {
   it("does not claim settlement is 'Not applicable' for an AED source with server settlement truth", () => {
-    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
+    const text = settlementDisplay({ currency: "AED", amount: "367.25" }, { amount: "100.000000", asset: "USDC" });
     expect(text).not.toContain("Not applicable");
-    expect(text).toContain("1568.413887 USDC");
+    expect(text).toContain("100.000000 USDC");
     expect(text).toContain("1 USD = AED 3.6725");
   });
 
   it("reports unavailable settlement truth rather than a fabricated amount", () => {
-    expect(settlementDisplay({ currency: "AED", amount: "5760.00" }, undefined)).toContain("Unavailable");
+    expect(settlementDisplay({ currency: "AED", amount: "367.25" }, undefined)).toContain("Unavailable");
   });
 });
 
@@ -466,14 +466,14 @@ describe("financial oracles cover USD, AED and unsupported currency explicitly",
   });
 
   it("shows pre-intent AED settlement only as indicative with the fixed policy rate", () => {
-    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" });
+    const text = settlementDisplay({ currency: "AED", amount: "367.25" }, { amount: "100.000000", asset: "USDC" });
     expect(text).toContain("indicative only");
     expect(text).toContain("1 USD = AED 3.6725");
     expect(text).toContain("No payment intent exists");
   });
 
   it("labels an intent-bound settlement amount separately from an indicative equivalent", () => {
-    const text = settlementDisplay({ currency: "AED", amount: "5760.00" }, { amount: "1568.413887", asset: "USDC" }, true);
+    const text = settlementDisplay({ currency: "AED", amount: "367.25" }, { amount: "100.000000", asset: "USDC" }, true);
     expect(text).toContain("Intent-bound amount");
     expect(text).not.toContain("indicative only");
   });

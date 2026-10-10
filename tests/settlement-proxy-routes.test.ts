@@ -73,7 +73,7 @@ async function preparedState(selectedIndex = 0) {
   state = new DemoState(undefined, undefined, undefined, provider);
   const records = eligibleSources(state);
   const selected = selectedIndex < 0 ? records.at(selectedIndex) : records[selectedIndex];
-  if (!selected) throw new Error("Frozen genuine set has too few complete USD sources for this route proof.");
+  if (!selected) throw new Error("Synthetic fixture has too few complete sources for this route proof.");
 
   for (const record of state.liveUsageRecords) {
     sealTestAssessment(state.store, DEMO_ORGANIZATION_ID, record.obligation_id, 1, {
@@ -230,7 +230,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ obligation_id: "OBL-J0C-003", amount: "5.000000" });
+    expect(await response.json()).toMatchObject({ obligation_id: "OBL-J0C-003", amount: "8.000000" });
     expect(state.getSettlementProxy("OBL-J0C-003")?.preflight.obligation_id).toBe("OBL-J0C-003");
     expect(state.getSettlementProxy("OBL-J0C-001")).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
@@ -278,7 +278,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
   });
 
   it("approves the explicitly selected 003 while an earlier-due PAY recommendation exists for 001", async () => {
-    const { state, selectedId, records, api } = await preparedState(3);
+    const { state, selectedId, records, api } = await preparedState(2);
     reassess(state, selectedId);
     const earlierDuePay = records.find((record) => record.obligation_id === "OBL-J0C-001");
     expect(selectedId).toBe("OBL-J0C-003");

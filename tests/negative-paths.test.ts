@@ -92,11 +92,11 @@ describe("USD-only demo settlement boundary", () => {
     const source = state.getRecord("OBL-J0C-001");
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, "OBL-J0C-001");
 
-    // Source evidence remains exactly as the original — AED 5760.00.
-    expect(source).toMatchObject({ amount: "5760.00", currency: "AED" });
-    // AED is admitted via conversion: USD = 5760.00 / 3.6725 = 1568.413887 (round-half-up).
-    expect(aggregate.amount).toBe("1568.413887");
-    expect(aggregate.source_amount).toBe("5760.00");
+    // Source evidence remains exactly as the original — AED 367.25.
+    expect(source).toMatchObject({ amount: "367.25", currency: "AED" });
+    // AED is admitted via conversion: USD = 367.25 / 3.6725 = 100.000000 (round-half-up).
+    expect(aggregate.amount).toBe("100.000000");
+    expect(aggregate.source_amount).toBe("367.25");
     expect(aggregate.source_currency).toBe("AED");
     expect(aggregate.settlement_conversion_rate).toBe("3.6725");
     expect(aggregate.product_trust_provenance).toBe("SIMULATED_DEMO_FIXTURE");
@@ -235,11 +235,11 @@ describe("negative path: missing human authorization", () => {
 
   it("admits AED authorization when the assessment says PAY with AED currency (conversion admitted)", () => {
     const store = new AuthorityStore();
-    const aedUsdcAmount = "1568.413887";
+    const aedUsdcAmount = "100.000000";
     store.seed(baseAggregate({
       state: "APPROVAL_PENDING",
       amount: aedUsdcAmount,
-      source_amount: "5760.00",
+      source_amount: "367.25",
       source_currency: "AED",
       settlement_conversion_rate: "3.6725",
     }));
@@ -247,7 +247,7 @@ describe("negative path: missing human authorization", () => {
     const aedFacts = {
       ...usdAssessment.record.race!.evidence.authoritative_facts,
       currency: "AED" as const,
-      amount: "5760.00",
+      amount: "367.25",
     };
     const aedAssessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1, {
       race: {
@@ -268,7 +268,7 @@ describe("negative path: missing human authorization", () => {
       reasonText: "Reviewed AED obligation with derived USD settlement.",
     });
     expect(aggregate.state).toBe("AUTHORIZED");
-    expect(aggregate.amount).toBe("1568.413887");
+    expect(aggregate.amount).toBe("100.000000");
   });
 
   it("refuses approval when the human reviewed an older same-version assessment", () => {
@@ -335,8 +335,8 @@ describe("negative path: missing human authorization", () => {
     store.seed(
       baseAggregate({
         state: "APPROVAL_PENDING",
-        amount: "1568.413887",
-        source_amount: "5760.00",
+        amount: "100.000000",
+        source_amount: "367.25",
         source_currency: "AED",
         settlement_conversion_rate: "3.6725",
       }),
@@ -344,8 +344,8 @@ describe("negative path: missing human authorization", () => {
     const assessment = sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 1);
     const authorized = store.approve("ORG-DEMO-001", "OBL-J0C-002", 1, assessment.record.assessment_id, assessment.assessment_hash);
     expect(authorized.state).toBe("AUTHORIZED");
-    expect(authorized.amount).toBe("1568.413887");
-    expect(authorized.source_amount).toBe("5760.00");
+    expect(authorized.amount).toBe("100.000000");
+    expect(authorized.source_amount).toBe("367.25");
 
     // Simulate a material source amount change (stale conversion must be invalidated).
     // applyMaterialChange bumps version and re-derives the USDC amount from the new AED source.

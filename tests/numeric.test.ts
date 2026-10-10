@@ -17,7 +17,7 @@ describe("numeric safety", () => {
 
   it("round-trips atomic back to the exact canonical decimal", () => {
     expect(atomicToDecimal("21000000", USDC_DECIMALS)).toBe("21.000000");
-    expect(verifyAtomicRoundtrip("5760.000000", USDC_DECIMALS)).toBe("5760000000");
+    expect(verifyAtomicRoundtrip("1234.560000", USDC_DECIMALS)).toBe("1234560000");
   });
 
   it("rejects scientific notation and non-canonical forms", () => {

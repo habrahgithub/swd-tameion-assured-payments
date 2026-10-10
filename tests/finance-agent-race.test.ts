@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import syntheticSourceSet from "./test-support/synthetic-source-records.json";
 
 import { assessObligation } from "../src/agent/finance-agent";
 import { buildFinanceAgentContext, toFinanceAgentModelContext, type LiveUsageObligationRecord } from "../src/agent/context-builder";
@@ -37,13 +37,11 @@ function trustedTestContext(input: LiveUsageObligationRecord, version = 0, asOfD
   });
 }
 
-const liveRecords = (JSON.parse(readFileSync(new URL("../data/live-usage/LIVE_USAGE_SET.json", import.meta.url), "utf8")) as {
-  records: LiveUsageObligationRecord[];
-}).records;
+const liveRecords = syntheticSourceSet.records as LiveUsageObligationRecord[];
 
 function liveRecord(id: string): LiveUsageObligationRecord {
   const found = liveRecords.find((item) => item.obligation_id === id);
-  if (!found) throw new Error(`Missing live-usage fixture ${id}`);
+  if (!found) throw new Error(`Missing synthetic fixture ${id}`);
   return found;
 }
 
@@ -148,15 +146,15 @@ describe("#17 CARE and RACE grounding", () => {
     })));
     expect(result.race.evidence.authoritative_facts.due_date_position).toBe("OVERDUE");
     expect(result.race.evidence.authoritative_facts.as_of_date).toBe("2026-09-29");
-    expect(result.race.evidence.authoritative_facts.due_date).toBe("2026-09-12");
+    expect(result.race.evidence.authoritative_facts.due_date).toBe("2020-01-03");
     expect(result.decision).toBe("PAY");
     expect(result.race.evidence.authoritative_facts).toMatchObject({
-      issue_date: "2026-09-12",
-      due_date: "2026-09-12",
+      issue_date: "2020-01-03",
+      due_date: "2020-01-03",
       due_date_status: "STATED_ON_SOURCE",
-      effective_due_date: "2026-09-12",
+      effective_due_date: "2020-01-03",
       effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
-      effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-J0C-003-A" },
+      effective_due_date_provenance: { provenance_class: "SOURCE_INVOICE_DATE", evidence_id: "EVID-SYNTHETIC-003" },
     });
     expect(result.race.caveats.model_explanation).not.toEqual(result.race.evidence.authoritative_facts.due_date_position);
   });
@@ -183,12 +181,12 @@ describe("#17 CARE and RACE grounding", () => {
     expect(context.due_date_status).toBe("NOT_STATED_ON_SOURCE");
     expect(context.due_date_position).toBe("OVERDUE");
     expect(toFinanceAgentModelContext(context)).toMatchObject({
-      issue_date: "2026-01-28",
+      issue_date: "2020-01-01",
       due_date: null,
       due_date_status: "NOT_STATED_ON_SOURCE",
-      effective_due_date: "2026-01-28",
+      effective_due_date: "2020-01-01",
       effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
-      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "GITHUB_ISSUE_COMMENT_5981941458" },
+      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "SYNTHETIC_TEST_ATTESTATION_001" },
       due_date_position: "OVERDUE",
     });
     expect(CARE_SYSTEM_PROMPT).toMatch(/effective_due_date is valid[\s\S]*operative assessment date/i);
@@ -197,12 +195,12 @@ describe("#17 CARE and RACE grounding", () => {
     expect(CARE_SYSTEM_PROMPT).toMatch(/INVALID[\s\S]*fail.closed/i);
     expect(result.decision).toBe("PAY");
     expect(result.race.evidence.authoritative_facts).toMatchObject({
-      issue_date: "2026-01-28",
+      issue_date: "2020-01-01",
       due_date: null,
       due_date_status: "NOT_STATED_ON_SOURCE",
-      effective_due_date: "2026-01-28",
+      effective_due_date: "2020-01-01",
       effective_due_date_basis: "INVOICE_DATE_CASH_TERM",
-      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "GITHUB_ISSUE_COMMENT_5981941458" },
+      effective_due_date_provenance: { provenance_class: "AUTHORIZED_OPERATOR_ATTESTATION", authority_reference: "SYNTHETIC_TEST_ATTESTATION_001" },
       due_date_position: "OVERDUE",
     });
     expect(result.race.result.validated_findings.map((finding) => finding.code)).not.toContain("DUE_DATE_NOT_STATED");

@@ -1,3 +1,4 @@
+import { syntheticSourceResponse } from "./source-fixtures";
 import AxeBuilder from "@axe-core/playwright";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -37,14 +38,26 @@ async function collapseLifecycleStages(page: Page) {
   if (await disclosure.count() && await disclosure.getAttribute("aria-expanded") === "true") await disclosure.click();
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "GET" && /^\/api\/obligations(?:\/[^/]+)?$/.test(pathname)) {
+      const response = await syntheticSourceResponse(pathname);
+      return route.fulfill({ status: response.status, json: await response.json() });
+    }
+    return route.fulfill({ status: 503, json: { error: "Unmocked API call forbidden in browser verification." } });
+  });
+});
+
 test("genuine first view keeps the payable, current stage, reason and legal next action in the initial viewport", async ({ page }, testInfo) => {
-  const listResponse = await page.request.get("/api/obligations");
-  expect(listResponse.ok()).toBe(true);
+  const listResponse = await syntheticSourceResponse("/api/obligations");
+  expect(listResponse.ok).toBe(true);
   const list = await listResponse.json() as { obligations: Array<Record<string, any>> };
   const first = list.obligations[0];
   expect(first).toBeTruthy();
-  const detailResponse = await page.request.get(`/api/obligations/${first.obligation_id}`);
-  expect(detailResponse.ok()).toBe(true);
+  const detailResponse = await syntheticSourceResponse(`/api/obligations/${first.obligation_id}`);
+  expect(detailResponse.ok).toBe(true);
   const expected = await detailResponse.json() as Record<string, any>;
   expect(expected.current_assessment).toBeNull();
 
@@ -134,13 +147,13 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await assertGenuineFirstView(751);
   await page.screenshot({ path: testInfo.outputPath("genuine-desktop-first-view.png") });
 
-  const fifthResponse = await page.request.get("/api/obligations/OBL-J0C-005");
-  expect(fifthResponse.ok()).toBe(true);
+  const fifthResponse = await syntheticSourceResponse("/api/obligations/OBL-J0C-005");
+  expect(fifthResponse.ok).toBe(true);
   const fifth = await fifthResponse.json() as Record<string, any>;
   await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
   const fifthSource = page.getByRole("region", { name: "Selected source obligation" });
   await expect(fifthSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
-  await expect(fifthSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
+  await expect(fifthSource.getByTestId("source-service-context")).toContainText("synthetic test only");
   await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
   await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
   const fifthDesktopBounds = await Promise.all([
@@ -165,7 +178,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
   await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
   const fifthMobileSource = page.getByRole("region", { name: "Selected source obligation" });
   await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
-  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText("email invoice excerpt");
+  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText("synthetic test only");
   await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
   await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
   const fifthMobileBounds = await Promise.all([
@@ -455,13 +468,13 @@ async function openFixture(
 }
 
 async function actualSourcePayFixtures(page: Page) {
-  const listResponse = await page.request.get("/api/obligations");
-  expect(listResponse.ok()).toBe(true);
+  const listResponse = await syntheticSourceResponse("/api/obligations");
+  expect(listResponse.ok).toBe(true);
   const list = await listResponse.json() as { obligations: Array<Record<string, any>> };
   const sourceById: Record<string, Record<string, any>> = {};
   for (const id of ["OBL-J0C-001", "OBL-J0C-003"]) {
-    const response = await page.request.get(`/api/obligations/${id}`);
-    expect(response.ok()).toBe(true);
+    const response = await syntheticSourceResponse(`/api/obligations/${id}`);
+    expect(response.ok).toBe(true);
     sourceById[id] = await response.json();
     expect(sourceById[id].record.obligation_id).toBe(id);
   }
@@ -832,8 +845,8 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
     await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
 
     for (const scenario of [
-      { selectedId: "OBL-J0C-001", businessName: "business license and flexi desk", action: "Prepare Arc Testnet settlement proxy" },
-      { selectedId: "OBL-J0C-003", businessName: "cloud infrastructure subscription", action: "Prepare Arc Testnet settlement proxy" },
+      { selectedId: "OBL-J0C-001", businessName: "synthetic service 001", action: "Prepare Arc Testnet settlement proxy" },
+      { selectedId: "OBL-J0C-003", businessName: "synthetic service 003", action: "Prepare Arc Testnet settlement proxy" },
     ] as const) {
       if (viewport.label.startsWith("mobile")) {
         await openMobileQueue(page);
@@ -1472,13 +1485,13 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
 
 test("Stage 1 queue states stay truthful with no default selection at desktop and mobile", async ({ browser, page }, testInfo) => {
   test.setTimeout(120_000);
-  const oracle = await page.request.get("/api/obligations");
-  expect(oracle.ok()).toBe(true);
+  const oracle = await syntheticSourceResponse("/api/obligations");
+  expect(oracle.ok).toBe(true);
   const sourceQueue = await oracle.json() as Record<string, any>;
   expect(sourceQueue.obligations).toHaveLength(5);
   expect(sourceQueue.obligations.map((row: Record<string, unknown>) => row.obligation_id)).toContain("OBL-J0C-003");
-  const detailOracle = await page.request.get("/api/obligations/OBL-J0C-003");
-  expect(detailOracle.ok()).toBe(true);
+  const detailOracle = await syntheticSourceResponse("/api/obligations/OBL-J0C-003");
+  expect(detailOracle.ok).toBe(true);
   const source003Detail = await detailOracle.json() as Record<string, any>;
   expect(source003Detail.record.obligation_id).toBe("OBL-J0C-003");
   const selected003DetailFixture = structuredClone(source003Detail);

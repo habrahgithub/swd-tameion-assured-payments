@@ -106,25 +106,25 @@ describe("J2A real Arc Testnet demo preflight", () => {
     const result = await runJ2aReadOnlyPreflight(api, () => new Date(capturedAt), {
       organization_id: "ORG-DEMO-001",
       obligation_id: "OBL-J0C-002",
-      source_amount: "21.00",
+      source_amount: "12.00",
       source_currency: "USD",
-      settlement_amount: "21.000000",
-      source_evidence_ids: ["EVID-J0C-002-A"],
+      settlement_amount: "12.000000",
+      source_evidence_ids: ["EVID-SYNTHETIC-002"],
       classification: "GENUINE BUSINESS OBLIGATION · ARC TESTNET SETTLEMENT PROXY",
       invoice_reference: "INV-J0C-002",
-      invoice_date: "2026-08-14",
-      effective_due_date: "2026-08-14",
+      invoice_date: "2020-01-02",
+      effective_due_date: "2020-01-02",
       payment_basis: "INVOICE_DATE_CASH_TERM",
-      particulars: "Monthly AI software subscription.",
+      particulars: "Invented monthly service 002; synthetic test only.",
     });
 
     expect(result).toMatchObject({
       readiness: "READY",
       organization_id: "ORG-DEMO-001",
       obligation_id: "OBL-J0C-002",
-      source_amount: "21.00",
+      source_amount: "12.00",
       source_currency: "USD",
-      amount: "21.000000",
+      amount: "12.000000",
       classification: "GENUINE BUSINESS OBLIGATION · ARC TESTNET SETTLEMENT PROXY",
       source_wallet: { id: J2A_DEMO_SOURCE.id },
       destination_wallet: { id: J2A_DEMO_DESTINATION.id },
@@ -132,12 +132,12 @@ describe("J2A real Arc Testnet demo preflight", () => {
     if (result.readiness !== "READY") throw new Error("expected ready proxy preflight");
     expect(result.business_payment_instruction.commercial).toMatchObject({
       obligation_id: "OBL-J0C-002",
-      source_amount: "21.00",
+      source_amount: "12.00",
       source_currency: "USD",
-      settlement_amount: "21.000000",
-      source_evidence_ids: ["EVID-J0C-002-A"],
+      settlement_amount: "12.000000",
+      source_evidence_ids: ["EVID-SYNTHETIC-002"],
     });
-    expect(api.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({ amount: ["21.000000"] }));
+    expect(api.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({ amount: ["12.000000"] }));
   });
 
   it("uses Circle's provider-reported native Arc USDC precision while retaining the fixed six-place demo amount", async () => {

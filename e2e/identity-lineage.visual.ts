@@ -1,3 +1,4 @@
+import { syntheticSourceRecords } from "../tests/test-support/synthetic-source-records";
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
@@ -9,9 +10,9 @@ import type { J2aCircleClient } from "../src/execution/provider-adapter";
 import { sealTestAssessment } from "../tests/test-support/seal-assessment";
 
 async function genuinePreparedReadModel() {
-  const state = new DemoState();
+  const state = new DemoState(undefined, undefined, undefined, undefined, {}, syntheticSourceRecords());
   const selected = state.liveUsageRecords.find((record) => record.obligation_id === "OBL-J0C-001");
-  if (!selected) throw new Error("The frozen genuine source set is missing OBL-J0C-001.");
+  if (!selected) throw new Error("The synthetic source fixture is missing OBL-J0C-001.");
 
   for (const record of state.liveUsageRecords) {
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, record.obligation_id);
@@ -138,10 +139,10 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await gotoStage(page, "Authorization");
   const packet = page.getByRole("region", { name: "Approver decision packet" });
   await expect(packet).toContainText("OBL-J0C-001");
-  await expect(packet).toContainText("CP-J0C-001");
-  await expect(packet).toContainText("EVID-J0C-001-A");
-  await expect(packet).toContainText("5760.00 AED");
-  await expect(packet).toContainText("1568.413887 USDC");
+  await expect(packet).toContainText("CP-SYNTHETIC-001");
+  await expect(packet).toContainText("EVID-SYNTHETIC-001");
+  await expect(packet).toContainText("367.25 AED");
+  await expect(packet).toContainText("100.000000 USDC");
   await expect(packet).toContainText("OUTSTANDING");
   await expect(packet).toContainText("Supplier name is not included in this public demo record");
   await expect(packet.getByRole("region", { name: "Source obligation lineage" })).not.toContainText(fixture.details["OBL-J0C-001"].aggregate.counterparty_id);
@@ -172,10 +173,10 @@ test("real-record Authorization lineage remains bound to the manually selected o
 
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
   await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await gotoStage(page, "Assessment");
-  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("5.00 USD");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Advisory — PAY");
   await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
@@ -186,10 +187,10 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await page.getByRole("button", { name: /Switch obligation/ }).click();
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
   await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await gotoStage(page, "Assessment");
-  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("5.00 USD");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("cloud infrastructure subscription");
+  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Advisory — PAY");
   await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
