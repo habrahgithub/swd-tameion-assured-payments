@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import type {
   ProviderAdapter,
   StatusResult,
@@ -69,7 +67,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
 
     this.submissionCount += 1;
     const outcome = this.outcomeQueue.shift() ?? "CONFIRMED";
-    const providerRef = `fake-tx-${randomUUID()}`;
+    const providerRef = `fake-tx-${globalThis.crypto.randomUUID()}`;
     this.refsByIdempotencyKey.set(params.idempotencyKey, providerRef);
 
     if (outcome === "TIMEOUT") {

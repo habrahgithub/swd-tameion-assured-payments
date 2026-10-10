@@ -51,3 +51,27 @@ or caller/server-selected actor fallback is introduced. Detail GET is observatio
 only; mock-only worker reconciliation tests preserve financial safety proofs.
 Remaining design-derived commentary is withdrawn with its original retained privately.
 No baseline replacement, dependency uplift, public action or live operation is admitted.
+
+## 2026-10-10 — Local synthetic functional walkthrough
+
+The new PRIME/AXIS admission permits a local interactive mock journey while
+retaining genuine-source withdrawal and privileged mutation denials. A dedicated
+`/local-demo` page checks loopback request shape and the actual browser independently
+requires a secure, top-level loopback location without an opener. Hosted platform
+markers additionally deny activation. Header checks are defense in depth, not a
+remote authentication boundary: forged headers cannot give the mock model access
+to any live adapter or source authority.
+
+The model imports only the existing in-memory FakeProviderAdapter. Its UUID uses
+the native Web Crypto API, available in both pinned Node and secure loopback
+browsers. Production pipeline, signing, worker, provider and persistence modules
+are not dependencies of this journey. No signing key, environment source override,
+server mutation endpoint or production guard bypass is introduced.
+
+Mock authorization binds an invented reviewer, case, version, assessment, amount
+and destination into an unsigned presentation packet. It is not authentication,
+a PAE or cryptographic assurance. Submission and reconciliation are separate real
+interactions with in-memory fake records. Duplicate or unresolved submission cannot
+retry; changed inputs and historical evidence do not establish current eligibility.
+Every stage and retained audit entry stays explicitly non-economic. Existing image
+baselines, tolerances and genuine financial negative assertions remain preserved.

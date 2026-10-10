@@ -79,3 +79,24 @@ outcome remains unresolved; this candidate supplies no live reconciliation workf
 Withdrawn list/detail and approval-packet reads short-circuit before state hydration, whose legacy
 durable loader can seed or migrate records. No database read-path extraction or
 live reconciliation is introduced by this correction.
+
+## Local synthetic walkthrough
+
+The separately isolated walkthrough is at `http://127.0.0.1:3190/local-demo`
+after a local build and `npm run start -- --hostname 127.0.0.1 --port 3190`.
+It requires a top-level secure loopback browser context and rejects hosted,
+embedded, cross-origin and hostile forwarded activation. It has no API mutation
+endpoint, no credentials and no persistence. It never populates the genuine queue.
+
+Choose an invented case, assess it with deterministic local rules, acknowledge
+its exact mock intent, submit to the in-memory fake adapter, then separately
+observe the recorded fake outcome. Authorization uses an invented reviewer and
+an **unsigned mock packet**, not real authentication, a signed PAE, Safety Kernel
+assurance or production execution. The UI keeps SIMULATED / NON-ECONOMIC /
+NOT_VENDOR_PAYMENT labels visible. Reload discards browser-memory state.
+
+Scenario choices cover advisory HOLD/ESCALATE, ineligible mock funding,
+historical authority, packet mismatch, destination changes and UNKNOWN with no
+retry. Changing inputs invalidates current assessment and packet binding while
+retaining their mock audit history. Production withdrawal and requester guards
+are unchanged. Automated mock checks are distinct from PRIME-observed UAT.
