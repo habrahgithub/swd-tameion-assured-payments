@@ -70,6 +70,18 @@ describe("enforced local synthetic journey", () => {
     await expect(j.execute()).rejects.toThrow(/NO_RETRY/);expect((await j.reconcile()).stage).toBe("UNKNOWN");
     expect(j.view().submissions).toBe(1);
   });
+  it("never records reconciliation completion when an UNKNOWN outcome is merely observed",async()=>{
+    const j=local();j.scenario("UNKNOWN");const assessed=j.assess();
+    j.authorize(assessed.caseId,assessed.version,assessed.assessment!.id);
+    await j.execute();const count=j.view().submissions;
+    const observed=await j.reconcile();
+    expect(observed.stage).toBe("UNKNOWN");expect(observed.reconciliation).toBe("UNKNOWN");
+    expect(observed.events.at(-1)?.action).toBe("OBSERVED_MOCK");
+    expect(observed.events.some(e=>e.action==="RECONCILED_MOCK")).toBe(false);
+    await expect(j.execute()).rejects.toThrow(/NO_RETRY/);
+    expect((await j.reconcile()).events.at(-1)?.action).toBe("OBSERVED_MOCK");
+    expect(j.view().submissions).toBe(count);expect(count).toBe(1);
+  });
   it("prevents duplicate concurrent submissions and case changes while submission is in flight",async()=>{
     const j=local();const a=j.assess();j.authorize(a.caseId,a.version,a.assessment!.id);
     const first=j.execute();await expect(j.execute()).rejects.toThrow(/NO_RETRY/);await first;

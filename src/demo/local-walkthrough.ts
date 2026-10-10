@@ -125,7 +125,7 @@ class LocalWalkthrough {
     assertLocalBrowser();
     v.reconciliation=recorded.status;
     if(recorded.status==="CONFIRMED")v.stage="RECONCILED_MOCK";
-    this.#event(v,"RECONCILED_MOCK",recorded.status==="CONFIRMED"?"Recorded fake confirmation observed; no external query or payment.":"Recorded fake outcome UNKNOWN; no retry or new submission.");
+    this.#event(v,recorded.status==="CONFIRMED"?"RECONCILED_MOCK":"OBSERVED_MOCK",recorded.status==="CONFIRMED"?"Recorded fake confirmation observed; no external query or payment.":"Recorded fake outcome UNKNOWN; no retry or new submission.");
     return this.view();
   }
 }
