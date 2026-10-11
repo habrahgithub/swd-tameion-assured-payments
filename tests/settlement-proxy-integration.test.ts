@@ -16,7 +16,7 @@ import { ExecutionBlockedError } from "../src/execution/worker";
 import { DemoStateConflictError, type SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
 import { sealTestAssessment, currentAssessmentReview } from "./test-support/seal-assessment";
 import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
-import { POST as executeObligation } from "../app/api/obligations/[id]/execute/route";
+import { POST as executeObligation } from "../src/server/legacy-routes/obligations/[id]/execute/route";
 
 function selectCandidate(state: DemoState): string {
   const record = state.liveUsageRecords.find((candidate) => Boolean(
@@ -703,4 +703,10 @@ describe("selected genuine obligation to Arc Testnet proxy integration", () => {
     expect(api.createCount()).toBe(1);
   });
 
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

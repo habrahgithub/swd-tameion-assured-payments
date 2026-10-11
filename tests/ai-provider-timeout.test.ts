@@ -38,7 +38,7 @@ describe("NVIDIA assessment timeout", () => {
   });
 
   it("aborts the provider request before the route execution limit", async () => {
-    const { maxDuration } = await import("../app/api/obligations/[id]/assess/route");
+    const { maxDuration } = await import("../src/server/legacy-routes/obligations/[id]/assess/route");
     process.env.NVIDIA_API_KEY = "test-only-key";
     let requestSignal: AbortSignal | null | undefined;
     globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

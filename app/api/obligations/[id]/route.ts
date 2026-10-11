@@ -1,12 +1,9 @@
-import { NextResponse } from "next/server";
-import { isCurrentSourceEligible } from "../../../../src/server/source-records";
-import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../src/server/demo-state";
-import { projectObligationDetail } from "../../../../src/server/obligation-read-model";
-
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  if (isCurrentSourceEligible(DEMO_ORGANIZATION_ID, id) !== true) {
-    return NextResponse.json({ error: "Obligation source record not found", code: "SRC-001" }, { status: 404 });
-  }
-  return projectObligationDetail(await getDemoState(), id);
-}
+import {obligationReaders} from "../../../../src/server/operator-obligation-routes";
+import {methodNotAllowed} from "../../../../src/server/route-access-policy";
+export async function GET(request:Request,context:{params:Promise<{id:string}>}){return obligationReaders.detail(request,(await context.params).id);}
+export const HEAD=methodNotAllowed;
+export const POST=methodNotAllowed;
+export const PUT=methodNotAllowed;
+export const PATCH=methodNotAllowed;
+export const DELETE=methodNotAllowed;
+export const OPTIONS=methodNotAllowed;

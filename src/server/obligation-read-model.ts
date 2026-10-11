@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuthorityError } from "../authority/aggregate";
-import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, type DemoState } from "./demo-state";
+import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, type ExistingState } from "./load-existing-demo-state";
 import { buildPaymentTruthLayers } from "../domain/payment-control-boundary";
 import { getCurrentSettlementProxyPacket, getSettlementEvidenceBinding } from "./settlement-proxy-packet";
 import { projectAssuranceEvidence } from "./assurance-evidence-projection";
@@ -9,7 +9,7 @@ import { projectAssuranceEvidence } from "./assurance-evidence-projection";
  * recovery or persistence. Source admission belongs to the calling GET boundary.
  * Browser fixtures use these same projections with independently invented data.
  */
-export function projectObligationList(state: DemoState) {
+export function projectObligationList(state: ExistingState) {
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);
@@ -43,7 +43,7 @@ export function projectObligationList(state: DemoState) {
   });
 }
 
-export function projectObligationDetail(state: DemoState, id: string) {
+export function projectObligationDetail(state: ExistingState, id: string) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);

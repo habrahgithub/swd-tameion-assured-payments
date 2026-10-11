@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 
-import { POST } from "../app/api/j0d/run-connectivity-spike/route";
+import { POST } from "../src/server/legacy-routes/j0d/run-connectivity-spike/route";
 import { computeJ0dIntentFingerprint, type J0dExactIntent } from "../src/j0d-spike/intent";
 
 const resumeFrom = {

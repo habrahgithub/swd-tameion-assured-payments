@@ -493,7 +493,7 @@ describe("J0-D execution capability and source invariants", () => {
     }
     const spike = readFileSync(new URL("../src/j0d-spike/connectivity-spike.ts", import.meta.url), "utf8");
     expect(spike).not.toMatch(/requestTestnetTokens|createWallets|createWalletSet|symbol === "USDC"/);
-    const route = readFileSync(new URL("../app/api/j0d/run-connectivity-spike/route.ts", import.meta.url), "utf8");
+    const route = readFileSync(new URL("../src/server/legacy-routes/j0d/run-connectivity-spike/route.ts", import.meta.url), "utf8");
     expect(route).not.toMatch(/requestTestnetTokens|createWallets|createWalletSet/);
   });
 });

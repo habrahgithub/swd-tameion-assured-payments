@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "./network-fence";
 
 const obligation = {
   obligation_id: "OBL-UAT-01",
@@ -40,6 +40,7 @@ async function collapseLifecycleStages(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "GET" && /^\/api\/obligations(?:\/[^/]+)?$/.test(pathname)) {
@@ -434,6 +435,7 @@ async function openFixture(
 ) {
   const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
     const url = new URL(route.request().url());
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
     if (url.pathname === "/api/obligations") return route.fulfill({ json: {
@@ -1251,6 +1253,7 @@ test("stale detail offers only a mocked read refresh after an assessment respons
   const unassessed: Record<string, any> = structuredClone(detail);
   unassessed.current_assessment = null;
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
@@ -1459,6 +1462,7 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
   await page.setViewportSize({ width: 390, height: 844 });
   const requests: string[] = [];
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
     const { pathname } = new URL(route.request().url());
     requests.push(`${route.request().method()} ${pathname}`);
     if (pathname === "/api/obligations" && route.request().method() === "GET") {
@@ -1549,6 +1553,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
       let releaseLoading!: () => void;
       const delayedQueue = new Promise<void>((resolve) => { releaseLoading = resolve; });
       await statePage.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
         const request = route.request();
         const url = new URL(request.url());
         observedRequests.push(`${request.method()} ${url.pathname}`);
@@ -1867,6 +1872,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       const requests: string[] = [];
       const mutations: string[] = [];
       await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
         const request = route.request();
         const url = new URL(request.url());
         requests.push(`${request.method()} ${url.pathname}`);

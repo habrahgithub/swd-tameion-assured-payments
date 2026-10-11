@@ -15,7 +15,7 @@ vi.mock("@circle-fin/developer-controlled-wallets", async (importOriginal) => {
   };
 });
 
-import { POST } from "../app/api/j0d/reconcile-prior-outbound/route";
+import { POST } from "../src/server/legacy-routes/j0d/reconcile-prior-outbound/route";
 import { createCircleArcPriorOutboundReadClient } from "../src/j0d-spike/circle-arc-client";
 import {
   J0D_PRIOR_OUTBOUND_PROBES,
@@ -501,10 +501,10 @@ describe("J0-D prior-outbound reconciliation capability invariants", () => {
 
   it("the route and module cannot import or name any mutation or execution capability", () => {
     const importSpecifiers = (source: string) => [...source.matchAll(/\bfrom\s+"([^"]+)"|\bimport\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1] ?? m[2]);
-    const route = readFileSync(new URL("../app/api/j0d/reconcile-prior-outbound/route.ts", import.meta.url), "utf8");
+    const route = readFileSync(new URL("../src/server/legacy-routes/j0d/reconcile-prior-outbound/route.ts", import.meta.url), "utf8");
     const moduleSource = readFileSync(new URL("../src/j0d-spike/prior-outbound-reconciliation.ts", import.meta.url), "utf8");
 
-    expect(importSpecifiers(route)).toEqual(["next/server", "../../../../src/j0d-spike/prior-outbound-reconciliation"]);
+    expect(importSpecifiers(route)).toEqual(["next/server", "../../../../j0d-spike/prior-outbound-reconciliation"]);
     expect(importSpecifiers(moduleSource)).toEqual(["zod", "./circle-arc-client", "./intent"]);
     expect(moduleSource).toMatch(/import \{ ARC_TESTNET_BLOCKCHAIN, createCircleArcPriorOutboundReadClient \} from "\.\/circle-arc-client";/);
     expect(moduleSource).toMatch(/import \{ walletIdSchema \} from "\.\/intent";/);

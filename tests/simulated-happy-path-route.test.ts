@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { POST } from "../app/api/internal/demo/simulated-happy-path/route";
+import { POST } from "../src/server/legacy-routes/internal/demo/simulated-happy-path/route";
 
 const SAVED = { VERCEL_ENV: process.env.VERCEL_ENV, PAE_KEY: process.env.PAE_SIGNING_KEY_HEX_54414D45494F4E2D44454D4F2D53494D554C415445442D48415050592D4B45592D31_PEM };
 

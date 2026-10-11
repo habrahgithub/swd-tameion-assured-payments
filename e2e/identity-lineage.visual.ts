@@ -1,7 +1,7 @@
 import { syntheticSourceRecords } from "../tests/test-support/synthetic-source-records";
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "./network-fence";
 import { projectObligationDetail, projectObligationList } from "../src/server/obligation-read-model";
 import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
 import { J2A_DEMO_DESTINATION, J2A_DEMO_SOURCE, J2A_DEMO_WALLET_SET_ID, runJ2aReadOnlyPreflight } from "../src/demo/real-testnet-payment";
@@ -105,6 +105,7 @@ async function capture(page: Page, testInfo: TestInfo, name: string, width: numb
 test("real-record Authorization lineage remains bound to the manually selected obligation in desktop and mobile browser views", async ({ page, browser }, testInfo) => {
   const fixture = await genuinePreparedReadModel();
   const mutations: string[] = [];
+  await page.route("**/api/operator/session",route=>route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}}));
   await page.route("**/api/obligations**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;

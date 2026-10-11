@@ -7,7 +7,7 @@ let counter = 0;
 
 /**
  * Test-only helper: seals a minimal, valid DurableAssessmentRecord for a
- * fixture, mirroring what app/api/obligations/[id]/assess/route.ts does in
+ * fixture, mirroring what src/server/legacy-routes/obligations/[id]/assess/route.ts does in
  * production. Kept here rather than duplicated per test file since most of
  * the P0 execution/authorization test suites need a sealed PAY assessment
  * as a precondition and don't otherwise care about assessment content.

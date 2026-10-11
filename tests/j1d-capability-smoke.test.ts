@@ -31,7 +31,7 @@ import {
   PATCH,
   POST,
   PUT,
-} from "../app/api/internal/j1d/capability-smoke/route";
+} from "../src/server/legacy-routes/internal/j1d/capability-smoke/route";
 import {
   buildJ1dSyntheticContext,
   J1D_SYNTHETIC_OBLIGATION_ID,

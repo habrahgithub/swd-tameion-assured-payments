@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { GET } from "../app/api/obligations/[id]/route";
 import { DEMO_ORGANIZATION_ID, getDemoState } from "../src/server/demo-state";
@@ -80,4 +80,10 @@ describe("obligation detail truth-layer API", () => {
       (state as any).store = restored;
     }
   });
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

@@ -48,10 +48,16 @@ it("withdrawn list and detail do not hydrate a state loader that can seed or mig
   vi.spyOn(source, "loadPublicSourceRecords").mockReturnValue([]);
   vi.mocked(source.isCurrentSourceEligible).mockReturnValue(false);
   mocks.state.mockResolvedValue(new DemoState()).mockClear();
-  const response = await list();
+  const response = await list(new Request("http://localhost/api/obligations"));
   expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ obligations: [], total_count: 0 });
   const absent = await detail(new Request("http://localhost/detail"), {params:Promise.resolve({id:"OBL-J0C-001"})});
   expect(absent.status).toBe(404);
   const disclosure = await packet(new Request("http://localhost/packet"), {params:Promise.resolve({id:"OBL-J0C-001"})});
   expect(disclosure.status).toBe(404); expect(mocks.state).not.toHaveBeenCalled();
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

@@ -52,7 +52,7 @@ describe("public candidate privacy boundary", () => {
   });
 
   it("returns no genuine list or detail for the withdrawn source set", async () => {
-    const list = await listObligations();
+    const list = await listObligations(new Request("http://localhost/api/obligations"));
     expect(list.status).toBe(200);
     expect((await list.json()).obligations).toHaveLength(0);
     const detail = await obligationDetail(new Request("http://localhost/api/obligations/OBL-J0C-001"), {
@@ -71,4 +71,10 @@ describe("public candidate privacy boundary", () => {
       expect(markdown.length).toBeLessThan(1000);
     }
   });
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

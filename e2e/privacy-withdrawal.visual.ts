@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./network-fence";
 
 test("withdrawn runtime source stays empty without synthetic fallback", async ({ page }) => {
   const writes: string[] = [];

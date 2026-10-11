@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { POST } from "../app/api/j0d/preflight/route";
+import { POST } from "../src/server/legacy-routes/j0d/preflight/route";
 import { j0dPreflightHttpStatus, type J0dPreflightResult } from "../src/j0d-spike/preflight";
 
 const resumeFrom = {

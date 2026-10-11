@@ -100,3 +100,18 @@ historical authority, packet mismatch, destination changes and UNKNOWN with no
 retry. Changing inputs invalidates current assessment and packet binding while
 retaining their mock audit history. Production withdrawal and requester guards
 are unchanged. Automated mock checks are distinct from PRIME-observed UAT.
+
+## Private operator continuation (#65)
+
+The root dashboard requires a server-validated operator session. Login, session,
+logout and manual read-only wallet balance routes fail closed until approved
+exact-origin, ingress, auth database and balance-pin configuration is provisioned.
+No values or credentials are supplied by this candidate. The new SQL migration
+has not been executed; isolated grants/concurrency/security validation must precede
+enablement. Existing privileged HTTP lanes are disabled and login does not grant
+assessment, approval, signing, payment or reconciliation authority.
+
+Read paths now use an existing-state-only loader, with no request-triggered seed,
+migration or bootstrap. Source withdrawal short-circuits before state hydration.
+Private responses are no-store. Mocked core tests retained in internal legacy
+modules do not establish current HTTP admission or live proof.

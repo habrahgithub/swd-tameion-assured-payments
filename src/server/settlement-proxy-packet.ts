@@ -1,4 +1,4 @@
-import { DEMO_ORGANIZATION_ID, type DemoState } from "./demo-state";
+import { DEMO_ORGANIZATION_ID, type ExistingState } from "./load-existing-demo-state";
 import { getAuthorizedReviewedAssessment } from "../demo/authorized-assessment-lineage";
 import { buildJ2aExecutionPacket, hashJ2aPreflightEvidence } from "../demo/real-testnet-payment";
 import { decimalToAtomicAtScale } from "../j0d-spike/intent";
@@ -11,7 +11,7 @@ export type SettlementEvidenceBinding =
 
 /** Resolve the already-authorized exact packet from persisted source and proxy
  * facts. This is read-only and is shared by detail rendering and execution. */
-export function getCurrentSettlementProxyPacket(state: DemoState, obligationId: string) {
+export function getCurrentSettlementProxyPacket(state: ExistingState, obligationId: string) {
   const proxy = state.getSettlementProxy(obligationId);
   const sealedPae = state.getSealedPae(obligationId);
   const authorization = state.getAuthorizationArtifacts(obligationId);
@@ -88,7 +88,7 @@ export function getCurrentSettlementProxyPacket(state: DemoState, obligationId: 
  * evidence to that exact instruction. It never feeds execute or release gates.
  */
 export function getSettlementEvidenceBinding(
-  state: DemoState,
+  state: ExistingState,
   obligationId: string,
   currentPacket: ReturnType<typeof getCurrentSettlementProxyPacket>,
 ): SettlementEvidenceBinding {

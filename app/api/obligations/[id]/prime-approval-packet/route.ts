@@ -1,25 +1,9 @@
-import { NextResponse } from "next/server";
-
-import { buildJ2PrimeApprovalPacket, renderJ2PrimeApprovalPacketText } from "../../../../../src/pipeline/prime-approval-packet";
-import { isCurrentSourceEligible } from "../../../../../src/server/source-records";
-import { DEMO_ORGANIZATION_ID, getDemoState } from "../../../../../src/server/demo-state";
-
-/**
- * Renders the exact-intent disclosure Prime must approve before any real J2
- * Arc Testnet transfer (DIR-TAMEION-PROTOTYPE-CLAUDE-001 gate 1). This route
- * only reads an already-sealed PAE and formats it — it never submits
- * anything and is unrelated to /execute.
- */
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  if (isCurrentSourceEligible(DEMO_ORGANIZATION_ID, id) !== true) {
-    return NextResponse.json({ error: "Obligation source record not found", code: "SRC-001" }, { status: 404 });
-  }
-  const state = await getDemoState();
-  const sealed = state.getSealedPae(id);
-  if (!sealed) {
-    return NextResponse.json({ error: "No sealed PAE for this obligation; authorize it first." }, { status: 409 });
-  }
-  const packet = buildJ2PrimeApprovalPacket(sealed);
-  return NextResponse.json({ packet, text: renderJ2PrimeApprovalPacketText(packet) });
-}
+import {obligationReaders} from "../../../../../src/server/operator-obligation-routes";
+import {methodNotAllowed} from "../../../../../src/server/route-access-policy";
+export async function GET(request:Request,context:{params:Promise<{id:string}>}){return obligationReaders.packet(request,(await context.params).id);}
+export const HEAD=methodNotAllowed;
+export const POST=methodNotAllowed;
+export const PUT=methodNotAllowed;
+export const PATCH=methodNotAllowed;
+export const DELETE=methodNotAllowed;
+export const OPTIONS=methodNotAllowed;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { POST } from "../app/api/obligations/[id]/assess/route";
+import { POST } from "../src/server/legacy-routes/obligations/[id]/assess/route";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, getDemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { DemoStatePersistenceError } from "../src/server/supabase-demo-state-repository";

@@ -16,8 +16,8 @@ vi.mock("../src/demo/real-testnet-payment", async (importOriginal) => {
 });
 
 import { POST as approve } from "../app/api/obligations/[id]/approve/route";
-import { POST as execute } from "../app/api/obligations/[id]/execute/route";
-import { POST as prepareProxy } from "../app/api/internal/demo/real-testnet-payment/preflight/route";
+import { POST as execute } from "../src/server/legacy-routes/obligations/[id]/execute/route";
+import { POST as prepareProxy } from "../src/server/legacy-routes/internal/demo/real-testnet-payment/preflight/route";
 import { GET as listObligations } from "../app/api/obligations/route";
 import { DEMO_ORGANIZATION_ID, DemoState } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
@@ -307,7 +307,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
     }
     mocks.getDemoState.mockResolvedValue(state);
 
-    const response = await listObligations();
+    const response = await listObligations(new Request("http://localhost/api/obligations"));
     const body = await response.json();
 
     expect(body.obligations.filter((item: { decision: string }) => item.decision === "PAY")).toHaveLength(5);
@@ -425,4 +425,10 @@ describe("selected genuine Arc proxy route enforcement", () => {
     expect(api.createTransaction).not.toHaveBeenCalled();
     if (status === "UNKNOWN") expect((await response.json()).error).toMatch(/read-only status reconciliation/i);
   });
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

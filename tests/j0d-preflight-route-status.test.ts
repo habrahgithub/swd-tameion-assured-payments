@@ -7,7 +7,7 @@ vi.mock("../src/j0d-spike/preflight", async (importOriginal) => {
   return { ...actual, runJ0dPreflight: mocks.runJ0dPreflight };
 });
 
-import { POST } from "../app/api/j0d/preflight/route";
+import { POST } from "../src/server/legacy-routes/j0d/preflight/route";
 
 const resumeFrom = {
   walletSetId: "2b72f116-16da-591a-9212-5382388a35c4",

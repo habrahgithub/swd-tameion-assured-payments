@@ -10,3 +10,11 @@ export async function POST() {
     code: "DEMO-004",
   }, { status: 410, headers: { "Cache-Control": "no-store, max-age=0" } });
 }
+
+import {methodNotAllowed} from "../../../../../src/server/route-access-policy";
+export const GET=methodNotAllowed;
+export const HEAD=methodNotAllowed;
+export const PUT=methodNotAllowed;
+export const PATCH=methodNotAllowed;
+export const DELETE=methodNotAllowed;
+export const OPTIONS=methodNotAllowed;

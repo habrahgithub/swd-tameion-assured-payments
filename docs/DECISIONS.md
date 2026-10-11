@@ -75,3 +75,43 @@ interactions with in-memory fake records. Duplicate or unresolved submission can
 retry; changed inputs and historical evidence do not establish current eligibility.
 Every stage and retained audit entry stays explicitly non-economic. Existing image
 baselines, tolerances and genuine financial negative assertions remain preserved.
+
+## 2026-10-11 — Private operator and read-only balance boundary (#65)
+
+The isolated private continuation adds digest-only operator sessions, one-use
+prelogin CSRF challenges, finite durable budgets, fixed session expiry, and
+version/revocation checks. Authentication grants no financial authority. All
+unadmitted assessment/model, signing, execution and internal provider HTTP lanes
+return constant denials before initialization. Their prior implementations remain
+internal solely to preserve mocked core regression coverage; no HTTP route imports
+them. Approval and kill-switch denials and all source withdrawals remain intact.
+
+Enabled private reads authenticate before checking source eligibility. Existing
+state may only be selected and restored; no request seeds actors, initializes a
+worker/provider, migrates keys or backfills history. Empty source does not hydrate.
+Missing state, schema or trust/bootstrap markers blocks the read.
+
+Deployment must explicitly provision exact HTTPS origins and an approved
+`vercel-direct-v1` project/deployment/environment topology record. Platform flags
+alone do not establish ingress provenance. Absent or inconsistent configuration
+blocks before any durable admission. Network budgets use a dedicated HMAC key;
+raw IPs never enter persistence. No hosted test-mode or insecure cookie switch
+exists. Session CSRF is domain-separated from an opaque random bearer, with only
+a digest stored; bearer values remain solely in Secure/HttpOnly host cookies.
+
+Balance is a separately pinned, manual read-only observation with exactly two GET
+capabilities. Its narrow client needs no entity/signing secret and cannot list,
+estimate fees, create or sign transactions. Wallet, wallet-set, source address,
+Arc Testnet network and native USDC identity/precision must match exact approved
+server configuration. Missing/duplicate/malformed responses never become zero.
+Session revalidation surrounds each read; logout and expiry discard pending UI
+results. No affordability or payment readiness is inferred. Circle endpoint
+shapes follow the pinned installed SDK and the official
+[wallet API reference](https://developers.circle.com/api-reference/w3s/developer-controlled-wallets/list-wallet-balance).
+
+The additive migration is source only. Mock/static tests cannot prove SQL grants,
+transactional serialization or deployed ingress. Isolated SQL/grant/concurrency,
+protected Preview setup, out-of-band credentials, independent review, and one
+operator-clicked live read smoke remain separately gated. No SQL or live call is
+admitted here. Original003 UNKNOWN/no retry and the two existing visual failures
+are preserved; browser-server consent remains a separate explicit gate.

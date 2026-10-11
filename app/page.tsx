@@ -1,5 +1,2 @@
-import { CommandCenter } from "./command-center";
-
-export default function Home() {
-  return <CommandCenter />;
-}
+import {OperatorDashboard} from './operator-dashboard';
+export default function Home(){return <OperatorDashboard/>;}

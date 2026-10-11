@@ -11,7 +11,7 @@ vi.mock("../src/server/demo-state", async (importOriginal) => {
 import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
-import { POST as postAssessment } from "../app/api/obligations/[id]/assess/route";
+import { POST as postAssessment } from "../src/server/legacy-routes/obligations/[id]/assess/route";
 import { CommandCenter, SourceObligationLineage, useExecutionConfirmation, workflowState } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
@@ -189,7 +189,7 @@ async function detailJson(state: DemoState, obligationId: string) {
 
 async function listJson(state: DemoState) {
   stateMocks.getDemoState.mockResolvedValue(state);
-  const response = await getObligationList();
+  const response = await getObligationList(new Request("http://localhost/api/obligations"));
   expect(response.status).toBe(200);
   return response.json();
 }
@@ -1027,10 +1027,12 @@ describe("real detail GET producer-consumer packet controls", () => {
 
   it("keeps genuine durable-loader failures outside presentation projection errors", async () => {
     stateMocks.getDemoState.mockRejectedValue(new Error("Persisted demo-state integrity failure."));
-    await expect(getObligationDetail(
+    const response=await getObligationDetail(
       new Request("http://localhost/api/obligations/OBL-LOADER-FAILURE"),
       { params: Promise.resolve({ id: "OBL-LOADER-FAILURE" }) },
-    )).rejects.toThrow("Persisted demo-state integrity failure.");
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({code:"AUTH_UNAVAILABLE"});
   });
 
   it("rebuilds the assurance producer from a cold module registry and durable snapshot", async () => {
@@ -2096,4 +2098,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(receipt.textContent).toContain("No provider reference is recorded for this instruction");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
+});
+
+vi.mock("../src/server/operator-obligation-routes", async original => {
+ const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
+ const {getDemoState}=await import("../src/server/demo-state");
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

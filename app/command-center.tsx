@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { decimalToAtomic, USDC_DECIMALS } from "../src/domain/numeric";
 import type { RaceAssessment } from "../src/agent/schema";
 import type { PaymentTruthLayers } from "../src/domain/payment-control-boundary";
@@ -1797,7 +1797,7 @@ function DemoStage({ title, value }: { title: string; value: string }) {
   );
 }
 
-export function CommandCenter() {
+export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={}) {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
@@ -2774,13 +2774,14 @@ export function CommandCenter() {
 
   return (
     <main dir="ltr" className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
-      <header className="-mx-4 flex flex-col items-start justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
+      <header className="relative -mx-4 flex flex-col items-start justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
-          <h1 className="text-lg font-semibold text-[var(--color-ink)] sm:text-xl">Assured Payment — Command Center</h1>
+          <h1 className="text-lg font-semibold text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="sr-only sm:not-sr-only"> — Command Center</span>:" — Command Center"}</h1>
         </div>
+        {operatorControls}
       </header>
 
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
