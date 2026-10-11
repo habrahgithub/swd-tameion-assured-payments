@@ -29,7 +29,7 @@ describe("#65 auth before effect",()=>{
  it("requires bound nonce/token before password ticket, never accepts caller session fixation",async()=>{
   const h=harness();const denied=await h.login(request('/api/operator/login',{username:'MOCK-OPERATOR',password:'invented'}));expect(denied.status).toBe(403);expect(h.factory).not.toHaveBeenCalled();expect(h.verify).not.toHaveBeenCalled();
   const accepted=await h.login(request('/api/operator/login',{username:'MOCK-OPERATOR',password:'invented'},{cookie:`__Host-tameion-prelogin=${token}; __Host-tameion-session=${token}`,'x-tameion-csrf':token}));
-  expect(accepted.status).toBe(200);expect(h.r.reserveLogin).toHaveBeenCalledOnce();expect(h.verify).toHaveBeenCalledOnce();
+  expect(accepted.status).toBe(200);expect(h.r.reserveLogin).toHaveBeenCalledOnce();expect(h.verify).toHaveBeenCalledOnce();expect(h.r.finishLogin.mock.calls[0][0].expected_credential_version).toBe(verifier.credential_version);
   const data=await accepted.json();expect(data.authenticated).toBe(true);expect(data.session_token).toBeUndefined();
   expect(accepted.headers.get('set-cookie')).not.toContain(`__Host-tameion-session=${token};`);
   expect(accepted.headers.get('set-cookie')).toContain('__Host-tameion-prelogin=;');
@@ -43,6 +43,7 @@ describe("#65 auth before effect",()=>{
   const response=await h.login(request('/api/operator/login',{username:'UNKNOWN',password:'invented'},{cookie:`__Host-tameion-prelogin=${token}`,'x-tameion-csrf':token}));expect(response.status).toBe(401);
   expect(h.r.reserveLogin.mock.calls[0][0].operator_key).toBe('MOCK-OPERATOR');expect(h.r.finishLogin.mock.calls[0][0].verified).toBe(false);
  });
+ it.each([false,null,undefined])('a mocked login-finish denial/missing acceptance %s never issues a session',async accepted=>{const h=harness();h.r.finishLogin.mockResolvedValueOnce({accepted} as never);const response=await h.login(request('/api/operator/login',{username:'MOCK-OPERATOR',password:'INVENTED-UNIT-ONLY'},{cookie:`__Host-tameion-prelogin=${token}`,'x-tameion-csrf':token}));expect(response.status).toBe(401);expect((await response.json()).code).toBe('LOGIN_REJECTED');expect(response.headers.get('set-cookie')).not.toContain('__Host-tameion-session=');expect(h.r.finishLogin.mock.calls[0][0].expected_credential_version).toBe(1);expect(h.r.finishLogin).toHaveBeenCalledOnce();expect(h.balance).not.toHaveBeenCalled();});
  it("rejects expired/revoked/version-stale durable session before refresh budget/provider",async()=>{
   const h=harness();h.r.validateSession.mockResolvedValueOnce({valid:false} as never);
   const response=await h.refresh(request('/api/wallet/balance/refresh',{}, {cookie:`__Host-tameion-session=${token}`,'x-tameion-csrf':csrfForBearer(token)}));expect(response.status).toBe(401);expect(h.r.admitRefresh).not.toHaveBeenCalled();expect(h.balance).not.toHaveBeenCalled();

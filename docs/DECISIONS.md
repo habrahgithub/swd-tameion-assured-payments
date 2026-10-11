@@ -130,3 +130,16 @@ operator read authentication grants no mutation authority. Screenshot baselines
 and tolerances remain unchanged. Temporary mocked browser execution records
 source/build/config identity, owned shutdown and network evidence privately.
 Earlier missing supervisor evidence remains missing.
+
+### #65 login-finish expected credential version correction
+
+The SQL login-finish denial now explicitly rejects NULL and nonpositive expected
+credential versions and compares the verifier version with IS DISTINCT FROM.
+A nullable inequality could otherwise evaluate NULL and skip a denial; this is
+a source finding, not proven HTTP exploitation. Ticket consumption order,
+positive matching-version session minting, expiry and existing guards are retained.
+Offline checks cover the SQL source contract, production password validation
+and mocked handler denials; they do not establish PostgreSQL runtime behavior.
+The separate SQL harness remains bound to frozen candidate93b and its original
+migration hashes. It requires explicit independent rebinding before use with
+this corrected migration; no SQL execution or enablement is authorized here.

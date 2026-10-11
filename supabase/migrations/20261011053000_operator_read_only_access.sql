@@ -119,7 +119,11 @@ BEGIN
  n:=clock_timestamp();
  IF NOT FOUND OR a.consumed_at IS NOT NULL OR a.expires_at<=n THEN RETURN jsonb_build_object('accepted',false);END IF;
  UPDATE tameion_private.login_attempts SET consumed_at=n WHERE attempt_digest=p_attempt_digest;
- IF p_verified IS NOT TRUE OR v.enabled IS NOT TRUE OR v.credential_version<>p_expected_credential_version OR a.credential_version<>v.credential_version THEN RETURN jsonb_build_object('accepted',false);END IF;
+ -- NULL or nonpositive expected versions must deny, never fall through SQL three-valued logic.
+ IF p_verified IS NOT TRUE OR v.enabled IS NOT TRUE
+ OR p_expected_credential_version IS NULL OR p_expected_credential_version<=0
+ OR v.credential_version IS DISTINCT FROM p_expected_credential_version
+ OR a.credential_version<>v.credential_version THEN RETURN jsonb_build_object('accepted',false);END IF;
  INSERT INTO tameion_private.operator_sessions VALUES(p_session_digest,a.operator_key,v.credential_version,p_csrf_digest,n,n+interval '60 minutes',NULL);
  RETURN jsonb_build_object('accepted',true,'expires_at',n+interval '60 minutes');
 END $$;
