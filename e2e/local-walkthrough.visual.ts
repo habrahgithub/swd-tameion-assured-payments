@@ -101,7 +101,7 @@ test("adversarial request shape and genuine mutation denials remain isolated",as
     const response=await request.get("/local-demo",{headers});expect(await response.text()).toContain("LOCAL_ONLY");
     expect(await response.text()).not.toContain("Assess mock case</button>");
   }
-  const list=await request.get("/api/obligations");expect((await list.json()).obligations).toEqual([]);
+  const list=await request.get("/api/obligations");expect(list.status()).toBe(503);expect(list.headers()["cache-control"]).toContain("no-store");expect(await list.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
   for(const route of ["approve","kill-switch"]){
     const response=await request.post(`/api/obligations/OBL-J0C-001/${route}`,{data:{actor_id:"MOCK_REVIEWER",action:"DEACTIVATE"}});
     expect(response.status()).toBe(403);expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");

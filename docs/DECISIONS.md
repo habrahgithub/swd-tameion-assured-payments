@@ -115,3 +115,18 @@ protected Preview setup, out-of-band credentials, independent review, and one
 operator-clicked live read smoke remain separately gated. No SQL or live call is
 admitted here. Original003 UNKNOWN/no retry and the two existing visual failures
 are preserved; browser-server consent remains a separate explicit gate.
+
+### #65 review correction — selected balance precision and test boundaries
+
+Balance collection rows retain bounded canonical decimal syntax; the six-decimal
+limit applies only after unique pinned USDC identity is selected. Duplicate and
+near-match identities still fail closed. No amounts are rescaled. Native versus
+interface USDC representation remains unresolved pending AXIS adjudication;
+unsupported precision/metadata is rejected and no live enablement is claimed.
+
+Anonymous browser reads assert denial. Authenticated source-withdrawal checks
+use the explicit in-process reader seam, including detail and approval packet;
+operator read authentication grants no mutation authority. Screenshot baselines
+and tolerances remain unchanged. Temporary mocked browser execution records
+source/build/config identity, owned shutdown and network evidence privately.
+Earlier missing supervisor evidence remains missing.
