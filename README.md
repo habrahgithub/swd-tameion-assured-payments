@@ -50,4 +50,4 @@ The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](d
 
 ## Architecture and assurance reviews
 
-Within Tameion DevOps, **PBAR** stands for **Perspective-Based Assurance Review** across eight stakeholder viewpoints. The separate seven-lens technical review is **SENTINEL Assurance Review**. See [Review-method terminology and Tameion assessment boundaries](docs/reviews/PBAR_AND_SENTINEL_ASSURANCE.md). Neither review authorizes SQL, deployment, credentials or payments.
+Within Tameion DevOps, **SWD-PBAR** stands for **Perspective-Based Assurance Review** across eight stakeholder viewpoints. The separate seven-lens technical review is **SENTINEL Assurance Review**. See [Review-method terminology and Tameion assessment boundaries](docs/reviews/PBAR_AND_SENTINEL_ASSURANCE.md). Neither review authorizes SQL, deployment, credentials or payments.
