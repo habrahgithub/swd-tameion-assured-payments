@@ -1,16 +1,16 @@
-# Tameion — Perspective-Based Assurance Review (PBAR)
+# Tameion — Perspective-Based Assurance Review (SWD-PBAR)
 
 **Status:** SWD/Tameion DevOps terminology and assurance framework (2026-10-12); documentation-only. This does not amend frozen architecture, change current jobs, grant SQL/provider/payment authority or certify a deployed prototype.
 
 ## Canonical Tameion terminology
 
-**PBAR = Perspective-Based Assurance Review** within Tameion DevOps: a structured, stakeholder-perspective assessment of the solution, architecture, operations and delivery. Record business/customer concerns as well as technical implementation and security evidence.
+**SWD-PBAR means Perspective-Based Assurance Review** within Tameion DevOps. Use the prefixed `SWD-PBAR` name in issue threads, reports and cross-team messages, avoiding the ambiguous bare `PBAR`. It is a structured, stakeholder-perspective assessment of the solution, architecture, operations and delivery. Record business/customer concerns as well as technical implementation and security evidence.
 
-**SENTINEL Assurance Review** remains a **distinct seven-lens independent technical review**: Authority, Ownership, Identity, Logic, Contradiction, Regression and Risk. A SENTINEL exact-head PASS can support a PBAR technical conclusion but cannot stand in for business/user/operations/support evidence, true operator UAT or live provider receipts.
+**SENTINEL Assurance Review** remains a **distinct seven-lens independent technical review**: Authority, Ownership, Identity, Logic, Contradiction, Regression and Risk. A SENTINEL exact-head PASS can support a SWD-PBAR technical conclusion but cannot stand in for business/user/operations/support evidence, true operator UAT or live provider receipts.
 
-**Name collision:** Some external architecture literature uses PBAR for **Pattern-Based Architecture Review**. Spell that other technique out in full when it is explicitly intended. Do not substitute it for the SWD/Tameion DevOps definition.
+**Name collision:** Some external architecture literature uses the bare acronym PBAR for **Pattern-Based Architecture Review**. Spell that other technique out in full when it is explicitly intended. Do not substitute it for the SWD/Tameion DevOps definition.
 
-## Eight PBAR perspectives applied to Tameion
+## Eight SWD-PBAR perspectives applied to Tameion
 
 | Perspective | Tameion-specific review focus | Evidence required to claim assurance |
 | --- | --- | --- |
@@ -25,9 +25,9 @@
 
 The assessment is evidence-specific; no perspective should receive PASS solely from a static review, CI readiness or a simulated UI. For the Circle balance, **missing pages or unresolved token/wallet/decimals make the balance NOT VERIFIED, never a verified zero**.
 
-## PBAR evidence and deliverable contract
+## SWD-PBAR evidence and deliverable contract
 
-Return a PBAR report with:
+Return a SWD-PBAR report with:
 
 1. Executive summary, reviewed exact candidate and boundaries.
 2. Eight perspective findings distinguishing PASS / FAIL / PARTIAL / NOT_RUN / BLOCKED and material unknowns.
@@ -45,10 +45,10 @@ SENTINEL independently checks these seven narrower lenses: **Authority** (curren
 
 Tameion's **full E2E demo remains NOT ACCEPTED** until actual evidence supports the full obligation → AI assessment → human authorization → deterministic Safety Kernel / signed PAE → transaction execution → reconciliation/evidence journey. The earlier original 003 authorization HTTP 500 has an unverified outcome: **no retry/reset or simulated success substituted for actual proof**.
 
-The Thursday V1 login + genuine user-clicked read-only Circle balance + PRIME UAT milestone remains separate from later payment/reconciliation proofs. A PBAR or SENTINEL PASS does not waive any deployment, credentials, Supabase mutation, Circle access, payment, privacy or publication permission.
+The Thursday V1 login + genuine user-clicked read-only Circle balance + PRIME UAT milestone remains separate from later payment/reconciliation proofs. A SWD-PBAR or SENTINEL PASS does not waive any deployment, credentials, Supabase mutation, Circle access, payment, privacy or publication permission.
 
 **Project-specific actors:** PRIME → AXIS → FORGE → independent SENTINEL; ATLAS out of commission. Evidence/state must be reconciled before any new writer or side-effecting operation.
 
 ## Related distinct methodology
 
-Pattern-Based Architecture Review is a separately named architectural-pattern method (Harrison & Avgeriou, *IEEE Software*, 2011, https://doi.org/10.1109/MS.2010.156). Within this Tameion DevOps document, **PBAR does not refer to that methodology**.
+Pattern-Based Architecture Review is a separately named architectural-pattern method (Harrison & Avgeriou, *IEEE Software*, 2011, https://doi.org/10.1109/MS.2010.156). Within this Tameion DevOps document, **SWD-PBAR does not refer to that methodology**.
