@@ -1743,7 +1743,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("keeps HTTP approval disabled and consumes direct synthetic assurance refusal as NOT_CREATED evidence", async () => {
+  it("keeps HTTP approval disabled, restores a refused local approval, and renders retained partial authorization as NOT_CREATED", async () => {
     const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     const assessment = fixture.state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, fixture.selectedId)!;
@@ -1760,6 +1760,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     }), { params: Promise.resolve({ id: fixture.selectedId }) });
     expect(response.status).toBe(403);
     expect(fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId).state).toBe("APPROVAL_PENDING");
+    const before = fixture.state.store.exportSnapshot();
     expect(() => approveAndSealPae(fixture.state.store, signingKeyId, {
       organizationId: DEMO_ORGANIZATION_ID, obligationId: fixture.selectedId,
       expectedVersion: current.aggregate_version,
@@ -1767,6 +1768,17 @@ describe("real detail GET producer-consumer packet controls", () => {
       actorId: "USR-DEMO-OPERATOR", actorRole: "FINANCE_APPROVER",
       policyVersion: current.policy_version, reasonText: "Mock-only safety kernel refusal proof.",
     }, fixture.state.trustedKeys)).toThrow(expect.objectContaining({ overall: "BLOCK" }));
+    expect(fixture.state.store.exportSnapshot()).toEqual(before);
+    const refused = await detailJson(fixture.state, fixture.selectedId);
+    expect(refused.aggregate.state).toBe("APPROVAL_PENDING");
+    expect(refused.current_assessment).toMatchObject({ assessment_id: assessment.record.assessment_id });
+    expect(refused.pae_sealed).toBe(false);
+    expect(refused.assurance_evidence.state).toBe("NOT_CREATED");
+
+    // Retain the UI oracle for an older partial authorization with no envelope.
+    // This explicit synthetic setup is not the corrected pipeline's failure outcome.
+    fixture.state.store.approve(DEMO_ORGANIZATION_ID, fixture.selectedId, current.aggregate_version,
+      assessment.record.assessment_id, assessment.hash);
 
     const body = await detailJson(fixture.state, fixture.selectedId);
     expect(body.aggregate.state).toBe("AUTHORIZED");

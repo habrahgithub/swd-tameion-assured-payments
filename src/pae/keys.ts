@@ -246,8 +246,17 @@ export function loadServerSigningKey(signingKeyId: string, registry = processTru
   const envVar = signingKeyEnvironmentVariableName(signingKeyId);
   const pem = process.env[envVar];
   if (pem) {
-    const privateKey = importPrivateKeyPem(pem);
-    const publicKey = createPublicKey(privateKey);
+    let privateKey: KeyObject;
+    let publicKey: KeyObject;
+    try {
+      privateKey = importPrivateKeyPem(pem);
+      publicKey = createPublicKey(privateKey);
+      if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
+        throw new Error("Unexpected key type");
+      }
+    } catch {
+      throw new PaeKeyError("Configured server signing key is invalid", "PAE-015");
+    }
     const publicKeySpki = exportPublicKeySpkiBase64Url(publicKey);
     const existing = registry.export().find((entry) => entry.signing_key_id === signingKeyId);
     if (existing && (

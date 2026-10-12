@@ -143,3 +143,21 @@ and mocked handler denials; they do not establish PostgreSQL runtime behavior.
 The separate SQL harness remains bound to frozen candidate93b and its original
 migration hashes. It requires explicit independent rebinding before use with
 this corrected migration; no SQL execution or enablement is authorized here.
+
+### 2026-10-12 — Signer readiness and synchronous authorization failure
+
+The shared authorization pipeline validates configured Ed25519 signing capability
+and active matching trust before calling the authority approval transition.
+Missing, malformed, wrong-algorithm, revoked or mismatched hosted signing material
+fails with sanitized `PAE-015`; no key is provisioned by this correction.
+The pipeline marks a PAE usable only after successful signing. Any synchronous
+approval/kernel/payload/sealing failure restores the original request-local
+aggregate using the existing store API, preserving assessment history and kill
+switches. This helper performs no persistence or provider calls; local restoration
+does not establish durable rollback, repair an uncertain flush, or authorize retry.
+
+Regression tests use invented non-economic obligations and isolated cryptographic
+fixtures through the shared production code. Withdrawn-source and requester
+denials, retired synthetic HTTP routes, signing trust and execution guards remain
+in force. Original003 remains `OUTCOME_UNVERIFIED / NO_RETRY`; the historical
+hosted HTTP 500 outcome has not been inspected or resolved by this correction.
