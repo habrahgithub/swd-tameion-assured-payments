@@ -1,53 +1,54 @@
-# Tameion review methods: PBAR and SENTINEL
+# Tameion — Perspective-Based Assurance Review (PBAR)
 
-**Status:** Terminology clarification (2026-10-12) — documentation only. This file does **not** amend the frozen product blueprint, admit new work, certify a deployed build, or authorize live provider/database/financial actions.
+**Status:** SWD/Tameion DevOps terminology and assurance framework (2026-10-12); documentation-only. This does not amend frozen architecture, change current jobs, grant SQL/provider/payment authority or certify a deployed prototype.
 
-## Naming correction
+## Canonical Tameion terminology
 
-**PBAR means Pattern-Based Architecture Review.** It is a lightweight evaluation of software **architecture patterns** and their effect on **quality attributes**. It does **not** mean "Perspective-Based Assurance Review."
+**PBAR = Perspective-Based Assurance Review** within Tameion DevOps: a structured, stakeholder-perspective assessment of the solution, architecture, operations and delivery. Record business/customer concerns as well as technical implementation and security evidence.
 
-Tameion's existing seven-perspective independent assessment is called **SENTINEL Assurance Review**. These are complementary and not interchangeable.
+**SENTINEL Assurance Review** remains a **distinct seven-lens independent technical review**: Authority, Ownership, Identity, Logic, Contradiction, Regression and Risk. A SENTINEL exact-head PASS can support a PBAR technical conclusion but cannot stand in for business/user/operations/support evidence, true operator UAT or live provider receipts.
 
-| Method | Main focus | Review evidence |
+**Name collision:** Some external architecture literature uses PBAR for **Pattern-Based Architecture Review**. Spell that other technique out in full when it is explicitly intended. Do not substitute it for the SWD/Tameion DevOps definition.
+
+## Eight PBAR perspectives applied to Tameion
+
+| Perspective | Tameion-specific review focus | Evidence required to claim assurance |
 | --- | --- | --- |
-| **PBAR — Pattern-Based Architecture Review** | Architecture patterns, their interactions and quality-attribute tradeoffs | Exact architecture snapshot, design decisions, pattern/quality matrix, risk-ranked findings |
-| **SENTINEL Assurance Review** | Seven Tameion-specific safety/evidence perspectives | Exact source/packet/reviewer identities, negative tests, contracts and runtime receipts |
-| **RCA / 5 Whys** | Cause of a reproduced defect | Reproduction, supported explanation, corrected behavior and regressions |
-| **Deterministic verification / UAT** | Actual correctness in tests and operator workflow | Case-by-case PASS/FAIL/NOT_RUN, exact environment, live/simulated provenance |
+| **Business** | ERP remains system of record; value of assured USDC payment control; demo target and compliance implications | Approved use case, business decisions, cost/benefit assumptions and limitations |
+| **Customer / User** | Treasury operator's selected obligation, PAY/HOLD/ESCALATE explanation, first-screen wallet balance, desktop/mobile journey | Actual authenticated PRIME UAT, accessibility and observable workflow outcomes |
+| **Architecture** | Next.js/server enforcement, durable Supabase transitions, Circle/Arc rail boundary and signed PAE separation | Exact reviewed component/dependency diagrams, binding contracts, quality and drift checks |
+| **Security** | One-operator credentials/sessions, route protection, trusted origin/CSRF, provider-asset identity, secrets and replay | Approved threat model, negative authorization tests, exact-run access and isolation receipts |
+| **Operations** | Provider failures, incomplete paginated balance, audit trail, metrics, recovery/UNKNOWN semantics and incident ownership | Real or isolated failure-case evidence, monitoring/runbook/retention checks |
+| **DevOps** | Local/cloud runners, exclusive writer, immutable artifact, CI/build, Preview protection, reproducibility, safe stage windows | Exact SHA, runner/lease/CI/reviewer checks, private environment and release/rollback evidence |
+| **Support** | Operator instructions, next lawful action, troubleshooting for NOT VERIFIED, escalations and UAT guidance | Usable runbook, ownership, documented failure recovery and support criteria |
+| **Risk & Governance** | NO ASSURANCE, NO EXECUTION; explicit PRIME/AXIS/worker powers; legal stage progress, uncertain payment/database state | Current authority record, signed/validated proof as applicable, risk owner and stop receipts |
 
-## PBAR evaluation for the Tameion architecture
+The assessment is evidence-specific; no perspective should receive PASS solely from a static review, CI readiness or a simulated UI. For the Circle balance, **missing pages or unresolved token/wallet/decimals make the balance NOT VERIFIED, never a verified zero**.
 
-Review the actual design and source version against its declared requirements and the relevant established patterns—not against a generic AWS service checklist.
+## PBAR evidence and deliverable contract
 
-| Tameion boundary | Architecture/pattern questions | Quality attributes |
-| --- | --- | --- |
-| **Next.js / Vercel API** | Are server/client boundaries, privileged-route access, trusted ingress and request authorization consistently enforced? | Security, operability, reliability |
-| **PostgreSQL / durable authority** | Are transactions, constrained state transitions, immutable receipts, failure/partial-state handling and row/role access properly separated? | Data integrity, reliability, auditability |
-| **ERP input / obligation contracts** | Is the source system authoritative for its business facts while Tameion separately decides assurance eligibility? | Modifiability, data integrity, consistency |
-| **Circle Developer-Controlled Wallets / Arc** | Are provider reads, idempotent writes, evidence provenance, wallet/asset/network identity, decimal precision, pagination completeness and reconciliation handled as distinct contracts? | Security, correctness, reliability |
-| **AI assessment / deterministic Safety Kernel / signed PAE** | Are advisory PAY/HOLD/ESCALATE decisions separated from current human authorization, deterministic gates, evidence and execution permissions? | Safety, separation of duties, explainability |
-| **Local/cloud DevOps runners** | Are writer ownership, artifact identity, secrets/egress restrictions, reproducible checks and independent reviews maintained? | Operational excellence, supply-chain integrity, cost |
+Return a PBAR report with:
 
-When assessing provider balance: an **incomplete paginated response must not be represented as a verified zero**. A verified snapshot does not grant payment or preflight authority. No assurance means no execution.
+1. Executive summary, reviewed exact candidate and boundaries.
+2. Eight perspective findings distinguishing PASS / FAIL / PARTIAL / NOT_RUN / BLOCKED and material unknowns.
+3. Risk assessment and **High / Medium / Low** priority matrix.
+4. Explicit assurance statement with scope, basis and exclusions.
+5. Remediation actions, accountable owners, target dates and acceptance oracles.
 
-PBAR's report should include the reviewed baseline, architectural patterns and quality objectives, assumptions, concrete evidence, **High/Medium/Low** findings, remediation owner and verification path. An architecture-only PASS is not proof of a working preview or a genuine Arc transaction.
+Per finding: `ID | Perspective | Observation | Exact source/evidence | Impact | Priority | Remediation | Owner | Target date | Verification status`.
 
-## Seven SENTINEL assurance perspectives
+For an illustrative finding, “Security — privileged-access MFA absent” is an **example**, not a confirmed Tameion condition; any actual severity and remedy require Tameion-specific threat/evidence assessment. Same for single-region resilience and proposed DR cadence.
 
-1. **Authority:** current human grant, expiry/revocation and exact effect scope.
-2. **Ownership:** one accountable writer, independent reviewer and unambiguous escalation.
-3. **Identity:** source obligation/version, selected intent, wallet/asset, packet/hash, environment and evidence identity.
-4. **Logic:** legal state transitions, deterministic outcomes and final authority rechecks.
-5. **Contradiction:** mismatch between UI, API, database, historical artifacts and provider truth.
-6. **Regression:** focused negative tests, replay/concurrency cases and prior accepted behavior.
-7. **Risk:** unintended payment, partial/unknown effects, privacy/credential exposure, recovery uncertainty and safety margins.
+## SENTINEL technical review and actual end-to-end acceptance
 
-A SENTINEL PASS is **scoped evidence**, not standing operational approval. Preserve the separation of architecture review, exact-head implementation review, owner UAT and provider-backed financial proof. Historical Safety Kernel PASS/PAE evidence is not current permission to execute.
+SENTINEL independently checks these seven narrower lenses: **Authority** (current permissions), **Ownership** (one writer/reviewer), **Identity** (exact selected obligation, actor/wallet/hash and environment), **Logic** (legal transitions), **Contradiction** (UI/API/database/provider truth), **Regression** (changed seams and negative cases), and **Risk** (security, races, unknown or partial side effects).
 
-## Review and delivery authority
+Tameion's **full E2E demo remains NOT ACCEPTED** until actual evidence supports the full obligation → AI assessment → human authorization → deterministic Safety Kernel / signed PAE → transaction execution → reconciliation/evidence journey. The earlier original 003 authorization HTTP 500 has an unverified outcome: **no retry/reset or simulated success substituted for actual proof**.
 
-Within Tameion's current project-specific routing, **PRIME → AXIS → FORGE → independent SENTINEL**, with AXIS adjudicating and PRIME retaining owner-only security, SQL, protected deployment, credential, live provider and financial gates as recorded in the active issues. **ATLAS is out of commission.** Naming these actors does not itself reserve a runner or prove the handoff.
+The Thursday V1 login + genuine user-clicked read-only Circle balance + PRIME UAT milestone remains separate from later payment/reconciliation proofs. A PBAR or SENTINEL PASS does not waive any deployment, credentials, Supabase mutation, Circle access, payment, privacy or publication permission.
 
-Preserve existing task-specific one-run restrictions and the unresolved original obligation 003 authorization state. No review report, code-only candidate, simulated demo, CI PASS or screenshot substitutes for end-to-end PRIME acceptance or real provider reconciliation.
+**Project-specific actors:** PRIME → AXIS → FORGE → independent SENTINEL; ATLAS out of commission. Evidence/state must be reconciled before any new writer or side-effecting operation.
 
-**Reference:** Neil B. Harrison and Paris Avgeriou, "Pattern-Based Architecture Reviews," *IEEE Software* 28(6), 66–71 (2011), https://doi.org/10.1109/MS.2010.156.
+## Related distinct methodology
+
+Pattern-Based Architecture Review is a separately named architectural-pattern method (Harrison & Avgeriou, *IEEE Software*, 2011, https://doi.org/10.1109/MS.2010.156). Within this Tameion DevOps document, **PBAR does not refer to that methodology**.
