@@ -414,30 +414,38 @@ export class ExecutionWorker {
       return record;
     }
 
+    // Preserve the accepted reference before awaiting another provider call.
+    // An unavailable status endpoint must leave a durable, read-only recovery
+    // path for this exact submission, never only a reference-less marker.
+    this.store.markUnknown(payload.organization_id, obligationId);
+    const acceptedRecord: ExecutionRecord = {
+      obligation_id: obligationId,
+      idempotency_key: payload.idempotency_key,
+      provider_ref: submission.providerRef,
+      status: "UNKNOWN",
+      atomic_amount: payload.atomic_amount,
+      destination_address: payload.destination_address,
+      provider_evidence: null,
+    };
+    this.executionLedger.set(payload.idempotency_key, acceptedRecord);
+    try {
+      await this.onDurableStateChange?.();
+    } catch (persistenceError) {
+      this.store.restoreAggregateSnapshot(preSubmitAggregate);
+      this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+      throw persistenceError;
+    }
+    const acceptedAggregate = this.store.get(payload.organization_id, obligationId);
     const status = await this.adapter.getStatus(submission.providerRef, payload.idempotency_key);
-    const finalRecord = this.finalizeFromStatus(
-      {
-        obligation_id: obligationId,
-        idempotency_key: payload.idempotency_key,
-        provider_ref: submission.providerRef,
-        status: "UNKNOWN",
-        atomic_amount: payload.atomic_amount,
-        destination_address: payload.destination_address,
-        provider_evidence: null,
-      },
-      status,
-      payload.organization_id,
-    );
+    const finalRecord = this.finalizeFromStatus(acceptedRecord, status, payload.organization_id);
     this.executionLedger.set(payload.idempotency_key, finalRecord);
     try {
       await this.onDurableStateChange?.();
     } catch (persistenceError) {
-      // A persistence conflict after provider submission cannot cancel the
-      // external effect. Restore only the last durable in-flight marker so a
-      // follow-up resolves UNKNOWN/read-only rather than claiming cancellation
-      // or permitting a second submit.
-      this.store.restoreAggregateSnapshot(preSubmitAggregate);
-      this.executionLedger.set(payload.idempotency_key, { ...submittingRecord });
+      // Restore the most recent durable checkpoint, including its accepted
+      // provider reference, so reconciliation never loses known identity.
+      this.store.restoreAggregateSnapshot(acceptedAggregate);
+      this.executionLedger.set(payload.idempotency_key, { ...acceptedRecord });
       throw persistenceError;
     }
     return finalRecord;
@@ -650,15 +658,20 @@ export class ExecutionWorker {
       : this.adapter.getStatusByIdempotencyKey
         ? await this.adapter.getStatusByIdempotencyKey(idempotencyKey)
         : { status: "UNKNOWN" as const };
-    if (status.status === "UNKNOWN") {
-      const unresolved = { ...record, provider_evidence: status };
-      this.executionLedger.set(idempotencyKey, unresolved);
-      await this.onDurableStateChange?.();
-      return unresolved; // still unknown; caller may poll again later, never resubmit.
-    }
-    const finalRecord = this.finalizeFromStatus(record, status, organizationId);
+    const previousAggregate = this.store.get(organizationId, record.obligation_id);
+    const finalRecord = status.status === "UNKNOWN"
+      ? { ...record, provider_evidence: status }
+      : this.finalizeFromStatus(record, status, organizationId);
     this.executionLedger.set(idempotencyKey, finalRecord);
-    await this.onDurableStateChange?.();
+    try {
+      await this.onDurableStateChange?.();
+    } catch (persistenceError) {
+      // Provider observation is evidence, not proof of a committed local
+      // settlement. Preserve the previous durable UNKNOWN record on conflict.
+      this.store.restoreAggregateSnapshot(previousAggregate);
+      this.executionLedger.set(idempotencyKey, { ...record });
+      throw persistenceError;
+    }
     return finalRecord;
   }
 

@@ -42,6 +42,37 @@ async function statusAdapter(api: J2aCircleClient) {
 }
 
 describe("Arc Circle provider adapter for J2A", () => {
+  it.each(["STUCK", "INITIATED", "PENDING_RISK_SCREENING", "QUEUED", "SENT", "CONFIRMED"])("keeps intermediate provider state %s pending without resubmission", async state => {
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state, blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"),
+    } } })) });
+    const result = await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key");
+    expect(result).toMatchObject({ status: "PENDING", transaction_state: state });
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each(["FAILED", "DENIED", "CANCELLED"])("retains exact-identity terminal failure %s", async state => {
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "circle-tx-1", state, blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"),
+    } } })) });
+    expect(await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key")).toMatchObject({ status: "FAILED", transaction_state: state });
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not accept intermediate state evidence for a different transaction identity", async () => {
+    const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
+      id: "different-transaction", state: "STUCK", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
+      destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
+      refId: deriveJ2aCircleRefId("exact-demo-key"),
+    } } })) });
+    expect((await (await statusAdapter(api)).getStatus("circle-tx-1", "exact-demo-key")).status).toBe("UNKNOWN");
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
   it("accepts a valid EIP-55 representation of the exact destination and preserves the raw provider evidence", async () => {
     const checksummedDestination = "0x591A1002127b1605d9DbB51348787bbE3014b2b9";
     const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {

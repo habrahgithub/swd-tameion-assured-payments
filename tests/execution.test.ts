@@ -234,6 +234,81 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(adapter.getSubmissionCount()).toBe(1);
   });
 
+  it("persists an accepted provider reference before a failing status lookup and recovers after restart", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    const originalStatus = adapter.getStatus.bind(adapter);
+    let durableStore = store.exportSnapshot();
+    let durableRecords: ReturnType<ExecutionWorker["exportSnapshot"]> = [];
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      durableStore = store.exportSnapshot();
+      durableRecords = worker.exportSnapshot();
+    });
+    adapter.getStatus = async (ref) => {
+      expect(durableRecords[0]).toMatchObject({ provider_ref: ref, status: "UNKNOWN" });
+      throw new Error("status transport unavailable");
+    };
+    await expect(worker.execute(sealed)).rejects.toThrow("status transport unavailable");
+    expect(durableRecords[0]?.provider_ref).toBeTruthy();
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    adapter.getStatus = originalStatus;
+    const restarted = new ExecutionWorker(AuthorityStore.fromSnapshot(durableStore), adapter);
+    restarted.restoreSnapshot(durableRecords);
+    expect((await restarted.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("does not query status or publish an accepted reference when its checkpoint persistence fails", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let writes = 0;
+    let statusReads = 0;
+    const originalStatus = adapter.getStatus.bind(adapter);
+    adapter.getStatus = async (ref) => { statusReads += 1; return originalStatus(ref); };
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (++writes === 2) throw new Error("accepted checkpoint conflict");
+    });
+    await expect(worker.execute(sealed)).rejects.toThrow("accepted checkpoint conflict");
+    expect(statusReads).toBe(0);
+    expect(worker.exportSnapshot()[0]).toMatchObject({ status: "SUBMITTING", provider_ref: null });
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("retains the accepted checkpoint if the final settlement write conflicts", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let writes = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (++writes === 3) throw new Error("settlement checkpoint conflict");
+    });
+    await expect(worker.execute(sealed)).rejects.toThrow("settlement checkpoint conflict");
+    expect(worker.exportSnapshot()[0]).toMatchObject({ status: "UNKNOWN", provider_ref: expect.any(String) });
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect((await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("does not expose unpersisted settlement after reconciliation CAS failure", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("TIMEOUT");
+    let rejectWrite = false;
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (rejectWrite) throw new Error("reconciliation checkpoint conflict");
+    });
+    const first = await worker.execute(sealed);
+    adapter.resolvePending(first.provider_ref!, "CONFIRMED");
+    rejectWrite = true;
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).rejects.toThrow("reconciliation checkpoint conflict");
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(first);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    rejectWrite = false;
+    expect((await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
   it("keeps a provider PENDING response UNKNOWN with its reference for read-only reconciliation", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     let status: "PENDING" | "CONFIRMED" = "PENDING";

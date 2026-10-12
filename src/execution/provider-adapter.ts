@@ -174,7 +174,7 @@ function statusForCircleTransaction(
     tx.tokenId === tokenId && amountMatchesIntent &&
     tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
   if (!exactIdentity) return { status: "UNKNOWN", ...evidence };
-  if (["FAILED", "DENIED", "CANCELLED", "STUCK"].includes(tx.state ?? "")) return { status: "FAILED", ...evidence };
+  if (["FAILED", "DENIED", "CANCELLED"].includes(tx.state ?? "")) return { status: "FAILED", ...evidence };
   if (tx.state !== "COMPLETE") return { status: "PENDING", ...evidence };
 
   try {
