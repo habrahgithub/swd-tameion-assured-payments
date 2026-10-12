@@ -5,6 +5,7 @@ import { openLocalWalkthrough, SCENARIOS, SYNTHETIC_NOTICE, type Scenario, type 
 
 type Journey = ReturnType<typeof openLocalWalkthrough>;
 const button="rounded border border-[var(--color-border-strong)] bg-white px-4 py-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50";
+const terminalButton="min-h-11 w-full rounded border border-[var(--color-border-strong)] bg-white px-2 py-2 text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto";
 const card="min-w-0 rounded-lg border border-[var(--color-border)] bg-white p-4 sm:p-6";
 function guidance(v:WalkthroughView):string {
   if(v.stage==="UNKNOWN")return "OUTCOME_UNVERIFIED / NO RETRY. Observe recorded fake evidence only; do not resubmit.";
@@ -25,9 +26,16 @@ export function LocalWalkthrough() {
   const [error,setError]=useState<string|null>(null);
   const [blocked,setBlocked]=useState(false);
   const [busy,setBusy]=useState(false);
+  const receiptRef=useRef<HTMLElement|null>(null);
+  const reviewActionRef=useRef<HTMLButtonElement|null>(null);
+  const [reviewingReceipt,setReviewingReceipt]=useState(false);
+  useEffect(()=>{
+    if(reviewingReceipt){receiptRef.current?.scrollIntoView({block:"start"});receiptRef.current?.focus({preventScroll:true});}
+    else reviewActionRef.current?.focus({preventScroll:true});
+  },[reviewingReceipt]);
   useEffect(()=>{try{model.current=openLocalWalkthrough();setView(model.current.view());}catch(e){setBlocked(true);setError(String(e));}},[]);
   async function act(action:(j:Journey)=>WalkthroughView|Promise<WalkthroughView>) {
-    if(!model.current||busy)return;setBusy(true);setError(null);
+    if(!model.current||busy)return;setReviewingReceipt(false);setBusy(true);setError(null);
     try{setView(await action(model.current));}catch(e){setError(e instanceof Error?e.message:String(e));try{setView(model.current.view());}catch{setBlocked(true);}}finally{setBusy(false);}
   }
   if(blocked)return <main className="p-6"><h1>Local synthetic walkthrough</h1><p role="alert">{error ?? "LOCAL_ONLY"}</p></main>;
@@ -42,7 +50,7 @@ export function LocalWalkthrough() {
     : canAuthorize
     ? {label:"Acknowledge mock intent",run:(j:Journey)=>j.authorize(view.caseId,view.version,view.assessment!.id),disabled:false}
     : {label:"Assess mock case",run:(j:Journey)=>j.assess(),disabled:!canAssess};
-  return <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-8" style={{overflowWrap:"anywhere",paddingBottom:"18rem"}}>
+  return <main className="mx-auto max-w-6xl space-y-5 p-4 sm:p-8" style={{overflowWrap:"anywhere",paddingBottom:"20rem"}}>
     <header className="space-y-2">
       <p className="text-xs font-bold uppercase tracking-widest">Tameion · local demonstration</p>
       <h1 className="text-2xl font-semibold sm:text-3xl">Local synthetic walkthrough</h1>
@@ -97,11 +105,14 @@ export function LocalWalkthrough() {
         <p className="mt-3">UNKNOWN is unresolved. No retry is offered; observation reads only this session’s fake evidence. No provider, database, wallet or payment API is called.</p>
       </section>
     </div>
-    <section className={card} aria-labelledby="audit-heading" data-testid="mock-audit"><h2 id="audit-heading" className="text-lg font-semibold">Session audit · {view.caseId}</h2><ol className="mt-4 space-y-3">{view.events.map((e,i)=><li key={i} className="border-s-2 border-[var(--color-border-strong)] ps-3"><strong>{e.action}</strong> · {e.caseId} · version {e.version}<p>{e.detail}</p>{e.intent&&<p className="text-sm">Recorded intent: {e.intent.amount} · {e.intent.destination}</p>}{e.assessment&&<p className="text-sm">Assessment: {e.assessment.id}</p>}{e.packet&&<p className="text-sm">Unsigned packet: {e.packet.id} · {e.packet.intent.caseId} · version {e.packet.intent.version}</p>}</li>)}</ol></section>
+    <section ref={receiptRef} tabIndex={-1} className={card} aria-labelledby="audit-heading" data-testid="mock-audit"><h2 id="audit-heading" className="text-base font-semibold sm:text-lg">{view.stage==="RECONCILED_MOCK"?"Mock receipt":`Session audit · ${view.caseId}`}</h2>{view.stage==="RECONCILED_MOCK"&&<p data-testid="mock-receipt-outcome" className="mt-2 text-[13px]">Mock {view.reconciliation} · fake submissions: {view.submissions}.</p>}<ol className="mt-4 space-y-3">{view.events.map((e,i)=><li key={i} className="border-s-2 border-[var(--color-border-strong)] ps-3"><strong>{e.action}</strong> · {e.caseId} · version {e.version}<p>{e.detail}</p>{e.intent&&<p className="text-sm">Recorded intent: {e.intent.amount} · {e.intent.destination}</p>}{e.assessment&&<p className="text-sm">Assessment: {e.assessment.id}</p>}{e.packet&&<p className="text-sm">Unsigned packet: {e.packet.id} · {e.packet.intent.caseId} · version {e.packet.intent.version}</p>}</li>)}</ol></section>
     <section role="region" aria-label="Current mock next action" className="fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-white p-3 shadow-lg">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0"><p className="text-xs font-bold">{SYNTHETIC_NOTICE}</p><p className="text-sm">{view.caseId} · {view.stage}{view.stage==="UNKNOWN"?" · NO RETRY":""}</p></div>
-        <button className={button} disabled={busy||next.disabled} onClick={()=>void act(next.run)}>Next: {next.label}</button>
+        <div className="min-w-0"><p className="text-[11px] font-bold leading-tight">{reviewingReceipt?"SIMULATED":SYNTHETIC_NOTICE}</p><p className="text-[12px] leading-tight">{view.caseId} · {view.stage==="RECONCILED_MOCK"?"Complete":view.stage}{view.stage==="UNKNOWN"?" · NO RETRY":""}</p></div>
+        {view.stage==="RECONCILED_MOCK" && reviewingReceipt ? <button className={terminalButton} onClick={()=>setReviewingReceipt(false)}>Show actions</button> : view.stage==="RECONCILED_MOCK" ? <>
+          <button ref={reviewActionRef} className={terminalButton} onClick={()=>setReviewingReceipt(true)}>Review receipt</button>
+          <button className={terminalButton} disabled={busy} onClick={()=>void act(j=>j.select(view.caseId==="MOCK-CASE-A"?"MOCK-CASE-B":"MOCK-CASE-A"))}>Choose another mock case</button>
+        </> : <button className={button} disabled={busy||next.disabled} onClick={()=>void act(next.run)}>Next: {next.label}</button>}
       </div>
     </section>
     <footer className="text-sm font-semibold">{SYNTHETIC_NOTICE} · this local walkthrough is not production assurance or UAT acceptance.</footer>

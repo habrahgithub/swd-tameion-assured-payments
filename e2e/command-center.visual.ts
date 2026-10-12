@@ -80,13 +80,15 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByText(/Operational Report/)).toHaveCount(0);
     const funding = page.getByRole("region", { name: "Wallet funding and payment readiness" });
     await expect(funding).toContainText("USDC funding: NOT VERIFIED");
-    const balanceRefresh = funding.getByRole("button", { name: "Refresh Wallet Balance" });
+    const wallet = page.getByRole("region", { name: "Read-only wallet balance" });
+    await expect(wallet).toContainText("Balance not verified");
+    const balanceRefresh = wallet.getByRole("button", { name: "Refresh wallet balance" });
     await expect(balanceRefresh).toBeVisible();
-    await expect(balanceRefresh).toBeDisabled();
-    await expect(balanceRefresh).toContainText("AUTH_GATE_UNVERIFIED");
+    await expect(balanceRefresh).toBeEnabled();
+    await expect(wallet).not.toContainText("AUTH_GATE_UNVERIFIED");
     expect(await balanceRefresh.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
     await expect(page.getByTestId("current-next-step")).not.toContainText(/Safety Kernel|PAE|provider|reconciliation/i);
-    await expect(page.getByTestId("current-next-step")).toContainText("Run AI Assessment");
+    await expect(page.getByRole("region",{name:"Current obligation action"})).toContainText("Run AI Assessment");
     await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
     await expect(page.getByTestId("current-next-step")).toContainText("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
     await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
@@ -564,7 +566,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
 
   await page.setViewportSize({ width: 1280, height: 900 });
   const desktopCard = await openAssessmentOnDesktop();
-  const desktopReview = desktopCard.getByRole("button", { name: "Review current PAY assessment" });
+  const desktopReview = page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: "Review current PAY assessment" });
   await expect(desktopReview).toBeVisible();
   await desktopReview.click();
   await expect(desktopCard.getByTestId("assessment-supporting-detail")).not.toHaveAttribute("open");
@@ -867,7 +869,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       const payResult = card.getByText("Advisory — PAY", { exact: true });
       const reason = card.getByText("The current assessment found no validated payment blocker; separate payment controls still apply.", { exact: true });
       const eligibility = page.getByTestId("payment-eligibility");
-      const action = card.getByRole("button", { name: scenario.action, exact: true });
+      const action = page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: scenario.action, exact: true });
       const identity = selectedSource.locator("h2");
       const stage = page.getByText("Step 2 of 6 · Assessment", { exact: true });
       const currentStage = page.getByText("Current stage", { exact: true });
@@ -997,7 +999,7 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
     await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Advisory — PAY");
     await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
     const assessmentCard = page.getByRole("region", { name: "Assessment result" });
-    const review = assessmentCard.getByRole("button", { name: "Review current PAY assessment" });
+    const review = page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: "Review current PAY assessment" });
     await expect(review).toBeVisible();
     await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("What to do next");
     await expect(page.getByText(`Step 2 of 6 · Assessment`, { exact: true })).toBeVisible();
@@ -1021,7 +1023,7 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
     expect(measured.every((item) => item.scrollY === 0 && item.top >= 0 && item.bottom <= viewport.height), JSON.stringify({ viewport, measured })).toBe(true);
     expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
     await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-2-before-review-${viewport.label}.png`), fullPage: true });
-    await page.getByRole("region", { name: "Assessment result" }).getByRole("button", { name: "Review current PAY assessment" }).click();
+    await page.getByRole("region", { name: "Current obligation action" }).getByRole("button", { name: "Review current PAY assessment" }).click();
     await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Continue to Authorization" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to Authorization" }).click();
@@ -1184,15 +1186,15 @@ test("an already assessed obligation offers read-only View Assessment in the fir
       { name: "selected source identity", element: document.querySelector('[aria-label="Selected source obligation"] h2') },
       { name: "viewed and current position", element: document.querySelector('[aria-label="Guided lifecycle"] p:nth-of-type(2)') },
       { name: "current reason", element: reason },
-      { name: "permitted-action guidance", element: step?.querySelector('button[data-primary-action="true"]') ?? null },
-      { name: "permitted primary action", element: step?.querySelector('button[data-primary-action="true"]') ?? null },
+      { name: "permitted-action guidance", element: document.querySelector('[aria-label="Current obligation action"] button[data-primary-action="true"]') ?? null },
+      { name: "permitted primary action", element: document.querySelector('[aria-label="Current obligation action"] button[data-primary-action="true"]') ?? null },
     ];
     return elements.map(({ name, element }) => {
       const rect = element?.getBoundingClientRect();
       return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null };
     });
   });
-  const primaryHeight = await page.locator('[data-testid="current-next-step"] button[data-primary-action="true"]').evaluate((element) => element.getBoundingClientRect().height);
+  const primaryHeight = await page.locator('[aria-label="Current obligation action"] button[data-primary-action="true"]').evaluate((element) => element.getBoundingClientRect().height);
   expect(primaryHeight).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: testInfo.outputPath("desktop-short-assessment-resume.png") });
   expect(firstViewport.every((element) => element.exists && element.top! >= 0 && element.bottom! <= 761), JSON.stringify(firstViewport)).toBe(true);
@@ -1228,7 +1230,7 @@ test("sealed, submitted, unknown and reconciled proxy states preserve source tru
     await expect(page.getByRole("heading", { name: scenario.ariaLabel })).toHaveCount(1);
     await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(scenario.action ? 1 : 0);
     if (scenario.action) {
-      await expect(currentStageCard.getByRole("button", { name: scenario.action })).toBeVisible();
+      await expect(page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: scenario.action })).toBeVisible();
     } else {
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
     }
@@ -1239,7 +1241,7 @@ test("sealed, submitted, unknown and reconciled proxy states preserve source tru
       await expandLifecycleStages(page);
       await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "AVAILABLE");
       await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
-      await expect(page.getByRole("region", { name: "Deterministic assurance result" }).getByRole("button", { name: "Continue to Payment" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "Current obligation action" }).getByRole("button", { name: "Continue to Payment" })).toBeVisible();
     }
     await expect(page.getByText(/real-world payable settled/i)).toHaveCount(0);
     expect(writes).toEqual([]);
@@ -1283,22 +1285,18 @@ test("stale detail offers only a mocked read refresh after an assessment respons
   expect(requests.filter((request) => request.startsWith("POST"))).toEqual(["POST /api/obligations/OBL-UAT-01/assess"]);
 });
 
-test("disabled wallet funding hold stays readable without overflow at 200% mobile zoom", async ({ page }) => {
+test("read-only wallet summary stays readable without overflow at 200% mobile zoom", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
-  const refresh = page.getByRole("button", { name: "Refresh Wallet Balance", exact: true });
-  await expect(refresh).toBeDisabled();
-  await expect(refresh).toHaveAttribute("aria-describedby", "wallet-balance-refresh-hold");
-  await expect(page.locator("#wallet-balance-refresh-hold")).toHaveText("Disabled · AUTH_GATE_UNVERIFIED · operator access is not verified");
+  const wallet = page.getByRole("region",{name:"Read-only wallet balance"});
+  const refresh = wallet.getByRole("button", { name: "Refresh wallet balance", exact: true });
+  await expect(refresh).toBeEnabled();
+  await expect(wallet).toContainText("Balance not verified");
   await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
-  const dimensions = await page.evaluate(() => ({
-    document: document.documentElement.scrollWidth,
-    viewport: document.documentElement.clientWidth,
-    hold: document.getElementById("wallet-balance-refresh-hold")!.getBoundingClientRect().toJSON(),
-  }));
+  const dimensions = await wallet.evaluate(element => ({document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, wallet: element.getBoundingClientRect().toJSON()}));
   expect(dimensions.document, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewport);
-  expect(dimensions.hold.right).toBeLessThanOrEqual(dimensions.viewport);
-  await expect(refresh).toBeDisabled();
+  expect(dimensions.wallet.right).toBeLessThanOrEqual(dimensions.viewport);
+  await expect(refresh).toBeEnabled();
   expect(unexpectedWrites).toEqual([]);
 });
 
@@ -1316,7 +1314,7 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(queueItem(page, "OBL-UAT-01")).toBeVisible();
   await assertMobileTarget(queueItem(page, "OBL-UAT-01"), "Queue obligation");
   await page.getByRole("button", { name: "Close obligation list" }).click();
-  const mobilePrimary = page.locator('[data-testid="current-next-step"] button[data-primary-action="true"]');
+  const mobilePrimary = page.locator('[aria-label="Current obligation action"] button[data-primary-action="true"]');
   await expect(mobilePrimary).toBeVisible();
   expect(await mobilePrimary.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
   await expect(page.getByText("No payment intent created")).toBeHidden();
@@ -1576,7 +1574,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
       await statePage.evaluate(() => document.fonts.ready.then(() => true));
 
       if (stateName === "loading") {
-        await expect(statePage.getByRole("main").getByRole("status")).toContainText("Loading genuine obligations");
+        await expect(statePage.getByRole("main").getByRole("status").filter({hasText:"Loading genuine obligations"})).toContainText("Loading genuine obligations");
         await expect(statePage.getByRole("main").getByText(/no genuine obligations|open demo mode|choose one obligation/i)).toHaveCount(0);
         await expect(statePage.getByRole("main").locator('button[data-obligation-id]')).toHaveCount(0);
       } else if (stateName === "loaded-none") {
@@ -1972,3 +1970,66 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
     contentType: "application/json",
   });
 });
+
+for (const viewport of [{width:1365,height:951},{width:390,height:844},{width:320,height:640}]) {
+  test(`contextual action keeps identity and meaning through scrolling at ${viewport.width}`, async ({page},testInfo)=>{
+    await page.setViewportSize(viewport);
+    const unexpectedWrites=await openFixture(page,liveWinnerForPreparation());
+    const strip=page.getByRole("region",{name:"Current obligation action"});
+    const verify=async()=>{
+      const geometry=await strip.evaluate(element=>{
+        const rect=element.getBoundingClientRect();
+        const button=element.querySelector<HTMLButtonElement>('button[data-primary-action="true"]');
+        return {text:element.textContent,top:rect.top,bottom:rect.bottom,width:rect.width,viewport:window.innerHeight,
+          action:button?.textContent,actionBox:button?.getBoundingClientRect().toJSON(),scrollY:window.scrollY,
+          overflow:document.documentElement.scrollWidth>window.innerWidth};
+      });
+      expect(geometry.text).toContain("OBL-UAT-01");expect(geometry.text).toContain("125.00 USD");
+      expect(geometry.text).toMatch(/Current(?: stage)?: Assessment/);expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(viewport.height);expect(geometry.overflow).toBe(false);
+      expect(geometry.actionBox!.height).toBeGreaterThanOrEqual(44);
+      await expect(page.locator('button[data-primary-action="true"]:enabled')).toHaveCount(1);
+      return geometry;
+    };
+    await page.evaluate(()=>window.scrollTo(0,0));const top=await verify();
+    await page.screenshot({path:testInfo.outputPath(`context-top-${viewport.width}.png`)});
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));const bottom=await verify();
+    expect(bottom.action).toEqual(top.action);expect(bottom.scrollY).toBeGreaterThan(top.scrollY);
+    await page.screenshot({path:testInfo.outputPath(`context-bottom-${viewport.width}.png`)});
+    await strip.getByRole("button").focus();await expect(strip.getByRole("button")).toBeFocused();
+    await page.evaluate(()=>window.scrollTo(0,0));
+    if(viewport.width<768)await openMobileQueue(page);
+    await queueItem(page,"OBL-UAT-02").click();
+    await expect(strip).toContainText("OBL-UAT-02");await expect(strip).not.toContainText("OBL-UAT-01");
+    await expect(strip).toContainText("40.00 USD");
+    await testInfo.attach("strip-geometry",{body:JSON.stringify({top,bottom}),contentType:"application/json"});
+    expect(unexpectedWrites).toEqual([]);
+  });
+}
+
+for(const width of [1365,390,320]){
+  test(`authorization summary preserves exact destination disclosure at ${width}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height:width===320?640:844});
+    const fixture=proxyLifecycleDetail("AUTHORIZED");
+    const writes=await openFixture(page,fixture);
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation",{name:"Payment lifecycle navigation"}).getByRole("button",{name:"Authorization",exact:true}).click();
+    await collapseLifecycleStages(page);
+    const summary=page.getByRole("region",{name:"Authorization summary"});
+    const address=fixture.settlement_proxy.preflight.destination_wallet.address;
+    await expect(summary).toContainText(`${address.slice(0,6)}…${address.slice(-4)}`);
+    await expect(summary).toContainText(fixture.settlement_proxy.preflight.network);
+    await expect(summary).toContainText("does not discharge the real-world payable");
+    await expect(summary).toContainText("Next owner");await expect(summary).toContainText("Reason:");
+    const disclosure=page.getByText("View exact instruction and source evidence",{exact:true});
+    await expect(disclosure.locator("..")).not.toHaveAttribute("open","");
+    const strip=page.getByRole("region",{name:"Current obligation action"});
+    await expect(strip).toContainText("Authorization recorded");
+    await expect(strip).not.toContainText("Review current PAY assessment before authorization");
+    await page.screenshot({path:testInfo.outputPath(`authorization-summary-${width}.png`),fullPage:true});
+    await disclosure.click();
+    await expect(page.getByText(address,{exact:true})).toBeVisible();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+    expect(writes).toEqual([]);
+  });
+}

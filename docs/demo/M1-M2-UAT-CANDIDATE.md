@@ -28,7 +28,12 @@ server publicly. Stop with Ctrl+C when finished.
 4. Repeat with HOLD, ESCALATE and FUNDING_HOLD: acknowledgment is unavailable.
    Change amount after assessment: assessment is no longer current. Changed
    destination, historical authority and mismatched packet must block.
-5. UNKNOWN must show **OUTCOME_UNVERIFIED / NO RETRY**, disable submission and
+5. On RECONCILED_MOCK, use Review receipt: the compact SIMULATED toolbar
+   must leave the recorded mock outcome readable at320×640 and200% zoom.
+   Show actions restores focus to Review receipt. Choose another mock case
+   shows that case's own submission count; returning to A retains its single
+   fake submission and completed state.
+6. UNKNOWN must show **OUTCOME_UNVERIFIED / NO RETRY**, disable submission and
    keep fake submission count1 after observation. Never retry original003.
 
 The browser-local walkthrough uses an unsigned toy packet. It is a UX check,
@@ -78,3 +83,25 @@ privacy clearance, owner desktop/mobile UAT and release decisions remain gates.
 Original obligation003 remains OUTCOME_UNVERIFIED / NO_RETRY. Keep payment HTTP
 lanes disabled; mock proof never enables them. Currency policy and assessment
 UNKNOWN recovery are not changed in this candidate.
+
+## Command Center UI correction acceptance
+
+The isolated browser suite supplies invented queue/session/balance/stage data;
+these fixtures do not enable real operator access. Once the separate hosted
+prerequisites are approved and provisioned, owner UAT should confirm:
+
+- The permanent action strip keeps the selected obligation, source amount,
+  viewed/current stage and one existing legal action visible while scrolling.
+  A payment stop or unknown stop state offers no approval. A sealed instruction
+  shows recorded authorization rather than asking for another PAY review.
+- Wallet balance status is visible before opening Operator. One manual refresh
+  shows amount, network and observation time with its read-only caveat; it does
+  not establish affordability, fees or payment readiness. Expiry/logout clears
+  the private view and rejects a late observation.
+- Authorization distinguishes the source payable/beneficiary from the testnet
+  proxy. The concise summary shows amount, recognizable destination, network,
+  reason/currentness and next owner/step. View exact instruction and source
+  evidence exposes the full exact destination address before approval.
+- Queue amount/currency and complete due date remain readable. Inspect desktop,
+ 390px and320px widths and keyboard focus. Stored screenshots are intentionally
+  reviewed local Chromium baselines; they are not hosted UAT evidence.

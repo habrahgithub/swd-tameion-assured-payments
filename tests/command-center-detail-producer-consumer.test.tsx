@@ -1405,7 +1405,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(assurance.textContent).toContain("Deterministic controls, not AI, grant or deny release authority.");
     expect((assurance.querySelector("details[aria-label='Assurance control details']") as HTMLDetailsElement | null)?.open).toBe(false);
     expect(screen.getAllByRole("button", { name: "Continue to Payment" })).toHaveLength(1);
-    expect(assurance.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
+    expect(assurance.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
+    expect(within(screen.getByRole("region", {name:"Current obligation action"})).getByRole("button",{name:"Continue to Payment"})).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1976,7 +1977,15 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(packet.textContent).toContain("Privacy-safe source counterparty reference");
     expect(packet.textContent).toContain("Proxy beneficiary reference");
     expect(packet.textContent).toMatch(/Arc Testnet settlement proxy · 0x[0-9a-f]{4}…[0-9a-f]{4}/i);
-    expect(packet.textContent).not.toContain(body.settlement_proxy.preflight.destination_wallet.address);
+    const summary = screen.getByRole("region",{name:"Authorization summary"});
+    const address = body.settlement_proxy.preflight.destination_wallet.address;
+    expect(summary.textContent).toContain(`${address.slice(0,6)}…${address.slice(-4)}`);
+    expect(summary.textContent).not.toContain(address);
+    const instructionEvidence = screen.getByText("View exact instruction and source evidence").closest("details")!;
+    expect(instructionEvidence.open).toBe(false);
+    fireEvent.click(screen.getByText("View exact instruction and source evidence"));
+    expect(instructionEvidence.open).toBe(true);
+    expect(within(instructionEvidence).getByText(address,{exact:true})).toBeTruthy();
     expect(packet.closest("main")?.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
   });
 

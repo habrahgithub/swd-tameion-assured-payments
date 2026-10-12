@@ -134,6 +134,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await page.getByRole("button", { name: "Review current PAY assessment" }).click();
   await gotoStage(page, "Authorization");
   const packet = page.getByRole("region", { name: "Approver decision packet" });
+  await page.getByText("View exact instruction and source evidence",{exact:true}).click();
   await expect(packet).toContainText("OBL-J0C-001");
   await expect(packet).toContainText("CP-SYNTHETIC-001");
   await expect(packet).toContainText("EVID-SYNTHETIC-001");

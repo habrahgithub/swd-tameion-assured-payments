@@ -306,6 +306,40 @@ describe("Command Center mounted Operational Report", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps the single selected-identity action in a permanent contextual strip", async () => {
+    fetchMock.mockImplementation(input => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }))
+      : Promise.resolve(response(detail(String(input).split("/").at(-1)!))));
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-A"));
+    const action = await screen.findByRole("button", { name: "Run AI Assessment" });
+    const strip = screen.getByRole("region", { name: "Current obligation action" });
+    expect(strip.contains(action)).toBe(true);expect(strip.textContent).toContain("OBL-A");
+    expect(screen.getAllByRole("button", { name: "Run AI Assessment" })).toHaveLength(1);
+    fireEvent.click(obligationRow("OBL-B"));
+    await waitFor(() => expect(strip.textContent).toContain("OBL-B"));
+    expect(strip.textContent).not.toContain("OBL-A");
+    expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("shows a plain authorization summary with exact evidence collapsed", async () => {
+    const authorized = proxyPrepared(sealedDetail("OBL-AUTH-SUMMARY"));
+    fetchMock.mockImplementation(input => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-AUTH-SUMMARY", true)] }))
+      : Promise.resolve(response(authorized)));
+    renderWithExplicitFirstSelection();await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    navigateStage("Authorization");
+    const summary=screen.getByRole("region",{name:"Authorization summary"});
+    expect(summary.textContent).toContain("Source payable");expect(summary.textContent).toContain("Testnet destination");
+    expect(summary.textContent).toContain("does not discharge");expect(summary.textContent).toContain("Next owner");
+    const disclosure=screen.getByText("View exact instruction and source evidence").closest("details");
+    expect(disclosure?.open).toBe(false);
+    const strip=screen.getByRole("region",{name:"Current obligation action"});
+    expect(strip.textContent).toContain("Authorization recorded");
+    expect(strip.textContent).not.toContain("Review current PAY assessment before authorization");
+  });
+
   it("starts unselected, lets the operator inspect all five source records, and never posts during selection", async () => {
     const ids = ["OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005"];
     const rows = ids.map((id, index) => ({ ...obligation(id, true), decision: index === 2 ? "PAY" as const : "HOLD" as const }));
@@ -423,7 +457,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(writesBeforeNavigation);
   });
 
-  it("keeps wallet refresh visibly disabled until operator authentication is verified", async () => {
+  it("keeps wallet observation unavailable without the authenticated owner summary", async () => {
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-FUNDING-AUTH")] }))
       : Promise.resolve(response(detail("OBL-FUNDING-AUTH"))));
@@ -434,16 +468,9 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Selected source obligation" });
 
     const funding = screen.getByRole("region", { name: "Wallet funding and payment readiness" });
-    const refresh = within(funding).getByRole("button", { name: "Refresh Wallet Balance" }) as HTMLButtonElement;
-    expect(refresh.disabled).toBe(true);
-    expect(funding.textContent).toContain("USDC funding: NOT VERIFIED");
-    expect(funding.textContent).toContain("AUTH_GATE_UNVERIFIED");
-    expect(funding.textContent).toContain("operator access is not verified");
-    const assessmentAction = within(screen.getByRole("region", { name: "Obligation next step" })).getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
-    expect(assessmentAction.disabled).toBe(false);
-
-    fireEvent.click(refresh);
-    expect(fetchMock.mock.calls.some(([input]) => /balance|circle/i.test(String(input)))).toBe(false);
+    expect(within(funding).queryByRole("button", { name: /Refresh.*Balance/i })).toBeNull();
+    expect(funding.textContent).toContain("Read-only wallet observation is unavailable");
+    expect(funding.textContent).toContain("NOT VERIFIED");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1574,6 +1601,24 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
   });
 
+  it.each([true, undefined])("keeps approval unavailable when a payment stop is active or unknown after PAY review (%s)", async (killSwitch) => {
+    const pay = proxyPrepared(assessedDetail("OBL-STOPPED", "PAY"));
+    Object.assign(pay.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    pay.execution_kill_switched = killSwitch;
+    fetchMock.mockImplementation(input=>String(input)==="/api/obligations"
+      ? Promise.resolve(response({obligations:[{...obligation("OBL-STOPPED",true),decision:"PAY"}]}))
+      : Promise.resolve(response(pay)));
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region",{name:"Genuine obligation workspace"});
+    fireEvent.click(screen.getByRole("button",{name:"View Assessment"}));
+    fireEvent.click(screen.getByRole("button",{name:"Review current PAY assessment"}));
+    fireEvent.click(screen.getByRole("button",{name:"Continue to Authorization"}));
+    const strip=screen.getByRole("region",{name:"Current obligation action"});
+    expect(within(strip).queryByRole("button",{name:"Authorize payment"})).toBeNull();
+    expect(strip.textContent).toMatch(/stop|kill switch/i);
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+  });
+
   it("shows the current amount, destination, FX and authority boundary before an approval control can enable", async () => {
     const pay = proxyPrepared(assessedDetail("OBL-EXACT-INTENT", "PAY"));
     pay.aggregate.destination_verification_status = "VERIFIED";
@@ -1682,7 +1727,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
     const decisionHeading = screen.getByText(`Advisory — ${decision}`);
     expect(decisionHeading.className).toContain("text-[var(--status-hold-text)]");
-    expect(obligationRow("OBL-A").querySelector("span.text-end")?.getAttribute("style"))
+    expect(obligationRow("OBL-A").querySelector("span.col-span-2[style]")?.getAttribute("style"))
       .toContain("--status-hold-text");
     const assessmentStage = screen.getByRole("region", { name: "Assessment result" });
     expect(assessmentStage.textContent).toContain(decision === "HOLD" ? "Source evidence is incomplete." : "Controller review is required.");

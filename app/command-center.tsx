@@ -1681,7 +1681,7 @@ function assuranceStateSummary(evidence: AssuranceEvidenceView | undefined): str
           : "No PASS assurance is recorded. Execution remains blocked until current assurance succeeds.";
 }
 
-function DeterministicAssuranceSummary({ detail, continueToPayment }: { detail: ObligationDetail; continueToPayment?: () => void }) {
+function DeterministicAssuranceSummary({ detail }: { detail: ObligationDetail }) {
   const evidence = detail.assurance_evidence;
   const available = evidence?.state === "AVAILABLE_CURRENT_BINDING" || evidence?.state === "AVAILABLE_HISTORICAL";
   const current = evidence?.state === "AVAILABLE_CURRENT_BINDING";
@@ -1721,7 +1721,6 @@ function DeterministicAssuranceSummary({ detail, continueToPayment }: { detail: 
         </details>
       )}
       {detail.execution_kill_switched && <p role="alert" className="rounded border-s-4 border-s-[var(--color-danger)] px-3 py-2 text-[13px] font-semibold text-[var(--color-danger)]">A payment stop is active. Execution is unavailable.</p>}
-      {continueToPayment && <PrimaryButton onClick={continueToPayment}>Continue to Payment</PrimaryButton>}
     </section>
   );
 }
@@ -1797,7 +1796,7 @@ function DemoStage({ title, value }: { title: string; value: string }) {
   );
 }
 
-export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={}) {
+export function CommandCenter({operatorControls,walletSummary}:{operatorControls?:ReactNode;walletSummary?:ReactNode}={}) {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
@@ -1836,9 +1835,11 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
   };
 
   useLayoutEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
     if (!focusConfirmedStageRef.current) return;
     focusConfirmedStageRef.current = false;
-    stageHeadingRef.current?.focus();
+    stageHeadingRef.current?.focus({preventScroll:true});
   }, [viewedStage, panel]);
 
   const refreshObligations = async (showLoading = false, preserveLastKnown = false, expectedSelectionGeneration?: number): Promise<
@@ -2644,9 +2645,9 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
     workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
-  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && !detail.pae_sealed && !detail.execution) {
+  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
     workspaceAction = { label: "Authorize payment", actor: "Authorized approver · identity not shown", run: () => {
-      if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady) return;
+      if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady || killSwitchView !== "inactive") return;
       void run("approve", () => postJson(`/api/obligations/${selectedId}/approve`, {
         expected_version: Number(authorizationAssessment.aggregate_version),
         reviewed_assessment_id: authorizationAssessment.assessment_id,
@@ -2703,7 +2704,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
       ? [...new Set(assessmentRemediation.map((item) => item.required_action))].join(" ")
       : assessmentResult
         ? assessmentNextAction(assessmentResult.decision, allAssessed).replace(/^Next action:\s*/, "")
-        : "Run AI Assessment from the current-stage action above.";
+        : "Run AI Assessment from the permanent action strip.";
   const assessmentOwnerRoles = assessmentResult?.decision === "ESCALATE"
     ? assessmentRemediation.map((item) => item.escalation_target).filter((role): role is string => Boolean(role))
     : assessmentResult?.decision === "HOLD"
@@ -2722,11 +2723,23 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
     (panel === "assurance" && (viewedStage === "Assurance" || viewedStage === "Payment")) ||
     (panel === "reconciliation" && viewedStage === "Reconciliation")
   );
-  const assessmentCardPrimaryAction = showContinueToAuthorization
-    ? { label: "Continue to Authorization", onClick: () => showStage("Authorization") }
-    : visibleWorkspaceAction && !visibleWorkspaceAction.exactConfirmation
-      ? { label: visibleWorkspaceAction.label, onClick: visibleWorkspaceAction.run }
-      : null;
+  const contextualAction: WorkspaceAction | null = panel === "report"
+    ? {label: `View current stage · ${currentLifecycleStage}`, actor: "You · read-only navigation", run: () => showStage(currentLifecycleStage)}
+    : showContinueToAuthorization
+      ? {label: "Continue to Authorization", actor: "You · read-only navigation", run: () => showStage("Authorization")}
+      : showContinueToPayment
+        ? {label: "Continue to Payment", actor: "You · read-only navigation", run: () => showStage("Payment")}
+        : workspaceAction;
+  const contextualStatus = detailState === "loading" ? "Loading current status; actions are unavailable."
+    : detailState === "failed" || detailState === "stale" ? "Current status is unavailable; refresh before proceeding."
+    : detail?.execution?.status === "UNKNOWN" ? "Outcome unknown · NO RETRY. Read-only reconciliation only."
+    : detail?.execution?.status === "SETTLED" ? "Testnet outcome recorded; source payable remains unchanged."
+    : detail?.settlement_proxy && killSwitchView === "engaged" ? "A payment stop is active; authorization and execution are unavailable."
+    : detail?.settlement_proxy && killSwitchView === "unknown" ? "Payment stop state is not verified; authorization and execution are unavailable."
+    : contextualAction ? "Payment authority remains separate."
+    : detail?.pae_sealed || detail?.aggregate.state === "AUTHORIZED" ? `Authorization recorded. ${lifecycleStatus(currentLifecycleStage)}`
+    : firstUnmetPrerequisite ? firstUnmetPrerequisite.split(/(?<=\.)\s/)[0]
+    : "No permitted action is available from the recorded state.";
   const stageButton = (stage: LifecycleStage, mobile = false) => {
     const status = stageState(stage);
     const upcoming = status === "UPCOMING";
@@ -2773,7 +2786,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
   };
 
   return (
-    <main dir="ltr" className="mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
+    <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
       <header className="relative -mx-4 flex flex-col items-start justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
@@ -2783,6 +2796,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
         </div>
         {operatorControls}
       </header>
+      {walletSummary}
 
       <div className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
         <aside className="order-1 min-w-0 md:order-1 md:border-e md:pe-4">
@@ -2841,10 +2855,10 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                         style={{ background: o.assessed || workflowRecorded ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
                     </span>
-                    <span className="col-span-1 tabular text-start text-[15px] font-semibold text-[var(--color-ink)]">
-                      {o.amount} {o.currency}<span className="font-normal text-[12px] text-[var(--color-ink-muted)]"> · {queueDueDate(o)}</span>
+                    <span className="col-span-2 tabular flex flex-wrap items-baseline gap-x-2 text-start text-[15px] font-semibold text-[var(--color-ink)]">
+                      <span className="whitespace-nowrap">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
                     </span>
-                    <span className="col-span-1 text-end text-[11px] font-semibold" style={{ color: statusColor }}>
+                    <span className="col-span-2 text-start text-[11px] font-semibold" style={{ color: statusColor }}>
                       {o.assessed
                         ? o.decision === "PAY" ? "PAY recommendation (advisory)" : `${o.decision ?? "—"} assessment`
                         : workflowRecorded ? "Workflow recorded" : "Assessment required"}
@@ -2924,14 +2938,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
               {detailState === "loaded" && detail && detail.record.obligation_id === selectedId
                 ? <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">Selected settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Wallet funds, network fees, and execution readiness require a separate current selected-intent preflight.</p>
                 : null}
-              <div>
-                <button type="button" disabled aria-label="Refresh Wallet Balance" aria-describedby="wallet-balance-refresh-hold" className="inline-flex min-h-[44px] max-w-full flex-col items-start justify-center rounded border border-[var(--color-border)] px-3 py-1 text-start font-semibold text-[var(--color-ink-muted)] disabled:cursor-not-allowed disabled:opacity-60">
-                  <span className="text-[12px] leading-4">Refresh Wallet Balance</span>
-                  <span id="wallet-balance-refresh-hold" className="max-w-full text-[10px] leading-3 [overflow-wrap:anywhere]">
-                    {selectedId ? "Disabled · AUTH_GATE_UNVERIFIED · operator access is not verified" : "Select an obligation for its settlement amount · AUTH_GATE_UNVERIFIED · operator access is not verified"}
-                  </span>
-                </button>
-              </div>
+              {!walletSummary && <p className="text-[12px] text-[var(--color-ink-muted)]">Read-only wallet observation is unavailable in this view. No balance or payment readiness is inferred.</p>}
             </section>
           )}
 
@@ -3044,21 +3051,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                       {exceptionRecoveryCard}
                     </details>
                 : exceptionRecoveryCard)}
-              {showContinueToAuthorization && (
-                <PrimaryButton onClick={() => showStage("Authorization")} disabled={busy}>Continue to Authorization</PrimaryButton>
-              )}
-              {showContinueToPayment && (
-                <PrimaryButton onClick={() => showStage("Payment")} disabled={busy}>Continue to Payment</PrimaryButton>
-              )}
-              {visibleWorkspaceAction && (
-                <PrimaryButton
-                  disabled={busy || (visibleWorkspaceAction.exactConfirmation && !executionConfirmation.matchesExact)}
-                  danger={visibleWorkspaceAction.exactConfirmation}
-                  onClick={visibleWorkspaceAction.run}
-                >
-                  {visibleWorkspaceAction.label}
-                </PrimaryButton>
-              )}
               {stageCompletionReceiptView}
               {!assessmentOwnsCurrentStage && selectedAssessmentFeedbackView}
             </div>
@@ -3073,7 +3065,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                     nextAction={assessmentNextStep}
                     nextOwner={assessmentNextOwner}
                     paymentEligibility={assessmentPaymentEligibility}
-                    primaryAction={assessmentOwnsCurrentStage ? assessmentCardPrimaryAction : null}
+                    primaryAction={null}
                     stageAccessibilityLabel={stageAccessibilityLabel}
                     stageHeadingRef={stageHeadingRef}
                     canReassess={optionalReassessmentAvailable}
@@ -3086,7 +3078,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                     <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Assessment</h3>
                     <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
                       {assessmentAction === "assess"
-                        ? "Run AI Assessment from the current-stage action above. The result is advisory and cannot authorize or execute payment."
+                        ? "Run AI Assessment from the permanent action strip. The result is advisory and cannot authorize or execute payment."
                         : assessmentActionStatus}
                     </p>
                     <p className="border-t border-[var(--color-border)] pt-2 text-[12px] leading-5 text-[var(--color-ink-muted)]"><strong>Capability boundary:</strong> this product does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.</p>
@@ -3103,7 +3095,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
             )}
 
             {panel === "authorization" && (
-              <div className="max-w-xl space-y-3">
+              <div className="w-full max-w-4xl space-y-3">
                 {detailState !== "loaded" && <p className="text-[13px] text-[var(--color-ink-muted)]">
                   {authorizationPanelCopy(detailState, Boolean(selectedId))}
                 </p>}
@@ -3116,6 +3108,23 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                       : detail.aggregate.state === "AUTHORIZED"
                         ? <p className="text-[13px] font-semibold text-[var(--color-ink)]">Authorization is recorded. Assurance failed or is blocked; no usable PAE or execution is available.</p>
                         : <p className="text-[13px] font-semibold text-[var(--color-ink)]">AI did not authorize this payment. You are approving this exact instruction.</p>}
+                    <section aria-label="Authorization summary" className="space-y-2">
+                      <dl className="grid gap-x-6 sm:grid-cols-2">
+                        <Field label="Source payable" value={`${detail.record.amount} ${detail.record.currency} · ${sourcePayableState(detail)}`} />
+                        <Field label="Source beneficiary" value={sourceText(detail.record,"beneficiary_name") === "Not captured" ? "Supplier identity not established" : sourceText(detail.record,"beneficiary_name")} />
+                        <Field label="Testnet amount" value={detail.settlement_proxy ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset}` : "No testnet instruction prepared"} />
+                        <Field label="Testnet destination" value={detail.settlement_proxy ? `${detail.settlement_proxy.preflight.destination_wallet.name ?? "Controlled testnet proxy"} · ${detail.settlement_proxy.preflight.destination_wallet.address.slice(0,6)}…${detail.settlement_proxy.preflight.destination_wallet.address.slice(-4)}` : "No controlled proxy prepared"} />
+                        <Field label="Network" value={detail.settlement_proxy?.preflight.network ?? "No testnet instruction prepared"} />
+                      </dl>
+                      <p className="text-[13px]">Testnet execution does not discharge the real-world payable or verify the source supplier.</p>
+                      <p className="text-[13px]"><strong>Current decision:</strong> {lifecycleStatus("Authorization")}. {hasCurrentPayAssessment ? "The PAY recommendation is current for this selected version; it remains advisory." : "A current PAY review is not established."}</p>
+                      <p className="text-[13px]"><strong>Reason:</strong> {hasCurrentAssessment && currentAssessment?.reasons[0] ? currentAssessment.reasons[0] : "No current assessment reason is established."}</p>
+                      <p className="text-[13px]"><strong>Next owner:</strong> {recoveryOwner}. <strong>Next step:</strong> {contextualAction?.label ?? recoveryNextAction}</p>
+                    </section>
+                    <details className="rounded border border-[var(--color-border)] px-3 py-2">
+                      <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold">View exact instruction and source evidence</summary>
+                      <div className="space-y-3 border-t border-[var(--color-border)] pt-3">
+                    {detail.settlement_proxy && <dl><Field label="Exact testnet destination address" value={detail.settlement_proxy.preflight.destination_wallet.address} /></dl>}
                     <SourceObligationLineage
                       record={detail.record}
                       payableState={sourcePayableState(detail)}
@@ -3128,9 +3137,10 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                       preflight={detail.settlement_proxy.preflight}
                       payableState={sourcePayableState(detail)}
                     /> : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
+                      </div>
+                    </details>
                     <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.</p>
                     {!detail.pae_sealed && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
-                    {workspaceAction?.label === "Authorize payment" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>Authorize payment</PrimaryButton>}
                     {exceptionRecoveryCard}
                     {stageCompletionReceiptView}
                   </section>
@@ -3170,7 +3180,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                     <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail, exactPacketSubmissionReady, detailState)}</h3>
                   </div>
                   {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
-                  {detail.execution?.status === "UNKNOWN" && workspaceAction?.label === "Reconcile this same intent" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                   <dl>
                     <Field label="Testnet settlement" value={detail.settlement_proxy
                       ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`
@@ -3197,7 +3206,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                       <span id="execution-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">The exact-packet gate and final pre-send checks must still pass.</span>
                     </label>
                   )}
-                  {workspaceAction && !(detail.execution?.status === "UNKNOWN" && workspaceAction.label === "Reconcile this same intent") && <PrimaryButton disabled={busy || (workspaceAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={workspaceAction.exactConfirmation} onClick={workspaceAction.run}>{workspaceAction.label}</PrimaryButton>}
                   {exceptionRecoveryCard}
                   {stageCompletionReceiptView}
                 </section>
@@ -3230,7 +3238,7 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
               <div className="max-w-xl space-y-3">
                 {detailState === "loaded" && detail && <>
                   <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Deterministic assurance</h3>
-                  <DeterministicAssuranceSummary detail={detail} continueToPayment={showContinueToPayment ? () => showStage("Payment") : undefined} />
+                  <DeterministicAssuranceSummary detail={detail} />
                 </>}
                 {detailState !== "loaded" && <section aria-label="Deterministic assurance result" className="rounded border border-[var(--color-border)] p-4"><h3 className="text-[16px] font-semibold">Deterministic assurance</h3><p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Current assurance is unavailable until the obligation detail is refreshed.</p></section>}
                 {exceptionRecoveryCard}
@@ -3277,7 +3285,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                     <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
                       <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
                       <p className="text-[13px] font-semibold text-[var(--color-ink)]">{result}</p>
-                      {detail.execution?.status === "UNKNOWN" && workspaceAction?.label === "Reconcile this same intent" && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                       <dl>
                         <Field label="Source obligation" value={`${sourceText(detail.record, "beneficiary_name")} · ${detail.record.amount} ${detail.record.currency}`} />
                         <Field label="Source payable" value={`${sourcePayableState(detail)} · remains outstanding in the source record`} />
@@ -3289,7 +3296,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                       </dl>
                       {settledEvidence && <p className={`text-[12px] ${settledEvidence.state === "verified" ? "text-[var(--color-ink-muted)]" : "text-[var(--color-warning)]"}`}>{settledEvidenceExplanation(detail)}</p>}
                       <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">ARC TESTNET · Controlled settlement proxy · testnet execution does not discharge the real-world payable.</p>
-                      {workspaceAction && !(detail.execution?.status === "UNKNOWN" && workspaceAction.label === "Reconcile this same intent") && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                       {exceptionRecoveryCard}
                       {stageCompletionReceiptView}
                       <details className="rounded border border-[var(--color-border)] px-3 py-2">
@@ -3307,7 +3313,6 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
                   <div className="space-y-3">
                     <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Reconciliation</h3>
                     <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detailState, detail?.execution, Boolean(detail?.settlement_proxy), detail ? sourcePayableState(detail) : "OUTSTANDING")}</p>
-                    {workspaceAction && <PrimaryButton onClick={workspaceAction.run} disabled={busy}>{workspaceAction.label}</PrimaryButton>}
                     {exceptionRecoveryCard}
                     {stageCompletionReceiptView}
                   </div>
@@ -3704,6 +3709,17 @@ export function CommandCenter({operatorControls}:{operatorControls?:ReactNode}={
 
         </div>
       </details>}
+      <section role="region" aria-label="Current obligation action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-3 shadow-lg">
+        <div className="mx-auto flex max-w-[1392px] flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 flex-1 basis-full sm:basis-0">
+            <p className="text-[13px] font-semibold">{selectedId || "No obligation selected"}{selected ? ` · ${selected.amount} ${selected.currency}` : ""}</p>
+            <p className="text-[13px]">{viewedStage === currentLifecycleStage ? `Current stage: ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current: ${currentLifecycleStage}`}</p>
+            <p className="text-[13px] text-[var(--color-ink-muted)]">{contextualStatus}</p>
+            {!contextualAction && <p className="text-[12px] text-[var(--color-ink-muted)]">Owner: {recoveryOwner}</p>}
+          </div>
+          {contextualAction && <PrimaryButton disabled={busy || (contextualAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{contextualAction.label}</PrimaryButton>}
+        </div>
+      </section>
     </main>
   );
 }

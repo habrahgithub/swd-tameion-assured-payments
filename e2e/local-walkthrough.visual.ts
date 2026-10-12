@@ -30,6 +30,33 @@ test("local interactive mock journey preserves identity, gates and recorded reco
   await page.getByRole("button",{name:"Observe recorded fake outcome"}).click();
   await expect(page.getByTestId("journey-stage")).toHaveText("RECONCILED_MOCK");
   await expect(page.getByTestId("mock-audit")).toContainText("RECONCILED_MOCK");
+  await page.setViewportSize({width:320,height:640});
+  const strip=page.getByRole("region",{name:"Current mock next action"});
+  await expect(strip).toContainText("Complete");
+  await expect(strip.getByRole("button",{name:"Next: Assess mock case"})).toHaveCount(0);
+  for(const zoom of ["100%","200%"]){
+    await page.evaluate(value=>{document.documentElement.style.zoom=value;},zoom);
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+    await expect(strip.getByRole("button",{name:"Review receipt"})).toBeInViewport();
+    await strip.getByRole("button",{name:"Review receipt"}).click();
+    const audit=page.getByTestId("mock-audit");await expect(audit).toBeFocused();
+    const geometry=await audit.evaluate(element=>({audit:element.getBoundingClientRect().toJSON(),heading:element.querySelector('h2')!.getBoundingClientRect().toJSON(),outcome:element.querySelector('[data-testid="mock-receipt-outcome"]')!.getBoundingClientRect().toJSON(),strip:document.querySelector('[aria-label="Current mock next action"]')!.getBoundingClientRect().toJSON(),width:document.documentElement.scrollWidth,viewport:window.innerWidth}));
+    expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
+    expect(geometry.audit.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.heading.bottom).toBeLessThanOrEqual(geometry.strip.top);
+    expect(geometry.outcome.bottom).toBeLessThanOrEqual(geometry.strip.top);
+    expect(geometry.strip.top).toBeGreaterThanOrEqual(0);
+    await page.screenshot({path:test.info().outputPath(`terminal-receipt-320-${zoom}.png`)});
+    await strip.getByRole("button",{name:"Show actions"}).click();
+    await expect(strip.getByRole("button",{name:"Review receipt"})).toBeFocused();
+  }
+  await page.evaluate(()=>{document.documentElement.style.zoom="100%";});
+  await strip.getByRole("button",{name:"Choose another mock case"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("OBLIGATION");
+  await expect(page.getByText("Fake submissions: 0",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Mock case A"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("RECONCILED_MOCK");
+  await expect(page.getByText("Fake submissions: 1",{exact:true})).toBeVisible();
   expect(effects).toEqual([]);
 });
 
