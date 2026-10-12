@@ -47,3 +47,7 @@ The repository hygiene check rejects tracked environment files, common credentia
 The only domain code is a Zod-backed contract metadata skeleton under `src/domain/contracts`. It establishes a typed location for later admitted work without defining payment decisions, provider behavior, persistence, or J1 semantics.
 
 The event-start record remains in [`docs/evidence/J0-EVENT-START-BASELINE.md`](docs/evidence/J0-EVENT-START-BASELINE.md).
+
+## Architecture and assurance reviews
+
+**PBAR** stands for **Pattern-Based Architecture Review**. The seven-perspective Tameion process is separately named **SENTINEL Assurance Review**. See [Review-method terminology and Tameion assessment boundaries](docs/reviews/PBAR_AND_SENTINEL_ASSURANCE.md). Neither review authorizes SQL, deployment, credentials or payments.
