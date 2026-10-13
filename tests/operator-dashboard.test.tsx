@@ -4,7 +4,7 @@ import {act,render,screen,waitFor,fireEvent,cleanup} from '@testing-library/reac
 import {OperatorDashboard} from '../app/operator-dashboard';
 vi.mock('../app/command-center',()=>({CommandCenter:({operatorControls,walletSummary,csrfToken}:{operatorControls:import("react").ReactNode;walletSummary?:import("react").ReactNode;csrfToken?:string})=> <div>{operatorControls}{walletSummary}<span data-testid="command-csrf">{csrfToken}</span>Protected queue</div>}));
 beforeEach(()=>window.history.replaceState(null,'','/?refresh_balance=1'));
-afterEach(()=>{cleanup();window.history.replaceState(null,'','/');});
+afterEach(()=>{cleanup();window.localStorage.removeItem('tameion-theme');delete document.documentElement.dataset.theme;window.history.replaceState(null,'','/');});
 describe('operator dashboard boundary',()=>{
  it('does not mount the private queue until session verification and then refreshes the balance once after login',async()=>{const fetcher=vi.fn(async(input:RequestInfo|URL,_init?:RequestInit)=>String(input).includes('session')?Response.json({authenticated:true,csrf_token:'mock-csrf',expires_at:new Date(Date.now()+3600000).toISOString()}):Response.json({amount:'12.34',asset:'USDC',network:'ARC-TESTNET',captured_at:new Date().toISOString(),verification:'READ_ONLY_BALANCE'}));render(<OperatorDashboard fetcher={fetcher}/>);expect(screen.queryByText('Protected queue')).toBeNull();await screen.findByText(/12.34 USDC/);expect(screen.getByText('Protected queue')).toBeTruthy();expect(screen.getByTestId('command-csrf').textContent).toBe('mock-csrf');expect(window.location.search).toBe('');expect(fetcher).toHaveBeenCalledTimes(2);expect(fetcher.mock.calls[0][0]).toBe('/api/operator/session');expect(fetcher.mock.calls[1][0]).toBe('/api/wallet/balance/refresh');expect(fetcher.mock.calls[1][1]).toMatchObject({method:'POST',headers:{'X-Tameion-CSRF':'mock-csrf'}});});
  it('shows one visible read-only balance summary and keeps manual refresh available',async()=>{
@@ -15,6 +15,15 @@ describe('operator dashboard boundary',()=>{
   fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3));
   expect(summary.textContent).toContain('ARC-TESTNET');expect(summary.textContent).toContain('Observed');
   expect(summary.textContent).toContain('does not establish affordability');expect(screen.getAllByRole('button',{name:'Refresh wallet balance'})).toHaveLength(1);
+ });
+ it('shows the canonical test organization and provides a persistent accessible theme control',async()=>{
+  const fetcher=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('session')?Response.json({authenticated:true,csrf_token:'mock',expires_at:new Date(Date.now()+3500000).toISOString()}):Response.json({code:'BALANCE_UNVERIFIED'},{status:503}));
+  render(<OperatorDashboard fetcher={fetcher}/>);await screen.findByText('Protected queue');
+  const profile=screen.getByLabelText('Operator session and workspace');expect(profile.textContent).toContain('Tameion Testnet Demonstration Organization');expect(profile.textContent).toContain('ORG-DEMO-001');
+  const theme=screen.getByRole('button',{name:'Color theme: system'});fireEvent.click(theme);
+  expect(document.documentElement.dataset.theme).toBe('light');expect(window.localStorage.getItem('tameion-theme')).toBe('light');
+  fireEvent.click(screen.getByRole('button',{name:'Color theme: light'}));expect(document.documentElement.dataset.theme).toBe('dark');
+  fireEvent.click(screen.getByRole('button',{name:'Color theme: dark'}));expect(document.documentElement.dataset.theme).toBeUndefined();expect(window.localStorage.getItem('tameion-theme')).toBeNull();
  });
  it('expires the session and discards a balance response received afterward',async()=>{
   vi.useFakeTimers();let finish!:(r:Response)=>void;

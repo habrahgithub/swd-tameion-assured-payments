@@ -2,6 +2,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {CommandCenter} from './command-center';
 import {OperatorAccessCard,OperatorAccessShell} from './operator-access-ui';
+import {ThemeControl} from './theme-control';
 type Session={csrf_token:string;expires_at:string};
 type Balance={amount:string;asset:'USDC';captured_at:string;network:string};
 /** Only verified metadata enables the view. Bearer stays in HttpOnly cookie. */
@@ -38,16 +39,16 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
  if(!session)return <OperatorAccessShell eyebrow="Private finance workspace" title="Review payment obligations securely" description="Review business obligations and check the current Arc Testnet USDC settlement balance from one protected workspace." boundary="Signing in allows private financial review. Every payment still requires separate approval before release.">
   <OperatorAccessCard heading="Continue to the payment workspace" description="Sign in with your approved finance account.">
    <p role="status" className="mt-4 text-sm leading-6 text-[var(--color-ink-muted)]">{message}</p>
-   <a className="mt-5 flex min-h-11 w-full items-center justify-center rounded bg-[var(--color-ink)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]" href="/operator/login">Sign in securely</a>
+   <a className="mt-5 flex min-h-11 w-full items-center justify-center rounded bg-[var(--color-primary-action)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]" href="/operator/login">Sign in securely</a>
   </OperatorAccessCard>
  </OperatorAccessShell>;
- const controls=<details className="absolute right-4 top-1 z-30"><summary className="flex min-h-11 cursor-pointer items-center rounded border bg-[var(--color-surface)] px-3 text-sm">Operator</summary><section aria-label="Operator session" className="absolute right-0 top-full flex w-[min(300px,calc(100vw-32px))] flex-wrap items-center gap-2 rounded border bg-[var(--color-surface)] p-3 text-xs shadow-lg"><span>Operator session verified</span><button className="min-h-11 rounded border px-3" onClick={logout}>Log out</button></section></details>;
+ const controls=<details className="absolute right-4 top-1 z-30"><summary className="flex min-h-11 cursor-pointer items-center rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 text-sm">Operator</summary><section aria-label="Operator session and workspace" className="absolute right-0 top-full flex w-[min(320px,calc(100vw-32px))] flex-col items-stretch gap-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3 text-xs shadow-lg"><div><p className="font-semibold">Tameion Testnet Demonstration Organization</p><p className="text-[var(--color-ink-muted)]">Test organization · Arc Testnet</p><p className="mono mt-1">ORG-DEMO-001</p></div><span>Operator session verified</span><ThemeControl/><button className="min-h-11 rounded border border-[var(--color-border-strong)] px-3" onClick={logout}>Log out</button></section></details>;
  const walletSummary=<section aria-label="Read-only wallet balance" className="flex flex-wrap items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-  <div className="min-w-0 flex-1 basis-full sm:basis-0"><h2 className="text-sm font-semibold">Wallet balance status</h2>
+  <div className="min-w-0 flex-1 basis-full sm:basis-0"><h2 className="flex items-center gap-2 text-sm font-semibold"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-4 shrink-0 text-[var(--color-ink-muted)]"><rect x="3.5" y="6" width="17" height="13" rx="2" stroke="currentColor" strokeWidth="1.7"/><path d="M3.5 9h17M16 14h1.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M6 6V4.5h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>Wallet balance status</h2>
    {balance&&<p className="tabular text-base font-semibold">{balance.amount} USDC · {balance.network}<span className="block text-xs font-normal">Observed <time dateTime={balance.captured_at}>{balance.captured_at}</time></span></p>}
    <p role="status" className="text-xs text-[var(--color-ink-muted)]">{message}</p>
   </div>
-  <button className="min-h-11 rounded border px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={()=>void refresh()} disabled={busy}>Refresh wallet balance</button>
+  <button className="flex min-h-11 items-center justify-center gap-2 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={()=>void refresh()} disabled={busy} aria-busy={busy}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className={`size-4 shrink-0 ${busy?'animate-spin':''}`}><path d="M20 11a8 8 0 0 0-14.6-4L4 9m0-4v4h4M4 13a8 8 0 0 0 14.6 4L20 15m0 4v-4h-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>{busy?'Checking balance…':'Refresh wallet balance'}</button>
  </section>;
  return <CommandCenter operatorControls={controls} walletSummary={walletSummary} walletBalance={balance??undefined} csrfToken={session.csrf_token}/>;
 }

@@ -10,6 +10,7 @@
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-ink: #0b132b;
+  --color-primary-action: #0b132b;
   --color-ink-muted: #5b6577;
   --color-border: #e2e8f0;
   --color-border-strong: #cbd5e1;
@@ -62,6 +63,62 @@
   --space-xl: 2rem;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #111827;
+  --color-surface: #182235;
+  --color-ink: #f3f6fb;
+  --color-primary-action: #0b132b;
+  --color-ink-muted: #b5c0d0;
+  --color-border: #334155;
+  --color-border-strong: #64748b;
+  --color-accent: #d8b66d;
+  --color-accent-ink: #111827;
+  --color-attestation: #d8b66d;
+  --color-attestation-ink: #111827;
+  --status-pass-text: #6ee7b7;
+  --status-pass-surface: #12342d;
+  --status-pass-border: #216b56;
+  --status-hold-text: #fbbf24;
+  --status-hold-surface: #3a2d13;
+  --status-hold-border: #806124;
+  --status-blocked-text: #fca5a5;
+  --status-blocked-surface: #3b2028;
+  --status-blocked-border: #7f3544;
+  --status-advisory-text: #c4b5fd;
+  --status-advisory-surface: #252348;
+  --status-advisory-border: #4b4789;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-bg: #111827;
+    --color-surface: #182235;
+    --color-ink: #f3f6fb;
+    --color-primary-action: #0b132b;
+    --color-ink-muted: #b5c0d0;
+    --color-border: #334155;
+    --color-border-strong: #64748b;
+    --color-accent: #d8b66d;
+    --color-accent-ink: #111827;
+    --color-attestation: #d8b66d;
+    --color-attestation-ink: #111827;
+    --status-pass-text: #6ee7b7;
+    --status-pass-surface: #12342d;
+    --status-pass-border: #216b56;
+    --status-hold-text: #fbbf24;
+    --status-hold-surface: #3a2d13;
+    --status-hold-border: #806124;
+    --status-blocked-text: #fca5a5;
+    --status-blocked-surface: #3b2028;
+    --status-blocked-border: #7f3544;
+    --status-advisory-text: #c4b5fd;
+    --status-advisory-surface: #252348;
+    --status-advisory-border: #4b4789;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -74,6 +131,20 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  transition: color 180ms ease, background-color 180ms ease;
+}
+
+button, a, summary, input {
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .tabular {
