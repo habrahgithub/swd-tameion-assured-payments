@@ -90,9 +90,12 @@ body {
   unicode-bidi: isolate;
 }
 
-/* Reserve space for the single contextual action at narrow/zoomed viewports. */
-.command-center { padding-bottom: 16rem; }
-.command-center :focus-visible { scroll-margin-bottom: 16rem; }
+/* Reserve space for the compact contextual action at narrow/zoomed viewports. */
+.command-center { padding-bottom: 9rem; }
+.command-center :focus-visible { scroll-margin-bottom: 9rem; }
 .obligation-action-strip { overflow-wrap: anywhere; }
-.obligation-action-strip button { flex-shrink: 0; max-width: 100%; white-space: normal; }
-@media (min-width: 640px) { .command-center { padding-bottom: 10rem; } }
+.obligation-action-strip button { flex-shrink: 0; max-width: 50%; white-space: normal; }
+@media (min-width: 640px) {
+  .command-center { padding-bottom: 9rem; }
+  .obligation-action-strip button { max-width: 100%; }
+}

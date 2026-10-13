@@ -330,14 +330,14 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main } = await renderProducerJson(firstBody, otherBodies, queue, { selectInitial: false });
     expect(main.querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
-    expect(main.textContent).toContain("Choose one obligation from the genuine queue");
+    expect(main.textContent).toContain("Choose one obligation from the payment queue");
     expect(main.textContent).not.toMatch(/no genuine obligations|demo mode|loading/i);
     expect(state.liveUsageRecords).toHaveLength(5);
 
     fireEvent.click(obligationRow("OBL-J0C-003"));
     await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
     expect(main.textContent).toContain("Current advisory for OBL-J0C-003.");
-    expect(main.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label")).toContain("Current lifecycle position: Assessment");
+    expect(main.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label")).toContain("Workflow now: Assessment");
     expect(main.textContent).not.toContain("Selected payment candidate: software services");
     expect(main.textContent).not.toContain("View selected payment candidate");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -363,8 +363,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.execution).toBeNull();
     const { main } = await renderProducerJson(body);
     expect(screen.getByRole("heading", {
-      name: "Viewed stage: Obligation. Current lifecycle position: Assurance. Step 1 of 6.",
+      name: "Reviewing: Obligation. Workflow now: Assurance, Payment controls. Reviewing step 1 of 6; workflow is at step 4 of 6.",
     })).toBeTruthy();
+    expect(main.textContent).toContain("Reviewing: Obligation");
+    expect(main.textContent).toContain("Workflow now: Assurance · Payment controls");
     expect(openStageNavigator().querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");
     expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId("current-next-step").textContent).not.toContain("Final payment authorization");
@@ -478,7 +480,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       navigateStage("Payment");
       const payment = screen.getByRole("region", { name: "Payment status" });
       expect(payment.querySelector("h3")?.textContent, scenario.name).toMatch(scenario.expected);
-      expect(payment.textContent, scenario.name).toContain("Testnet proxy destination");
+      expect(payment.textContent, scenario.name).toContain("Testnet payment destination");
       const executeActions = screen.queryAllByRole("button", { name: "Execute Test Payment" });
       expect(executeActions.length, scenario.name).toBe(scenario.execute ? 1 : 0);
       expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]').length, scenario.name).toBeLessThanOrEqual(1);
@@ -1216,7 +1218,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(postProxyDetail.assurance_evidence.state).toBe("NOT_CREATED");
     const postProxyQueue = await listJson(postProxy.state);
     const { main: postProxyMain } = await renderProducerJson(postProxyDetail, [], postProxyQueue);
-    expect(screen.getByText(/Current position: Assessment/)).toBeTruthy();
+    expect(screen.getAllByText(/Workflow now: Assessment/).length).toBeGreaterThan(0);
     expect(screen.getByTestId("current-next-step").textContent).toContain("fresh assessment for the prepared Arc Testnet proxy");
     expect(screen.getByTestId("current-next-step").textContent).not.toMatch(/PAE.*revoked|sealed.*revoked/i);
     expect(postProxyMain.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
@@ -1239,7 +1241,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main: preparedMain } = await renderProducerJson(preparedDetail, [], preparedQueue);
     navigateStage("Assessment");
     expect(preparedMain.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("PAY is advisory for the selected obligation");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("PAY is advisory");
     expect(screen.getByTestId("payment-eligibility").textContent).not.toMatch(/selected payment candidate|earliest effective due/i);
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
@@ -1276,10 +1278,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Recommendation — PAY");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Payment eligibility");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("PAY is advisory for the selected obligation");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("PAY is advisory");
     expect(screen.getByTestId("assessment-result-card").textContent).not.toMatch(/selected payment candidate|earliest effective due date/i);
     expect(screen.queryByRole("button", { name: "View selected payment candidate" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Prepare Arc Testnet settlement proxy" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Prepare testnet payment details" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     expect(main.textContent).toContain("OBL-J0C-003");
@@ -1312,7 +1314,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
     expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Recommendation — PAY");
-    expect(screen.getByTestId("payment-eligibility").textContent).toContain("Business eligibility, wallet funding, and payment authority are separate checks");
+    expect(screen.getByTestId("payment-eligibility").textContent).toContain("Route checks pending; authorization locked");
     expect(screen.getByTestId("assessment-result-card").textContent).not.toContain("Back to obligations");
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue to Authorization" })).toBeNull();
@@ -1370,7 +1372,7 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     const header = screen.getByRole("region", { name: "Selected source obligation" });
     expect(header.textContent).not.toMatch(/ARC TESTNET|controlled settlement proxy|USDC|PAE|provider/i);
-    expect(screen.getByText(/Step 1 of 6 · Obligation/)).toBeTruthy();
+    expect(screen.getByText(/Reviewing step 1 of 6 · Obligation/)).toBeTruthy();
     expect(screen.getByText("View all stages")).toBeTruthy();
     expect((main.querySelector('nav[aria-label="Payment lifecycle navigation"]') as HTMLElement).hidden).toBe(true);
     expect(main.querySelectorAll("details[open]")).toHaveLength(0);
@@ -1403,7 +1405,7 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     const assurance = screen.getByRole("region", { name: "Deterministic assurance result" });
     expect(assurance.textContent).toMatch(/10\/10 controls passed/);
-    expect(assurance.textContent).toContain("Deterministic controls, not AI, grant or deny release authority.");
+    expect(assurance.textContent).toContain("Payment controls, not AI, grant or deny release authority.");
     expect((assurance.querySelector("details[aria-label='Assurance control details']") as HTMLDetailsElement | null)?.open).toBe(false);
     expect(screen.getAllByRole("button", { name: "Continue to Payment" })).toHaveLength(1);
     expect(assurance.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
@@ -1797,7 +1799,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     });
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
-    expect(screen.getByText(/Current position: Assurance/)).toBeTruthy();
+    expect(screen.getAllByText(/Workflow now: Assurance · Payment controls/).length).toBeGreaterThan(0);
     expect(obligationRow(fixture.selectedId).textContent).toContain("Workflow recorded");
     expect(obligationRow(fixture.selectedId).textContent).not.toMatch(/PAE|execution|route|provider/i);
     expect(obligationRow(fixture.selectedId).textContent).not.toContain("Assessment required");
@@ -1975,7 +1977,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(packet.textContent).toContain("ARC_TESTNET");
     expect(packet.textContent).toContain("OUTSTANDING");
     expect(packet.textContent).not.toContain("No current assessment is available in this detail");
-    expect(packet.textContent).toContain("Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.");
+    expect(packet.textContent).toContain("Authorization records approval only. Payment controls and release remain separate; approval does not submit payment.");
     expect(packet.textContent).toContain("The Arc Testnet payment instruction is approved.");
     expect(packet.textContent).toContain("Original amount · payable status");
     expect(packet.textContent).toContain("Exact source → settlement amount");
@@ -1986,9 +1988,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     const address = body.settlement_proxy.preflight.destination_wallet.address;
     expect(summary.textContent).toContain(`${address.slice(0,6)}…${address.slice(-4)}`);
     expect(summary.textContent).not.toContain(address);
-    const instructionEvidence = screen.getByText("View exact instruction and source evidence").closest("details")!;
+    const instructionEvidence = screen.getByText("View payment instruction details").closest("details")!;
     expect(instructionEvidence.open).toBe(false);
-    fireEvent.click(screen.getByText("View exact instruction and source evidence"));
+    fireEvent.click(screen.getByText("View payment instruction details"));
     expect(instructionEvidence.open).toBe(true);
     expect(within(instructionEvidence).getByText(address,{exact:true})).toBeTruthy();
     expect(packet.closest("main")?.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);

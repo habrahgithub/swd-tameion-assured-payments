@@ -134,7 +134,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await page.getByRole("button", { name: "Review current PAY assessment" }).click();
   await gotoStage(page, "Authorization");
   const packet = page.getByRole("region", { name: "Payment approval decision" });
-  await page.getByText("View exact instruction and source evidence",{exact:true}).click();
+  await page.getByText("View payment instruction details",{exact:true}).click();
   await expect(packet).toContainText("OBL-J0C-001");
   await expect(packet).toContainText("CP-SYNTHETIC-001");
   await expect(packet).toContainText("EVID-SYNTHETIC-001");
@@ -175,7 +175,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Recommendation — PAY");
-  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
+  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("View selected payment candidate");
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
@@ -189,7 +189,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Recommendation — PAY");
-  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory for the selected obligation");
+  await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("View selected payment candidate");
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);

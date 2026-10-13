@@ -67,7 +67,7 @@ describe("Command Center assessment coverage copy", () => {
   });
 
   it("reports a verified-empty list distinctly from an unavailable one", () => {
-    expect(assessmentCoverageLabel("empty", 0, 0)).toContain("No genuine obligations");
+    expect(assessmentCoverageLabel("empty", 0, 0)).toContain("No payment obligations");
   });
 
   it("reports real counts once the list is populated", () => {
@@ -141,7 +141,7 @@ describe("Command Center operational report availability", () => {
     const summary = { total: 0, hold: 0, escalate: 0, unassessed: 0, pay: 0 };
     expect(operationalReportSummaryLabel("loading", summary)).toContain("loading");
     expect(operationalReportSummaryLabel("error", summary)).toContain("unavailable");
-    expect(operationalReportSummaryLabel("empty", summary)).toContain("No genuine obligations");
+    expect(operationalReportSummaryLabel("empty", summary)).toContain("No payment obligations");
     expect(operationalReportSummaryLabel("ready", { ...summary, total: 2, unassessed: 2 })).toContain("Incomplete");
   });
 

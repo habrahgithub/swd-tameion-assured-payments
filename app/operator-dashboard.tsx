@@ -12,9 +12,10 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
   const current=++generation.current,abort=new AbortController();
   void fetcher('/api/operator/session',{cache:'no-store',credentials:'same-origin',signal:abort.signal}).then(async response=>{
    const value=await response.json();if(current!==generation.current)return;
+   if(response.status===401||response.status===403){setMessage('Sign-in required. Use your approved finance account to continue.');return;}
    if(!response.ok||value.authenticated!==true||typeof value.csrf_token!=='string'||typeof value.expires_at!=='string'||!Number.isFinite(Date.parse(value.expires_at))||Date.parse(value.expires_at)<=Date.now()||Date.parse(value.expires_at)>Date.now()+3600000)throw new Error();
    setSession({csrf_token:value.csrf_token,expires_at:value.expires_at});setMessage('Balance not verified. Refresh manually.');
-  }).catch(()=>{if(current===generation.current)setMessage('Session unavailable. Sign in or ask the platform owner to verify access.');});
+  }).catch(()=>{if(current===generation.current)setMessage('Access service unavailable. Ask the platform owner to verify access.');});
   return()=>{++generation.current;abort.abort();controller.current?.abort();};
  },[fetcher]);
  useEffect(()=>{if(!session)return;const timer=setTimeout(()=>{++generation.current;controller.current?.abort();setSession(null);setBalance(null);setBusy(false);setMessage('Session expired. Sign in again.');},Math.max(0,Date.parse(session.expires_at)-Date.now()));return()=>clearTimeout(timer);},[session]);

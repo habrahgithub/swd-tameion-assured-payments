@@ -374,9 +374,9 @@ export function assessmentCoverageLabel(
   assessedCount: number,
   total: number,
 ): string {
-  if (presentation === "loading") return "Genuine obligations are loading — assessment coverage is not yet known.";
-  if (presentation === "error") return "Genuine obligations are unavailable — assessment coverage cannot be determined.";
-  if (presentation === "empty") return "No genuine obligations are currently available to assess.";
+  if (presentation === "loading") return "Payment obligations are loading — assessment coverage is not yet known.";
+  if (presentation === "error") return "Payment obligations are unavailable — assessment coverage cannot be determined.";
+  if (presentation === "empty") return "No payment obligations are currently available to assess.";
   return `${assessedCount}/${total} obligations assessed`;
 }
 
@@ -463,9 +463,9 @@ export function killSwitchLabel(presentation: KillSwitchView): string {
 }
 
 export function lifecycleStopLabel(args: { presentation: ObligationListPresentation; total: number; assessed: number; pay: number }): string {
-  if (args.presentation === "loading") return "Genuine obligations are loading — lifecycle not yet known.";
-  if (args.presentation === "error") return "Genuine obligations are unavailable — lifecycle cannot be determined.";
-  if (args.presentation === "empty") return "No genuine obligations — nothing to assess or authorize.";
+  if (args.presentation === "loading") return "Payment obligations are loading — lifecycle not yet known.";
+  if (args.presentation === "error") return "Payment obligations are unavailable — lifecycle cannot be determined.";
+  if (args.presentation === "empty") return "No payment obligations — nothing to assess or authorize.";
   if (args.assessed < args.total) return `STOP — ${args.assessed} of ${args.total} assessed. Authorization is blocked until all are assessed.`;
   if (args.pay > 0) return `Assessed — ${args.pay} PAY recommendation(s); advisory, still requires human authorization.`;
   return "Assessment complete — all assessed; no PAY candidate.";
@@ -495,8 +495,8 @@ export function aggregateVersionLabel(aggregateVersion: number | undefined, hasS
  * operational-report summary must say so instead of rendering an all-zero
  * table that looks like a verified, reportable empty state. */
 export function reportSummaryUnavailableReason(presentation: ObligationListPresentation): string | null {
-  if (presentation === "error") return "Genuine obligations are unavailable — this operational report cannot be produced.";
-  if (presentation === "loading") return "Genuine obligations are loading — this operational report is not yet available.";
+  if (presentation === "error") return "Payment obligations are unavailable — this operational report cannot be produced.";
+  if (presentation === "loading") return "Payment obligations are loading — this operational report is not yet available.";
   return null;
 }
 
@@ -517,9 +517,9 @@ export function operationalReportSummaryLabel(
   presentation: ObligationListPresentation,
   summary: HoldEscalateSummary,
 ): string {
-  if (presentation === "loading") return "Genuine obligations are loading — operational report summary is not yet available.";
-  if (presentation === "error") return "Genuine obligations are unavailable — operational report summary cannot be determined.";
-  if (presentation === "empty") return "No genuine obligations — nothing to report.";
+  if (presentation === "loading") return "Payment obligations are loading — operational report summary is not yet available.";
+  if (presentation === "error") return "Payment obligations are unavailable — operational report summary cannot be determined.";
+  if (presentation === "empty") return "No payment obligations — nothing to report.";
   return queueCompletionLabel(summary);
 }
 
@@ -597,7 +597,7 @@ export function availableEvidenceItems(detail: ObligationDetail): AvailableEvide
   const items: AvailableEvidenceItem[] = [];
   const preflightTime = detail.settlement_proxy?.preflight.captured_at;
   if (validStoredTimestamp(preflightTime)) {
-    items.push({ occurredAt: preflightTime, label: "Read-only Arc Testnet preflight evidence", result: "Captured for the controlled settlement proxy." });
+    items.push({ occurredAt: preflightTime, label: "Read-only Arc Testnet preflight evidence", result: "Captured for the testnet payment destination." });
   }
   const assurance = detail.assurance_evidence;
   if (assurance && (assurance.state === "AVAILABLE_CURRENT_BINDING" || assurance.state === "AVAILABLE_HISTORICAL") && validStoredTimestamp(assurance.recorded_at)) {
@@ -640,9 +640,9 @@ export function currentAuthorityGuidance(detail: ObligationDetail): string | nul
 }
 
 export function queueHeaderLabel(presentation: ObligationListPresentation, summary: HoldEscalateSummary): string {
-  if (presentation === "loading") return "Loading genuine queue — completion is not yet known.";
-  if (presentation === "error") return "Genuine queue unavailable — completion cannot be determined.";
-  if (presentation === "empty") return "No genuine obligations are in the queue.";
+  if (presentation === "loading") return "Loading payment queue — completion is not yet known.";
+  if (presentation === "error") return "Payment queue unavailable — completion cannot be determined.";
+  if (presentation === "empty") return "No payment obligations are in the queue.";
   return queueCompletionLabel(summary);
 }
 
@@ -654,6 +654,28 @@ const PAYMENT_LIFECYCLE_STAGES = [
   "Payment",
   "Reconciliation",
 ] as const;
+
+const STAGE_BUSINESS_CONTEXT: Partial<Record<LifecycleStage, string>> = {
+  Assurance: "Payment controls",
+  Reconciliation: "Settlement confirmation",
+};
+
+function stageBusinessLabel(stage: LifecycleStage): string {
+  const context = STAGE_BUSINESS_CONTEXT[stage];
+  return context ? `${stage} · ${context}` : stage;
+}
+
+function stageSpokenLabel(stage: LifecycleStage): string {
+  const context = STAGE_BUSINESS_CONTEXT[stage];
+  return context ? `${stage}, ${context}` : stage;
+}
+
+function businessAmount(value: string): string {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(value);
+  if (!match) return value;
+  const fraction = (match[2] ?? "").replace(/0+$/, "");
+  return `${match[1]}.${fraction.padEnd(2, "0")}`;
+}
 
 const STAGE_PANEL: Record<LifecycleStage, PanelKey> = {
   Obligation: "obligations",
@@ -1707,11 +1729,11 @@ function DeterministicAssuranceSummary({ detail }: { detail: ObligationDetail })
   return (
     <section aria-label="Deterministic assurance result" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="assurance-result-card">
       <div>
-        <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Deterministic assurance</h3>
+        <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Assurance · Payment controls</h3>
         <p className="mt-1 text-[14px] font-semibold text-[var(--color-ink)]">{status}</p>
-        {assuranceRecordedBlocked && <p data-testid="assurance-no-action-guidance" className="mt-1 text-[12px] font-semibold text-[var(--color-ink-muted)]">No further product action is available in this state.</p>}
+        {assuranceRecordedBlocked && <p data-testid="assurance-no-action-guidance" className="mt-1 text-sm font-semibold text-[var(--color-ink-muted)]">No further payment action is available in this state.</p>}
       </div>
-      <p className="text-[12px] text-[var(--color-ink-muted)]">Deterministic controls, not AI, grant or deny release authority.</p>
+      <p className="text-sm text-[var(--color-ink-muted)]">Payment controls, not AI, grant or deny release authority.</p>
       <p className="text-[13px] text-[var(--color-ink-muted)]">Payment instruction state: {currentPaeDisplay(detail)}{detail.pae_sealed ? ". Current release checks still apply." : "."}</p>
       {currentAuthorityGuidance(detail) && <p className="text-[12px] text-[var(--color-warning)]">{currentAuthorityGuidance(detail)}</p>}
       {failedControls.length > 0 && (
@@ -2214,7 +2236,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
-        summary: `PAY is advisory for the selected obligation. Business eligibility, wallet funding, and payment authority are separate checks.${routeAssuranceReady ? "" : " Current payment-route assurance is not ready; authorization remains locked."}`,
+        summary: `PAY is advisory.${routeAssuranceReady ? " Business eligibility, funds and payment authority remain separate checks." : " Route checks pending; authorization locked."}`,
       }
     : null;
   const proxyPreparationReady = Boolean(detailState === "loaded" && detail && selectedId && !detail.settlement_proxy && !detail.pae_sealed &&
@@ -2316,8 +2338,11 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
   const currentStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(currentLifecycleStage);
   const viewedStageIndex = PAYMENT_LIFECYCLE_STAGES.indexOf(viewedStage);
   const stageAccessibilityLabel = viewedStage === currentLifecycleStage
-    ? `Current stage: ${viewedStage}. Step ${viewedStageIndex + 1} of 6.`
-    : `Viewed stage: ${viewedStage}. Current lifecycle position: ${currentLifecycleStage}. Step ${viewedStageIndex + 1} of 6.`;
+    ? `Workflow now: ${stageSpokenLabel(currentLifecycleStage)}. Step ${currentStageIndex + 1} of 6.`
+    : `Reviewing: ${stageSpokenLabel(viewedStage)}. Workflow now: ${stageSpokenLabel(currentLifecycleStage)}. Reviewing step ${viewedStageIndex + 1} of 6; workflow is at step ${currentStageIndex + 1} of 6.`;
+  const stagePositionLabel = viewedStage === currentLifecycleStage
+    ? `Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`
+    : `Reviewing: ${viewedStage} · Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`;
   const currentPositionBlocked = detailState !== "loaded" || detailIsStale || !detail ||
     (currentLifecycleStage === "Assurance" && !detail.pae_sealed) ||
     (currentLifecycleStage === "Payment" && (
@@ -2365,12 +2390,12 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
     ? "This obligation was cancelled. No authorization or execution action is available."
     : !selectedId
     ? listPresentation === "loading"
-      ? "Loading genuine obligations. Selection is not available yet."
+      ? "Loading payment obligations. Selection is not available yet."
       : listPresentation === "error"
         ? "The genuine source queue could not be loaded. Retry the queue before selecting an obligation."
         : listPresentation === "empty"
-          ? "No genuine obligations are currently available. Refresh the genuine queue to check again."
-          : "Choose one obligation from the genuine queue to review its current status."
+          ? "No payment obligations are currently available. Refresh the payment queue to check again."
+          : "Choose one obligation from the payment queue to review its current status."
     : detailState === "loading"
       ? "Loading current obligation status."
       : detailState === "failed"
@@ -2621,7 +2646,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
   if (!selectedId && listPresentation === "ready" && obligations.length > 0) {
     workspaceAction = { label: "Choose an obligation", actor: "You", run: () => setMobileQueueOpen(true) };
   } else if (!selectedId && listPresentation === "empty") {
-    workspaceAction = { label: "Refresh genuine obligations", actor: "You · read-only refresh", run: () => { void refreshObligations(true); } };
+    workspaceAction = { label: "Refresh payment obligations", actor: "You · read-only refresh", run: () => { void refreshObligations(true); } };
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
@@ -2647,7 +2672,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
       }));
     } };
   } else if (viewedStage === "Assessment" && proxyPreparationReady && detail) {
-    workspaceAction = { label: "Prepare Arc Testnet settlement proxy", actor: "Authorized operator", run: () => {
+    workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized operator", run: () => {
       void run("proxy preflight", () => postJson("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
@@ -2702,13 +2727,13 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
     ? !assessmentResult.race
       ? "This recorded PAY recommendation has no review evidence in this detail; authorization remains locked."
       : proxyPreparationReady
-      ? "Prepare the Arc Testnet proxy; a fresh assessment is required afterward, before authorization review."
+      ? "Prepare the testnet payment details; a fresh assessment is required afterward, before authorization review."
       : workspaceAction?.label === "Review current PAY assessment"
         ? "Review this advisory recommendation before any separate human authorization decision."
         : workspaceAction?.label === "Authorize payment"
           ? "An authorized approver may review this exact obligation."
           : !allAssessed
-            ? "Assess the remaining genuine obligations before authorization review."
+            ? "Assess the remaining payment obligations before authorization review."
             : !routeAssuranceReady
               ? "Complete current payment-route assurance before authorization review."
               : assessmentNextAction("PAY", allAssessed).replace(/^Next action:\s*/, "")
@@ -2821,18 +2846,18 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
             className="mb-3 min-h-11 w-full rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-start text-[13px] font-semibold text-[var(--color-ink)] md:hidden"
           >
             {mobileQueueOpen ? "Close obligation list" : listPresentation === "loading"
-              ? "Loading genuine obligations…"
+              ? "Loading payment obligations…"
               : listPresentation === "error"
                 ? "Open queue to retry"
                 : listPresentation === "empty"
-                  ? "No genuine obligations"
+                  ? "No payment obligations"
                   : selected
                     ? `Switch obligation${viewedStage !== "Assessment" ? ` · ${selected.service_category.replaceAll("_", " ").toLowerCase()}` : ""}`
                     : "Choose an obligation"}
           </button>
           <div id="genuine-obligation-queue" className={mobileQueueOpen ? "block" : "hidden md:block"}>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
-            Genuine obligations
+            Payment obligations
           </p>
           <p className="mb-2 text-[12px] text-[var(--color-ink)]">{listPresentation === "ready" ? `${obligations.length} obligations` : queueHeaderLabel(listPresentation, reportSummary)}</p>
           <ul className="border-y border-[var(--color-border)]">
@@ -2882,13 +2907,13 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
           </ul>
           {obligationListState(obligationsStatus, obligationsError, obligations.length) !== "ready" && (
             <div className="space-y-2 border-b border-[var(--color-border)] px-3 py-4">
-              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading genuine obligations…</p>}
+              {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading payment obligations…</p>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "error" && <>
-                <p role="alert" className="text-[13px] text-[var(--color-danger)]">Genuine obligations are unavailable. No synthetic demo data has been added to this list. {obligationsError}</p>
-                <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry genuine obligations</button>
+                <p role="alert" className="text-[13px] text-[var(--color-danger)]">Payment obligations are unavailable. Training data has not been substituted. {obligationsError}</p>
+                <button type="button" onClick={() => void refreshObligations(true)} className="text-[13px] font-semibold underline">Retry payment obligations</button>
               </>}
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "empty" && <>
-                <p className="text-[13px] font-semibold text-[var(--color-ink)]">No genuine obligations are currently available.</p>
+                <p className="text-[13px] font-semibold text-[var(--color-ink)]">No payment obligations are currently available.</p>
                 <p className="text-[12px] text-[var(--color-ink-muted)]">Genuine records are withheld from this candidate for privacy review. No synthetic records have been added to this queue.</p>
               </>}
             </div>
@@ -2897,7 +2922,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
         </aside>
 
         <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
-          {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading genuine obligations…</p>}
+          {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading payment obligations…</p>}
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
             <section aria-label="Selected source obligation" className={viewedStage === "Assessment"
@@ -2921,16 +2946,16 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
               <div className="sm:col-span-2">
                 {detailState === "loaded" && detail && (
                   <>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                       <p><strong>{sourcePayableState(detail)}</strong></p>
                       <p><span className="text-[var(--color-ink-muted)]">Due </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
                     </div>
-                    {viewedStage !== "Assessment" && sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-[12px] leading-4 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
-                    {viewedStage === "Authorization" && <p className="mt-1 text-[11px] leading-4 text-[var(--color-warning)]">
-                      ARC TESTNET · {detail.settlement_proxy ? "controlled settlement proxy" : "no controlled proxy"} · real-world payable remains {sourcePayableState(detail)}.
+                    {viewedStage !== "Assessment" && sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-sm leading-5 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
+                    {viewedStage === "Authorization" && <p className="mt-1 text-sm leading-5 text-[var(--color-warning)]">
+                      ARC TESTNET · {detail.settlement_proxy ? "testnet payment destination prepared" : "testnet payment destination not prepared"} · real-world payable remains {sourcePayableState(detail)}.
                     </p>}
-                    {viewedStage === "Authorization" && detail.settlement_proxy && <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">
-                      Testnet intent: <bdi dir="ltr" className="tabular font-semibold">{detail.settlement_proxy.preflight.amount} {detail.settlement_proxy.preflight.asset}</bdi>
+                    {viewedStage === "Authorization" && detail.settlement_proxy && <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
+                      Testnet amount: <bdi dir="ltr" className="tabular font-semibold">{businessAmount(detail.settlement_proxy.preflight.amount)} {detail.settlement_proxy.preflight.asset}</bdi>
                       {" · "}{detail.settlement_proxy.preflight.network}. Testnet execution does not discharge the real-world payable.
                     </p>}
                   </>
@@ -2946,11 +2971,11 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
 
           {viewedStage === "Obligation" && (
             <section aria-label="Wallet funding and payment readiness" className="rounded border border-[var(--color-border)] px-3 py-1">
-              <p className="text-[12px] font-semibold text-[var(--color-ink)]">Settlement wallet · USDC balance not verified</p>
+              <p className="text-sm font-semibold text-[var(--color-ink)]">Settlement wallet · USDC balance not verified</p>
               {detailState === "loaded" && detail && detail.record.obligation_id === selectedId
-                ? <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">Proposed settlement amount <bdi dir="ltr" className="tabular">{detail.aggregate.amount} USDC</bdi>. Available funds, network fees, and payment readiness require a fresh settlement check.</p>
+                ? <p className="text-sm leading-5 text-[var(--color-ink-muted)]">Proposed settlement amount <bdi dir="ltr" className="tabular">{businessAmount(detail.aggregate.amount)} USDC</bdi>. Available funds, network fees, and payment readiness require a fresh settlement check.</p>
                 : null}
-              {!walletSummary && <p className="text-[12px] text-[var(--color-ink-muted)]">A current settlement balance is unavailable. Available funds and payment readiness are therefore not confirmed.</p>}
+              {!walletSummary && <p className="text-sm text-[var(--color-ink-muted)]">A current settlement balance is unavailable. Available funds and payment readiness are therefore not confirmed.</p>}
             </section>
           )}
 
@@ -2972,17 +2997,17 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
 
           {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Obligation" ? "space-y-2 border-b border-[var(--color-border)] pb-2" : "border-b border-[var(--color-border)] pb-1 md:space-y-2 md:pb-2"}>
             {viewedStage === "Obligation" ? <div className="rounded border border-[var(--color-border)] px-3 py-2">
-              <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
-              <p className="mt-0.5 text-[11px] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · current position ${currentLifecycleStage}`}</p>
-              <div className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Viewed step progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
-                <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
+              <p aria-live="polite" aria-atomic="true" className="text-sm font-semibold text-[var(--color-ink)]">{viewedStage === currentLifecycleStage ? `Step ${currentStageIndex + 1} of 6 · ${viewedStage}` : `Reviewing step ${viewedStageIndex + 1} of 6 · ${viewedStage}`}</p>
+              <p className="mt-0.5 text-sm text-[var(--color-ink-muted)]">{stagePositionLabel}</p>
+              <div className="mt-2 h-1.5 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Current workflow progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={currentStageIndex + 1}>
+                <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((currentStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
-                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-[12px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
               </div>
               <div className="mt-2">
-                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 py-2 text-[12px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
+                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 py-2 text-sm font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
                 <nav id="all-payment-stages" aria-label="Payment lifecycle navigation" hidden={!mobileStagesOpen}>
                   <ol aria-label="Payment lifecycle" className="grid gap-1 border-t border-[var(--color-border)] pt-2 md:grid-cols-2 lg:grid-cols-3">
                     {PAYMENT_LIFECYCLE_STAGES.map((stage) => stageButton(stage))}
@@ -2991,16 +3016,16 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
               </div>
             </div> : <div className="rounded border border-[var(--color-border)] px-2 py-1 md:px-3 md:py-2">
               <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                <p aria-live="polite" aria-atomic="true" className="text-[12px] font-semibold text-[var(--color-ink)]">Step {viewedStageIndex + 1} of 6 · {viewedStage}</p>
-                <p className="text-[11px] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? "Current stage" : `Viewing ${viewedStage} · current position ${currentLifecycleStage}`}</p>
+                <p aria-live="polite" aria-atomic="true" className="text-sm font-semibold text-[var(--color-ink)]">{viewedStage === currentLifecycleStage ? `Step ${currentStageIndex + 1} of 6 · ${viewedStage}` : `Reviewing step ${viewedStageIndex + 1} of 6 · ${viewedStage}`}</p>
+                <p className="text-sm text-[var(--color-ink-muted)]">{stagePositionLabel}</p>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2">
-                <div className="h-1.5 min-w-8 flex-1 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Viewed step progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={viewedStageIndex + 1}>
-                  <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((viewedStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
+                <div className="h-1.5 min-w-8 flex-1 overflow-hidden rounded bg-[var(--color-border)]" role="progressbar" aria-label="Current workflow progress" aria-valuemin={1} aria-valuemax={6} aria-valuenow={currentStageIndex + 1}>
+                  <span className="block h-full bg-[var(--color-accent)]" style={{ width: `${((currentStageIndex + 1) / PAYMENT_LIFECYCLE_STAGES.length) * 100}%` }} />
                 </div>
-                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-[11px] font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
-                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-[11px] font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
-                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 shrink-0 px-1 text-[11px] font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
+                <button type="button" disabled={!canGoBack} onClick={() => previousViewedStage && showStage(previousViewedStage)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-sm font-semibold disabled:opacity-50">{previousViewedStage ? `Back to ${previousViewedStage}` : "Back"}</button>
+                {continueTarget && <button type="button" onClick={() => showStage(continueTarget)} className="min-h-11 shrink-0 rounded border border-[var(--color-border-strong)] px-2 text-sm font-semibold text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">Continue to {continueTarget}</button>}
+                <button type="button" aria-expanded={mobileStagesOpen} aria-controls="all-payment-stages" onClick={() => setMobileStagesOpen((open) => !open)} className="min-h-11 shrink-0 px-1 text-sm font-semibold text-[var(--color-ink-muted)] underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]">View all stages</button>
               </div>
               <nav id="all-payment-stages" aria-label="Payment lifecycle navigation" hidden={!mobileStagesOpen}>
                 <ol aria-label="Payment lifecycle" className="grid gap-1 border-t border-[var(--color-border)] pt-2 md:grid-cols-2 lg:grid-cols-3">
@@ -3013,15 +3038,15 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
           {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && (selectedId || listPresentation !== "loading") && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
-                {!isInitialObligationScreen && <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">{viewedStage === currentLifecycleStage ? `Current stage · ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current position: ${currentLifecycleStage}`}</p>}
+                {!isInitialObligationScreen && <p className="text-sm font-semibold text-[var(--color-ink-muted)]">{stagePositionLabel}</p>}
                 <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{!selectedId
-                  ? listPresentation === "ready" ? "Choose an obligation" : listPresentation === "empty" ? "No genuine obligations" : "Genuine obligations unavailable"
+                  ? listPresentation === "ready" ? "Choose an obligation" : listPresentation === "empty" ? "No payment obligations" : "Payment obligations unavailable"
                   : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
                 {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
                 {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.</p>}
                 {visibleWorkspaceAction && !showExceptionRecovery && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
               {!visibleWorkspaceAction && !showContinueToAuthorization && !showContinueToPayment && selectedId && detailState === "loaded" && !showExceptionRecovery && !isInitialObligationScreen && (
-                  <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
+                  <p className="mt-2 text-sm text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
                     {detail?.execution?.status === "FAILED" || detail?.execution?.status === "BLOCKED" ||
                     ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? "")
                       ? "Unassigned · no permitted product action is available"
@@ -3086,7 +3111,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                     busy={busy}
                   />
                 ) : (
-                  <section aria-label="Assessment result" className="max-w-xl space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                  <section aria-label="Assessment result" className="max-w-xl space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2 sm:p-4">
                     <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Assessment</h3>
                     <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
                       {assessmentAction === "assess"
@@ -3114,7 +3139,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                 {detailState === "loaded" && selectedId && detail && (
                   <section aria-label="Payment approval decision" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
                     <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Payment approval decision</h3>
-                    <p className="text-[12px] text-[var(--color-warning)]">Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.</p>
+                    <p className="text-sm text-[var(--color-warning)]">Source payment obligation · Arc Testnet payment destination · testnet execution does not discharge the real-world payable.</p>
                     {detail.pae_sealed && detail.settlement_proxy
                       ? <p className="text-[13px] font-semibold text-[var(--color-ink)]">The Arc Testnet payment instruction is approved. Final payment authorization and pre-release checks still apply.</p>
                       : detail.aggregate.state === "AUTHORIZED"
@@ -3134,7 +3159,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                       <p className="text-[13px]"><strong>Next owner:</strong> {recoveryOwner}. <strong>Next step:</strong> {contextualAction?.label ?? recoveryNextAction}</p>
                     </section>
                     <details className="rounded border border-[var(--color-border)] px-3 py-2">
-                      <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold">View exact instruction and source evidence</summary>
+                      <summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold">View payment instruction details</summary>
                       <div className="space-y-3 border-t border-[var(--color-border)] pt-3">
                     {detail.settlement_proxy && <dl><Field label="Exact testnet destination address" value={detail.settlement_proxy.preflight.destination_wallet.address} /></dl>}
                     <SourceObligationLineage
@@ -3148,10 +3173,10 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                       selectedObligationId={selectedId}
                       preflight={detail.settlement_proxy.preflight}
                       payableState={sourcePayableState(detail)}
-                    /> : <p className="text-[12px] text-[var(--color-ink-muted)]">No controlled Arc Testnet settlement proxy is prepared for this source obligation.</p>}
+                    /> : <p className="text-sm text-[var(--color-ink-muted)]">No Arc Testnet payment destination is prepared for this source obligation.</p>}
                       </div>
                     </details>
-                    <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-ink-muted)]">Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.</p>
+                    <p className="border-t border-[var(--color-border)] pt-2 text-sm text-[var(--color-ink-muted)]">Authorization records approval only. Payment controls and release remain separate; approval does not submit payment.</p>
                     {!detail.pae_sealed && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">{selectedWorkspaceGuidance}</p>}
                     {exceptionRecoveryCard}
                     {stageCompletionReceiptView}
@@ -3196,7 +3221,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                     <Field label="Testnet settlement" value={detail.settlement_proxy
                       ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`
                       : `${detail.aggregate.amount} ${detail.aggregate.asset} · ${detail.aggregate.network}`} />
-                    <Field label="Testnet proxy destination" value={detail.settlement_proxy
+                    <Field label="Testnet payment destination" value={detail.settlement_proxy
                       ? compactProxyDestination(detail.settlement_proxy.preflight.destination_wallet.name, detail.settlement_proxy.preflight.destination_wallet.address)
                       : "No controlled proxy recipient is recorded."} />
                     <Field label="Instruction state" value={currentPaeDisplay(detail)} />
@@ -3249,10 +3274,10 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
             {panel === "assurance" && viewedStage === "Assurance" && (
               <div className="max-w-xl space-y-3">
                 {detailState === "loaded" && detail && <>
-                  <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Deterministic assurance</h3>
+                  <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Assurance · Payment controls</h3>
                   <DeterministicAssuranceSummary detail={detail} />
                 </>}
-                {detailState !== "loaded" && <section aria-label="Deterministic assurance result" className="rounded border border-[var(--color-border)] p-4"><h3 className="text-[16px] font-semibold">Deterministic assurance</h3><p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Current assurance is unavailable until the obligation detail is refreshed.</p></section>}
+                {detailState !== "loaded" && <section aria-label="Deterministic assurance result" className="rounded border border-[var(--color-border)] p-4"><h3 className="text-[16px] font-semibold">Assurance · Payment controls</h3><p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Current payment controls are unavailable until the obligation detail is refreshed.</p></section>}
                 {exceptionRecoveryCard}
                 {stageCompletionReceiptView}
               </div>
@@ -3261,7 +3286,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
             {panel === "reconciliation" && (
               <div className="max-w-xl space-y-3">
                 <header className="space-y-1">
-                  <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Reconciliation &amp; evidence</h3>
+                  <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Reconciliation · Settlement confirmation</h3>
                   <p className="text-[13px] text-[var(--color-ink-muted)]">Compare the recorded testnet outcome with the source obligation. The source payable remains separate and unchanged.</p>
                 </header>
                 {detail && detailState === "loaded" && detail.settlement_proxy ? (() => {
@@ -3294,20 +3319,20 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                             ? "No Tameion payment record is recorded for this instruction"
                             : "A payment record is present, but its status is not classified in this receipt.";
                   return (
-                    <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+                    <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3 sm:p-4">
                       <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
                       <p className="text-[13px] font-semibold text-[var(--color-ink)]">{result}</p>
                       <dl>
                         <Field label="Source obligation" value={`${sourceText(detail.record, "beneficiary_name")} · ${detail.record.amount} ${detail.record.currency}`} />
                         <Field label="Source payable" value={`${sourcePayableState(detail)} · remains outstanding in the source record`} />
                         <Field label="Testnet settlement" value={`${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`} />
-                        <Field label="Testnet proxy destination" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet settlement proxy"} />
+                        <Field label="Testnet payment destination" value={detail.settlement_proxy.preflight.destination_wallet.name ?? "Arc Testnet payment destination"} />
                         <Field label="Exact amount verification" value={amountMatch} />
                       <Field label="Settlement-network amount verification" value={settledEvidence?.providerAmountMatch ?? "not established from the settlement record"} />
                         <Field label="Exact destination verification" value={destinationMatch} />
                       </dl>
                       {settledEvidence && <p className={`text-[12px] ${settledEvidence.state === "verified" ? "text-[var(--color-ink-muted)]" : "text-[var(--color-warning)]"}`}>{settledEvidenceExplanation(detail)}</p>}
-                      <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">ARC TESTNET · Controlled settlement proxy · testnet execution does not discharge the real-world payable.</p>
+                      <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">ARC TESTNET · Testnet payment destination · testnet execution does not discharge the real-world payable.</p>
                       {exceptionRecoveryCard}
                       {stageCompletionReceiptView}
                       <details className="rounded border border-[var(--color-border)] px-3 py-2">
@@ -3721,13 +3746,13 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
 
         </div>
       </details>}
-      <section role="region" aria-label="Current obligation action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-3 shadow-lg">
-        <div className="mx-auto flex max-w-[1392px] flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0 flex-1 basis-full sm:basis-0">
-            <p className="text-[13px] font-semibold">{selectedId || "No obligation selected"}{selected ? ` · ${selected.amount} ${selected.currency}` : ""}</p>
-            <p className="text-[13px]">{viewedStage === currentLifecycleStage ? `Current stage: ${currentLifecycleStage}` : `Viewing ${viewedStage} · Current: ${currentLifecycleStage}`}</p>
-            <p className="text-[13px] text-[var(--color-ink-muted)]">{contextualStatus}</p>
-            {!contextualAction && <p className="text-[12px] text-[var(--color-ink-muted)]">Owner: {recoveryOwner}</p>}
+      <section role="region" aria-label="Current obligation action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 shadow-lg">
+        <div className="mx-auto flex max-w-[1392px] flex-nowrap items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">{selectedId || "No obligation selected"}{selected ? ` · ${businessAmount(selected.amount)} ${selected.currency}` : ""}</p>
+            <p className="text-sm leading-5">{stagePositionLabel}</p>
+            <p className={`${contextualAction ? "hidden sm:block" : "line-clamp-2"} text-sm leading-5 text-[var(--color-ink-muted)]`}>{contextualStatus}</p>
+            {!contextualAction && <p className="hidden text-sm text-[var(--color-ink-muted)] sm:block">Owner: {recoveryOwner}</p>}
           </div>
           {contextualAction && <PrimaryButton disabled={busy || (contextualAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{contextualAction.label}</PrimaryButton>}
         </div>
