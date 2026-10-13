@@ -23,7 +23,7 @@ describe("authenticated private VIEW admission, independent of financial source 
 
 import { afterEach } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalize } from "json-canonicalize";
@@ -70,6 +70,15 @@ describe("production private source/file/read-only restoration boundary",()=>{
 import { execFileSync } from "node:child_process";
 const productRoot=join(import.meta.dirname,"..");
 describe("owner-approved source packaging uses the canonical production parser",()=>{
+ it("materializes exact independently hashed secret bytes during a clean hosted build",()=>{
+  const f=privateFixture();rmSync(f.path);
+  const script=join(productRoot,"scripts/materialize-operator-source-env.mjs");
+  const run=(env:Record<string,string|undefined>)=>execFileSync(process.execPath,[script],{cwd:directory,env:{...process.env,...env},encoding:"utf8",stdio:["ignore","pipe","pipe"]});
+  expect(JSON.parse(run({TAMEION_OPERATOR_SOURCE_DOCUMENT:f.bytes.toString("utf8"),TAMEION_OPERATOR_SOURCE_SHA256:f.hash}))).toMatchObject({record_count:5,purpose:"OPERATOR_VIEW_ONLY",provisioning:"HOSTED_BUILD_BYTES_ONLY"});
+  expect(readFileSync(f.path)).toEqual(f.bytes);expect(statSync(f.path).mode&0o777).toBe(0o600);
+  expect(()=>run({TAMEION_OPERATOR_SOURCE_DOCUMENT:f.bytes.toString("utf8"),TAMEION_OPERATOR_SOURCE_SHA256:f.hash})).toThrow();
+  rmSync(f.path);expect(()=>run({TAMEION_OPERATOR_SOURCE_DOCUMENT:f.bytes.toString("utf8"),TAMEION_OPERATOR_SOURCE_SHA256:undefined})).toThrow();
+ });
  it("packages approved bytes exclusively and proves server trace/client exclusion",()=>{
   const f=privateFixture();const approved=join(directory!,"approved-source.json");writeFileSync(approved,f.bytes);rmSync(f.path);
   const args=["--approved-source",approved,"--sha256",f.hash];const invoke=(name:string)=>JSON.parse(execFileSync(process.execPath,[join(productRoot,"scripts",name),...args],{cwd:directory,encoding:"utf8",stdio:["ignore","pipe","pipe"]}));
