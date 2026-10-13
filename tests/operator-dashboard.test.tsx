@@ -7,11 +7,11 @@ afterEach(cleanup);
 describe('operator dashboard boundary',()=>{
  it('does not mount private queue or refresh balance until verified session and click',async()=>{const fetcher=vi.fn(async(_path:RequestInfo|URL)=>Response.json({authenticated:true,csrf_token:'mock-csrf',expires_at:new Date(Date.now()+3600000).toISOString()}));render(<OperatorDashboard fetcher={fetcher}/>);expect(screen.queryByText('Protected queue')).toBeNull();await screen.findByText('Protected queue');fireEvent.click(screen.getByText('Operator',{exact:true}));expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0][0]).toBe('/api/operator/session');fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(2));});
  it('shows one visible read-only balance summary and manual refresh without a disclosure',async()=>{
-  const fetcher=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('session')?Response.json({authenticated:true,csrf_token:'mock',expires_at:new Date(Date.now()+3500000).toISOString()}):Response.json({amount:'12.345678',asset:'USDC',network:'ARC-TESTNET',captured_at:new Date().toISOString(),verification:'READ_ONLY_BALANCE'}));
+  const fetcher=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('session')?Response.json({authenticated:true,csrf_token:'mock',expires_at:new Date(Date.now()+3500000).toISOString()}):Response.json({amount:'12.345678000000000000',asset:'USDC',network:'ARC-TESTNET',captured_at:new Date().toISOString(),verification:'READ_ONLY_BALANCE'}));
   render(<OperatorDashboard fetcher={fetcher}/>);await screen.findByText('Protected queue');
   const summary=screen.getByRole('region',{name:'Read-only wallet balance'});
   expect(summary.closest('details')).toBeNull();expect(fetcher).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await screen.findByText(/12.345678 USDC/);
+  fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await screen.findByText(/12.345678000000000000 USDC/);
   expect(summary.textContent).toContain('ARC-TESTNET');expect(summary.textContent).toContain('Observed');
   expect(summary.textContent).toContain('does not establish affordability');expect(screen.getAllByRole('button',{name:'Refresh wallet balance'})).toHaveLength(1);
  });
