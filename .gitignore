@@ -25,3 +25,6 @@ npm-debug.log*
 # every dev run and not project-specific.
 /AGENTS.md
 /CLAUDE.md
+
+# Owner-approved server-only deployment input (never commit an actual record)
+/.tameion/
