@@ -3,6 +3,7 @@ import {mkdtempSync,mkdirSync,readFileSync,rmSync,statSync,writeFileSync} from "
 import {execFileSync} from "node:child_process";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {pathToFileURL} from "node:url";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import {DemoState} from "../src/server/demo-state";
 import {createObligationReaders} from "../src/server/operator-obligation-routes";
@@ -12,17 +13,18 @@ import type {AuthContext} from "../src/server/operator-auth";
 import {syntheticSourceRecords} from "./test-support/synthetic-source-records";
 
 const now=Date.parse("2026-10-13T19:30:00.000Z");
+const futureChildNow=Date.parse("2040-01-01T00:30:00.000Z");
 const gitSha="d".repeat(40),origin="https://uat.example.invalid",projectId="prj_SYNTHETIC";
 let root:string|undefined;
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();vi.useRealTimers();if(root)rmSync(root,{recursive:true,force:true});root=undefined;});
 
 function controlledRecord(){return {obligation_id:"TESTNET-CONTROLLED-UAT-20261013-001",service_category:"Controlled Arc Testnet settlement validation",recurrence:"ONE_TIME" as const,issue_date:null,due_date:null,due_date_status:"NOT_STATED_ON_SOURCE" as const,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null,amount:"1.00",currency:"USD",state_at_event_baseline:"OUTSTANDING" as const,business_purpose_confirmed:false,commercial_terms:"TESTNET_ONLY NON_ECONOMIC NOT_VENDOR_PAYMENT",source_evidence:[{evidence_id:"PRIME-CONTROLLED-TESTNET-20261013-001",content_sha256:"a".repeat(64)}],candidate_readiness:{arc_product_destination_status:"NOT_VERIFIED"}};}
-function fixture(){
- root=mkdtempSync(join(tmpdir(),"controlled-read-"));mkdirSync(join(root,".tameion"));vi.spyOn(process,"cwd").mockReturnValue(root);vi.useFakeTimers();vi.setSystemTime(now);
+function fixture(clock=now){
+ root=mkdtempSync(join(tmpdir(),"controlled-read-"));mkdirSync(join(root,".tameion"));vi.spyOn(process,"cwd").mockReturnValue(root);vi.useFakeTimers();vi.setSystemTime(clock);
  const ingress={approval_id:"INGRESS-APPROVAL",binding:"git-sha-preview-v1",project_id:projectId,git_commit_sha:gitSha,environment:"preview",direct_edge:true,trusted_proxy_override:false,origins:[origin]};
  const ingressBytes=JSON.stringify(ingress),record=controlledRecord(),recordHash=createHash("sha256").update(JSON.stringify(record)).digest("hex");
  const binding={binding:"git-sha-preview-v1",git_commit_sha:gitSha,project_id:projectId,environment:"preview",origin,ingress_approval_id:ingress.approval_id,ingress_record_sha256:createHash("sha256").update(ingressBytes).digest("hex"),source_record_sha256:recordHash};
- const source={purpose:"TESTNET_FINANCIAL_SOURCE",approval_id:"SOURCE-APPROVAL",organization_id:"ORG-DEMO-001",...binding,namespace:"CONTROLLED-NAMESPACE",valid_from:"2026-10-13T19:00:00.000Z",expires_at:"2026-10-13T20:00:00.000Z",intent_id:"CONTROLLED-INTENT",classification:"TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT",principal:"1.000000",estimated_fee_ceiling:"0.002000",estimated_total_ceiling:"1.002000",source:record};
+ const source={purpose:"TESTNET_FINANCIAL_SOURCE",approval_id:"SOURCE-APPROVAL",organization_id:"ORG-DEMO-001",...binding,namespace:"CONTROLLED-NAMESPACE",valid_from:new Date(clock-30*60*1000).toISOString(),expires_at:new Date(clock+30*60*1000).toISOString(),intent_id:"CONTROLLED-INTENT",classification:"TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT",principal:"1.000000",estimated_fee_ceiling:"0.002000",estimated_total_ceiling:"1.002000",source:record};
  const sourceBytes=JSON.stringify(source),sourceHash=createHash("sha256").update(sourceBytes).digest("hex");
  const requester={purpose:"FINANCIAL_REQUESTER_ACTOR_BINDING",approval_id:"REQUESTER-APPROVAL",organization_id:"ORG-DEMO-001",...binding,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:"OPERATOR",credential_version:1,actor_id:"ACTOR",source_sha256:sourceHash,intent_id:source.intent_id};
  const requesterBytes=JSON.stringify(requester),requesterHash=createHash("sha256").update(requesterBytes).digest("hex");
@@ -30,6 +32,12 @@ function fixture(){
  const env={TAMEION_FINANCIAL_SOURCE_SHA256:sourceHash,TAMEION_FINANCIAL_REQUESTER_SHA256:requesterHash,TAMEION_INGRESS_RECORD:ingressBytes,VERCEL:"1",VERCEL_ENV:"preview",VERCEL_PROJECT_ID:projectId,VERCEL_GIT_COMMIT_SHA:gitSha,TAMEION_ALLOWED_ORIGINS:JSON.stringify([origin])};
  for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);
  return {source,requester,sourceBytes,requesterBytes,sourceHash,requesterHash,ingress,env,record};
+}
+
+function childEnv(env:Record<string,string>,clock:number){
+ const preload=join(root!,"fixed-child-clock.mjs");
+ writeFileSync(preload,`Date.now=()=>${clock};\n`);
+ return {...process.env,...env,NODE_OPTIONS:[process.env.NODE_OPTIONS,`--import=${pathToFileURL(preload).href}`].filter(Boolean).join(" ")};
 }
 
 describe("controlled obligation read isolation",()=>{
@@ -62,18 +70,18 @@ describe("git-sha Preview financial authority binding",()=>{
 });
 
 describe("server-only financial authority build input",()=>{
- it("materializes exact hash-verified source and requester bytes with private permissions",()=>{
-  const f=fixture();rmSync(join(root!,".tameion"),{recursive:true});
-  const output=execFileSync(process.execPath,[join(import.meta.dirname,"../scripts/materialize-operator-source-env.mjs")],{cwd:root,env:{...process.env,...f.env,TAMEION_FINANCIAL_SOURCE_DOCUMENT:f.sourceBytes,TAMEION_FINANCIAL_REQUESTER_DOCUMENT:f.requesterBytes},encoding:"utf8"});
+ it("materializes exact hash-verified source and requester bytes in a future-clock child with private permissions",()=>{
+  const f=fixture(futureChildNow);rmSync(join(root!,".tameion"),{recursive:true});
+  const output=execFileSync(process.execPath,[join(import.meta.dirname,"../scripts/materialize-operator-source-env.mjs")],{cwd:root,env:childEnv({...f.env,TAMEION_FINANCIAL_SOURCE_DOCUMENT:f.sourceBytes,TAMEION_FINANCIAL_REQUESTER_DOCUMENT:f.requesterBytes},futureChildNow),encoding:"utf8"});
   expect(JSON.parse(output)).toMatchObject({financial_source:{purpose:"TESTNET_FINANCIAL_SOURCE"},financial_requester:{purpose:"FINANCIAL_REQUESTER_ACTOR_BINDING"}});
   for(const [name,bytes] of [["financial-source.json",f.sourceBytes],["financial-requester.json",f.requesterBytes]] as const){const path=join(root!,".tameion",name);expect(readFileSync(path,"utf8")).toBe(bytes);expect(statSync(path).mode&0o777).toBe(0o600);}
  });
  it("proves server trace inclusion and rejects client disclosure",()=>{
-  const f=fixture(),route="app/api/obligations/[id]/approve/route.js",trace=join(root!,".next/server",route+".nft.json");
+  const f=fixture(futureChildNow),route="app/api/obligations/[id]/approve/route.js",trace=join(root!,".next/server",route+".nft.json");
   mkdirSync(join(root!,".next/server/app/api/obligations/[id]/approve"),{recursive:true});mkdirSync(join(root!,".next/static"),{recursive:true});
   writeFileSync(join(root!,".next/server/app-paths-manifest.json"),JSON.stringify({"/api/obligations/[id]/approve/route":route}));writeFileSync(trace,JSON.stringify({files:["../../../../../../../.tameion/financial-source.json","../../../../../../../.tameion/financial-requester.json"]}));writeFileSync(join(root!,".next/static/client.js"),"/* public */");
   const args=["--approved-source",join(root!,".tameion/financial-source.json"),"--source-sha256",f.sourceHash,"--approved-requester",join(root!,".tameion/financial-requester.json"),"--requester-sha256",f.requesterHash];
-  const run=()=>execFileSync(process.execPath,[join(import.meta.dirname,"../scripts/verify-financial-authority.mjs"),...args],{cwd:root,env:{...process.env,...f.env},encoding:"utf8",stdio:["ignore","pipe","pipe"]});
+  const run=()=>execFileSync(process.execPath,[join(import.meta.dirname,"../scripts/verify-financial-authority.mjs"),...args],{cwd:root,env:childEnv(f.env,futureChildNow),encoding:"utf8",stdio:["ignore","pipe","pipe"]});
   expect(JSON.parse(run())).toMatchObject({proof:"LOCAL_NEXT_FINANCIAL_AUTHORITY_PRIVACY_ONLY_NOT_HOSTED",source_sha256:f.sourceHash,requester_sha256:f.requesterHash});writeFileSync(join(root!,".next/static/client.js"),f.record.obligation_id);expect(run).toThrow();
  });
 });
