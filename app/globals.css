@@ -3,11 +3,10 @@
 :root {
   color-scheme: light;
 
-  /* Institutional treasury-console palette — obsidian ink + brass accent,
-     ported from the Stitch visual-reference design tokens
-     (docs/design/STITCH-DELTA-CENSUS.md), not copied as HTML/Tailwind-CDN
-     markup. Variable names are kept stable so existing component code
-     (app/command-center.tsx) needs no rewiring. */
+  /* Institutional treasury-console palette — obsidian ink + brass accent.
+     These accepted candidate tokens remain stable for existing component
+     code. The withdrawn private-origin design package is not an active
+     implementation authority. */
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-ink: #0b132b;
