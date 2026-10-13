@@ -35,11 +35,12 @@ function canonicalIp(value:string):string {
   return normalized;
 }
 export function resolveRequestIdentity(request:Request,policy:OperatorPolicy,post:boolean):RequestIdentity {
-  let target:URL;try{target=new URL(request.url);}catch{throw new AccessError("ORIGIN_REJECTED");}
+  const host=request.headers.get("host")??"";
+  let target:URL;try{target=new URL(`https://${host}/`);}catch{throw new AccessError("ORIGIN_REJECTED");}
   const origin=target.origin;
-  if(target.protocol!=="https:"||!policy.origins.includes(origin)||request.headers.get("host")!==target.host||request.headers.get("sec-fetch-site")!=="same-origin"||request.headers.get("sec-fetch-dest")!=="empty")throw new AccessError("ORIGIN_REJECTED");
+  if(target.host!==host||!policy.origins.includes(origin)||request.headers.get("x-forwarded-host")!==host||request.headers.get("x-forwarded-proto")!=="https"||request.headers.get("sec-fetch-site")!=="same-origin"||request.headers.get("sec-fetch-dest")!=="empty")throw new AccessError("ORIGIN_REJECTED");
   const claimed=request.headers.get("origin");
-  if((post&&!claimed)||(claimed!==null&&claimed!==origin)||request.headers.has("forwarded")||(request.headers.has("x-forwarded-host")&&request.headers.get("x-forwarded-host")!==target.host))throw new AccessError("ORIGIN_REJECTED");
+  if((post&&!claimed)||(claimed!==null&&claimed!==origin)||request.headers.has("forwarded"))throw new AccessError("ORIGIN_REJECTED");
   const ip=canonicalIp(request.headers.get("x-vercel-forwarded-for")??"");
   return {origin,originDigest:digest(`tameion/origin/v1\0${origin}`),networkDigest:createHmac("sha256",policy.throttleKey).update(`tameion/network/vercel-direct-v1\0${ip}`).digest("hex")};
 }
