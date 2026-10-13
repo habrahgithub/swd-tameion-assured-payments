@@ -38,6 +38,13 @@ interface ObligationSummary {
   route_assurance_status?: "Route assurance ready" | "Route assurance not ready";
 }
 
+export interface ObservedWalletBalance {
+  amount: string;
+  asset: "USDC";
+  captured_at: string;
+  network: string;
+}
+
 type AssuranceEvidenceView =
   | { state: "NOT_CREATED" | "UNAVAILABLE" | "INVALID"; message: string; control_results: [] }
   | { state: "AVAILABLE_CURRENT_BINDING" | "AVAILABLE_HISTORICAL"; message: string; control_results: ControlResultView[]; overall: "PASS"; assurance_id: string; recorded_at: string; aggregate_version: string; policy_version: string };
@@ -1830,7 +1837,7 @@ function DemoStage({ title, value }: { title: string; value: string }) {
   );
 }
 
-export function CommandCenter({operatorControls,walletSummary}:{operatorControls?:ReactNode;walletSummary?:ReactNode}={}) {
+export function CommandCenter({operatorControls,walletSummary,walletBalance}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance}={}) {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
@@ -2970,11 +2977,15 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
           </section>
           )}
 
-          {viewedStage === "Obligation" && (
+          {viewedStage === "Obligation" && (selected || !walletBalance) && (
             <section aria-label="Wallet funding and payment readiness" className="rounded border border-[var(--color-border)] px-3 py-1">
-              <p className="text-sm font-semibold text-[var(--color-ink)]">Settlement wallet · USDC balance not verified</p>
+              <p className="text-sm font-semibold text-[var(--color-ink)]">{walletBalance
+                ? <>Settlement wallet · <bdi dir="ltr" className="tabular">{walletBalance.amount} {walletBalance.asset}</bdi> verified</>
+                : "Settlement wallet · USDC balance not verified"}</p>
               {detailState === "loaded" && detail && detail.record.obligation_id === selectedId
-                ? <p className="text-sm leading-5 text-[var(--color-ink-muted)]">Proposed settlement amount <bdi dir="ltr" className="tabular">{businessAmount(detail.aggregate.amount)} USDC</bdi>. Available funds, network fees, and payment readiness require a fresh settlement check.</p>
+                ? <p className="text-sm leading-5 text-[var(--color-ink-muted)]">Proposed settlement amount <bdi dir="ltr" className="tabular">{businessAmount(detail.aggregate.amount)} USDC</bdi>. {walletBalance
+                  ? <>Balance observed <time dateTime={walletBalance.captured_at}>{walletBalance.captured_at}</time>; network fees and payment readiness remain separate checks.</>
+                  : "Available funds, network fees, and payment readiness require a fresh settlement check."}</p>
                 : null}
               {!walletSummary && <p className="text-sm text-[var(--color-ink-muted)]">A current settlement balance is unavailable. Available funds and payment readiness are therefore not confirmed.</p>}
             </section>

@@ -46,5 +46,5 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
   </div>
   <button className="min-h-11 rounded border px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={refresh} disabled={busy}>Refresh wallet balance</button>
  </section>;
- return <CommandCenter operatorControls={controls} walletSummary={walletSummary}/>;
+ return <CommandCenter operatorControls={controls} walletSummary={walletSummary} walletBalance={balance??undefined}/>;
 }

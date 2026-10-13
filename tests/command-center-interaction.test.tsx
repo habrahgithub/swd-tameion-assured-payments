@@ -474,6 +474,37 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
+  it("does not contradict a verified owner balance on the empty obligation screen", async () => {
+    fetchMock.mockResolvedValue(response({ obligations: [] }));
+
+    rtlRender(<CommandCenter
+      walletSummary={<div>Verified wallet summary</div>}
+      walletBalance={{amount:"19.989211477825042",asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-13T16:46:10.708Z"}}
+    />);
+
+    await screen.findAllByText("No payment obligations");
+    expect(screen.queryByRole("region", { name: "Wallet funding and payment readiness" })).toBeNull();
+    expect(screen.getByRole("main").textContent).not.toContain("USDC balance not verified");
+  });
+
+  it("uses the verified owner balance in selected-obligation funding context", async () => {
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [obligation("OBL-FUNDING-VERIFIED")] }))
+      : Promise.resolve(response(detail("OBL-FUNDING-VERIFIED"))));
+
+    rtlRender(<CommandCenter
+      walletSummary={<div>Verified wallet summary</div>}
+      walletBalance={{amount:"19.989211477825042",asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-13T16:46:10.708Z"}}
+    />);
+    await waitFor(() => expect(obligationRow("OBL-FUNDING-VERIFIED")).toBeTruthy());
+    fireEvent.click(obligationRow("OBL-FUNDING-VERIFIED"));
+    await screen.findByRole("region", { name: "Selected source obligation" });
+
+    const funding = screen.getByRole("region", { name: "Wallet funding and payment readiness" });
+    expect(funding.textContent).toContain("19.989211477825042 USDC verified");
+    expect(funding.textContent).not.toContain("not verified");
+  });
+
   it("keeps loaded detail when the operator reselects the already-selected obligation", async () => {
     const rows = [obligation("OBL-J0C-001", true)];
     const selectedDetail = assessedDetail("OBL-J0C-001", "PAY");
