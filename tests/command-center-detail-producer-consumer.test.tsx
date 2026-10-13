@@ -337,7 +337,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     fireEvent.click(obligationRow("OBL-J0C-003"));
     await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
     expect(main.textContent).toContain("Current advisory for OBL-J0C-003.");
-    expect(main.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label")).toContain("Workflow now: Assessment");
+    const stageHeading = main.querySelector<HTMLElement>('[data-testid="current-next-step"] h3');
+    expect(stageHeading?.textContent).toBe("Outstanding");
+    expect(document.getElementById(stageHeading?.getAttribute("aria-describedby") ?? "")?.textContent).toContain("Workflow now: Assessment");
     expect(main.textContent).not.toContain("Selected payment candidate: software services");
     expect(main.textContent).not.toContain("View selected payment candidate");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -362,9 +364,10 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
     expect(body.execution).toBeNull();
     const { main } = await renderProducerJson(body);
-    expect(screen.getByRole("heading", {
-      name: "Reviewing: Obligation. Workflow now: Assurance, Payment controls. Reviewing step 1 of 6; workflow is at step 4 of 6.",
-    })).toBeTruthy();
+    const stageHeading = main.querySelector<HTMLElement>('[data-testid="current-next-step"] h3');
+    expect(stageHeading?.getAttribute("aria-label")).toBeNull();
+    expect(stageHeading?.textContent).toBeTruthy();
+    expect(document.getElementById(stageHeading?.getAttribute("aria-describedby") ?? "")?.textContent).toBe("Reviewing: Obligation. Workflow now: Assurance, Payment controls. Reviewing step 1 of 6; workflow is at step 4 of 6.");
     expect(main.textContent).toContain("Reviewing: Obligation");
     expect(main.textContent).toContain("Workflow now: Assurance · Payment controls");
     expect(openStageNavigator().querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");

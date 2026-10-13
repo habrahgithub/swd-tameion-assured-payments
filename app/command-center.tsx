@@ -1272,7 +1272,7 @@ function AssessmentResultCard({
   nextOwner,
   paymentEligibility,
   primaryAction,
-  stageAccessibilityLabel,
+  stageDescriptionId,
   stageHeadingRef,
   canReassess,
   reassessmentIsPrimary,
@@ -1284,7 +1284,7 @@ function AssessmentResultCard({
   nextOwner: string | null;
   paymentEligibility: { summary: string; candidate?: string; reason?: string; selectionDetail?: string; routeNote?: string } | null;
   primaryAction: { label: string; onClick: () => void } | null;
-  stageAccessibilityLabel: string;
+  stageDescriptionId: string;
   stageHeadingRef: React.RefObject<HTMLHeadingElement | null>;
   canReassess: boolean;
   reassessmentIsPrimary: boolean;
@@ -1312,7 +1312,7 @@ function AssessmentResultCard({
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[var(--color-border)] pb-1 sm:pb-2">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payment review · advisory</p>
-          <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className={`mt-0.5 text-[21px] font-semibold ${decisionToneClass}`}>Recommendation — {assessment.decision}</h3>
+          <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className={`mt-0.5 text-[21px] font-semibold ${decisionToneClass}`}>Recommendation — {assessment.decision}</h3>
           <p aria-label="Assessment provenance" className="mt-0.5 text-[12px] leading-4 text-[var(--color-ink-muted)]" data-testid="assessment-provenance">
             {assessmentProvenanceCopy(assessment)}
           </p>
@@ -2340,6 +2340,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
   const stageAccessibilityLabel = viewedStage === currentLifecycleStage
     ? `Workflow now: ${stageSpokenLabel(currentLifecycleStage)}. Step ${currentStageIndex + 1} of 6.`
     : `Reviewing: ${stageSpokenLabel(viewedStage)}. Workflow now: ${stageSpokenLabel(currentLifecycleStage)}. Reviewing step ${viewedStageIndex + 1} of 6; workflow is at step ${currentStageIndex + 1} of 6.`;
+  const stageDescriptionId = "focused-stage-position-description";
   const stagePositionLabel = viewedStage === currentLifecycleStage
     ? `Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`
     : `Reviewing: ${viewedStage} · Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`;
@@ -3035,11 +3036,13 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
             </div>}
           </section>}
 
+          <span id={stageDescriptionId} className="sr-only">{stageAccessibilityLabel}</span>
+
           {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && (selectedId || listPresentation !== "loading") && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 {!isInitialObligationScreen && <p className="text-sm font-semibold text-[var(--color-ink-muted)]">{stagePositionLabel}</p>}
-                <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{!selectedId
+                <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{!selectedId
                   ? listPresentation === "ready" ? "Choose an obligation" : listPresentation === "empty" ? "No payment obligations" : "Payment obligations unavailable"
                   : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
                 {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
@@ -3103,7 +3106,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                     nextOwner={assessmentNextOwner}
                     paymentEligibility={assessmentPaymentEligibility}
                     primaryAction={null}
-                    stageAccessibilityLabel={stageAccessibilityLabel}
+                    stageDescriptionId={stageDescriptionId}
                     stageHeadingRef={stageHeadingRef}
                     canReassess={optionalReassessmentAvailable}
                     reassessmentIsPrimary={false}
@@ -3138,7 +3141,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                 </p>}
                 {detailState === "loaded" && selectedId && detail && (
                   <section aria-label="Payment approval decision" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Payment approval decision</h3>
+                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="text-[14px] font-semibold text-[var(--color-ink)]">Payment approval decision</h3>
                     <p className="text-sm text-[var(--color-warning)]">Source payment obligation · Arc Testnet payment destination · testnet execution does not discharge the real-world payable.</p>
                     {detail.pae_sealed && detail.settlement_proxy
                       ? <p className="text-[13px] font-semibold text-[var(--color-ink)]">The Arc Testnet payment instruction is approved. Final payment authorization and pre-release checks still apply.</p>
@@ -3214,7 +3217,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                 <section aria-label="Payment status" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-4" data-testid="payment-status-card">
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Payment · Arc Testnet</p>
-                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail, exactPacketSubmissionReady, detailState)}</h3>
+                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="mt-1 text-[16px] font-semibold text-[var(--color-ink)]">{paymentStageStatus(detail, exactPacketSubmissionReady, detailState)}</h3>
                   </div>
                   {detail.execution?.status === "UNKNOWN" && <p role="status" className="border-s-4 border-s-[var(--color-warning)] ps-3 text-[13px] font-semibold">Reconciliation only. No blind retry or second submission.</p>}
                   <dl>
@@ -3274,7 +3277,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
             {panel === "assurance" && viewedStage === "Assurance" && (
               <div className="max-w-xl space-y-3">
                 {detailState === "loaded" && detail && <>
-                  <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Assurance · Payment controls</h3>
+                  <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="sr-only">Assurance · Payment controls</h3>
                   <DeterministicAssuranceSummary detail={detail} />
                 </>}
                 {detailState !== "loaded" && <section aria-label="Deterministic assurance result" className="rounded border border-[var(--color-border)] p-4"><h3 className="text-[16px] font-semibold">Assurance · Payment controls</h3><p className="mt-1 text-[13px] text-[var(--color-ink-muted)]">Current payment controls are unavailable until the obligation detail is refreshed.</p></section>}
@@ -3320,7 +3323,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                             : "A payment record is present, but its status is not classified in this receipt.";
                   return (
                     <section aria-label="Reconciliation receipt" className="space-y-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-3 sm:p-4">
-                      <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
+                      <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="text-[14px] font-semibold text-[var(--color-ink)]">Testnet reconciliation receipt</h3>
                       <p className="text-[13px] font-semibold text-[var(--color-ink)]">{result}</p>
                       <dl>
                         <Field label="Source obligation" value={`${sourceText(detail.record, "beneficiary_name")} · ${detail.record.amount} ${detail.record.currency}`} />
@@ -3348,7 +3351,7 @@ export function CommandCenter({operatorControls,walletSummary}:{operatorControls
                   );
                 })() : (
                   <div className="space-y-3">
-                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-label={stageAccessibilityLabel} className="sr-only">Reconciliation</h3>
+                    <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="sr-only">Reconciliation</h3>
                     <p className="text-[13px] font-semibold text-[var(--color-ink)]">{reconciliationLeadLine(detailState, detail?.execution, Boolean(detail?.settlement_proxy), detail ? sourcePayableState(detail) : "OUTSTANDING")}</p>
                     {exceptionRecoveryCard}
                     {stageCompletionReceiptView}

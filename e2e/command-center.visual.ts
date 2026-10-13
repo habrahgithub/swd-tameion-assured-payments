@@ -552,7 +552,9 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
     await expandLifecycleStages(page);
     await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
     const card = page.getByRole("region", { name: "Assessment result" });
-    await expect(card.getByRole("heading", { name: "Workflow now: Assessment. Step 2 of 6." })).toBeVisible();
+    const heading = card.getByRole("heading", { name: "Recommendation — PAY" });
+    await expect(heading).toBeVisible();
+    await expect(heading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
     await expect(card.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
     await expect(card).toContainText(result.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"));
     await expect(card).toContainText("What this means");
@@ -582,7 +584,9 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   await page.getByRole("button", { name: "View all stages", exact: true }).click();
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
   const mobileCard = page.getByRole("region", { name: "Assessment result" });
-  await expect(mobileCard.getByRole("heading", { name: "Workflow now: Assessment. Step 2 of 6." })).toBeVisible();
+  const mobileHeading = mobileCard.getByRole("heading", { name: "Recommendation — PAY" });
+  await expect(mobileHeading).toBeVisible();
+  await expect(mobileHeading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
   await expect(mobileCard.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
   await expect(mobileCard).toContainText(result.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"));
   await page.getByRole("button", { name: "Review current PAY assessment" }).click();
@@ -1212,10 +1216,10 @@ test("an already assessed obligation offers read-only View Assessment in the fir
 
 test("sealed, submitted, unknown and reconciled proxy states preserve source truth", async ({ page }) => {
   const scenarios = [
-    { state: "AUTHORIZED" as const, lifecycle: "ASSURANCE PASSED · 10/10 controls passed for the current binding.", position: "Assurance", ariaLabel: "Workflow now: Assurance, Payment controls. Step 4 of 6.", action: "Continue to Payment" },
-    { state: "SUBMITTED" as const, lifecycle: "Submission is recorded. The settlement outcome is awaiting reconciliation", position: "Reconciliation", ariaLabel: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
-    { state: "UNKNOWN" as const, lifecycle: "Outcome unknown · read-only reconciliation only; do not resubmit", position: "Reconciliation", ariaLabel: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
-    { state: "SETTLED" as const, lifecycle: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", position: "Reconciliation", ariaLabel: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: null },
+    { state: "AUTHORIZED" as const, lifecycle: "ASSURANCE PASSED · 10/10 controls passed for the current binding.", position: "Assurance", heading: "Assurance · Payment controls", positionDescription: "Workflow now: Assurance, Payment controls. Step 4 of 6.", action: "Continue to Payment" },
+    { state: "SUBMITTED" as const, lifecycle: "Submission is recorded. The settlement outcome is awaiting reconciliation", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
+    { state: "UNKNOWN" as const, lifecycle: "Outcome unknown · read-only reconciliation only; do not resubmit", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
+    { state: "SETTLED" as const, lifecycle: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: null },
   ];
 
   for (const scenario of scenarios) {
@@ -1234,7 +1238,10 @@ test("sealed, submitted, unknown and reconciled proxy states preserve source tru
       ? page.getByRole("region", { name: "Deterministic assurance result" })
       : page.getByRole("region", { name: "Reconciliation receipt" });
     await expect(currentStageCard).toContainText(scenario.lifecycle);
-    await expect(page.getByRole("heading", { name: scenario.ariaLabel })).toHaveCount(1);
+    const stageHeading = page.locator('h3[aria-describedby="focused-stage-position-description"]');
+    await expect(stageHeading).toHaveCount(1);
+    await expect(stageHeading).toHaveAccessibleName(scenario.heading);
+    await expect(stageHeading).toHaveAccessibleDescription(scenario.positionDescription);
     await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(scenario.action ? 1 : 0);
     if (scenario.action) {
       await expect(page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: scenario.action })).toBeVisible();
@@ -1672,7 +1679,11 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
           fontFamily: getComputedStyle(document.body).fontFamily,
           userAgent: navigator.userAgent,
           queueHeading: document.querySelector('[data-testid="current-next-step"] h3')?.textContent ?? null,
-          stageAnnouncement: document.querySelector('[data-testid="current-next-step"] h3')?.getAttribute("aria-label") ?? null,
+          stageAnnouncement: (() => {
+            const heading = document.querySelector('[data-testid="current-next-step"] h3');
+            const descriptionId = heading?.getAttribute("aria-describedby");
+            return descriptionId ? document.getElementById(descriptionId)?.textContent ?? null : null;
+          })(),
           providerMode: null,
         };
       });
@@ -1934,7 +1945,9 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       if (viewport.width <= 768) await openMobileQueue(page);
       await queueItem(page, "OBL-J0C-003").click();
       await expect(page.getByRole("region", { name: "Selected source obligation" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: /Reviewing: Obligation.*Workflow now: Assessment/ })).toBeVisible();
+      const stageHeading = page.getByTestId("current-next-step").getByRole("heading", { name: "Outstanding" });
+      await expect(stageHeading).toBeVisible();
+      await expect(stageHeading).toHaveAccessibleDescription(/Reviewing: Obligation.*Workflow now: Assessment/);
       await page.getByRole("button", { name: "Run AI Assessment" }).click();
       const feedback = page.getByRole("status", { name: "Assessment request status" });
       await expect(feedback).toBeVisible();

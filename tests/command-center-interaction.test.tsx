@@ -650,7 +650,8 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
-    expect(screen.getByRole("heading", { name: "Workflow now: Obligation. Step 1 of 6." })).toBeTruthy();
+    const stageHeading = screen.getByRole("heading", { name: "Assessment required" });
+    expect(document.getElementById(stageHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Obligation. Step 1 of 6.");
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     expect(feedback.getAttribute("aria-live")).toBe("assertive");
@@ -679,7 +680,8 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
     await screen.findByRole("region", { name: "Selected source obligation" });
-    expect(screen.getByRole("heading", { name: "Reviewing: Obligation. Workflow now: Assessment. Reviewing step 1 of 6; workflow is at step 2 of 6." })).toBeTruthy();
+    const stageHeading = screen.getByRole("heading", { name: "Approved For Payment" });
+    expect(document.getElementById(stageHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Reviewing: Obligation. Workflow now: Assessment. Reviewing step 1 of 6; workflow is at step 2 of 6.");
 
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST")).toHaveLength(1));
@@ -741,7 +743,8 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
-    expect(screen.getByRole("heading", { name: "Workflow now: Obligation. Step 1 of 6." })).toBeTruthy();
+    const stageHeading = screen.getByRole("heading", { name: "Assessment required" });
+    expect(document.getElementById(stageHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Obligation. Step 1 of 6.");
     expect(screen.queryByRole("status", { name: "Stage completion receipt" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Assessment result" })?.textContent ?? "").not.toContain("Recommendation — PAY");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
@@ -1944,7 +1947,8 @@ describe("guided lifecycle navigation", () => {
     renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
 
-    expect(screen.getByRole("heading", { name: "Workflow now: Obligation. Step 1 of 6." })).toBeTruthy();
+    const stageHeading = screen.getByRole("heading", { name: "Assessment required" });
+    expect(document.getElementById(stageHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Obligation. Step 1 of 6.");
   });
 
   it("labels a back-viewed stage separately from the authoritative current position", async () => {
@@ -1960,13 +1964,13 @@ describe("guided lifecycle navigation", () => {
     openStageNavigator();
     const rail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
     fireEvent.click(within(rail).getByRole("button", { name: "Reconciliation" }));
-    expect(await screen.findByRole("heading", { name: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6." })).toBeTruthy();
+    const reconciliationHeading = await screen.findByRole("heading", { name: "Reconciliation" });
+    expect(document.getElementById(reconciliationHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.");
     const refreshedRail = screen.getByRole("navigation", { name: "Payment lifecycle navigation" });
     fireEvent.click(within(refreshedRail).getByRole("button", { name: "Obligation" }));
 
-    expect(screen.getByRole("heading", {
-      name: "Reviewing: Obligation. Workflow now: Reconciliation, Settlement confirmation. Reviewing step 1 of 6; workflow is at step 6 of 6.",
-    })).toBeTruthy();
+    const reviewedHeading = screen.getByRole("heading", { name: "Approved For Payment" });
+    expect(document.getElementById(reviewedHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Reviewing: Obligation. Workflow now: Reconciliation, Settlement confirmation. Reviewing step 1 of 6; workflow is at step 6 of 6.");
   });
 
   it("uses one primary rail, makes locked stages unavailable, and keeps Back/Continue read-only", async () => {
@@ -2050,11 +2054,13 @@ describe("guided lifecycle navigation", () => {
     await screen.findByRole("button", { name: "Run AI Assessment" });
     fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
-    expect(screen.getByRole("heading", { name: "Workflow now: Obligation. Step 1 of 6." })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Last-known state — stale" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     await act(async () => { delayedDetail.resolve(response(refreshed)); });
     await waitFor(() => expect(screen.getByRole("region", { name: "Assessment result" })).toBeTruthy());
-    expect(screen.getByRole("heading", { name: "Workflow now: Assessment. Step 2 of 6." })).toBe(document.activeElement);
+    const focusedHeading = screen.getByRole("heading", { name: "Recommendation — HOLD" });
+    expect(focusedHeading).toBe(document.activeElement);
+    expect(document.getElementById(focusedHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Assessment. Step 2 of 6.");
     expect(screen.getByRole("status", { name: "Assessment request status" }).getAttribute("data-feedback-kind")).toBe("durable");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
   });
@@ -2076,7 +2082,8 @@ describe("guided lifecycle navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("stale"));
-    expect(screen.getByRole("heading", { name: "Workflow now: Obligation. Step 1 of 6." })).toBeTruthy();
+    const staleHeading = screen.getByRole("heading", { name: "Last-known state — stale" });
+    expect(document.getElementById(staleHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Workflow now: Obligation. Step 1 of 6.");
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Back to Assessment" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init?.method)).toEqual(["POST"]);
