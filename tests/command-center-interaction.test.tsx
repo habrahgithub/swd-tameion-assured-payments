@@ -1804,6 +1804,9 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => {
       const approval = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST");
       expect(approval?.[1]?.headers).toMatchObject({ "X-Tameion-CSRF": "verified-session-csrf" });
+      expect(JSON.parse(String(approval?.[1]?.body))).toMatchObject({
+        reason_text: "Authorized after reviewing the current PAY assessment and exact Arc Testnet payment instruction.",
+      });
     });
   });
 

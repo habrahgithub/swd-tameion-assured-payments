@@ -2704,6 +2704,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         expected_version: Number(authorizationAssessment.aggregate_version),
         reviewed_assessment_id: authorizationAssessment.assessment_id,
         reviewed_assessment_hash: authorizationAssessment.assessment_hash,
+        reason_text: "Authorized after reviewing the current PAY assessment and exact Arc Testnet payment instruction.",
       }));
     } };
   }
