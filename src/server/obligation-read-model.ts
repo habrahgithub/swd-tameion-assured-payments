@@ -43,7 +43,7 @@ export function projectObligationList(state: ExistingState) {
   });
 }
 
-export function projectObligationDetail(state: ExistingState, id: string) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -109,6 +109,7 @@ export function projectObligationDetail(state: ExistingState, id: string) {
       now: new Date(),
     });
     return NextResponse.json({
+      financial_action_eligible: financialActionEligible,
       truth,
       aggregate,
       record,

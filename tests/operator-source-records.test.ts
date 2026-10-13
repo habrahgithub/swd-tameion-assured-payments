@@ -48,7 +48,8 @@ describe("production private source/file/read-only restoration boundary",()=>{
   const f=privateFixture();expect(parseOperatorSource(f.bytes,f.hash).records).toHaveLength(5);
   const response=await f.readers.list(new Request("https://operator.example.invalid"));expect(response.status).toBe(200);expect((await response.json()).total_count).toBe(5);
   expect(f.rpc.call).toHaveBeenCalledExactlyOnceWith("tameion_state_load_existing",{namespace:"VIEW-NAMESPACE",expected_schema_version:2});
-  expect((await f.readers.detail(new Request("https://operator.example.invalid"),f.packet.records[0].obligation_id)).status).toBe(200);
+  const detail=await f.readers.detail(new Request("https://operator.example.invalid"),f.packet.records[0].obligation_id);
+  expect(detail.status).toBe(200);expect(await detail.json()).toMatchObject({financial_action_eligible:false});
   expect(isCurrentSourceEligible("ORG-DEMO-001",f.packet.records[2].obligation_id)).toBe(false);
   const before=f.state.store.exportSnapshot();expect(()=>approveAndSealPae(f.state.store,"NEVER-A-SIGNER",{organizationId:"ORG-DEMO-001",obligationId:f.packet.records[2].obligation_id,expectedVersion:1,reviewedAssessmentId:"NO_ASSESSMENT",reviewedAssessmentHash:"0".repeat(64),actorId:"NO_ACTOR",actorRole:"NO_ROLE",policyVersion:"NO_POLICY",reasonText:"private view cannot approve"})).toThrow(/source is withdrawn/);expect(f.state.store.exportSnapshot()).toEqual(before);
  });

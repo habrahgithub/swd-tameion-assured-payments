@@ -83,6 +83,7 @@ function obligation(id: string, assessed = false, currency: "USD" | "AED" = "USD
 
 function detail(id: string): Record<string, any> {
   return {
+    financial_action_eligible: true,
     truth: {
       source_truth: {
         role: "SOURCE_OF_RECORD",
@@ -1808,6 +1809,33 @@ describe("Command Center mounted Operational Report", () => {
         reason_text: "Authorized after reviewing the current PAY assessment and exact Arc Testnet payment instruction.",
       });
     });
+  });
+
+  it("keeps a protected view-only obligation out of financial actions despite historical PAY and preflight state", async () => {
+    const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => ({
+      ...obligation(id, true),
+      decision: id === "OBL-A" ? "PAY" : "HOLD",
+    }));
+    const pay = proxyPrepared(assessedDetail("OBL-A", "PAY"));
+    pay.financial_action_eligible = false;
+    pay.aggregate.destination_verification_status = "VERIFIED";
+    pay.aggregate.destination_operational_status = "ACTIVE";
+    pay.aggregate.source_wallet_status = "ACTIVE";
+    pay.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations, sole_pay_candidate_id: "OBL-A" }))
+      : Promise.resolve(response(pay)));
+
+    renderWithExplicitFirstSelection("verified-session-csrf");
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    navigateStage("Assessment");
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    navigateStage("Authorization");
+
+    expect(screen.getByRole("status", { name: "View-only obligation" }).textContent).toMatch(/separately approved controlled test obligation/i);
+    expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
   it("marks retained detail stale and offers retry when post-action refresh reads fail", async () => {

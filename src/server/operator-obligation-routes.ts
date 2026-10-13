@@ -25,7 +25,7 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
       if(JSON.stringify(source())!==sourceFingerprint)throw new Error("OPERATOR_SOURCE_UNAVAILABLE");
       let response:Response;
       if(packet){const sealed=state.getSealedPae(id!);if(!sealed)return privateJson({error:'No sealed PAE for this obligation.'},409);const {buildJ2PrimeApprovalPacket,renderJ2PrimeApprovalPacketText}=await import('../pipeline/prime-approval-packet');const value=buildJ2PrimeApprovalPacket(sealed);response=privateJson({packet:value,text:renderJ2PrimeApprovalPacketText(value)});}
-      else {const {projectObligationList,projectObligationDetail}=await import('./obligation-read-model');response=id===undefined?projectObligationList(state):projectObligationDetail(state,id);}
+      else {const {projectObligationList,projectObligationDetail}=await import('./obligation-read-model');response=id===undefined?projectObligationList(state):projectObligationDetail(state,id,isCurrentSourceEligible(DEMO_ORGANIZATION_ID,id));}
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}
   }

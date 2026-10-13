@@ -67,6 +67,7 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  financial_action_eligible: boolean;
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
   record: Record<string, unknown> & { obligation_id: string; amount: string; currency: string };
@@ -2674,7 +2675,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
-  } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
+  } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
     workspaceAction = { label: "Execute Test Payment", actor: "Authorized finance user · final payment approval recorded", exactConfirmation: true, run: () => {
       if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
@@ -2686,18 +2687,18 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         confirmation: executionConfirmation.value,
       }));
     } };
-  } else if (viewedStage === "Assessment" && proxyPreparationReady && detail) {
+  } else if (viewedStage === "Assessment" && proxyPreparationReady && detail?.financial_action_eligible === true) {
     workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized operator", run: () => {
       void run("proxy preflight", () => postCommand("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
-  } else if (assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+  } else if (detail?.financial_action_eligible === true && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
-  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
+  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
     workspaceAction = { label: "Authorize payment", actor: "Authorized approver · identity not shown", run: () => {
       if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady || killSwitchView !== "inactive") return;
       void run("approve", () => postCommand(`/api/obligations/${selectedId}/approve`, {
@@ -3015,6 +3016,13 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             </div>
           )}
 
+          {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && (
+            <section role="status" aria-label="View-only obligation" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
+              <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only obligation</p>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.</p>
+            </section>
+          )}
+
           {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Obligation" ? "space-y-2 border-b border-[var(--color-border)] pb-2" : "border-b border-[var(--color-border)] pb-1 md:space-y-2 md:pb-2"}>
             {viewedStage === "Obligation" ? <div className="rounded border border-[var(--color-border)] px-3 py-2">
               <p aria-live="polite" aria-atomic="true" className="text-sm font-semibold text-[var(--color-ink)]">{viewedStage === currentLifecycleStage ? `Step ${currentStageIndex + 1} of 6 · ${viewedStage}` : `Reviewing step ${viewedStageIndex + 1} of 6 · ${viewedStage}`}</p>
@@ -3277,12 +3285,12 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                     </div>
                     <div className="flex gap-2">
                       <button
-                        disabled={busy || detailState !== "loaded" || !selectedId}
+                        disabled={busy || detailState !== "loaded" || !selectedId || detail.financial_action_eligible !== true}
                         onClick={() => run("kill-switch", () => postCommand(`/api/obligations/${selectedId}/kill-switch`, { action: "ACTIVATE", scope: "TRANSACTION" }))}
                         className="min-h-11 rounded border border-[var(--color-danger)] px-3 py-2 text-[12px] font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-danger)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >Disable this obligation</button>
                       <button
-                        disabled={busy || detailState !== "loaded" || !selectedId}
+                        disabled={busy || detailState !== "loaded" || !selectedId || detail.financial_action_eligible !== true}
                         onClick={() => run("kill-switch", () => postCommand(`/api/obligations/${selectedId}/kill-switch`, { action: "DEACTIVATE", scope: "TRANSACTION" }))}
                         className="min-h-11 rounded border border-[var(--color-border)] px-3 py-2 text-[12px] font-medium text-[var(--color-ink)] transition hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
                       >Re-enable</button>

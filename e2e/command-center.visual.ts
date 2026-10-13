@@ -197,6 +197,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 });
 
 const detail = {
+  financial_action_eligible: true,
   truth: {
     source_truth: {
       role: "SOURCE_OF_RECORD",
