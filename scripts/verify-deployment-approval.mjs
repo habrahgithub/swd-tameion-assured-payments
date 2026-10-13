@@ -10,9 +10,20 @@ function files(root) {
     return entry.isDirectory() ? files(path) : [path];
   });
 }
+/** Checks separately authenticated/read-back evidence supplied by the owner.
+ * This cannot authenticate the cloud or grant execution permission itself. */
+export function requireHostedEvidence({ record, reservation, expectedTeam, mapping, protection }) {
+  const common = ["deployment_id", "project_id", "team_id", "environment", "access_origin", "generated_origin", "authenticated_readback", "evidence_sha256"];
+  for (const [value, extra] of [[mapping, []], [protection, ["anonymous_access_denied", "anonymous_generated_denied"]]]) {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== [...common, ...extra].sort().join()) throw new Error("Missing/ambiguous hosted mapping or protection evidence");
+    if (value.authenticated_readback !== true || !/^[a-f0-9]{64}$/.test(value.evidence_sha256 ?? "") || value.deployment_id !== record.deployment_id || value.project_id !== record.project_id || value.team_id !== expectedTeam || value.environment !== record.environment || value.access_origin !== record.origins[0] || value.generated_origin !== reservation.generated_origin) throw new Error("Hosted mapping/protection identity mismatch");
+  }
+  if (protection.anonymous_access_denied !== true || protection.anonymous_generated_denied !== true) throw new Error("Effective anonymous protection not proven");
+  return { hosted_evidence_inputs: "CONSISTENT_SUPPLIED_RECEIPTS_NOT_REMOTE_ATTESTATION", hosted_uat: "REQUIRES_SEPARATE_OWNER_AUTHORITY" };
+}
 /** Local Next proof only. This does not certify a Vercel upload/runtime. */
-export function verifyBuild({ root, approvalPath, expectedHash, reservationPath, contextPath, continueId, expectedTeam }) {
-  const { bytes, record } = approvedInput(approvalPath, expectedHash, reservationPath, contextPath, continueId, expectedTeam);
+export function verifyBuild({ root, approvalPath, expectedHash, reservationPath, contextPath, continueId, expectedTeam, accessPlanPath, accessPlanHash }) {
+  const { bytes, record, reservation } = approvedInput(approvalPath, expectedHash, reservationPath, contextPath, continueId, expectedTeam, accessPlanPath, accessPlanHash);
   const base = resolve(root);
   const packaged = join(base, DEPLOYMENT_APPROVAL_PATH);
   if (sha256(readFileSync(packaged)) !== expectedHash) throw new Error("Packaged approval changed");
@@ -42,12 +53,12 @@ export function verifyBuild({ root, approvalPath, expectedHash, reservationPath,
   }
   if (!scanned.some(path => path.startsWith(".next/static/"))) throw new Error("Client output not inspected");
   const outputSeal = files(join(base, ".next")).sort().map(file => ({ path: relative(base, file), sha256: sha256(readFileSync(file)) }));
-  return { next_output_tree_sha256: sha256(JSON.stringify(outputSeal)), proof: "LOCAL_NEXT_BUILD_ONLY_NOT_UPLOADED", deployment_id: record.deployment_id, approval_sha256: expectedHash, server_routes: tracedRoutes, client_public_files_inspected: scanned.length, served_server_files_inspected: servedServerFiles.length };
+  return { generated_origin: reservation.generated_origin, access_origin: record.origins[0], access_origin_mapping: "NOT_YET_VERIFIED", hosted_uat: "NOT_ADMITTED", next_output_tree_sha256: sha256(JSON.stringify(outputSeal)), proof: "LOCAL_NEXT_BUILD_ONLY_NOT_UPLOADED", deployment_id: record.deployment_id, approval_sha256: expectedHash, server_routes: tracedRoutes, client_public_files_inspected: scanned.length, served_server_files_inspected: servedServerFiles.length };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const args = argumentsFor(process.argv.slice(2));
-    if (Object.keys(args).sort().join() !== ["--approval", "--sha256", "--reservation", "--build-context", "--continue-id", "--team-id"].sort().join()) throw new Error("Required: --approval --sha256 --reservation --build-context --continue-id --team-id");
-    console.log(JSON.stringify(verifyBuild({ root: process.cwd(), approvalPath: args["--approval"], expectedHash: args["--sha256"], reservationPath: args["--reservation"], contextPath: args["--build-context"], continueId: args["--continue-id"], expectedTeam: args["--team-id"] })));
+    if (Object.keys(args).filter(key => !["--access-origin-plan", "--access-origin-plan-sha256"].includes(key)).sort().join() !== ["--approval", "--sha256", "--reservation", "--build-context", "--continue-id", "--team-id"].sort().join()) throw new Error("Required: --approval --sha256 --reservation --build-context --continue-id --team-id");
+    console.log(JSON.stringify(verifyBuild({ root: process.cwd(), approvalPath: args["--approval"], expectedHash: args["--sha256"], reservationPath: args["--reservation"], contextPath: args["--build-context"], continueId: args["--continue-id"], expectedTeam: args["--team-id"], accessPlanPath: args["--access-origin-plan"], accessPlanHash: args["--access-origin-plan-sha256"] })));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
