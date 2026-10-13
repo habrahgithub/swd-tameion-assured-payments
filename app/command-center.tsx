@@ -1910,7 +1910,12 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
       if (!isCurrent()) return { status: "superseded" };
       setObligations(fetched);
       setObligationsStatus("ready");
-      if (fetched.length === 0) setSelectedId("");
+      if (fetched.length === 0) {
+        setSelectedId("");
+        setMobileQueueOpen(false);
+      } else if (!selectedRef.current) {
+        setMobileQueueOpen(true);
+      }
       return { status: "ready", obligations: fetched };
     } catch (error) {
       if (!isCurrent()) return { status: "superseded" };

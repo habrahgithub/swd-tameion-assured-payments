@@ -356,6 +356,8 @@ describe("Command Center mounted Operational Report", () => {
 
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(screen.getByRole("main").querySelectorAll("button[data-obligation-id]")).toHaveLength(5));
+    expect(document.getElementById("genuine-obligation-queue")?.className).toBe("block");
+    expect(screen.getByRole("button", { name: "Close obligation list" })).toBeTruthy();
     expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
     expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose an obligation");
     expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the payment queue");

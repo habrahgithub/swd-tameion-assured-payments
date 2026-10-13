@@ -21,7 +21,7 @@ const obligation = {
 const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" };
 const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: "125.00", due_date: "2026-10-15" };
 const queueItem = (page: Page, id: string) => page.locator(`button[data-obligation-id="${id}"]`);
-const mobileQueueToggle = (page: Page) => page.getByRole("complementary").getByRole("button", { name: /^(?:Choose an obligation|Switch obligation(?: ·.*)?)$/ });
+const mobileQueueToggle = (page: Page) => page.getByRole("complementary").getByRole("button", { name: /^(?:Choose an obligation|Close obligation list|Switch obligation(?: ·.*)?)$/ });
 async function openMobileQueue(page: Page) {
   await expect.poll(() => mobileQueueToggle(page).count()).toBe(1);
   const toggle = mobileQueueToggle(page);
@@ -1629,6 +1629,10 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
       } else if (stateName === "loaded-none") {
         await expect(statePage.locator('button[data-obligation-id]')).toHaveCount(5);
         await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+        if (viewport.width < 768) {
+          await expect(statePage.getByRole("button", { name: "Close obligation list" })).toBeVisible();
+          await expect(statePage.locator('button[data-obligation-id="OBL-J0C-001"]')).toBeVisible();
+        }
         await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("Choose an obligation");
         await expect(statePage.getByTestId("current-next-step")).toContainText("Choose one obligation from the payment queue");
         await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
@@ -1647,7 +1651,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
         }
         await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
       } else {
-        if (viewport.width < 768) await statePage.getByRole("complementary").getByRole("button", { name: "Choose an obligation", exact: true }).click();
+        if (viewport.width < 768) await openMobileQueue(statePage);
         await statePage.locator('button[data-obligation-id="OBL-J0C-003"]').click();
         await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
         await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(1);
