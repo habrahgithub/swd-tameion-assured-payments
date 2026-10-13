@@ -2136,7 +2136,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
         if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/assess`, undefined, {
+      const result = await postCommand(`/api/obligations/${obligationId}/assess`, {}, {
         "Idempotency-Key": assessmentRequestKey.current.key,
       });
       if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {

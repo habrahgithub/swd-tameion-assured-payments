@@ -648,7 +648,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations: [obligation("OBL-A", false, "AED")] }))
       : Promise.resolve(response(aedDetail)));
 
-    renderWithExplicitFirstSelection();
+    renderWithExplicitFirstSelection("verified-session-csrf");
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
     const main = screen.getByRole("main");
@@ -671,7 +671,14 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByText("Control and audit records")).toBeNull();
     expect(screen.queryByText(/Payment review report/)).toBeNull();
     fireEvent.click(assess);
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
+    await waitFor(() => {
+      const assessment = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST");
+      expect(assessment?.[1]?.headers).toMatchObject({
+        "Content-Type": "application/json",
+        "X-Tameion-CSRF": "verified-session-csrf",
+      });
+      expect(assessment?.[1]?.body).toBe("{}");
+    });
   });
 
   it("announces the selected surface programmatically and gives refusal feedback alert semantics", async () => {
