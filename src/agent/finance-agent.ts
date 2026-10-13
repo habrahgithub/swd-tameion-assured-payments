@@ -1,3 +1,4 @@
+import {hasCurrentControlledInstruction} from "./context-builder";
 import type { AiProvider } from "./ai-provider";
 import { FINDING_CATALOG, remediationFor, type FindingCode } from "./finding-catalog";
 import {
@@ -49,6 +50,7 @@ export async function assessObligation(
   provider: AiProvider,
   options: { signal?: AbortSignal } = {},
 ): Promise<FinanceAgentDecision> {
+  if ((context.obligation_id.startsWith("TESTNET-CONTROLLED-") || context.controlled_instruction || context.due_date_position === "CONTROLLED_WINDOW_OPEN") && !hasCurrentControlledInstruction(context)) return normalizeFailure(context,"NORMALIZATION_REVIEW_REQUIRED",provider);
   let rawOutput: unknown;
   try {
     rawOutput = await provider.assess(context, options);
@@ -96,7 +98,8 @@ function deterministicFindings(context: FinanceAgentContext): Set<FindingCode> {
   if (context.due_date_position === "INVALID") findings.add("NORMALIZATION_REVIEW_REQUIRED");
   else if (context.due_date_position === "NOT_STATED") findings.add("DUE_DATE_NOT_STATED");
   if (!isSettleableCurrency(context.currency)) findings.add("UNSUPPORTED_SETTLEMENT_CURRENCY");
-  if (!context.business_purpose_confirmed) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
+  if ((context.controlled_instruction || context.due_date_position === "CONTROLLED_WINDOW_OPEN" || context.obligation_id.startsWith("TESTNET-CONTROLLED-")) && !hasCurrentControlledInstruction(context)) findings.add("NORMALIZATION_REVIEW_REQUIRED");
+  if (!context.business_purpose_confirmed && !hasCurrentControlledInstruction(context)) findings.add("BUSINESS_PURPOSE_UNCONFIRMED");
   return findings;
 }
 
@@ -186,6 +189,7 @@ function normalize(
         as_of_date: context.as_of_date,
         state_at_event_baseline: context.state_at_event_baseline,
         business_purpose_confirmed: context.business_purpose_confirmed,
+        ...(context.controlled_instruction?{controlled_instruction:context.controlled_instruction}:{}),
         source_evidence_present: context.evidence_present,
         destination_status: context.destination_status,
         destination_readiness_source: context.destination_readiness_source,

@@ -37,6 +37,11 @@ export class SupabaseDemoStateRepository {
     return parseRevision(result);
   }
 
+  async loadExisting(namespace: string): Promise<DemoStateRevision> {
+    if (!namespace || namespace.length > 128) throw new DemoStatePersistenceError("Existing namespace is required.");
+    return parseRevision(await this.rpc("tameion_state_load_existing", {p_namespace: namespace, p_expected_schema_version: 2}));
+  }
+
   async compareAndSet(
     namespace: string,
     expectedRevision: number,
@@ -64,6 +69,8 @@ export class SupabaseDemoStateRepository {
     const response = await this.fetcher(`${this.baseUrl}/rest/v1/rpc/${functionName}`, {
       method: "POST",
       cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.timeout(5000),
       headers: {
         apikey: this.serviceRoleKey,
         Authorization: `Bearer ${this.serviceRoleKey}`,
@@ -76,7 +83,11 @@ export class SupabaseDemoStateRepository {
       // Do not surface provider bodies: they may contain request details.
       throw new Error(`Supabase durable-state RPC ${functionName} failed (HTTP ${response.status}).`);
     }
-    return response.json();
+    const reader=response.body?.getReader();
+    if(!reader)throw new DemoStatePersistenceError("Durable state response unavailable.");
+    const chunks:Uint8Array[]=[];let size=0;
+    try{for(;;){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>2_097_152)throw new Error();chunks.push(part.value);}return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(chunks)));}
+    catch{void reader.cancel().catch(()=>undefined);throw new DemoStatePersistenceError("Durable state response invalid or exceeds bound.");}
   }
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach,afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ getDemoState: vi.fn() }));
 const readOnlyMocks = vi.hoisted(() => ({ client: null as J2aCircleClient | null }));
@@ -176,7 +176,9 @@ function setPrimeHash(value: string) {
   process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = value;
 }
 
+beforeEach(()=>vi.stubEnv("TAMEION_ALLOWED_ORIGINS",undefined));
 afterEach(() => {
+  vi.unstubAllEnvs();
   mocks.getDemoState.mockReset();
   readOnlyMocks.client = null;
   vi.useRealTimers();
@@ -200,8 +202,8 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(request, { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: "REQUESTER_UNVERIFIED" });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "AUTH_UNAVAILABLE" });
     expect(state.getAuthorizationArtifacts(selectedId)).toBeUndefined();
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
@@ -242,8 +244,8 @@ describe("selected genuine Arc proxy route enforcement", () => {
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
     const body = await response.json();
 
-    expect(response.status).toBe(403);
-    expect(body.code).toBe("REQUESTER_UNVERIFIED");
+    expect(response.status).toBe(503);
+    expect(body.code).toBe("AUTH_UNAVAILABLE");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -255,8 +257,8 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(approvalRequest(state, selectedId, stale), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(403);
-    expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("AUTH_UNAVAILABLE");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -268,8 +270,8 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(403);
-    expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("AUTH_UNAVAILABLE");
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
@@ -286,7 +288,7 @@ describe("selected genuine Arc proxy route enforcement", () => {
 
     const response = await approve(approvalRequest(state, selectedId), { params: Promise.resolve({ id: selectedId }) });
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(503);
     expect(state.getSealedPae(selectedId)).toBeUndefined();
     const sealed = sealAuthorization(state, selectedId);
     expect(sealed.payload.obligation_ids).toEqual([selectedId]);

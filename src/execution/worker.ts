@@ -62,6 +62,8 @@ export interface ExecutionWorkerOptions {
     actorId: string,
     organizationId: string,
   ) => CurrentActorAuthority | null | undefined;
+  /** Authenticated HTTP capability; revalidate requester after provider preflight. */
+  revalidateRequester?: () => Promise<void>;
   now?: () => Date;
 }
 
@@ -241,6 +243,8 @@ export class ExecutionWorker {
     // or unavailable authority source blocks before submitTransfer.
     let preSubmitAggregate = this.store.get(payload.organization_id, obligationId);
     try {
+      try { await this.options.revalidateRequester?.(); }
+      catch { throw new ExecutionBlockedError("Authenticated requester authority changed before provider send", "AUTH-REQUESTER"); }
       const durableContext = await this.options.reloadDurableExecutionContext?.(payload.organization_id, obligationId);
       const latestAggregate = durableContext?.aggregate ?? this.store.get(payload.organization_id, obligationId);
       preSubmitAggregate = latestAggregate;
@@ -459,6 +463,8 @@ export class ExecutionWorker {
   private async validateAtProviderSendBoundary(sealed: SealedPae): Promise<void> {
     const { payload } = sealed;
     const obligationId = payload.obligation_ids[0];
+    try { await this.options.revalidateRequester?.(); }
+    catch { throw new ExecutionBlockedError("Authenticated requester authority changed before provider send", "AUTH-REQUESTER"); }
     let durableContext: Awaited<ReturnType<NonNullable<ExecutionWorkerOptions["reloadDurableExecutionContext"]>>> | undefined;
     try {
       durableContext = await this.options.reloadDurableExecutionContext?.(payload.organization_id, obligationId);

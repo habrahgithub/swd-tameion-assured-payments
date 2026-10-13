@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach,afterEach,describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ state: vi.fn() }));
 vi.mock("../src/server/demo-state", async original => ({
   ...await original<typeof import("../src/server/demo-state")>(), getDemoState: mocks.state,
@@ -12,6 +12,8 @@ import { GET as detail } from "../app/api/obligations/[id]/route";
 import { DemoState } from "../src/server/demo-state";
 
 describe("unverified requester mutation boundary", () => {
+  beforeEach(()=>vi.stubEnv("TAMEION_ALLOWED_ORIGINS",undefined));
+  afterEach(()=>vi.unstubAllEnvs());
   it.each([undefined, "USR-DEMO-OPERATOR", "USR-ATTACKER"])("rejects approval for unverified actor %s before state access", async actor => {
     const state = new DemoState(); mocks.state.mockResolvedValue(state);
     const before = state.exportSnapshot(); mocks.state.mockClear();
@@ -19,8 +21,8 @@ describe("unverified requester mutation boundary", () => {
       headers: {"Content-Type":"application/json", "x-actor-id": actor ?? ""},
       body: JSON.stringify({actor_id:actor, expected_version:1, reviewed_assessment_id:"forged", reviewed_assessment_hash:"a".repeat(64)}),
     }), {params: Promise.resolve({id:"OBL-J0C-001"})});
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({code:"REQUESTER_UNVERIFIED"});
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
     expect(mocks.state).not.toHaveBeenCalled(); expect(state.exportSnapshot()).toEqual(before);
   });
   it.each([

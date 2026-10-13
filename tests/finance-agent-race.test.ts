@@ -91,7 +91,7 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("encodes the CARE boundary in the provider prompt and strictly validates actionable RACE", async () => {
-    expect(CARE_PROMPT_VERSION).toBe("tameion-finance-care-v4");
+    expect(CARE_PROMPT_VERSION).toBe("tameion-finance-care-v5");
     expect(CARE_PROMPT_SHA256).toBe(createHash("sha256").update(CARE_SYSTEM_PROMPT, "utf8").digest("hex"));
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
     expect(CARE_SYSTEM_PROMPT).toMatch(/OVERDUE is a timing and urgency fact, not an assessment blocker/i);

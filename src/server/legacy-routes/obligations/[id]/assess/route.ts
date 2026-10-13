@@ -21,6 +21,8 @@ const RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
+export function createAssessmentHandler(load: () => Promise<DemoState> = getDemoState, revalidate: () => Promise<void> = async () => {}) {
+const getDemoState = load;
 function reservationExpired(operation: AssessmentOperation): boolean {
   return operation.status === "RESERVED" && Date.now() - (operation.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS;
 }
@@ -191,7 +193,7 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
   return persistenceUnknownResponse(idempotencyKey);
 }
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const idempotencyKey = request.headers.get("Idempotency-Key");
   if (!isIdempotencyKey(idempotencyKey)) {
@@ -279,7 +281,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       : aggregate.product_trust_provenance === "SIMULATED_DEMO_FIXTURE" ? "SIMULATED_DEMO_FIXTURE" as const
         : "UNVERIFIED_CURRENT_TRUST" as const,
   };
+  await revalidate();
   const decision = await assessObligation(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay), provider);
+  await revalidate();
   if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
 
   const runtimeIdentity = provider.runtimeIdentity;
@@ -306,3 +310,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   return persistProviderResult(idempotencyKey, assessmentRecord, state);
 }
+
+return POST;
+}
+export const POST = createAssessmentHandler();

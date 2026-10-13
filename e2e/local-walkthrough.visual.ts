@@ -131,6 +131,7 @@ test("adversarial request shape and genuine mutation denials remain isolated",as
   const list=await request.get("/api/obligations");expect(list.status()).toBe(503);expect(list.headers()["cache-control"]).toContain("no-store");expect(await list.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
   for(const route of ["approve","kill-switch"]){
     const response=await request.post(`/api/obligations/OBL-J0C-001/${route}`,{data:{actor_id:"MOCK_REVIEWER",action:"DEACTIVATE"}});
-    expect(response.status()).toBe(403);expect((await response.json()).code).toBe("REQUESTER_UNVERIFIED");
+    expect(response.status()).toBe(route === "approve" ? 503 : 403);
+    expect((await response.json()).code).toBe(route === "approve" ? "AUTH_UNAVAILABLE" : "REQUESTER_UNVERIFIED");
   }
 });

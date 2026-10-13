@@ -10,13 +10,14 @@ export const dynamic = "force-dynamic";
 /** Read-only Circle preflight for the currently selected frozen source
  * obligation. Binding the returned proxy updates only the settlement aggregate;
  * the immutable genuine source record and its vendor route remain untouched. */
-export async function POST(request: Request) {
+export function createSelectedPreflightHandler(load: typeof getDemoState = getDemoState, revalidate: () => Promise<void> = async () => {}, preflightRun: typeof runJ2aReadOnlyPreflight = runJ2aReadOnlyPreflight) {
+return async function POST(request: Request) {
   const body = await request.json().catch(() => ({})) as { obligation_id?: unknown; expected_version?: unknown };
   if (typeof body.obligation_id !== "string" || !Number.isSafeInteger(body.expected_version)) {
     return NextResponse.json({ error: "Selected frozen obligation ID and current aggregate version are required." }, { status: 400 });
   }
 
-  const state = await getDemoState();
+  const state = await load();
   try {
     const obligationId = body.obligation_id;
     const aggregate = state.store.get(DEMO_ORGANIZATION_ID, obligationId);
@@ -38,7 +39,9 @@ export async function POST(request: Request) {
     }
 
     const intent = state.createSettlementProxyIntent(obligationId);
-    const preflight = await runJ2aReadOnlyPreflight(undefined, undefined, intent);
+    await revalidate();
+    const preflight = await preflightRun(undefined, undefined, intent);
+    await revalidate();
     if (preflight.readiness !== "READY") return NextResponse.json(preflight, { status: 409 });
     const stored = state.bindSettlementProxy(preflight, aggregate.aggregate_version);
     await state.flush();
@@ -54,3 +57,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Settlement proxy preparation failed." }, { status: 409 });
   }
 }
+
+}
+export const POST = createSelectedPreflightHandler();

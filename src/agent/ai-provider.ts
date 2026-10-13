@@ -22,7 +22,7 @@ export interface AiProvider {
   assess(context: FinanceAgentContext, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
-export const CARE_PROMPT_VERSION = "tameion-finance-care-v4";
+export const CARE_PROMPT_VERSION = "tameion-finance-care-v5";
 export const CARE_SYSTEM_PROMPT = `C — CONTEXT
 You receive an application-built JSON context containing obligation identity and aggregate version,
 authoritative financial facts, supplied evidence IDs, original issue date, raw source due-date truth,
@@ -44,6 +44,16 @@ propose HOLD, NORMALIZATION_REVIEW_REQUIRED, or additional evidence solely becau
 due-date field is absent. If effective_due_date is missing or invalid, or due_date_position is
 INVALID or NOT_STATED, fail closed: do not recommend PAY and use only an application-supported
 normalization finding.
+
+Controlled test-only exception: a CONTROLLED_OWNER_INSTRUCTION context with
+controlled_instruction.status OPEN and due_date_position CONTROLLED_WINDOW_OPEN describes an
+independently approved, non-economic testnet instruction, not a business invoice. Its invoice dates
+remain null and business_purpose_confirmed remains false. Assess only its explicit approved
+controlled purpose, evidence and exact timestamp window. Calendar as_of_date does not establish
+that window. Do not invent an invoice, business purpose, supplier fact or commercial due date.
+This explicit instruction basis can satisfy timing/purpose readiness only for that controlled
+source; absent/invalid/closed provenance must not recommend PAY. It grants no signing or payment
+authority. All other assessment/model-output validation rules remain unchanged.
 
 A — ACTION
 Assess the obligation and propose exactly one decision: PAY, HOLD, or ESCALATE. Recommend only

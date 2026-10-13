@@ -1,3 +1,4 @@
+import {loadFinancialSourceAdmission} from "./financial-source-admission";
 import { createHash } from "node:crypto";
 
 import { AuthorityStore, type AuthorityAggregate } from "../authority/aggregate";
@@ -526,7 +527,9 @@ export class DemoState {
     if (!record) throw new Error("Selected ID is not in the frozen genuine obligation set.");
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
     const conversion = convertSourceToSettlement(record.amount, record.currency);
-    if (!record.issue_date || !record.effective_due_date || !record.effective_due_date_basis || !record.commercial_terms) {
+    const controlled = obligationId.startsWith("TESTNET-CONTROLLED-") ? loadFinancialSourceAdmission() : undefined;
+    if (controlled && (controlled.source.obligation_id !== obligationId || JSON.stringify(controlled.source) !== JSON.stringify(record))) throw new Error("Controlled source admission changed.");
+    if (!controlled && (!record.issue_date || !record.effective_due_date || !record.effective_due_date_basis || !record.commercial_terms)) {
       throw new Error("Selected source record lacks the dated commercial facts required for a truthful settlement proxy instruction.");
     }
     if (aggregate.source_amount !== record.amount || aggregate.source_currency !== record.currency || aggregate.amount !== conversion.settlementAmount) {
@@ -539,11 +542,11 @@ export class DemoState {
       source_currency: record.currency,
       settlement_amount: conversion.settlementAmount,
       source_evidence_ids: record.source_evidence.map((evidence) => evidence.evidence_id),
-      classification: "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
-      invoice_reference: obligationId,
-      invoice_date: record.issue_date,
-      effective_due_date: record.effective_due_date,
-      payment_basis: record.effective_due_date_basis,
+      classification: controlled?.classification ?? "Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.",
+      invoice_reference: controlled ? null : obligationId,
+      invoice_date: controlled ? null : record.issue_date!,
+      effective_due_date: controlled ? null : record.effective_due_date!,
+      payment_basis: controlled ? "EXACT_OWNER_CONTROLLED_TESTNET_INSTRUCTION" : record.effective_due_date_basis!,
       particulars: record.commercial_terms,
     };
   }
@@ -1098,4 +1101,41 @@ export async function getDemoState(): Promise<DemoState> {
     globalThis.__tameionDemoState = createRuntimeDemoState();
   }
   return globalThis.__tameionDemoState;
+}
+
+/** Financial runtime restoration only: no seed, actor bootstrap or key migration.
+ * Source and requester authority are checked by the authenticated caller. */
+export async function loadExistingFinancialState(
+  repository: SupabaseDemoStateRepository,
+  namespace: string,
+  sourceRecords: readonly LiveUsageObligationRecord[],
+  workerOptions: ExecutionWorkerOptions,
+  suppliedAdapter?: ProviderAdapter,
+): Promise<DemoState> {
+  const load = async () => {
+    const stored = await repository.loadExisting(namespace);
+    if (stored.snapshot.schema_version !== 2 || stored.snapshot.actor_authority_registry_initialized !== true) throw new Error("STATE_UNAVAILABLE");
+    const snapshot = parseDemoStateSnapshot(stored.snapshot);
+    const store = AuthorityStore.fromSnapshot(snapshot.authority);
+    for (const record of sourceRecords) {
+      const aggregate = store.get(DEMO_ORGANIZATION_ID, record.obligation_id);
+      if (aggregate.source_amount !== record.amount || aggregate.source_currency !== record.currency) throw new Error("STATE_UNAVAILABLE");
+    }
+    return {stored,snapshot,store};
+  };
+  const {stored,snapshot} = await load();
+  const keys = new TrustedKeyRegistry(); keys.restore(snapshot.trusted_keys); keys.resolve(DEMO_SIGNING_KEY_ID,"Ed25519");
+  let state: DemoState;
+  const adapter = suppliedAdapter ?? new ArcCircleProviderAdapter(undefined,key=>state?.getSettlementProxyByIdempotencyKey(key)?.preflight??null);
+  state = new DemoState(snapshot,repository,stored.revision,adapter,{
+    ...workerOptions,
+    reloadDurableExecutionContext: async (organizationId,obligationId) => {
+      const current=await load();
+      return {authorization:current.snapshot.authorization_history.slice().reverse().find(a=>a.sealed_pae.payload.organization_id===organizationId&&a.sealed_pae.payload.obligation_ids[0]===obligationId)??null,
+        aggregate:current.store.get(organizationId,obligationId),trustedKeys:current.snapshot.trusted_keys,
+        actorAuthorities:current.snapshot.actor_authorities,executionKillSwitched:current.store.isExecutionKillSwitched(organizationId,obligationId)};
+    },
+  },sourceRecords);
+  state.attachRepository(repository,namespace,stored.revision);
+  return state;
 }

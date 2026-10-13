@@ -305,6 +305,7 @@ describe("real detail GET producer-consumer packet controls", () => {
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllEnvs();
     stateMocks.getDemoState.mockReset();
     vi.useRealTimers();
     if (originalPrimePacketHash === undefined) delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
@@ -1745,6 +1746,7 @@ describe("real detail GET producer-consumer packet controls", () => {
   });
 
   it("keeps HTTP approval disabled, restores a refused local approval, and renders retained partial authorization as NOT_CREATED", async () => {
+    vi.stubEnv("TAMEION_ALLOWED_ORIGINS",undefined);
     const fixture = await proxyPreparedWithoutCurrentAssessment(true);
     const current = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     const assessment = fixture.state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, fixture.selectedId)!;
@@ -1759,7 +1761,10 @@ describe("real detail GET producer-consumer packet controls", () => {
         reviewed_assessment_hash: assessment.hash,
       }),
     }), { params: Promise.resolve({ id: fixture.selectedId }) });
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
+    expect(stateMocks.getDemoState).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId).state).toBe("APPROVAL_PENDING");
     const before = fixture.state.store.exportSnapshot();
     expect(() => approveAndSealPae(fixture.state.store, signingKeyId, {

@@ -1,3 +1,4 @@
+import {loadFinancialSourceAdmission} from "./financial-source-admission";
 import publicSourceSet from "../../data/live-usage/LIVE_USAGE_SET.json";
 import type { LiveUsageObligationRecord } from "../agent/context-builder";
 
@@ -16,7 +17,8 @@ export function loadPublicSourceRecords(): LiveUsageObligationRecord[] {
 export function isCurrentSourceEligible(organizationId: string, obligationId: string): boolean {
   try {
     return organizationId === "ORG-DEMO-001" &&
-      loadPublicSourceRecords().some(record => record.obligation_id === obligationId);
+      (loadPublicSourceRecords().some(record => record.obligation_id === obligationId) ||
+       loadFinancialSourceAdmission().source.obligation_id === obligationId);
   } catch {
     return false;
   }

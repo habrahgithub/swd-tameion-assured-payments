@@ -1,3 +1,6 @@
+import {createHash} from "node:crypto";
+import {loadFinancialSourceAdmission} from "../server/financial-source-admission";
+import {controlledInstructionSchema,type ControlledInstruction} from "./schema";
 import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 
 /** Shape of one record in data/live-usage/LIVE_USAGE_SET.json (J0-C). */
@@ -73,7 +76,8 @@ export function buildFinanceAgentContext(
         : record.due_date === asOfDate
           ? "DUE_TODAY"
           : "FUTURE";
-  const dueDatePosition = !requiresEffectiveDateContract
+  const controlled = record.obligation_id.startsWith("TESTNET-CONTROLLED-") ? controlledInstructionFor(record,String(aggregateVersion)) : undefined;
+  const dueDatePosition = controlled ? "CONTROLLED_WINDOW_OPEN" as const : !requiresEffectiveDateContract
     ? legacyDueDatePosition
     : !rawDueDateConsistent || !effectiveDateValid
       ? "INVALID"
@@ -98,6 +102,7 @@ export function buildFinanceAgentContext(
     effective_due_date_provenance: record.effective_due_date_provenance,
     state_at_event_baseline: record.state_at_event_baseline,
     business_purpose_confirmed: record.business_purpose_confirmed,
+    ...(controlled?{controlled_instruction:controlled}:{}),
     commercial_terms: record.commercial_terms,
     evidence_ids: record.source_evidence.map((e) => e.evidence_id),
     evidence_present: record.source_evidence.length > 0,
@@ -123,4 +128,18 @@ function isCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function controlledInstructionFor(record:LiveUsageObligationRecord,version:string,observedAt=new Date().toISOString()):ControlledInstruction {
+ const current=loadFinancialSourceAdmission();
+ if(JSON.stringify(current.source)!==JSON.stringify(record))throw new Error("CONTROLLED_SOURCE_MISMATCH");
+ return controlledInstructionSchema.parse({basis:"CONTROLLED_OWNER_INSTRUCTION",purpose:current.classification,approval_id:current.approval_id,admission_version:1,
+ source_sha256:process.env.TAMEION_FINANCIAL_SOURCE_SHA256,organization_id:current.organization_id,intent_id:current.intent_id,obligation_id:record.obligation_id,
+ aggregate_version:version,principal:current.principal,source_evidence_sha256:createHash("sha256").update(JSON.stringify(record.source_evidence)).digest("hex"),valid_from:current.valid_from,expires_at:current.expires_at,observed_at:observedAt,status:"OPEN"});
+}
+/** A model, request or VIEW record cannot self-assert this context capability. */
+export function hasCurrentControlledInstruction(context:FinanceAgentContext):boolean {
+ try{const proof=context.controlled_instruction;if(!proof||Date.parse(proof.observed_at)>Date.now())return false;const current=loadFinancialSourceAdmission();const expected=controlledInstructionFor(current.source,context.aggregate_version,proof.observed_at);
+ return JSON.stringify(proof)===JSON.stringify(expected)&&context.obligation_id===current.source.obligation_id&&context.amount===current.source.amount&&context.currency===current.source.currency&&context.business_purpose_confirmed===false&&context.issue_date==null&&context.due_date===null&&context.effective_due_date==null&&context.effective_due_date_basis==null&&context.evidence_ids.join("\0")===current.source.source_evidence.map(e=>e.evidence_id).join("\0")&&context.due_date_position==="CONTROLLED_WINDOW_OPEN";
+ }catch{return false;}
 }

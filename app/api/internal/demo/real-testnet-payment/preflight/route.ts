@@ -1,5 +1,6 @@
-import {disabledLane,methodNotAllowed} from "../../../../../../src/server/route-access-policy";
-export const POST= (..._args:unknown[])=>disabledLane("LANE_NOT_ADMITTED",403);
+import {financialHandlers} from "../../../../../../src/server/operator-financial-routes";
+import {methodNotAllowed} from "../../../../../../src/server/route-access-policy";
+export const POST=(request:Request)=>financialHandlers("preflight",request);
 export const GET=methodNotAllowed;
 export const HEAD=methodNotAllowed;
 export const PUT=methodNotAllowed;

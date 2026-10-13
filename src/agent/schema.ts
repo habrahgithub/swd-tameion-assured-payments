@@ -47,6 +47,16 @@ export const remediationItemSchema = z.object({
   }
 });
 
+/** Sealed application facts; this schema validates historical consistency, not live authority. */
+export const controlledInstructionSchema=z.object({
+ basis:z.literal("CONTROLLED_OWNER_INSTRUCTION"),purpose:z.literal("TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT"),
+ approval_id:z.string().min(1).max(128),admission_version:z.literal(1),source_sha256:z.string().regex(/^[a-f0-9]{64}$/),
+ organization_id:z.literal("ORG-DEMO-001"),intent_id:z.string().min(1).max(128),obligation_id:z.string().regex(/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/),
+ aggregate_version:z.string().regex(/^[1-9][0-9]*$/),principal:z.literal("1.000000"),
+ source_evidence_sha256:z.string().regex(/^[a-f0-9]{64}$/),valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3}),observed_at:z.iso.datetime({precision:3}),status:z.literal("OPEN"),
+}).strict().superRefine((p,c)=>{const start=Date.parse(p.valid_from),end=Date.parse(p.expires_at),observed=Date.parse(p.observed_at);if(start>observed||observed>=end||end<=start||end-start>3600000)c.addIssue({code:"custom",message:"Controlled half-open instruction window invalid"});});
+export type ControlledInstruction=z.infer<typeof controlledInstructionSchema>;
+
 export const raceAssessmentSchema = z.object({
   result: z.object({
     decision: z.enum(["PAY", "HOLD", "ESCALATE"]),
@@ -82,10 +92,11 @@ export const raceAssessmentSchema = z.object({
         z.object({ provenance_class: z.literal("SOURCE_INVOICE_DATE"), evidence_id: z.string().min(1) }).strict(),
         z.object({ provenance_class: z.literal("AUTHORIZED_OPERATOR_ATTESTATION"), authority_reference: z.string().min(1) }).strict(),
       ]).nullable().optional(),
-      due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
+      due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE", "CONTROLLED_WINDOW_OPEN"]),
       as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       state_at_event_baseline: z.literal("OUTSTANDING"),
       business_purpose_confirmed: z.boolean(),
+      controlled_instruction: controlledInstructionSchema.optional(),
       source_evidence_present: z.boolean(),
       destination_status: z.string().min(1),
       destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]).optional(),
@@ -140,7 +151,9 @@ export const raceAssessmentSchema = z.object({
       facts.effective_due_date === facts.issue_date &&
       facts.effective_due_date_basis === "INVOICE_DATE_CASH_TERM" && provenanceValid;
   }
-  const expectedDuePosition = hasEffectiveDateContract
+  const controlled=facts.controlled_instruction;
+  if(controlled && (controlled.obligation_id!==facts.obligation_id||controlled.aggregate_version!==facts.aggregate_version||facts.amount!=="1.00"||facts.currency!=="USD"||facts.issue_date!=null||facts.due_date!==null||facts.effective_due_date!=null||facts.effective_due_date_basis!=null||facts.business_purpose_confirmed!==false))ctx.addIssue({code:"custom",message:"Controlled source facts mismatch"});
+  const expectedDuePosition = controlled ? "CONTROLLED_WINDOW_OPEN" : hasEffectiveDateContract
     ? !rawDueDateConsistent || !effectiveDateContractValid
       ? "INVALID"
       : facts.effective_due_date! < facts.as_of_date
@@ -217,13 +230,14 @@ export const financeAgentContextSchema = z
     ]).nullable().optional(),
     state_at_event_baseline: z.literal("OUTSTANDING"),
     business_purpose_confirmed: z.boolean(),
+    controlled_instruction: controlledInstructionSchema.optional(),
     commercial_terms: z.string(),
     evidence_ids: z.array(z.string()),
     evidence_present: z.boolean(),
     destination_ready: z.boolean(),
     destination_status: z.string(),
     destination_readiness_source: z.enum(["IMMUTABLE_SOURCE_EVIDENCE", "CURRENT_PRODUCT_TRUST_EVIDENCE", "SIMULATED_DEMO_FIXTURE", "SYNTHETIC_EVALUATION_FIXTURE", "UNVERIFIED_CURRENT_TRUST"]),
-      due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE"]),
+      due_date_position: z.enum(["NOT_STATED", "INVALID", "OVERDUE", "DUE_TODAY", "FUTURE", "CONTROLLED_WINDOW_OPEN"]),
   })
   .strict();
 

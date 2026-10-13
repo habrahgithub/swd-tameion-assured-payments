@@ -105,3 +105,11 @@ prerequisites are approved and provisioned, owner UAT should confirm:
 - Queue amount/currency and complete due date remain readable. Inspect desktop,
  390px and320px widths and keyboard focus. Stored screenshots are intentionally
   reviewed local Chromium baselines; they are not hosted UAT evidence.
+
+### Operator private VIEW readiness amendment
+
+Authenticated private VIEW admission is distinct from financial source eligibility. The fixed ignored source packet and independently configured SHA bind exactly five owner-approved records to an existing namespace/revision/canonical authority snapshot; public withdrawal, source eligibility and every financial HTTP lane remain unchanged. No original003 operation is authorized. Missing/inconsistent source/state remains unavailable without seeding. See HOSTED-UAT-DEPLOYMENT.md for exact packaging/privacy gates.
+
+The wallet completeness correction remains dependent on an adjudicated Circle pagination/terminal contract and actual native/token representation; first-page or mock success is not verified live balance. External read-only discovery requires its own owner consent/custody. Real hosted login/balance/full-flow and owner UAT remain unaccepted until their exact current runtime evidence exists.
+
+The current offline correction adds a guarded fresh controlled testnet financial path alongside the preserved five-record VIEW capability. Its independently approved source/requester authority is separate from viewing and public withdrawal; invoice facts remain null and genuine business purpose remains false. The canonical controlled timestamp/purpose context, persisted AI assessment, proxy preparation/reassessment, human review, SafetyKernel/PAE, durable one-submit worker and explicit reconciliation POST are exercised only by network-denied synthetic fixtures. No synthetic result establishes hosted readiness, actual provider pagination/precision, a transfer, or original003's outcome. See HOSTED-UAT-DEPLOYMENT.md for strict authority formats and retained effect prerequisites.

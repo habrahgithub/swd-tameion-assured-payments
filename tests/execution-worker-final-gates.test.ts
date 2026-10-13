@@ -485,3 +485,26 @@ describe("withdrawn source authority boundaries", () => {
     expect(fixture.adapter.getSubmissionCount()).toBe(0);
   });
 });
+
+describe('requester validation precedes both final durable authority reads',()=>{
+ it.each([1,2].flatMap(requesterBoundary=>['kill switch','actor','key','version'].map(change=>({requesterBoundary,change}))))('observes $change changed during requester await at boundary$requesterBoundary',async ({requesterBoundary,change})=>{
+   const f=authorizedFixture();let validations=0,changed=false;
+   const submit=vi.spyOn(f.adapter,'submitTransfer');
+   const worker=f.worker({
+    revalidateRequester:async()=>{await Promise.resolve();if(++validations===requesterBoundary)changed=true;},
+    reloadDurableExecutionContext:async()=>{
+     const aggregate=structuredClone(f.store.get(ORG,OBLIGATION));
+     const keys=structuredClone(processTrustedKeyRegistry.export());
+     const actors=[structuredClone(f.actorAuthority)];
+     if(changed&&change==='version')aggregate.aggregate_version++;
+     if(changed&&change==='key')keys.find(k=>k.signing_key_id===SIGNING_KEY_ID)!.status='REVOKED';
+     if(changed&&change==='actor')actors[0]!.authority_version='2';
+     return {authorization:f.authorization,aggregate,trustedKeys:keys,actorAuthorities:actors,executionKillSwitched:changed&&change==='kill switch'};
+    },
+   });
+   await expect(worker.execute(f.sealed)).rejects.toBeInstanceOf(Error);
+   expect(f.adapter.getSubmissionCount()).toBe(0);
+   expect(submit).toHaveBeenCalledTimes(requesterBoundary===1?0:1);
+   expect(worker.getExecutionRecord(f.sealed.payload.idempotency_key)?.status).toBe('BLOCKED');
+ });
+});

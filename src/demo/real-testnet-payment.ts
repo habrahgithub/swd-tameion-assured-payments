@@ -1,3 +1,4 @@
+import {loadFinancialSourceAdmission} from "../server/financial-source-admission";
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 import { z } from "zod";
@@ -60,9 +61,9 @@ export interface BusinessPaymentInstruction {
   commercial: {
     obligation_id: string;
     classification: string;
-    invoice_reference: string;
-    invoice_date: string;
-    effective_due_date: string;
+    invoice_reference: string | null;
+    invoice_date: string | null;
+    effective_due_date: string | null;
     payment_basis: string;
     particulars: string;
     source_amount: string;
@@ -82,9 +83,9 @@ export interface GenuineSettlementProxyIntent {
   settlement_amount: string;
   source_evidence_ids: string[];
   classification: string;
-  invoice_reference: string;
-  invoice_date: string;
-  effective_due_date: string;
+  invoice_reference: string | null;
+  invoice_date: string | null;
+  effective_due_date: string | null;
   payment_basis: string;
   particulars: string;
 }
@@ -163,7 +164,7 @@ const businessPaymentInstructionSchema = z.object({
   commercial: z.object({
     obligation_id: z.string().min(1),
     classification: z.string().min(1),
-    invoice_reference: z.string().min(1), invoice_date: z.string().date(), effective_due_date: z.string().date(),
+    invoice_reference: z.string().min(1).nullable(), invoice_date: z.string().date().nullable(), effective_due_date: z.string().date().nullable(),
     payment_basis: z.string().min(1),
     particulars: z.string().min(1),
     source_amount: z.string().min(1), source_currency: z.string().regex(/^[A-Z]{3}$/),
@@ -311,11 +312,27 @@ export async function runJ2aReadOnlyPreflight(
     payment_basis: J2A_DEMO_PAYMENT_BASIS,
     particulars: "Non-economic Arc Testnet demonstration to the synthetic test counterparty.",
   };
+  let controlled: ReturnType<typeof loadFinancialSourceAdmission> | undefined;
+  if (intent.obligation_id.startsWith("TESTNET-CONTROLLED-")) {
+    try {
+      controlled = loadFinancialSourceAdmission();
+      const source = controlled.source;
+      if (intent.organization_id !== controlled.organization_id || intent.obligation_id !== source.obligation_id ||
+          intent.classification !== controlled.classification || intent.source_amount !== source.amount ||
+          intent.source_currency !== source.currency || intent.settlement_amount !== controlled.principal ||
+          intent.source_evidence_ids.join("\0") !== source.source_evidence.map(e=>e.evidence_id).join("\0") ||
+          intent.invoice_reference !== null || intent.invoice_date !== null || intent.effective_due_date !== null ||
+          intent.payment_basis !== "EXACT_OWNER_CONTROLLED_TESTNET_INSTRUCTION" || intent.particulars !== source.commercial_terms) throw new Error();
+    } catch { return blocked("CONTROLLED_TESTNET_AUTHORITY_UNAVAILABLE",now); }
+  } else if (!intent.invoice_reference || !intent.invoice_date || !intent.effective_due_date) {
+    return blocked("INVALID_COMMERCIAL_INSTRUCTION",now);
+  }
   const transferAmount = intent.settlement_amount;
   const transferAtomic = decimalToAtomicAtScale(transferAmount, USDC_DECIMALS);
   const maxTotalDebitBufferAtomic = decimalToAtomicAtScale("0.012000", USDC_DECIMALS);
   if (transferAtomic === null || maxTotalDebitBufferAtomic === null || transferAtomic <= 0n) return blocked("INVALID_TRANSFER_AMOUNT", now);
-  const maxTotalDebit = atomicToDecimal((transferAtomic + maxTotalDebitBufferAtomic).toString(10), USDC_DECIMALS);
+  const maxTotalDebit = controlled?.estimated_total_ceiling ?? atomicToDecimal((transferAtomic + maxTotalDebitBufferAtomic).toString(10), USDC_DECIMALS);
+  const maxNetworkFee = controlled?.estimated_fee_ceiling ?? J2A_MAX_NETWORK_FEE;
   const providerClient = client ?? createCircleArcJ2aReadOnlyClient() as unknown as J2aPreflightClient;
   try {
     const [sourceResponse, destinationResponse] = await Promise.all([
@@ -370,7 +387,7 @@ export async function runJ2aReadOnlyPreflight(
     const sourceBalanceAtomic = atomic(sourceBalance, tokenDecimals);
     const providerTransferAtomic = atomic(transferAmount, tokenDecimals);
     const feeAtomic = atomic(estimatedNetworkFee, tokenDecimals);
-    const maxFeeAtomic = atomic(J2A_MAX_NETWORK_FEE, tokenDecimals);
+    const maxFeeAtomic = atomic(maxNetworkFee, tokenDecimals);
     const maxTotalDebitAtomic = atomic(maxTotalDebit, tokenDecimals);
     if (sourceBalanceAtomic === null) return blocked("INVALID_PROVIDER_BALANCE", now);
     if (providerTransferAtomic === null || feeAtomic === null || maxFeeAtomic === null || maxTotalDebitAtomic === null) return blocked("INVALID_FEE_ESTIMATE", now);
@@ -450,7 +467,7 @@ export async function runJ2aReadOnlyPreflight(
       amount: transferAmount,
       source_balance: sourceBalance,
       estimated_network_fee: estimatedNetworkFee,
-      max_network_fee: J2A_MAX_NETWORK_FEE,
+      max_network_fee: maxNetworkFee,
       max_total_debit: maxTotalDebit,
       prior_matching_outbound: false,
       captured_at: capturedAt,

@@ -1103,6 +1103,9 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("region", { name: "Selected source obligation" })).not.toContainText("ARC_TESTNET");
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
   await queueItem(page, "OBL-UAT-02").click();
+  await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("heading", { name: "software services" })).toBeVisible();
+  await expect(lifecycle.getByRole("listitem")).toHaveCount(6);
   const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
   expect(stageBoxes[0]).toBeLessThan(stageBoxes[1]);
   expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
