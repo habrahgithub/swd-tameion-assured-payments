@@ -28,7 +28,11 @@ export async function readPinnedBalance(pin:BalancePin,factory:()=>ReadOnlyBalan
     await revalidate();return {amount:row.amount,asset:'USDC' as const,captured_at:new Date().toISOString(),network:pin.network,verification:'READ_ONLY_BALANCE' as const};
   }catch(error){if(error instanceof AccessError&&error.code==='SESSION_REQUIRED')throw error;throw new AccessError('BALANCE_NOT_VERIFIED',503);}
 }
-export async function readOperatorBalance(revalidate:()=>Promise<void>){
-  let pin:BalancePin;try{pin=pinSchema.parse(JSON.parse(process.env.TAMEION_BALANCE_PIN??'null'));}catch{throw new AccessError('BALANCE_NOT_VERIFIED',503);}
-  return readPinnedBalance(pin,()=>circleBalanceCapability(process.env.CIRCLE_API_KEY??''),revalidate);
+export async function readOperatorBalance(revalidate:()=>Promise<void>):Promise<Awaited<ReturnType<typeof readPinnedBalance>>>{
+  await revalidate();
+  // Circle's collection cursor/terminal contract and Arc token representation are
+  // not yet established. A matching first page or configured pin cannot prove
+  // a complete verified balance. Keep the hosted path closed before any client
+  // construction or provider request; finite injected fixtures are not authority.
+  throw new AccessError('BALANCE_NOT_VERIFIED',503);
 }

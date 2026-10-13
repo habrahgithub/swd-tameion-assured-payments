@@ -1,5 +1,5 @@
-import {describe,it,expect,vi} from 'vitest';
-import {readPinnedBalance,type BalancePin} from '../src/server/operator-wallet-balance';
+import {afterEach,describe,it,expect,vi} from 'vitest';
+import {readOperatorBalance,readPinnedBalance,type BalancePin} from '../src/server/operator-wallet-balance';
 const pin:BalancePin={wallet_id:'MOCK-W',wallet_set_id:'MOCK-SET',source_address:'0x'+'1'.repeat(40),network:'ARC-TESTNET',token_id:'MOCK-T',token_address:'0x'+'2'.repeat(40),decimals:6,native:true};
 function fixture(){return {getWallet:vi.fn(async()=>({data:{wallet:{id:pin.wallet_id,walletSetId:pin.wallet_set_id,address:pin.source_address,blockchain:pin.network,state:'LIVE'}}})),getWalletTokenBalance:vi.fn(async()=>({data:{tokenBalances:[{amount:'12.345678',token:{id:pin.token_id,tokenAddress:pin.token_address,blockchain:pin.network,decimals:6,symbol:'USDC',isNative:true}}]}}))};}
 describe('pinned read-only balance',()=>{
@@ -12,4 +12,20 @@ describe('pinned read-only balance',()=>{
  it('rejects wallet mismatch before token read',async()=>{const c=fixture();c.getWallet.mockResolvedValueOnce({data:{wallet:{id:'WRONG',walletSetId:pin.wallet_set_id,address:pin.source_address,blockchain:pin.network,state:'LIVE'}}});await expect(readPinnedBalance(pin,()=>c,async()=>{})).rejects.toThrow();expect(c.getWalletTokenBalance).not.toHaveBeenCalled();});
  it('rejects duplicate token rows and provider error without zero fallback',async()=>{const c=fixture(),value=await c.getWalletTokenBalance();value.data.tokenBalances.push(value.data.tokenBalances[0]);c.getWalletTokenBalance.mockResolvedValueOnce(value);await expect(readPinnedBalance(pin,()=>c,async()=>{})).rejects.toThrow();c.getWallet.mockRejectedValueOnce(new Error('private body'));await expect(readPinnedBalance(pin,()=>c,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});});
  it('revocation between calls stops token read',async()=>{const c=fixture(),valid=vi.fn(async()=>{});valid.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('revoked'));await expect(readPinnedBalance(pin,()=>c,valid)).rejects.toThrow();expect(c.getWalletTokenBalance).not.toHaveBeenCalled();});
+});
+
+describe('hosted balance contract containment',()=>{
+ afterEach(()=>{vi.unstubAllGlobals();vi.unstubAllEnvs();});
+ it('refuses a matching first page without calling Circle when collection and representation are unproved',async()=>{
+  vi.stubEnv('TAMEION_BALANCE_PIN',JSON.stringify(pin));vi.stubEnv('CIRCLE_API_KEY','SYNTHETIC_NETWORK_DENIED');
+  const client=fixture(),http=vi.fn(async(input:RequestInfo|URL)=>Response.json(String(input).endsWith('/balances')?await client.getWalletTokenBalance():await client.getWallet()));
+  vi.stubGlobal('fetch',http);const valid=vi.fn(async()=>{});
+  await expect(readOperatorBalance(valid)).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED',status:503});
+  expect(valid).toHaveBeenCalledOnce();expect(http).not.toHaveBeenCalled();
+ });
+ it('preserves session revocation before reporting an unavailable balance',async()=>{
+  const {AccessError}=await import('../src/server/route-access-policy');
+  const revoked=new AccessError('SESSION_REQUIRED',401),http=vi.fn();vi.stubGlobal('fetch',http);
+  await expect(readOperatorBalance(async()=>{throw revoked;})).rejects.toBe(revoked);expect(http).not.toHaveBeenCalled();
+ });
 });
