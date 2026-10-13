@@ -1815,6 +1815,45 @@ test("revoked release authority overrides retained packet and exact gate on desk
   }
 });
 
+test("dark-mode exact payment confirmation keeps accessible contrast without submitting", async ({ page }) => {
+  const exactPacket = proxyLifecycleDetail("AUTHORIZED");
+  exactPacket.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+  const writes = await openFixture(page, exactPacket);
+  await expandLifecycleStages(page);
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment", exact: true }).click();
+  await collapseLifecycleStages(page);
+  const confirmation = page.getByRole("textbox", { name: /Confirm exact testnet intent/ });
+  await expect(confirmation).toBeVisible();
+  await confirmation.fill("SUBMIT EXACT TESTNET SETTLEMENT PROXY");
+  const execute = page.getByRole("button", { name: "Execute Test Payment" });
+  await expect(execute).toBeEnabled();
+  for (const mode of ["explicit", "system"] as const) {
+    await page.emulateMedia({ colorScheme: mode === "system" ? "dark" : "light" });
+    await page.locator("html").evaluate((element, selectedMode) => {
+      if (selectedMode === "explicit") element.setAttribute("data-theme", "dark");
+      else element.removeAttribute("data-theme");
+    }, mode);
+    const contrast = await execute.evaluate((button) => {
+      const toLinear = (value: number) => {
+        const channel = value / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      };
+      const luminance = (color: string) => {
+        const [red, green, blue] = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(toLinear);
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      };
+      const style = getComputedStyle(button);
+      const foreground = luminance(style.color);
+      const background = luminance(style.backgroundColor);
+      return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+    });
+    expect(contrast, `${mode} dark mode button contrast`).toBeGreaterThanOrEqual(4.5);
+    const contrastAudit = await new AxeBuilder({ page }).withRules(["color-contrast"]).analyze();
+    expect(contrastAudit.violations, `${mode} dark mode color contrast violations`).toEqual([]);
+  }
+  expect(writes).toEqual([]);
+});
+
 test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in the first viewport", async ({ browser }, testInfo) => {
   const viewports = [
     { width: 1173, height: 751, label: "desktop-1173x751" },

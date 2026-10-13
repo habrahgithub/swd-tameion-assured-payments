@@ -32,6 +32,7 @@
   --status-blocked-text: #b91c1c;
   --status-blocked-surface: #fef2f2;
   --status-blocked-border: #fecaca;
+  --color-danger-action-bg: #b91c1c;
   --status-advisory-text: #4338ca;
   --status-advisory-surface: #eef2ff;
   --status-advisory-border: #c7d2fe;
@@ -85,6 +86,7 @@
   --status-blocked-text: #fca5a5;
   --status-blocked-surface: #3b2028;
   --status-blocked-border: #7f3544;
+  --color-danger-action-bg: #991b1b;
   --status-advisory-text: #c4b5fd;
   --status-advisory-surface: #252348;
   --status-advisory-border: #4b4789;
@@ -113,6 +115,7 @@
     --status-blocked-text: #fca5a5;
     --status-blocked-surface: #3b2028;
     --status-blocked-border: #7f3544;
+    --color-danger-action-bg: #991b1b;
     --status-advisory-text: #c4b5fd;
     --status-advisory-surface: #252348;
     --status-advisory-border: #4b4789;

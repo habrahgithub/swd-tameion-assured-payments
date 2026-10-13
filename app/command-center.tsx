@@ -1428,7 +1428,7 @@ function PrimaryButton({
       onClick={onClick}
       disabled={disabled}
       className={`min-h-[44px] w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
-        danger ? "bg-[var(--color-danger)] hover:opacity-90" : "bg-[var(--color-primary-action)] hover:opacity-90"
+        danger ? "bg-[var(--color-danger-action-bg)] hover:opacity-90" : "bg-[var(--color-primary-action)] hover:opacity-90"
       }`}
     >
       {children}
