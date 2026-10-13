@@ -10,7 +10,7 @@ const pin:BalancePin={
 const terminalHeaders:Record<string,string>={link:'<private-first>; rel="first", <private-self>; rel="self"'};
 function fixture(){return {
  getWallet:vi.fn(async()=>({data:{wallet:{id:pin.wallet_id,walletSetId:pin.wallet_set_id,address:pin.source_address,blockchain:pin.network,state:'LIVE'}}})),
- getWalletTokenBalance:vi.fn(async()=>({headers:terminalHeaders,data:{tokenBalances:[
+ getWalletTokenBalance:vi.fn(async(_id?:string,_pageAfter?:string)=>({headers:terminalHeaders,data:{tokenBalances:[
   {amount:'12.345678000000000000',token:{id:tokenId,tokenAddress:undefined,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}},
   {amount:'9.123456',token:{id:'MOCK-ERC20',tokenAddress:'0x'+'2'.repeat(40),blockchain:pin.network,decimals:6,symbol:'USDC',isNative:false,standard:'ERC20'}},
  ]}})),
@@ -21,7 +21,7 @@ describe('pinned read-only balance',()=>{
   const client=fixture(),valid=vi.fn(async()=>{}),factory=vi.fn(()=>client);const result=await readPinnedBalance(pin,factory,valid);
   expect(result).toMatchObject({amount:'12.345678000000000000',asset:'USDC',network:'ARC-TESTNET',verification:'READ_ONLY_BALANCE'});
   expect(factory).toHaveBeenCalledOnce();expect(valid).toHaveBeenCalledTimes(4);
-  expect(client.getWalletTokenBalance).toHaveBeenCalledWith(pin.wallet_id);
+  expect(client.getWalletTokenBalance).toHaveBeenCalledWith(pin.wallet_id,undefined);
  });
  it.each(['0','0.1','12.345678000000000000'])('accepts canonical native-18 decimal %s',async amount=>{
   const client=fixture(),value=await client.getWalletTokenBalance();value.data.tokenBalances[0].amount=amount;client.getWalletTokenBalance.mockResolvedValueOnce(value);
@@ -42,7 +42,6 @@ describe('pinned read-only balance',()=>{
   await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
  });
  it.each([
-  ['next','<private>; rel="first", <private>; rel="self", <private-cursor>; rel="next"'],
   ['unknown','<private>; rel="self", <private>; rel="custom"'],
   ['unparseable','<private-cursor>'],
   ['partially unparseable','<private>; rel="first", <private>; rel="self", <private-without-relation>'],
@@ -50,6 +49,54 @@ describe('pinned read-only balance',()=>{
  ] as const)('rejects %s collection-completeness evidence',async(_name,link)=>{
   const client=fixture(),value=await client.getWalletTokenBalance();value.headers=link===undefined?{}:{link};client.getWalletTokenBalance.mockResolvedValueOnce(value);
   await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+ });
+ it('follows every advertised page and selects the single pinned token across the complete result',async()=>{
+  const client=fixture();
+  client.getWalletTokenBalance
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-1>; rel="next", <https://api.circle.com/v1/w3s/wallets/W/balances>; rel="first", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[{amount:'1.25',token:{id:'OTHER-1',blockchain:pin.network,decimals:18,symbol:'ETH',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>)
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/v1/w3s/wallets/W/balances>; rel="first", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-1>; rel="prev", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-2>; rel="next", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[{amount:'12.345678',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>)
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/v1/w3s/wallets/W/balances>; rel="first", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-2>; rel="prev", <https://api.circle.com/v1/w3s/wallets/W/balances?pageAfter=cursor-2>; rel="self"'},data:{tokenBalances:[{amount:'4.5',token:{id:'OTHER-2',blockchain:pin.network,decimals:18,symbol:'ETH',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).resolves.toMatchObject({amount:'12.345678'});
+  expect(client.getWalletTokenBalance.mock.calls).toEqual([[pin.wallet_id,undefined],[pin.wallet_id,'cursor-1'],[pin.wallet_id,'cursor-2']]);
+ });
+ it('rejects duplicate token identities across pages',async()=>{
+  const repeated=fixture();
+  repeated.getWalletTokenBalance
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/balances?pageAfter=cursor-1>; rel="next", <https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[{amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof repeated.getWalletTokenBalance>>)
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=cursor-1>; rel="prev", <https://api.circle.com/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[{amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof repeated.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>repeated,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+  expect(repeated.getWalletTokenBalance).toHaveBeenCalledTimes(2);
+ });
+ it('rejects repeated pagination cursors without making another request',async()=>{
+  const client=fixture();
+  client.getWalletTokenBalance
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/balances?pageAfter=cursor-1>; rel="next", <https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>)
+   .mockResolvedValueOnce({headers:{link:'<https://api.circle.com/balances?pageAfter=cursor-1>; rel="next", <https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=cursor-1>; rel="self"'},data:{tokenBalances:[]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+  expect(client.getWalletTokenBalance).toHaveBeenCalledTimes(2);
+ });
+ it('rejects disagreement between body and Link pagination cursors',async()=>{
+  const client=fixture();
+  client.getWalletTokenBalance.mockResolvedValueOnce({headers:{link:'<https://api.circle.com/balances?pageAfter=link-cursor>; rel="next", <https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=link-cursor>; rel="self"'},data:{tokenBalances:[],pagination:{nextPageAfter:'body-cursor'}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+  expect(client.getWalletTokenBalance).toHaveBeenCalledOnce();
+ });
+ it('stops after the bounded page budget when Circle keeps advertising more pages',async()=>{
+  const client=fixture();let count=0;
+  client.getWalletTokenBalance.mockImplementation(async(_id,pageAfter)=>{
+   count++;const next=`cursor-${count}`;
+   return {headers:{link:`<https://api.circle.com/balances?pageAfter=${next}>; rel="next", <https://api.circle.com/balances>; rel="first", <https://api.circle.com/balances?pageAfter=${pageAfter??''}>; rel="self"`},data:{tokenBalances:[{amount:'1',token:{id:`OTHER-${count}`,blockchain:pin.network,decimals:18,symbol:'ETH',isNative:true}}]}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>;
+  });
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+  expect(client.getWalletTokenBalance).toHaveBeenCalledTimes(20);
+ });
+ it('accepts the documented nextPageAfter field when Link headers are absent',async()=>{
+  const client=fixture();
+  client.getWalletTokenBalance
+   .mockResolvedValueOnce({headers:{},data:{tokenBalances:[],pagination:{nextPageAfter:'body-cursor'}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>)
+   .mockResolvedValueOnce({headers:{},data:{tokenBalances:[{amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}],pagination:{}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).resolves.toMatchObject({amount:'12.3'});
+  expect(client.getWalletTokenBalance.mock.calls).toEqual([[pin.wallet_id,undefined],[pin.wallet_id,'body-cursor']]);
  });
  it('rejects malformed unrelated rows rather than hiding provider ambiguity',async()=>{
   const client=fixture(),value=await client.getWalletTokenBalance();value.data.tokenBalances[1].amount='NaN';client.getWalletTokenBalance.mockResolvedValueOnce(value);
