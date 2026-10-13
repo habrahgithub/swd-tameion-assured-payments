@@ -28,7 +28,7 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     const sealed=new Map(s.sealed_paes.map(([id,pae])=>[id,sealedPaeSchema.parse(pae)]));
     const records=structuredClone(sourceRecords);
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
-    for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(binding&&(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency))throw new Error();}
+    for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     return {store,trustedKeys,
       listObligations:()=>records.map(r=>({obligation_id:r.obligation_id,service_category:r.service_category,amount:r.amount,currency:r.currency,recurrence:r.recurrence,due_date:r.due_date,commercial_terms:r.commercial_terms})),
       getRecord:id=>records.find(r=>r.obligation_id===id),

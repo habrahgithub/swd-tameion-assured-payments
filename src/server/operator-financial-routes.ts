@@ -2,7 +2,7 @@ import {buildFinanceAgentContext,hasCurrentControlledInstruction} from "../agent
 import {z} from 'zod';
 import {operatorHandlers,type AuthContext} from './operator-auth';
 import {AccessError,readBoundedJson,requireJson,methodNotAllowed} from './route-access-policy';
-import {loadFinancialSourceAdmission,loadFinancialRequesterBinding,type FinancialSourceAdmission,type FinancialRequesterBinding} from './financial-source-admission';
+import {loadFinancialSourceAdmission,loadFinancialRequesterBinding,sameFinancialBinding,type FinancialSourceAdmission,type FinancialRequesterBinding} from './financial-source-admission';
 import {DEMO_ORGANIZATION_ID,DEMO_SIGNING_KEY_ID,loadExistingFinancialState,type DemoState} from './demo-state';
 import {SupabaseDemoStateRepository,DemoStatePersistenceError} from './supabase-demo-state-repository';
 import {createAssessmentHandler} from './legacy-routes/obligations/[id]/assess/route';
@@ -38,7 +38,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    if(!selected||!/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/.test(selected)||selected.length>128)throw new AccessError('CONTROLLED_SOURCE_REQUIRED',403);
    const source=deps.source(),requester=deps.requester();
    const sourceIdentity=JSON.stringify(source),requesterIdentity=JSON.stringify(requester);
-   if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||source.deployment_id!==requester.deployment_id||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
+   if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||!sameFinancialBinding(source,requester)||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
    const checkContext=async()=>{await auth.revalidate();if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
    let load!:()=>Promise<DemoState>;
    const resolveCurrentRequester=async()=>{await checkContext();const current=await load();const actor=current.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);

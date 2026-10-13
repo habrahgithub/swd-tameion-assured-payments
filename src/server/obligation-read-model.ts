@@ -9,7 +9,7 @@ import { projectAssuranceEvidence } from "./assurance-evidence-projection";
  * recovery or persistence. Source admission belongs to the calling GET boundary.
  * Browser fixtures use these same projections with independently invented data.
  */
-export function projectObligationList(state: ExistingState) {
+export function projectObligationListData(state: ExistingState) {
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);
@@ -36,11 +36,15 @@ export function projectObligationList(state: ExistingState) {
       route_assurance_status: routeAssuranceReady ? "Route assurance ready" : "Route assurance not ready",
     };
   });
-  return NextResponse.json({
+  return {
     obligations,
     assessed_count: obligations.filter((o) => o.assessed).length,
     total_count: obligations.length,
-  });
+  };
+}
+
+export function projectObligationList(state: ExistingState) {
+  return NextResponse.json(projectObligationListData(state));
 }
 
 export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true) {

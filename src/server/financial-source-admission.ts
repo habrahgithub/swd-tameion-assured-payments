@@ -2,26 +2,50 @@ import {createHash} from 'node:crypto';
 import {closeSync,constants,fstatSync,openSync,readSync} from 'node:fs';
 import {join} from 'node:path';
 import {z} from 'zod';
+import {deploymentApprovalSchema} from './deployment-approval';
 import {operatorSourceRecordSchema} from './operator-source-records';
 
-const text=z.string().min(1).max(128),hash=z.string().regex(/^[a-f0-9]{64}$/);
-const context={approval_id:text,organization_id:z.literal('ORG-DEMO-001'),deployment_id:text,namespace:text,valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3})};
-const sourceSchema=z.object({...context,purpose:z.literal('TESTNET_FINANCIAL_SOURCE'),intent_id:text,classification:z.literal('TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'),principal:z.literal('1.000000'),estimated_fee_ceiling:z.literal('0.002000'),estimated_total_ceiling:z.literal('1.002000'),source:operatorSourceRecordSchema}).strict();
-const requesterSchema=z.object({...context,purpose:z.literal('FINANCIAL_REQUESTER_ACTOR_BINDING'),operator_key:text,credential_version:z.number().int().positive(),actor_id:text,source_sha256:hash,intent_id:text}).strict();
+const text=z.string().min(1).max(128),hash=z.string().regex(/^[a-f0-9]{64}$/),origin=z.string().url().max(512);
+const temporal={approval_id:text,organization_id:z.literal('ORG-DEMO-001'),namespace:text,valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3})};
+const legacyContext=z.object({...temporal,deployment_id:text}).strict();
+const gitShaPreviewContext=z.object({...temporal,binding:z.literal('git-sha-preview-v1'),git_commit_sha:z.string().regex(/^[a-f0-9]{40}$/),project_id:text,environment:z.literal('preview'),origin,ingress_approval_id:text,ingress_record_sha256:hash,source_record_sha256:hash}).strict();
+const sourceFields={purpose:z.literal('TESTNET_FINANCIAL_SOURCE'),intent_id:text,classification:z.literal('TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'),principal:z.literal('1.000000'),estimated_fee_ceiling:z.literal('0.002000'),estimated_total_ceiling:z.literal('1.002000'),source:operatorSourceRecordSchema};
+const requesterFields={purpose:z.literal('FINANCIAL_REQUESTER_ACTOR_BINDING'),operator_key:text,credential_version:z.number().int().positive(),actor_id:text,source_sha256:hash,intent_id:text};
+const sourceSchema=z.union([legacyContext.extend(sourceFields),gitShaPreviewContext.extend(sourceFields)]);
+const requesterSchema=z.union([legacyContext.extend(requesterFields),gitShaPreviewContext.extend(requesterFields)]);
 export type FinancialSourceAdmission=z.infer<typeof sourceSchema>;
 export type FinancialRequesterBinding=z.infer<typeof requesterSchema>;
-/** Immutable owner-approved canonical bytes. Runtime facts can reject, never approve. */
-function approvedBytes(fd:number,expected:string|undefined):unknown{
- try{if(!expected||!hash.safeParse(expected).success)throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');const stat=fstatSync(fd);if(!stat.isFile()||stat.size>65536)throw new Error();const bytes=Buffer.alloc(65537);let size=0;while(size<bytes.length){const n=readSync(fd,bytes,size,bytes.length-size,null);if(!n)break;size+=n;}if(size>65536||createHash('sha256').update(bytes.subarray(0,size)).digest('hex')!==expected)throw new Error();const raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size));const value:unknown=JSON.parse(raw);if(JSON.stringify(value)!==raw)throw new Error();return value;}finally{closeSync(fd);}
+
+/** Exact owner-approved canonical bytes. Runtime facts can reject, never approve. */
+function approvedBytes(fd:number,expected:string|undefined):Uint8Array{
+ try{if(!expected||!hash.safeParse(expected).success)throw new Error();const stat=fstatSync(fd);if(!stat.isFile()||stat.size>65536)throw new Error();const bytes=Buffer.alloc(65537);let size=0;while(size<bytes.length){const n=readSync(fd,bytes,size,bytes.length-size,null);if(!n)break;size+=n;}const approved=bytes.subarray(0,size);if(size>65536||createHash('sha256').update(approved).digest('hex')!==expected)throw new Error();return approved;}finally{closeSync(fd);}
 }
-function current(value:{deployment_id:string;namespace:string;valid_from:string;expires_at:string},env:Record<string,string|undefined>,now:number){
- const start=Date.parse(value.valid_from),end=Date.parse(value.expires_at);
- if(!Number.isSafeInteger(now)||now<0)throw new Error();
- if(value.deployment_id!==env.VERCEL_DEPLOYMENT_ID||value.namespace!==env.TAMEION_STATE_NAMESPACE||start>now||end<=now||end<=start||end-start>60*60*1000)throw new Error();
+function parseCanonical(bytes:Uint8Array):unknown{const raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes);const value:unknown=JSON.parse(raw);if(JSON.stringify(value)!==raw)throw new Error();return value;}
+function allowedOrigins(env:Record<string,string|undefined>):string[]{const value:unknown=JSON.parse(env.TAMEION_ALLOWED_ORIGINS??'null');if(!Array.isArray(value)||value.some(item=>typeof item!=='string'))throw new Error();return value as string[];}
+function current(value:z.infer<typeof legacyContext>|z.infer<typeof gitShaPreviewContext>,env:Record<string,string|undefined>,now:number){
+ const start=Date.parse(value.valid_from),end=Date.parse(value.expires_at);if(!Number.isSafeInteger(now)||now<0||start>now||end<=now||end<=start||end-start>60*60*1000)throw new Error();
+ if('binding' in value){
+  const raw=env.TAMEION_INGRESS_RECORD;if(!raw||JSON.stringify(JSON.parse(raw))!==raw||createHash('sha256').update(raw).digest('hex')!==value.ingress_record_sha256)throw new Error();
+  const ingress=deploymentApprovalSchema.parse(JSON.parse(raw));
+  if(!('binding' in ingress)||ingress.binding!==value.binding||ingress.approval_id!==value.ingress_approval_id||ingress.git_commit_sha!==value.git_commit_sha||ingress.project_id!==value.project_id||ingress.environment!==value.environment||ingress.origins.length!==1||ingress.origins[0]!==value.origin)throw new Error();
+  const origins=allowedOrigins(env);if(origins.length!==1||origins[0]!==value.origin||env.VERCEL!=='1'||env.VERCEL_GIT_COMMIT_SHA!==value.git_commit_sha||env.VERCEL_PROJECT_ID!==value.project_id||env.VERCEL_ENV!==value.environment)throw new Error();
+ }else if(value.deployment_id!==env.VERCEL_DEPLOYMENT_ID||value.namespace!==env.TAMEION_STATE_NAMESPACE)throw new Error();
 }
-export function loadFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission{
- try{const p=sourceSchema.parse(approvedBytes(openSync(join(process.cwd(),".tameion","financial-source.json"),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),env.TAMEION_FINANCIAL_SOURCE_SHA256));current(p,env,now);if(!/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/.test(p.source.obligation_id)||p.source.amount!=='1.00'||p.source.currency!=='USD'||p.source.issue_date!=null||p.source.due_date!==null||p.source.effective_due_date!=null||p.source.effective_due_date_basis!=null||p.source.business_purpose_confirmed!==false||p.source.source_evidence.some(e=>!e.content_sha256))throw new Error();return structuredClone(p);}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}
+function openApproved(name:string,expected:string|undefined):Uint8Array{return approvedBytes(openSync(join(process.cwd(),'.tameion',name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),expected);}
+export function parseFinancialSource(bytes:Uint8Array,expected:string,env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission{
+ const packet=sourceSchema.parse(parseCanonical(bytes));current(packet,env,now);
+ if(!/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/.test(packet.source.obligation_id)||packet.source.amount!=='1.00'||packet.source.currency!=='USD'||packet.source.issue_date!=null||packet.source.due_date!==null||packet.source.effective_due_date!=null||packet.source.effective_due_date_basis!=null||packet.source.business_purpose_confirmed!==false||packet.source.source_evidence.some(e=>!e.content_sha256))throw new Error();
+ if('binding' in packet&&createHash('sha256').update(JSON.stringify(packet.source)).digest('hex')!==packet.source_record_sha256)throw new Error();
+ if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error();return structuredClone(packet);
 }
-export function loadFinancialRequesterBinding(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{
- try{const p=requesterSchema.parse(approvedBytes(openSync(join(process.cwd(),".tameion","financial-requester.json"),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),env.TAMEION_FINANCIAL_REQUESTER_SHA256));current(p,env,now);if(p.source_sha256!==env.TAMEION_FINANCIAL_SOURCE_SHA256)throw new Error();return structuredClone(p);}catch{throw new Error('FINANCIAL_REQUESTER_UNAVAILABLE');}
+export function parseFinancialRequester(bytes:Uint8Array,expected:string,env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{const packet=requesterSchema.parse(parseCanonical(bytes));current(packet,env,now);if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error();return structuredClone(packet);}
+export function loadFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission{try{const expected=env.TAMEION_FINANCIAL_SOURCE_SHA256??'';return parseFinancialSource(openApproved('financial-source.json',expected),expected,env,now);}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}}
+export function loadOptionalFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission|undefined{
+ const exists=(name:string)=>{try{const fd=openSync(join(process.cwd(),'.tameion',name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);closeSync(fd);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}};
+ try{const sourceFile=exists('financial-source.json'),requesterFile=exists('financial-requester.json'),sourceConfigured=env.TAMEION_FINANCIAL_SOURCE_SHA256!==undefined,requesterConfigured=env.TAMEION_FINANCIAL_REQUESTER_SHA256!==undefined;if(!sourceFile&&!requesterFile&&!sourceConfigured&&!requesterConfigured)return undefined;if(!sourceFile||!requesterFile||!sourceConfigured||!requesterConfigured)throw new Error();const source=loadFinancialSourceAdmission(env,now),requester=loadFinancialRequesterBinding(env,now);if(source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||source.intent_id!==requester.intent_id||!sameFinancialBinding(source,requester))throw new Error();return source;}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}
+}
+export function loadFinancialRequesterBinding(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{try{const expected=env.TAMEION_FINANCIAL_REQUESTER_SHA256??'';const packet=parseFinancialRequester(openApproved('financial-requester.json',expected),expected,env,now);if(packet.source_sha256!==env.TAMEION_FINANCIAL_SOURCE_SHA256)throw new Error();return packet;}catch{throw new Error('FINANCIAL_REQUESTER_UNAVAILABLE');}}
+export function sameFinancialBinding(source:FinancialSourceAdmission,requester:FinancialRequesterBinding):boolean{
+ const keys='binding' in source?['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256'] as const:['deployment_id'] as const;
+ return ('binding' in source)===('binding' in requester)&&keys.every(key=>(source as unknown as Record<string,unknown>)[key]===(requester as unknown as Record<string,unknown>)[key]);
 }
