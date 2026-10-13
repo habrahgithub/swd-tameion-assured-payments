@@ -29,7 +29,26 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
   if(!session)return;const csrf=session.csrf_token;++generation.current;controller.current?.abort();setSession(null);setBalance(null);setBusy(false);setMessage('Logging out…');
   try{const response=await fetcher('/api/operator/logout',{method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Tameion-CSRF':csrf},body:'{}'});const value=await response.json();setMessage(response.ok&&value.revoked===true?'Logged out.':'Logout unverified. Private view is disabled; server revocation could not be confirmed.');}catch{setMessage('Logout unverified. Private view is disabled; server revocation could not be confirmed.');}
  }
- if(!session)return <main className="mx-auto max-w-xl space-y-4 p-6"><h1 className="text-xl font-semibold">Tameion operator access</h1><p role="status">{message}</p><a className="underline" href="/operator/login">Sign in</a></main>;
+ if(!session)return <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-5 py-6 sm:px-8 sm:py-8">
+  <header className="border-b border-[var(--color-border)] pb-4">
+   <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--color-ink-muted)]">Tameion</p>
+   <p className="mt-1 text-base font-semibold text-[var(--color-ink)]">Assured Payment — Command Center</p>
+  </header>
+  <section className="grid flex-1 items-center gap-8 py-10 lg:grid-cols-[minmax(0,1fr)_23rem] lg:gap-16">
+   <div className="max-w-xl">
+    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--color-ink-muted)]">Protected workspace</p>
+    <h1 className="mt-2 text-3xl font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-4xl">Tameion operator access</h1>
+    <p className="mt-4 max-w-lg text-base leading-7 text-[var(--color-ink-muted)]">Review genuine obligations and request a fresh, read-only Arc Testnet wallet balance from one protected dashboard.</p>
+    <p className="mt-4 border-s-2 border-[var(--color-accent)] ps-3 text-sm leading-6 text-[var(--color-ink)]">Signing in grants access to private viewing. Payment authorization and execution remain separately controlled.</p>
+   </div>
+   <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[0_18px_50px_rgba(11,19,43,0.06)] sm:p-6">
+    <h2 className="text-lg font-semibold text-[var(--color-ink)]">Continue to your workspace</h2>
+    <p role="status" className="mt-2 text-sm leading-6 text-[var(--color-ink-muted)]">{message}</p>
+    <a className="mt-5 flex min-h-11 w-full items-center justify-center rounded bg-[var(--color-ink)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]" href="/operator/login">Sign in securely</a>
+   </div>
+  </section>
+  <footer className="border-t border-[var(--color-border)] pt-4 text-xs text-[var(--color-ink-muted)]">Private operator access · No assurance, no execution</footer>
+ </main>;
  const controls=<details className="absolute right-4 top-1 z-30"><summary className="flex min-h-11 cursor-pointer items-center rounded border bg-[var(--color-surface)] px-3 text-sm">Operator</summary><section aria-label="Operator session" className="absolute right-0 top-full flex w-[min(300px,calc(100vw-32px))] flex-wrap items-center gap-2 rounded border bg-[var(--color-surface)] p-3 text-xs shadow-lg"><span>Operator session verified</span><button className="min-h-11 rounded border px-3" onClick={logout}>Log out</button></section></details>;
  const walletSummary=<section aria-label="Read-only wallet balance" className="flex flex-wrap items-center justify-between gap-3 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
   <div className="min-w-0 flex-1 basis-full sm:basis-0"><h2 className="text-sm font-semibold">Wallet balance status</h2>
