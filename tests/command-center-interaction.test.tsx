@@ -39,8 +39,8 @@ function openAdditionalTools() {
  * model the operator explicitly choosing the first fixture row after the
  * unselected entry screen has loaded. The dedicated entry test uses rtlRender
  * directly and asserts that no row is selected by default. */
-function renderWithExplicitFirstSelection() {
-  const result = rtlRender(<CommandCenter />);
+function renderWithExplicitFirstSelection(csrfToken?: string) {
+  const result = rtlRender(<CommandCenter csrfToken={csrfToken} />);
   void waitFor(() => {
     const main = screen.getByRole("main");
     const row = main.querySelector<HTMLButtonElement>("button[data-obligation-id]");
@@ -1778,7 +1778,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
-  it("allows only a current reviewed PAY assessment to become authorization eligible", async () => {
+  it("submits a current reviewed PAY authorization with the verified session CSRF token", async () => {
     const obligations = ["OBL-A", "OBL-B", "OBL-C", "OBL-D", "OBL-E"].map((id) => ({
       ...obligation(id, true),
       decision: id === "OBL-A" ? "PAY" : "HOLD",
@@ -1792,7 +1792,7 @@ describe("Command Center mounted Operational Report", () => {
       ? Promise.resolve(response({ obligations, sole_pay_candidate_id: "OBL-A" }))
       : Promise.resolve(response(pay)));
 
-    renderWithExplicitFirstSelection();
+    renderWithExplicitFirstSelection("verified-session-csrf");
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
     navigateStage("Assessment");
@@ -1800,8 +1800,11 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     navigateStage("Authorization");
 
-    expect(screen.getByRole("button", { name: "Authorize payment" })).toBeTruthy();
-    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Authorize payment" }));
+    await waitFor(() => {
+      const approval = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST");
+      expect(approval?.[1]?.headers).toMatchObject({ "X-Tameion-CSRF": "verified-session-csrf" });
+    });
   });
 
   it("marks retained detail stale and offers retry when post-action refresh reads fail", async () => {

@@ -1837,7 +1837,7 @@ function DemoStage({ title, value }: { title: string; value: string }) {
   );
 }
 
-export function CommandCenter({operatorControls,walletSummary,walletBalance}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance}={}) {
+export function CommandCenter({operatorControls,walletSummary,walletBalance,csrfToken}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance;csrfToken?:string}={}) {
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
@@ -1863,6 +1863,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
   const selectionGeneration = useRef(0);
   const stageHeadingRef = useRef<HTMLHeadingElement>(null);
   const focusConfirmedStageRef = useRef(false);
+  const postCommand = (url: string, body?: unknown, headers: Record<string, string> = {}) =>
+    postJson(url, body, { ...headers, ...(csrfToken ? { "X-Tameion-CSRF": csrfToken } : {}) });
 
   const showStage = (stage: LifecycleStage) => {
     setViewedStage(stage);
@@ -2133,7 +2135,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
         assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
         if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
       }
-      const result = await postJson(`/api/obligations/${obligationId}/assess`, undefined, {
+      const result = await postCommand(`/api/obligations/${obligationId}/assess`, undefined, {
         "Idempotency-Key": assessmentRequestKey.current.key,
       });
       if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
@@ -2677,7 +2679,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
       if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
           !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
-      void run("execute", () => postJson(`/api/obligations/${selectedId}/execute`, {
+      void run("execute", () => postCommand(`/api/obligations/${selectedId}/execute`, {
         expected_version: detail.aggregate.aggregate_version,
         packet_sha256: detail.execution_packet!.packet_sha256,
         pae_instruction_hash: detail.sealed_pae_instruction_hash,
@@ -2686,7 +2688,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
     } };
   } else if (viewedStage === "Assessment" && proxyPreparationReady && detail) {
     workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized operator", run: () => {
-      void run("proxy preflight", () => postJson("/api/internal/demo/real-testnet-payment/preflight", {
+      void run("proxy preflight", () => postCommand("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
       }));
@@ -2698,7 +2700,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
   } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
     workspaceAction = { label: "Authorize payment", actor: "Authorized approver · identity not shown", run: () => {
       if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady || killSwitchView !== "inactive") return;
-      void run("approve", () => postJson(`/api/obligations/${selectedId}/approve`, {
+      void run("approve", () => postCommand(`/api/obligations/${selectedId}/approve`, {
         expected_version: Number(authorizationAssessment.aggregate_version),
         reviewed_assessment_id: authorizationAssessment.assessment_id,
         reviewed_assessment_hash: authorizationAssessment.assessment_hash,
@@ -3275,12 +3277,12 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance}:{op
                     <div className="flex gap-2">
                       <button
                         disabled={busy || detailState !== "loaded" || !selectedId}
-                        onClick={() => run("kill-switch", () => postJson(`/api/obligations/${selectedId}/kill-switch`, { action: "ACTIVATE", scope: "TRANSACTION" }))}
+                        onClick={() => run("kill-switch", () => postCommand(`/api/obligations/${selectedId}/kill-switch`, { action: "ACTIVATE", scope: "TRANSACTION" }))}
                         className="min-h-11 rounded border border-[var(--color-danger)] px-3 py-2 text-[12px] font-semibold text-[var(--color-danger)] transition hover:bg-[var(--color-danger)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                       >Disable this obligation</button>
                       <button
                         disabled={busy || detailState !== "loaded" || !selectedId}
-                        onClick={() => run("kill-switch", () => postJson(`/api/obligations/${selectedId}/kill-switch`, { action: "DEACTIVATE", scope: "TRANSACTION" }))}
+                        onClick={() => run("kill-switch", () => postCommand(`/api/obligations/${selectedId}/kill-switch`, { action: "DEACTIVATE", scope: "TRANSACTION" }))}
                         className="min-h-11 rounded border border-[var(--color-border)] px-3 py-2 text-[12px] font-medium text-[var(--color-ink)] transition hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-40"
                       >Re-enable</button>
                     </div>
