@@ -16,7 +16,10 @@ export function parseOperatorPolicy(env:Record<string,string|undefined> = proces
     const origins=z.array(z.string()).min(1).max(8).parse(JSON.parse(env.TAMEION_ALLOWED_ORIGINS??"null")).map(canonicalApprovalOrigin);
     if(new Set(origins).size!==origins.length||env.TAMEION_INGRESS_MODE!=="vercel-direct-v1")throw new Error("policy");
     const deployment=loadDeploymentApproval(env);
-    if(JSON.stringify([...origins].sort())!==JSON.stringify(deployment.origins.map(canonicalApprovalOrigin).sort())||env.VERCEL!=="1"||env.VERCEL_ENV!==deployment.environment||env.VERCEL_PROJECT_ID!==deployment.project_id||env.VERCEL_DEPLOYMENT_ID!==deployment.deployment_id)throw new Error("mapping");
+    const runtimeIdentityMatches="deployment_id" in deployment
+      ? env.VERCEL_DEPLOYMENT_ID===deployment.deployment_id
+      : env.VERCEL_GIT_COMMIT_SHA===deployment.git_commit_sha;
+    if(JSON.stringify([...origins].sort())!==JSON.stringify(deployment.origins.map(canonicalApprovalOrigin).sort())||env.VERCEL!=="1"||env.VERCEL_ENV!==deployment.environment||env.VERCEL_PROJECT_ID!==deployment.project_id||!runtimeIdentityMatches)throw new Error("mapping");
     if(!/^[0-9a-f]{64,128}$/.test(env.TAMEION_THROTTLE_HMAC_KEY??"")||(env.TAMEION_THROTTLE_HMAC_KEY!.length%2)!==0)throw new Error("key");
     return {origins,deployment,throttleKey:Buffer.from(env.TAMEION_THROTTLE_HMAC_KEY!,"hex")};
   } catch {throw new AccessError("AUTH_UNAVAILABLE",503);}

@@ -62,11 +62,11 @@ secret controls, never this document or a public issue.
 
 - `TAMEION_ALLOWED_ORIGINS`: exact HTTPS origins; `TAMEION_INGRESS_MODE`:
   `vercel-direct-v1`; `TAMEION_INGRESS_RECORD`: approval id, project id,
-  deployment id, environment, `direct_edge=true`,
-  `trusted_proxy_override=false` and exactly matching origins. Runtime
-  `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID` and `VERCEL_ENV` must match.
-  How to provision the generated immutable deployment-id binding remains
-  **UNPROVEN**. Do not weaken equality or invent a wildcard to obtain login.
+  environment, `direct_edge=true`, `trusted_proxy_override=false`, exactly
+  matching origins, and either the preferred exact deployment id or the
+  separately approved Preview-only `git-sha-preview-v1` exact commit SHA.
+  Runtime `VERCEL_PROJECT_ID`, `VERCEL_ENV` and the selected identity must
+  match. No wildcard or branch-only identity is accepted.
 - `TAMEION_THROTTLE_HMAC_KEY`: private compliant hex key;
   `TAMEION_OPERATOR_KEY`: existing operator identity backed by a separately
   provisioned password verifier. DDL alone does not provision that verifier.

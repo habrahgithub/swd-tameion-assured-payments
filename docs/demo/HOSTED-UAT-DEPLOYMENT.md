@@ -2,11 +2,23 @@
 
 This runbook prepares a separately approved **Preview** deployment of the exact accepted candidate. Offline tests and local Next traces do not establish a deployed runtime. No production promotion, SQL, credential provisioning, payment execution, or retry of original 003 is admitted by this document.
 
-## Why approval is packaged
+## Approval bindings
 
-The ingress policy requires an independently approved exact deployment ID. A deployment environment snapshot is fixed at creation; the inspected Vercel 59.26.0 continuation sends files, not replacement environment variables. Package the owner-approved nonsecret record as private server build input after reserving the actual deployment. Never copy runtime facts into a generated approval, override `VERCEL_DEPLOYMENT_ID`, or substitute a custom Skew Protection ID.
+The preferred ingress policy uses an independently approved exact deployment ID. A deployment environment snapshot is fixed at creation; the inspected Vercel 59.26.0 continuation sends files, not replacement environment variables. Package the owner-approved nonsecret record as private server build input after reserving the actual deployment. Never copy runtime facts into a generated approval, override `VERCEL_DEPLOYMENT_ID`, or substitute a custom Skew Protection ID.
 
-The production parser remains the authority for the strict record schema. The fixed server path is `.tameion/deployment-approval.json`, at most 16 KiB. Missing package permits an explicitly configured valid `TAMEION_INGRESS_RECORD` for legacy environments. A present malformed/unreadable/oversize package, invalid environment record, or conflicting sources fails closed. Identical records are permitted. Runtime project, deployment, environment, direct-edge mode, allowed origins, and throttle-key checks remain mandatory. No repository or provider is constructed before ingress succeeds.
+When the Vercel team does not support manual deployment provisioning, AXIS may separately approve the bounded `git-sha-preview-v1` fallback below. It binds a normal Git Preview to one exact 40-character lowercase Git SHA, the approved Vercel project, the Preview environment, and the approved HTTPS origins. It cannot authorize Production and cannot contain a deployment ID. The preferred deployment-ID path remains unchanged.
+
+The production parser remains the authority for both strict record schemas. The fixed server path is `.tameion/deployment-approval.json`, at most 16 KiB. Missing package permits an explicitly configured valid `TAMEION_INGRESS_RECORD`. A present malformed/unreadable/oversize package, invalid environment record, or conflicting sources fails closed. Identical records are permitted. Runtime project, selected exact identity, environment, direct-edge mode, allowed origins, and throttle-key checks remain mandatory. No repository or provider is constructed before ingress succeeds.
+
+### Exact-Git-SHA Preview fallback
+
+Use this only after manual provisioning has failed cleanly before deployment creation and AXIS/PRIME has approved this specific fallback. Configure the branch-scoped Preview `TAMEION_INGRESS_RECORD` with exact canonical JSON:
+
+```json
+{"approval_id":"OWNER_GIT_SHA_PREVIEW_APPROVAL","binding":"git-sha-preview-v1","project_id":"APPROVED_PROJECT_ID","git_commit_sha":"EXACT_40_CHARACTER_LOWERCASE_GIT_SHA","environment":"preview","direct_edge":true,"trusted_proxy_override":false,"origins":["https://owner-approved-new-private-alias"]}
+```
+
+Commit and verify the source before creating that record. Then redeploy the Git deployment for that same commit so the new environment snapshot is applied without changing `VERCEL_GIT_COMMIT_SHA`. The runtime admits access only when Vercel exposes `VERCEL=1`, `VERCEL_ENV=preview`, the exact project ID and the exact approved Git SHA. Wrong or missing SHA, Production, mixed `deployment_id` authority, project drift, origin drift, or malformed configuration fails closed. After READY, assign only the pre-approved private alias to that exact deployment and preserve authenticated alias-to-deployment/project/team/SHA readback plus anonymous SSO-denial evidence before login UAT. Do not select an unverified latest deployment or push an empty commit, because either breaks the exact-SHA approval.
 
 ## Retained owner prerequisites
 

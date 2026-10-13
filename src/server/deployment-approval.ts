@@ -10,20 +10,31 @@ export function canonicalApprovalOrigin(value: string): string {
   if (url.protocol !== "https:" || url.origin !== value || url.username || url.password || url.pathname !== "/" || url.search || url.hash || url.hostname.includes("*") || url.hostname.endsWith(".")) throw new Error("origin");
   return url.origin;
 }
-export const deploymentApprovalSchema = z.object({
+const approvalBase = {
   approval_id: z.string().min(1).max(128),
   project_id: z.string().min(1).max(128),
-  deployment_id: z.string().min(1).max(128),
-  environment: z.enum(["preview", "production"]),
   direct_edge: z.literal(true),
   trusted_proxy_override: z.literal(false),
   origins: z.array(z.string()).min(1).max(8),
-}).strict().superRefine((record, context) => {
+};
+function canonicalOrigins(record: { origins: string[] }, context: z.RefinementCtx): void {
   try {
     record.origins.forEach(canonicalApprovalOrigin);
     if (new Set(record.origins).size !== record.origins.length) throw new Error("duplicate origin");
   } catch { context.addIssue({ code: "custom", message: "Canonical unique HTTPS origins required" }); }
-});
+}
+const reservedDeploymentApprovalSchema = z.object({
+  ...approvalBase,
+  deployment_id: z.string().min(1).max(128),
+  environment: z.enum(["preview", "production"]),
+}).strict().superRefine(canonicalOrigins);
+const gitShaPreviewApprovalSchema = z.object({
+  ...approvalBase,
+  binding: z.literal("git-sha-preview-v1"),
+  git_commit_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  environment: z.literal("preview"),
+}).strict().superRefine(canonicalOrigins);
+export const deploymentApprovalSchema = z.union([reservedDeploymentApprovalSchema, gitShaPreviewApprovalSchema]);
 export type DeploymentApproval = z.infer<typeof deploymentApprovalSchema>;
 export function parseDeploymentApproval(contents: string): DeploymentApproval {
   if (Buffer.byteLength(contents, "utf8") > MAX_APPROVAL_BYTES) throw new Error("Approval too large");
