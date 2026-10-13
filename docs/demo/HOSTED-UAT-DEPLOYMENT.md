@@ -100,7 +100,7 @@ Only then, under the separate execution window, continue **the same reserved ID*
 
 ## Hosted acceptance after separate authorization
 
-Verify actual runtime identity equals the independently approved record, and reject mismatch before repository/provider access. Check fail-closed unauthenticated protected routes and cache headers before authorized login. Then perform the bounded owner login, manual balance refresh and logout checks, including expiry/revocation and desktop/mobile UAT. Auth/session/throttle writes and read-only provider calls require explicit coverage in the effect packet. Record exact wallet/network/token/decimals and observation time without exposing credentials.
+Verify actual runtime identity equals the independently approved record, and reject mismatch before repository/provider access. Check fail-closed unauthenticated protected routes and cache headers before authorized login. Then perform the bounded owner login, one automatic balance refresh after session verification, retained manual refresh and logout checks, including expiry/revocation and desktop/mobile UAT. Auth/session/throttle writes and read-only provider calls require explicit coverage in the effect packet. Record exact wallet/network/token/decimals and observation time without exposing credentials.
 
 Financial routes stay disabled. Mock receipts and UI screenshots are non-economic evidence. Original 003 remains OUTCOME_UNVERIFIED / NO_RETRY: no attempt, reassessment, preflight, reset, authorization or execution. A failed or missing live proof means UAT remains unaccepted; do not repair by weakening identity checks.
 

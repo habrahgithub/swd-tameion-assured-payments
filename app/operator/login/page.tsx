@@ -7,13 +7,13 @@ export default function OperatorLogin(){
   event.preventDefault();if(busy)return;const form=event.currentTarget,data=new FormData(form);setBusy(true);setMessage('Verifying operator access…');
   try{
    const bootstrap=await fetch('/api/operator/csrf',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF-Bootstrap':'1'},body:'{}',signal:AbortSignal.timeout(10000)});const challenge=await bootstrap.json();if(!bootstrap.ok||typeof challenge.csrf_token!=='string')throw new Error();
-   const response=await fetch('/api/operator/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF':challenge.csrf_token},body:JSON.stringify({username:data.get('username'),password:data.get('password')}),signal:AbortSignal.timeout(15000)});const result=await response.json();if(!response.ok||result.authenticated!==true)throw new Error();window.location.assign('/');
+   const response=await fetch('/api/operator/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF':challenge.csrf_token},body:JSON.stringify({username:data.get('username'),password:data.get('password')}),signal:AbortSignal.timeout(15000)});const result=await response.json();if(!response.ok||result.authenticated!==true)throw new Error();window.location.assign('/?refresh_balance=1');
   }catch{setMessage('Sign-in could not be verified. Access may be unavailable or rate limited. Try again after the stated access limit.');}
   finally{form.reset();setBusy(false);}
  }
  const details=<dl className="mt-7 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1">
     <div className="border-s-2 border-[var(--color-border-strong)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Private obligation review</dt><dd className="mt-1 text-[var(--color-ink-muted)]">Business records remain available only to approved finance users.</dd></div>
-    <div className="border-s-2 border-[var(--color-border-strong)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Current settlement balance</dt><dd className="mt-1 text-[var(--color-ink-muted)]">The USDC balance updates only when you request a fresh check.</dd></div>
+    <div className="border-s-2 border-[var(--color-border-strong)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Current settlement balance</dt><dd className="mt-1 text-[var(--color-ink-muted)]">The USDC balance refreshes after sign-in and can be refreshed again at any time.</dd></div>
     <div className="border-s-2 border-[var(--color-accent)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Separate payment approval</dt><dd className="mt-1 text-[var(--color-ink-muted)]">Signing in does not approve or release a payment.</dd></div>
     </dl>;
  return <OperatorAccessShell eyebrow="Secure finance access" title="Sign in to Tameion" description="Open the private payment workspace to review obligations and check the current Arc Testnet USDC settlement balance." details={details} brandHref="/">

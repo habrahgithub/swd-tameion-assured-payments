@@ -94,7 +94,7 @@ prerequisites are approved and provisioned, owner UAT should confirm:
   viewed/current stage and one existing legal action visible while scrolling.
   A payment stop or unknown stop state offers no approval. A sealed instruction
   shows recorded authorization rather than asking for another PAY review.
-- Wallet balance status is visible before opening Operator. One manual refresh
+- Wallet balance status is visible before opening Operator. One automatic refresh after verified login, with a retained manual refresh
   shows amount, network and observation time with its read-only caveat; it does
   not establish affordability, fees or payment readiness. Expiry/logout clears
   the private view and rejects a late observation.

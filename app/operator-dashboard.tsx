@@ -15,14 +15,17 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
    if(response.status===401){setMessage('Sign-in required. Use your approved finance account to continue.');return;}
    if(response.status===403){setMessage('Access could not be verified from this location. Use the approved workspace address or ask the platform owner to verify access.');return;}
    if(!response.ok||value.authenticated!==true||typeof value.csrf_token!=='string'||typeof value.expires_at!=='string'||!Number.isFinite(Date.parse(value.expires_at))||Date.parse(value.expires_at)<=Date.now()||Date.parse(value.expires_at)>Date.now()+3600000)throw new Error();
-   setSession({csrf_token:value.csrf_token,expires_at:value.expires_at});setMessage('Balance not verified. Refresh manually.');
+   const verifiedSession={csrf_token:value.csrf_token,expires_at:value.expires_at};setSession(verifiedSession);
+   const loginRefresh=typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('refresh_balance')==='1';
+   if(loginRefresh){const url=new URL(window.location.href);url.searchParams.delete('refresh_balance');window.history.replaceState(null,'',`${url.pathname}${url.search}${url.hash}`);void refresh(verifiedSession);}
+   else setMessage('Balance not verified. Refresh manually.');
   }).catch(()=>{if(current===generation.current)setMessage('Access service unavailable. Ask the platform owner to verify access.');});
   return()=>{++generation.current;abort.abort();controller.current?.abort();};
  },[fetcher]);
  useEffect(()=>{if(!session)return;const timer=setTimeout(()=>{++generation.current;controller.current?.abort();setSession(null);setBalance(null);setBusy(false);setMessage('Session expired. Sign in again.');},Math.max(0,Date.parse(session.expires_at)-Date.now()));return()=>clearTimeout(timer);},[session]);
- async function refresh(){
-  if(!session||busy)return;const current=generation.current;controller.current?.abort();const abort=new AbortController();controller.current=abort;setBusy(true);setBalance(null);setMessage('Checking wallet balance…');
-  try{const response=await fetcher('/api/wallet/balance/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',signal:abort.signal,headers:{'Content-Type':'application/json','X-Tameion-CSRF':session.csrf_token},body:'{}'});const value=await response.json();if(current!==generation.current)return;
+ async function refresh(activeSession=session){
+  if(!activeSession||busy)return;const current=generation.current;controller.current?.abort();const abort=new AbortController();controller.current=abort;setBusy(true);setBalance(null);setMessage('Checking wallet balance…');
+  try{const response=await fetcher('/api/wallet/balance/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',signal:abort.signal,headers:{'Content-Type':'application/json','X-Tameion-CSRF':activeSession.csrf_token},body:'{}'});const value=await response.json();if(current!==generation.current)return;
    if(response.status===401){++generation.current;setSession(null);setBusy(false);setMessage('Session expired or revoked. Sign in again.');throw new Error();}
    if(!response.ok||value.asset!=='USDC'||typeof value.amount!=='string'||!/^(0|[1-9]\d*)(\.\d{1,18})?$/.test(value.amount)||typeof value.captured_at!=='string'||!Number.isFinite(Date.parse(value.captured_at))||value.verification!=='READ_ONLY_BALANCE')throw new Error();
    setBalance(value);setMessage('Read-only observation. This does not establish affordability, fees or payment readiness.');
@@ -44,7 +47,7 @@ export function OperatorDashboard({fetcher=fetch}:{fetcher?:typeof fetch}){
    {balance&&<p className="tabular text-base font-semibold">{balance.amount} USDC · {balance.network}<span className="block text-xs font-normal">Observed <time dateTime={balance.captured_at}>{balance.captured_at}</time></span></p>}
    <p role="status" className="text-xs text-[var(--color-ink-muted)]">{message}</p>
   </div>
-  <button className="min-h-11 rounded border px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={refresh} disabled={busy}>Refresh wallet balance</button>
+  <button className="min-h-11 rounded border px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={()=>void refresh()} disabled={busy}>Refresh wallet balance</button>
  </section>;
  return <CommandCenter operatorControls={controls} walletSummary={walletSummary} walletBalance={balance??undefined}/>;
 }
