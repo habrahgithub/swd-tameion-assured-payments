@@ -22,9 +22,9 @@ import {
 describe("authorization copy follows prepared proxy state", () => {
   it("does not describe an existing proxy as a missing payment intent before PAE sealing", () => {
     expect(authorizationPanelCopy("loaded", true, false, true, false)).toBe(
-      "The Arc Testnet proxy is prepared. Current assessment and assurance determine whether authorization is available; no PAE is sealed.",
+      "The Arc Testnet settlement instruction is prepared. The payment review and controls determine whether approval is available.",
     );
-    expect(authorizationPanelCopy("loaded", true, false, false, false)).toContain("no payment intent exists");
+    expect(authorizationPanelCopy("loaded", true, false, false, false)).toContain("No payment instruction exists");
   });
 });
 
@@ -97,18 +97,18 @@ describe("Command Center kill-switch presentation", () => {
   it("never encodes an inactive kill switch as 'Execution allowed' (release is separate, still NOT_GRANTED)", () => {
     expect(killSwitchPresentation("loaded", false)).toBe("inactive");
     expect(killSwitchLabel("inactive")).not.toBe("Execution allowed");
-    expect(killSwitchLabel("inactive")).toContain("does not grant release");
+    expect(killSwitchLabel("inactive")).toContain("separate approval is still required");
   });
 
   it("reflects an engaged kill switch", () => {
     expect(killSwitchPresentation("loaded", true)).toBe("engaged");
-    expect(killSwitchLabel("engaged")).toBe("Execution disabled");
+    expect(killSwitchLabel("engaged")).toBe("Payments disabled");
   });
 
   it("does not present the retained kill-switch value as current when selected detail is stale", () => {
     expect(killSwitchPresentation("stale", false)).toBe("stale");
-    expect(killSwitchLabel("stale")).toContain("stale");
-    expect(killSwitchLabel("stale")).toContain("retry");
+    expect(killSwitchLabel("stale")).toContain("out of date");
+    expect(killSwitchLabel("stale")).toContain("refresh");
   });
 });
 
@@ -216,15 +216,15 @@ describe("Command Center server-derived authority headline", () => {
 
   it("shows execution suspended instead of ready when server truth reports a kill switch", () => {
     expect(workflowState(detailWithReleaseAuthority("SUSPENDED_KILL_SWITCH"))).toEqual({
-      label: "Execution suspended",
+      label: "Payment release suspended",
       tone: "warning",
-      explanation: "A kill switch prevents release of the currently sealed PAE.",
+      explanation: "An emergency payment stop prevents release of the approved instruction.",
     });
   });
 
   it("describes a sealed PAE as requiring worker re-verification, not unconditional readiness", () => {
     const state = workflowState(detailWithReleaseAuthority("TAMEION_PAE_REVERIFY_REQUIRED"));
-    expect(state.label).toBe("Authorized — PAE sealed");
+    expect(state.label).toBe("Payment instruction approved");
     expect(state.explanation).toContain("must still re-verify");
     expect(state.explanation).not.toContain("ready for execution");
   });
@@ -297,7 +297,7 @@ describe("authorization blockers name the first unmet prerequisite in order", ()
   });
 
   it("reports an engaged kill switch as a blocker", () => {
-    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: true, killSwitchEngaged: true }).join(" ")).toContain("Kill switch engaged");
+    expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: true, killSwitchEngaged: true }).join(" ")).toContain("Emergency payment stop is active");
   });
 });
 
@@ -307,7 +307,7 @@ describe("reconciliation leads with the absence of submission", () => {
   });
 
   it("labels a stored execution as simulated and not an Arc settlement", () => {
-    expect(reconciliationLeadLine("loaded", { status: "SUBMITTED" })).toBe("Simulated execution SUBMITTED; no Arc settlement to reconcile.");
+    expect(reconciliationLeadLine("loaded", { status: "SUBMITTED" })).toBe("Illustrative payment status: SUBMITTED; no Arc settlement to reconcile.");
   });
 });
 

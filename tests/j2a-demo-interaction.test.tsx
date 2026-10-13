@@ -19,9 +19,9 @@ describe("retired fixed-ID Arc Testnet demo surface", () => {
 
     render(<CommandCenter />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText("Demo tools")).toBeNull();
-    expect(screen.queryByText("Read-only sample")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show sample playback" })).toBeNull();
+    expect(screen.queryByText("Training scenario")).toBeNull();
+    expect(screen.queryByText("Illustrative payment journey")).toBeNull();
+    expect(screen.queryByRole("button", { name: "View example" })).toBeNull();
     expect(fetchMock.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET"]);
   });
 });

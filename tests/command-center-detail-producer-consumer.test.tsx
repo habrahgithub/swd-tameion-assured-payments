@@ -367,7 +367,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     })).toBeTruthy();
     expect(openStageNavigator().querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");
     expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("current-next-step").textContent).not.toContain("Prime · exact-packet authorization");
+    expect(screen.getByTestId("current-next-step").textContent).not.toContain("Final payment authorization");
     expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -557,12 +557,12 @@ describe("real detail GET producer-consumer packet controls", () => {
       { name: "evidence omitted", body: asSettled(undefined, "omit"), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "evidence null", body: asSettled(null), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "evidence incomplete", body: asSettled({ status: "CONFIRMED", atomic_amount: expectedAtomic }), expected: "Recorded as SETTLED — reconciliation evidence unavailable", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "provider status contradicts SETTLED", body: asSettled({ ...exactEvidence, status: "PENDING" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "provider amount contradicts the instruction", body: asSettled({ ...exactEvidence, atomic_amount: "1" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "provider destination contradicts the instruction", body: asSettled({ ...exactEvidence, destination_address: "0x1111111111111111111111111111111111111111" }), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "execution ledger amount contradicts the sealed instruction", body: (() => { const body = asSettled(exactEvidence); body.execution.atomic_amount = "1"; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "packet instruction amount contradicts packet settlement amount", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.amount = "1.000000"; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
-      { name: "packet instruction decimals contradict the token", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.decimals = 8; return body; })(), expected: "Reconciliation evidence mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider status contradicts SETTLED", body: asSettled({ ...exactEvidence, status: "PENDING" }), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider amount contradicts the instruction", body: asSettled({ ...exactEvidence, atomic_amount: "1" }), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "provider destination contradicts the instruction", body: asSettled({ ...exactEvidence, destination_address: "0x1111111111111111111111111111111111111111" }), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "execution ledger amount contradicts the sealed instruction", body: (() => { const body = asSettled(exactEvidence); body.execution.atomic_amount = "1"; return body; })(), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "packet instruction amount contradicts packet settlement amount", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.amount = "1.000000"; return body; })(), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
+      { name: "packet instruction decimals contradict the token", body: (() => { const body = asSettled(exactEvidence); body.execution_packet.packet.circle_arc_execution_instruction.decimals = 8; return body; })(), expected: "Settlement record mismatch — review required", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
       { name: "confirmed exact instruction", body: asSettled(exactEvidence), expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", forbidden: null },
       { name: "18-decimal provider evidence keeps canonical six-decimal ledger scale", body: exactEighteenDecimalEvidenceBody, expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", forbidden: null },
       { name: "simulated ledger record", body: (() => { const body = asSettled(exactEvidence); body.truth.settlement_truth.runtime = "SIMULATED"; return body; })(), expected: "Simulated record — no Arc settlement", forbidden: /TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i },
@@ -602,16 +602,16 @@ describe("real detail GET producer-consumer packet controls", () => {
 
       fireEvent.click(within(receipt).getByText("View reconciliation evidence"));
       expect(receipt.textContent, scenario.name).toContain(scenario.expected);
-      expect(receipt.textContent, scenario.name).toContain("Evidence classification");
-      fireEvent.click(within(screen.getByRole("main")).getByText("Developer & audit evidence"));
+      expect(receipt.textContent, scenario.name).toContain("Settlement record classification");
+      fireEvent.click(within(screen.getByRole("main")).getByText("Control and audit records"));
       const mainText = screen.getByRole("main").textContent ?? "";
       expect(mainText, `${scenario.name} developer evidence`).toContain(scenario.expected);
       if (scenario.forbidden) expect(mainText, scenario.name).not.toMatch(scenario.forbidden);
       if (scenario.name.startsWith("evidence ") || scenario.name === "instruction identity cannot be rebound") {
-        expect(mainText).toContain("Exact provider amount and destination verification cannot be established from the stored record.");
+        expect(mainText).toContain("The recorded settlement amount and destination cannot be verified. Review the settlement record and do not send the instruction again.");
       }
-      fireEvent.click(within(screen.getByRole("main")).getByText("Additional tools"));
-      fireEvent.click(within(screen.getByRole("main")).getByRole("button", { name: "Operational Report (secondary)" }));
+      fireEvent.click(within(screen.getByRole("main")).getByText("Related payment information"));
+      fireEvent.click(within(screen.getByRole("main")).getByRole("button", { name: "Payment review report" }));
       const reportText = screen.getByRole("main").textContent ?? "";
       const report = screen.getByRole("region", { name: /Operational report for/ });
       try {
@@ -675,7 +675,7 @@ describe("real detail GET producer-consumer packet controls", () => {
         const body = structuredClone(produced);
         body.execution.provider_evidence.provider_atomic_amount = "1";
         return body;
-      })(), expected: "Reconciliation evidence mismatch — review required" },
+      })(), expected: "Settlement record mismatch — review required" },
     ];
     for (const scenario of scenarios) {
       cleanup();
@@ -780,7 +780,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Reconciliation");
     const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
     expect(receipt.textContent).toContain("Recorded as SETTLED — reconciliation evidence unavailable");
-    expect(receipt.textContent).toContain("Exact provider amount and destination verification cannot be established from the stored record.");
+    expect(receipt.textContent).toContain("The recorded settlement amount and destination cannot be verified. Review the settlement record and do not send the instruction again.");
     expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
     expect(main.textContent).not.toMatch(/TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION|Settlement matches the authorized obligation exactly/i);
     expect(screen.queryByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toBeNull();
@@ -907,7 +907,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(awaitingPrime.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
     await renderProducerJson(awaitingPrime);
     navigateStage("Payment");
-    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("awaiting exact-packet authorization");
+    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("awaiting final payment authorization");
     expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
     cleanup();
     fetchMock.mockReset();
@@ -917,7 +917,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(openGate.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
     await renderProducerJson({
       ...openGate,
-      assurance_evidence: { state: "UNAVAILABLE", message: "Assurance evidence is expected but unavailable.", control_results: [] },
+      assurance_evidence: { state: "UNAVAILABLE", message: "Payment control record is expected but unavailable.", control_results: [] },
     });
     navigateStage("Payment");
     const submit = screen.getByRole("button", { name: "Execute Test Payment" });
@@ -962,8 +962,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     openStageNavigator();
     const lifecycleBeforeEvidence = screen.getByRole("list", { name: "Payment lifecycle" }).textContent;
     const paymentStateBeforeEvidence = screen.getByRole("button", { name: "Payment" }).getAttribute("data-stage-state");
-    fireEvent.click(screen.getByText("Developer & audit evidence"));
-    fireEvent.click(screen.getByText("Assurance evidence"));
+    fireEvent.click(screen.getByText("Control and audit records"));
+    fireEvent.click(screen.getByText("Payment control record"));
     const renderedOrder = Array.from(screen.getByText(/Stored assurance evidence — PASS/).parentElement!.querySelectorAll("li span:first-child"))
       .map((entry) => entry.textContent);
     expect(renderedOrder).toEqual(expectedStoredOrder);
@@ -1205,7 +1205,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(obligationRow(prepared.selectedId).textContent).not.toContain("Assessment required");
     expect(authorizedMain.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
     navigateStage("Assurance");
-    expect((screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect((screen.getByText("Control and audit records").closest("details") as HTMLDetailsElement).open).toBe(false);
     cleanup();
 
     const postProxy = await proxyPreparedWithoutCurrentAssessment();
@@ -1222,7 +1222,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(postProxyMain.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
     openStageNavigator();
     expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect((screen.getByText("Control and audit records").closest("details") as HTMLDetailsElement).open).toBe(false);
     expect(screen.queryByText(/Stored assurance evidence/)).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -1274,7 +1274,7 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
     expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Recommendation — PAY");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("Payment eligibility");
     expect(screen.getByTestId("assessment-result-card").textContent).toContain("PAY is advisory for the selected obligation");
     expect(screen.getByTestId("assessment-result-card").textContent).not.toMatch(/selected payment candidate|earliest effective due date/i);
@@ -1311,7 +1311,7 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"] button[aria-label="Assessment"]')?.getAttribute("data-stage-state")).toBe("CURRENT");
     expect(obligationRow(nonCandidateId).getAttribute("aria-current")).toBe("true");
-    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Advisory — PAY");
+    expect(screen.getByTestId("assessment-result-card").textContent).toContain("Recommendation — PAY");
     expect(screen.getByTestId("payment-eligibility").textContent).toContain("Business eligibility, wallet funding, and payment authority are separate checks");
     expect(screen.getByTestId("assessment-result-card").textContent).not.toContain("Back to obligations");
     expect(screen.getByRole("button", { name: "Review current PAY assessment" })).toBeTruthy();
@@ -1342,10 +1342,10 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"]')).toBeNull();
     expect(screen.queryByText("Payment journey")).toBeNull();
-    expect(screen.queryByText(/Activity & evidence/)).toBeNull();
-    expect(screen.queryByText("Developer & audit evidence")).toBeNull();
-    expect(screen.queryByText("Demo tools", { exact: true })).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText(/Payment activity/)).toBeNull();
+    expect(screen.queryByText("Control and audit records")).toBeNull();
+    expect(screen.queryByText("Training scenario", { exact: true })).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
     expect(source.textContent).not.toMatch(/ARC TESTNET|USDC|PAE|Safety Kernel|provider|reconciliation/i);
     expect(main.textContent).toContain("This obligation needs an assessment before it can proceed.");
     expect(main.textContent).toContain("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
@@ -1416,7 +1416,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
     navigateStage("Assessment");
     const card = screen.getByRole("region", { name: "Assessment result" });
-    expect(screen.getByTestId("assessment-provenance").textContent).toMatch(/live AI.*advisory/i);
+    expect(screen.getByTestId("assessment-provenance").textContent).toMatch(/AI-assisted payment review.*advisory/i);
     expect(card.textContent).toContain("Capability boundary");
     expect(card.textContent).toContain("This assessment does not verify invoice contents, match purchase orders or receipts, validate supplier tax, or provide enterprise fraud or duplicate assurance.");
     expect(card.textContent).toContain(fixture.body.current_assessment.race.result.decision_summary);
@@ -1448,9 +1448,9 @@ describe("real detail GET producer-consumer packet controls", () => {
 
       const card = screen.getByRole("region", { name: "Assessment result" });
       expect(screen.getByTestId("assessment-provenance").textContent)
-        .toMatch(/deterministic fallback.*not live AI/i);
+        .toMatch(/rules-based payment review.*advisory/i);
       expect(card.textContent).not.toMatch(/NOT_LIVE_AI|runtime_config_sha256|Model:/);
-      const developerEvidence = screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement;
+      const developerEvidence = screen.getByText("Control and audit records").closest("details") as HTMLDetailsElement;
       expect(developerEvidence.open).toBe(false);
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     } finally {
@@ -1467,17 +1467,17 @@ describe("real detail GET producer-consumer packet controls", () => {
           delete assessment.provider_mode;
           delete assessment.provider_used;
         },
-        expected: /provider source is unavailable.*whether this assessment used live AI is unknown/i,
+        expected: /recommendation source is unavailable/i,
       },
       {
         label: "unknown provider mode",
         edit: (assessment: Record<string, any>) => { assessment.provider_mode = "UNKNOWN"; },
-        expected: /provider source is unavailable.*whether this assessment used live AI is unknown/i,
+        expected: /recommendation source is unavailable/i,
       },
       {
         label: "blocked external provider",
         edit: (assessment: Record<string, any>) => { assessment.provider_mode = "BLOCKED_EXTERNAL"; },
-        expected: /external provider blocked.*live AI is unconfirmed/i,
+        expected: /AI review was unavailable.*source is unconfirmed/i,
       },
     ];
 
@@ -1489,7 +1489,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       await renderProducerJson(body, [], fixture.queue);
       navigateStage("Assessment");
       expect(screen.getByTestId("assessment-provenance").textContent, scenario.label).toMatch(scenario.expected);
-      expect(screen.getByText("Developer & audit evidence").closest("details")?.getAttribute("open")).toBeNull();
+      expect(screen.getByText("Control and audit records").closest("details")?.getAttribute("open")).toBeNull();
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.label).toHaveLength(0);
     }
   });
@@ -1658,9 +1658,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     };
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
-    const developerEvidence = screen.getByText("Developer & audit evidence").closest("details") as HTMLDetailsElement;
+    const developerEvidence = screen.getByText("Control and audit records").closest("details") as HTMLDetailsElement;
     expect(developerEvidence.open).toBe(false);
-    expect(developerEvidence.textContent).toContain("Aggregate version");
+    expect(developerEvidence.textContent).toContain("Obligation version");
     const visibleOutsideTechnicalEvidence = Array.from(main.querySelectorAll("*"))
       .filter((element) => element.children.length === 0 && /aggregate version/i.test(element.textContent ?? ""))
       .filter((element) => !developerEvidence.contains(element));
@@ -1675,7 +1675,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Assessment");
 
     const card = await screen.findByRole("region", { name: "Assessment result" });
-    expect(card.textContent).toContain(`Advisory — ${decision}`);
+    expect(card.textContent).toContain(`Recommendation — ${decision}`);
     expect(card.textContent).toContain(race.result.decision_summary);
     expect(card.textContent).toContain("What this means");
     expect(card.textContent).toContain("What to do next");
@@ -1810,26 +1810,26 @@ describe("real detail GET producer-consumer packet controls", () => {
     const body = await detailJson(fixture.state, fixture.selectedId);
     const { main } = await renderProducerJson(body);
 
-    const activity = screen.getByRole("region", { name: "Activity and evidence" });
-    expect(activity.textContent).toContain("Available evidence history");
+    const activity = screen.getByRole("region", { name: "Payment activity and records" });
+    expect(activity.textContent).toContain("Recorded payment history");
     expect(activity.textContent).toContain(body.settlement_proxy.preflight.captured_at);
     expect(activity.textContent).toContain(body.assurance_evidence.recorded_at);
     expect(activity.textContent).not.toMatch(/approved at|authorization event|execution event/i);
     expect(activity.textContent).toContain("Current authorization state");
-    expect(activity.textContent).toContain("No Tameion execution record is recorded for this instruction.");
+    expect(activity.textContent).toContain("No Tameion payment record is recorded for this instruction.");
     expect(activity.textContent).not.toMatch(/provider submissions\s*[:=]\s*0|zero provider submissions|not submitted to provider/i);
 
-    const developerEvidence = screen.getByText("Developer & audit evidence").closest("details");
+    const developerEvidence = screen.getByText("Control and audit records").closest("details");
     expect(developerEvidence?.open).toBe(false);
     expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
     const postsBefore = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
-    fireEvent.click(screen.getByText("Developer & audit evidence"));
-    expect(screen.getByText("Assessment evidence").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Authorization evidence").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Assurance evidence").closest("details")?.open).toBe(false);
-    expect(screen.getByText("PAE / instruction").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Execution / provider").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Reconciliation evidence").closest("details")?.open).toBe(false);
+    fireEvent.click(screen.getByText("Control and audit records"));
+    expect(screen.getByText("Payment review record").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Approval record").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Payment control record").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Authorized payment instruction").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Payment processing").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Settlement and reconciliation record").closest("details")?.open).toBe(false);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBefore);
 
     cleanup();
@@ -1837,8 +1837,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     malformedTimes.settlement_proxy.preflight.captured_at = "yesterday";
     malformedTimes.assurance_evidence.recorded_at = "October 7, 2026";
     await renderProducerJson(malformedTimes);
-    fireEvent.click(screen.getByText(/Activity & evidence/));
-    const unavailableHistory = screen.getByRole("region", { name: "Activity and evidence" });
+    fireEvent.click(screen.getByText(/Payment activity/));
+    const unavailableHistory = screen.getByRole("region", { name: "Payment activity and records" });
     expect(unavailableHistory.textContent).toContain("No timestamped durable evidence is available in this detail.");
     expect(unavailableHistory.textContent).not.toContain("yesterday");
     expect(unavailableHistory.textContent).not.toContain("October 7, 2026");
@@ -1898,7 +1898,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     navigateStage("Authorization");
 
-    const packet = screen.getByRole("region", { name: "Approver decision packet" });
+    const packet = screen.getByRole("region", { name: "Payment approval decision" });
     const sourceLineage = within(packet).getByRole("region", { name: "Source obligation lineage" });
     const proxyIdentity = within(packet).getByRole("region", { name: "Controlled Arc Testnet proxy" });
     expect(sourceLineage.textContent).toContain("OBL-J0C-001");
@@ -1968,15 +1968,15 @@ describe("real detail GET producer-consumer packet controls", () => {
     await renderProducerJson(body);
     navigateStage("Authorization");
 
-    const packet = screen.getByText("Approver decision packet").closest("section");
-    if (!packet) throw new Error("Approver decision packet section was not rendered.");
+    const packet = screen.getByText("Payment approval decision").closest("section");
+    if (!packet) throw new Error("Payment approval decision section was not rendered.");
     expect(packet.textContent).toContain(`${body.record.amount} ${body.record.currency}`);
     expect(packet.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset}`);
     expect(packet.textContent).toContain("ARC_TESTNET");
     expect(packet.textContent).toContain("OUTSTANDING");
     expect(packet.textContent).not.toContain("No current assessment is available in this detail");
     expect(packet.textContent).toContain("Authorization records approval only. Assurance and execution remain separately gated; approval does not submit payment.");
-    expect(packet.textContent).toContain("Approved instruction is sealed for the Arc Testnet settlement proxy.");
+    expect(packet.textContent).toContain("The Arc Testnet payment instruction is approved.");
     expect(packet.textContent).toContain("Original amount · payable status");
     expect(packet.textContent).toContain("Exact source → settlement amount");
     expect(packet.textContent).toContain("Privacy-safe source counterparty reference");
@@ -2007,7 +2007,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(assurance.textContent).toContain("Payment instruction state: Sealed · single use");
     expect(assurance.textContent).not.toContain("SK-");
     expect(assurance.textContent).not.toContain(body.assurance_evidence.assurance_id);
-    expect(screen.getByText("Developer & audit evidence").closest("details")?.open).toBe(false);
+    expect(screen.getByText("Control and audit records").closest("details")?.open).toBe(false);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -2046,8 +2046,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Payment");
     const recovery = screen.getByRole("region", { name: "Exception recovery" });
     expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("Execution is blocked. No successful settlement is established by this record.");
-    expect(recovery.textContent).toContain("No provider reference is recorded for this instruction.");
-    expect(recovery.textContent).toContain("External provider status is not established by this record.");
+    expect(recovery.textContent).toContain("No settlement-network reference is recorded for this instruction.");
+    expect(recovery.textContent).toContain("External settlement status is not established by this record.");
     expect(recovery.textContent).not.toMatch(/before provider submission|provider submissions\s*[:=]\s*0|zero provider submissions/i);
     expect(main.querySelectorAll('[aria-label="Exception recovery"]')).toHaveLength(1);
 
@@ -2095,8 +2095,8 @@ describe("real detail GET producer-consumer packet controls", () => {
   });
 
   it.each([
-    ["SUBMITTING", "Submission is in progress. Provider outcome has not been reconciled; continue with read-only reconciliation for this same intent. Do not resubmit."],
-    ["SUBMITTED", "Submission is recorded. Provider outcome is awaiting reconciliation for this same intent; reconcile read-only and do not resubmit."],
+    ["SUBMITTING", "Submission is in progress. The settlement outcome has not been reconciled; continue with read-only reconciliation for this same intent. Do not resubmit."],
+    ["SUBMITTED", "Submission is recorded. The settlement outcome is awaiting reconciliation for this same intent; reconcile read-only and do not resubmit."],
   ] as const)("renders the recorded %s execution as pending reconciliation from the detail GET", async (status, expectedReceipt) => {
     const fixture = await preparedAuthorizedState();
     const body = await detailJson(fixture.state, fixture.selectedId);
@@ -2120,8 +2120,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Reconciliation");
     const receipt = screen.getByRole("region", { name: "Reconciliation receipt" });
     expect(receipt.textContent).toContain(expectedReceipt);
-    expect(receipt.textContent).not.toContain("No Tameion execution record is recorded for this instruction");
-    expect(receipt.textContent).toContain("No provider reference is recorded for this instruction");
+    expect(receipt.textContent).not.toContain("No Tameion payment record is recorded for this instruction");
+    expect(receipt.textContent).toContain("No settlement-network reference is recorded for this instruction");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 });

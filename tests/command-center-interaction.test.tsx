@@ -30,7 +30,7 @@ function navigateStage(stage: string) {
 }
 
 function openAdditionalTools() {
-  const summary = screen.getByText("Additional tools");
+  const summary = screen.getByText("Related payment information");
   const disclosure = summary.closest("details") as HTMLDetailsElement;
   if (!disclosure.open) fireEvent.click(summary);
 }
@@ -469,8 +469,8 @@ describe("Command Center mounted Operational Report", () => {
 
     const funding = screen.getByRole("region", { name: "Wallet funding and payment readiness" });
     expect(within(funding).queryByRole("button", { name: /Refresh.*Balance/i })).toBeNull();
-    expect(funding.textContent).toContain("Read-only wallet observation is unavailable");
-    expect(funding.textContent).toContain("NOT VERIFIED");
+    expect(funding.textContent).toContain("A current settlement balance is unavailable");
+    expect(funding.textContent).toContain("not verified");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -542,18 +542,18 @@ describe("Command Center mounted Operational Report", () => {
     });
 
     renderWithExplicitFirstSelection();
-    expect(screen.queryByText("Additional tools")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
 
     list.resolve(response({ obligations: [obligation("OBL-A", true)] }));
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     selectedDetail.resolve(response(assessedDetail("OBL-A", "HOLD")));
     await waitFor(() => expect(screen.getByRole("main").querySelector('nav[aria-label="Payment lifecycle navigation"]')).not.toBeNull());
     openStageNavigator();
     await screen.findByRole("navigation", { name: "Payment lifecycle navigation" });
     openAdditionalTools();
-    expect(screen.getByRole("button", { name: /Operational Report.*secondary/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Payment review report/i })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
 
@@ -565,11 +565,11 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
-    expect(screen.queryByText("Additional tools")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
     selectedDetail.resolve(response(detail("OBL-A")));
     expect(await screen.findByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
 
@@ -580,13 +580,13 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     expect(await screen.findByText(/Genuine obligations are unavailable/)).toBeTruthy();
-    expect(screen.queryByText("Additional tools")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Retry genuine obligations" }));
     expect(await screen.findByText("No genuine obligations are currently available.")).toBeTruthy();
-    expect(screen.queryByText("Additional tools")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
   });
 
   it("shows the selected detail unavailable state after a failed read", async () => {
@@ -597,10 +597,10 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     selectedDetail.resolve(response(null, 502));
     expect(await screen.findByText(/Selected obligation status is unavailable/)).toBeTruthy();
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
 
@@ -620,9 +620,9 @@ describe("Command Center mounted Operational Report", () => {
     const main = screen.getByRole("main");
     expect(main.getAttribute("dir")).toBe("ltr");
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
-    expect(screen.queryByText("Demo tools")).toBeNull();
-    expect(screen.queryByText("Developer & audit evidence")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Training scenario")).toBeNull();
+    expect(screen.queryByText("Control and audit records")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
     expect(screen.getByRole("button", { name: "Run AI Assessment" })).toBeTruthy();
     const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assess.disabled).toBe(false);
@@ -633,9 +633,9 @@ describe("Command Center mounted Operational Report", () => {
     expect(workspace.textContent).not.toContain("Execution authority");
     expect(workspace.textContent).not.toContain("SIMULATED");
     expect(workspace.textContent).not.toContain("TEST-WALLET");
-    expect(screen.queryByText("Demo tools")).toBeNull();
-    expect(screen.queryByText("Developer & audit evidence")).toBeNull();
-    expect(screen.queryByText(/Operational Report/)).toBeNull();
+    expect(screen.queryByText("Training scenario")).toBeNull();
+    expect(screen.queryByText("Control and audit records")).toBeNull();
+    expect(screen.queryByText(/Payment review report/)).toBeNull();
     fireEvent.click(assess);
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
   });
@@ -659,7 +659,7 @@ describe("Command Center mounted Operational Report", () => {
 
   it.each([
     ["202 in progress", 202, { status: "IN_PROGRESS" }, "Completion not confirmed"],
-    ["202 recovery pending", 202, { status: "RECOVERY_PENDING" }, "Provider result recorded"],
+    ["202 recovery pending", 202, { status: "RECOVERY_PENDING" }, "Recommendation result recorded"],
     ["409 unresolved", 409, { code: "ASM-UNKNOWN", error: "The provider outcome is unknown." }, "request key retained"],
     ["503 unavailable", 503, { code: "ASSESSMENT_UNAVAILABLE", error: "Assessment service unavailable." }, "request key retained"],
   ])("shows selected OBL-J0C-003 assessment feedback for %s on the Obligation and Assessment views", async (_label, status, payload, expectedDurability) => {
@@ -743,7 +743,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
     expect(screen.getByRole("heading", { name: "Current stage: Obligation. Step 1 of 6." })).toBeTruthy();
     expect(screen.queryByRole("status", { name: "Stage completion receipt" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Assessment result" })?.textContent ?? "").not.toContain("Advisory — PAY");
+    expect(screen.queryByRole("region", { name: "Assessment result" })?.textContent ?? "").not.toContain("Recommendation — PAY");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
@@ -1131,15 +1131,15 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByRole("button", { name: "Simulate changed-destination attack" })).toBeNull();
-    fireEvent.click(screen.getByText("Demo tools"));
-    fireEvent.click(screen.getByText("Read-only sample"));
+    fireEvent.click(screen.getByText("Training scenario"));
+    fireEvent.click(screen.getByText("Illustrative payment journey"));
     const callsBeforePlayback = fetchMock.mock.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: "Show sample playback" }));
+    fireEvent.click(screen.getByRole("button", { name: "View example" }));
     const fixture = await screen.findByRole("region", { name: "Read-only sample playback" });
-    expect(fixture.textContent).toContain("No approval, assurance, provider call, or settlement is performed");
+    expect(fixture.textContent).toContain("No approval, payment-control review, external settlement request, or settlement is performed");
     expect(fixture.textContent).toContain("ORG-SAMPLE-PLAYBACK-001");
     expect(fixture.textContent).toContain("DEMO-SAMPLE-OBLIGATION-001");
-    expect(fixture.textContent).toContain("Changed destination branch — expected BLOCK before provider submission");
+    expect(fixture.textContent).toContain("Changed destination — expected block before settlement submission");
     expect(fixture.textContent).toContain("Same sample organization and obligation");
     expect(fixture.textContent?.split("ORG-SAMPLE-PLAYBACK-001")).toHaveLength(3);
     expect(fixture.textContent?.split("DEMO-SAMPLE-OBLIGATION-001")).toHaveLength(3);
@@ -1163,7 +1163,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
 
-    expect(await screen.findByText("Advisory — HOLD")).toBeTruthy();
+    expect(await screen.findByText("Recommendation — HOLD")).toBeTruthy();
     expect(screen.getAllByText("Destination trust evidence is not verified.").length).toBeGreaterThan(0);
     expect(screen.getByText("Review the finding.")).toBeTruthy();
   });
@@ -1304,7 +1304,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(lifecycle.textContent).toContain("PaymentCurrent"));
     expect(lifecycle.textContent).toContain("PaymentCurrent");
     navigateStage("Payment");
-    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("Current payment authority is not available for submission");
+    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("Current payment authority is unavailable");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
@@ -1326,8 +1326,8 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByText(/Approved instruction is sealed for the Arc Testnet settlement proxy/)).toBeNull();
     navigateStage("Authorization");
-    const packet = screen.getByRole("region", { name: "Approver decision packet" });
-    expect(within(packet).getByText(/Approved instruction is sealed for the Arc Testnet settlement proxy.*subject to the exact-packet gate and final pre-send checks/)).toBeTruthy();
+    const packet = screen.getByRole("region", { name: "Payment approval decision" });
+    expect(within(packet).getByText(/Arc Testnet payment instruction is approved.*Final payment authorization and pre-release checks still apply/)).toBeTruthy();
     expect(screen.queryByText(/has no Arc payment binding/)).toBeNull();
     expect(screen.queryByText(/payment remains blocked without an Arc binding/)).toBeNull();
     navigateStage("Assessment");
@@ -1341,7 +1341,7 @@ describe("Command Center mounted Operational Report", () => {
       releaseAuthority: "BLOCKED",
       paeState: "REVOKED",
       currentStage: "Reconciliation",
-      expected: /Provider attempt failed/i,
+      expected: /Settlement attempt failed/i,
     },
     {
       name: "execution BLOCKED",
@@ -1349,7 +1349,7 @@ describe("Command Center mounted Operational Report", () => {
       releaseAuthority: "BLOCKED",
       paeState: "REVOKED",
       currentStage: "Reconciliation",
-      expected: /Execution is blocked.*external provider outcome is not established/i,
+      expected: /Payment release is blocked.*external settlement outcome is not confirmed/i,
     },
     {
       name: "PAE-011/REVOKED without an execution record",
@@ -1358,7 +1358,7 @@ describe("Command Center mounted Operational Report", () => {
       releaseAuthority: "BLOCKED",
       paeState: "REVOKED",
       currentStage: "Payment",
-      expected: /Payment authority is revoked.*instruction is unavailable for submission/i,
+      expected: /Payment authority is revoked.*instruction cannot be submitted/i,
     },
     {
       name: "PAE EXPIRED without an execution record",
@@ -1366,7 +1366,7 @@ describe("Command Center mounted Operational Report", () => {
       releaseAuthority: "EXPIRED",
       paeState: "EXPIRED",
       currentStage: "Payment",
-      expected: /Payment authority is expired.*instruction is unavailable for submission/i,
+      expected: /Payment authority is expired.*instruction cannot be submitted/i,
     },
   ])("keeps $name distinct from a valid sealed exact-packet gate", async ({ executionStatus, aggregateExecutionState, releaseAuthority, paeState, currentStage, expected }) => {
     const id = `OBL-TERMINAL-${releaseAuthority}-${executionStatus ?? "NO-EXECUTION"}`;
@@ -1394,7 +1394,7 @@ describe("Command Center mounted Operational Report", () => {
     const currentStageCard = currentStage === "Payment"
       ? screen.getByRole("region", { name: "Payment status" })
       : screen.getByRole("region", { name: "Reconciliation receipt" });
-    expect(currentStageCard.textContent).not.toContain("Prime · exact-packet authorization");
+    expect(currentStageCard.textContent).not.toContain("Final payment authorization");
     expect(currentStageCard.textContent).toMatch(expected);
     expect(lifecycle.querySelector('[aria-current="step"]')?.getAttribute("data-stage-state")).toMatch(/CURRENT|BLOCKED/);
     expect(lifecycle.textContent).not.toMatch(/Not submitted/i);
@@ -1416,10 +1416,10 @@ describe("Command Center mounted Operational Report", () => {
     openStageNavigator();
     navigateStage("Assurance");
     const assurance = screen.getByRole("region", { name: "Deterministic assurance result" });
-    expect(assurance.textContent).toContain("Authorization recorded · Assurance failed/blocked");
-    expect(assurance.textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
+    expect(assurance.textContent).toContain("Approval recorded · payment controls incomplete");
+    expect(assurance.textContent).toMatch(/no payment can be released/i);
     const lifecycle = openStageNavigator().querySelector<HTMLOListElement>('ol[aria-label="Payment lifecycle"]')!;
-    expect(lifecycle.textContent).toContain("AssuranceBlockedAuthorization recorded · Assurance failed/blocked; no PASS assurance, usable PAE, or execution is available.");
+    expect(lifecycle.textContent).toContain("AssuranceBlockedApproval recorded · payment controls incomplete; no payment can be released.");
     expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
   });
@@ -1436,22 +1436,22 @@ describe("Command Center mounted Operational Report", () => {
     openStageNavigator();
     navigateStage("Assurance");
     const assurance = screen.getByRole("region", { name: "Deterministic assurance result" });
-    await waitFor(() => expect(assurance.textContent).toContain("Authorization recorded · Assurance failed/blocked"));
+    await waitFor(() => expect(assurance.textContent).toContain("Approval recorded · payment controls incomplete"));
     const lifecycle = openStageNavigator().querySelector<HTMLOListElement>('ol[aria-label="Payment lifecycle"]')!;
     await waitFor(() => expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assurance"));
-    expect(lifecycle.textContent).toContain("AssuranceBlockedAuthorization recorded · Assurance failed/blocked; no PASS assurance, usable PAE, or execution is available.");
+    expect(lifecycle.textContent).toContain("AssuranceBlockedApproval recorded · payment controls incomplete; no payment can be released.");
     expect((screen.getByRole("button", { name: "Assessment" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).getAttribute("data-stage-state")).toBe("COMPLETED");
-    expect(assurance.textContent).toContain("Authorization recorded · Assurance failed/blocked");
-    expect(assurance.textContent).toMatch(/no PASS assurance, usable PAE, or execution is available/i);
+    expect(assurance.textContent).toContain("Approval recorded · payment controls incomplete");
+    expect(assurance.textContent).toMatch(/no payment can be released/i);
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
 
     navigateStage("Assessment");
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
-    expect(screen.getByText(/Authorization is recorded\. Assurance failed or is blocked/)).toBeTruthy();
+    expect(screen.getAllByText(/Approval is recorded, but required payment controls did not complete/).length).toBeGreaterThan(0);
     navigateStage("Authorization");
-    expect(screen.getByText(/Authorization is recorded\. Assurance failed or is blocked/)).toBeTruthy();
+    expect(screen.getAllByText(/Approval is recorded, but required payment controls did not complete/).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
     expect(screen.queryByText(/Authorization review applies to the current PAY assessment/)).toBeNull();
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
@@ -1508,7 +1508,7 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     const workspace = await screen.findByRole("region", { name: "Genuine obligation workspace" });
-    expect(workspace.textContent).not.toContain("Advisory — HOLD");
+    expect(workspace.textContent).not.toContain("Recommendation — HOLD");
     navigateStage("Assessment");
     const assessmentStage = await screen.findByRole("region", { name: "Assessment result" });
 
@@ -1529,7 +1529,7 @@ describe("Command Center mounted Operational Report", () => {
     expect((screen.getByRole("button", { name: "Payment" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     expect(lifecycle.textContent).not.toMatch(/transaction (failed|pending)/i);
-    const developer = screen.getByText("Developer & audit evidence");
+    const developer = screen.getByText("Control and audit records");
     fireEvent.click(developer);
     expect(developer.closest("details")?.textContent).toContain("DESTINATION_NOT_READY");
   });
@@ -1553,7 +1553,7 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
-    fireEvent.click(screen.getByText("Developer & audit evidence"));
+    fireEvent.click(screen.getByText("Control and audit records"));
     const traceSummary = await screen.findByText("Assessment trace — evidence, facts, model proposal, validated findings, remediation");
     fireEvent.click(traceSummary);
     const trace = screen.getByTestId("assessment-trace");
@@ -1593,7 +1593,7 @@ describe("Command Center mounted Operational Report", () => {
     expect((screen.getByRole("button", { name: "Assurance" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Reconciliation" }) as HTMLButtonElement).disabled).toBe(true);
     navigateStage("Assessment");
-    expect(await screen.findByText("Advisory — PAY")).toBeTruthy();
+    expect(await screen.findByText("Recommendation — PAY")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Assessment result" }).textContent).toContain("PAY");
 
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
@@ -1641,22 +1641,22 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue to Authorization" }));
     navigateStage("Authorization");
-    const packet = screen.getByText("Approver decision packet").closest("section");
+    const packet = screen.getByText("Payment approval decision").closest("section");
     expect(packet?.textContent).toContain("125.00 USD");
     expect(packet?.textContent).toContain("125.000000 USDC");
     expect(packet?.textContent).toContain("ARC_TESTNET");
-    const developer = screen.getByText("Developer & audit evidence");
+    const developer = screen.getByText("Control and audit records");
     fireEvent.click(developer);
     const sourceDetails = screen.getByText("Source and current payment records").closest("details") as HTMLDetailsElement;
     expect(sourceDetails.open).toBe(false);
     fireEvent.click(screen.getByText("Source and current payment records"));
     const intentDetails = await screen.findByRole("region", { name: "Exact payment intent summary" });
     expect(intentDetails.textContent).toContain("No FX rate recorded");
-    expect(intentDetails.textContent).toContain("Pending separate Safety Kernel review and human authorization");
+    expect(intentDetails.textContent).toContain("Pending payment-control review and human approval");
     expect((screen.getByRole("button", { name: "Authorize payment" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/approve"))).toBe(false);
-    fireEvent.click(screen.getByText("Execution / provider"));
-    const executionEvidence = screen.getByText("Execution / provider").closest("details");
+    fireEvent.click(screen.getByText("Payment processing"));
+    const executionEvidence = screen.getByText("Payment processing").closest("details");
     expect(executionEvidence?.textContent).toContain("Source wallet reference");
     expect(executionEvidence?.textContent).toContain("Destination address");
   });
@@ -1722,10 +1722,10 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     expect(screen.queryByText("Awaiting human authorization")).toBeNull();
     const workspace = screen.getByRole("region", { name: "Genuine obligation workspace" });
-    expect(workspace.textContent).not.toContain(`Advisory — ${decision}`);
+    expect(workspace.textContent).not.toContain(`Recommendation — ${decision}`);
     navigateStage("Assessment");
-    expect(await screen.findByText(`Advisory — ${decision}`)).toBeTruthy();
-    const decisionHeading = screen.getByText(`Advisory — ${decision}`);
+    expect(await screen.findByText(`Recommendation — ${decision}`)).toBeTruthy();
+    const decisionHeading = screen.getByText(`Recommendation — ${decision}`);
     expect(decisionHeading.className).toContain("text-[var(--status-hold-text)]");
     expect(obligationRow("OBL-A").querySelector("span.col-span-2[style]")?.getAttribute("style"))
       .toContain("--status-hold-text");
@@ -1760,7 +1760,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
     navigateStage("Assessment");
-    expect(await screen.findByText("Advisory — PAY")).toBeTruthy();
+    expect(await screen.findByText("Recommendation — PAY")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     navigateStage("Authorization");
 
@@ -1796,7 +1796,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getAllByText("Last-known state — stale").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
     expect(obligationRow("OBL-A")).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
@@ -1812,7 +1812,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.getByTestId("current-next-step").textContent).toContain("Selected obligation status is stale");
     fireEvent.click(screen.getByRole("button", { name: "Refresh current status" }));
     await waitFor(() => expect(screen.queryByText(/Last-known obligation details are stale/)).toBeNull());
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
 
@@ -1865,7 +1865,7 @@ describe("Command Center mounted Operational Report", () => {
     await act(async () => { await actionBCompletion; });
     expect(listReads).toBe(2);
     expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
   });
 
   it("keeps assessment disabled during loading and a browser click sends no request", async () => {
@@ -1915,7 +1915,7 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-B")).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
     fireEvent.click(obligationRow("OBL-B"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-B"));
@@ -1924,7 +1924,7 @@ describe("Command Center mounted Operational Report", () => {
     firstDetail.resolve(response(detail("OBL-A")));
     await waitFor(() => expect(obligationRow("OBL-B").getAttribute("aria-current")).toBe("true"));
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
-    expect(screen.queryByText("Additional tools")).toBeNull();
+    expect(screen.queryByText("Related payment information")).toBeNull();
   });
 });
 
