@@ -38,12 +38,10 @@ export function resolveRequestIdentity(request:Request,policy:OperatorPolicy,pos
   const host=request.headers.get("host")??"";
   let target:URL;try{target=new URL(`https://${host}/`);}catch{throw new AccessError("ORIGIN_REJECTED");}
   const origin=target.origin;
-  const ingressChecks={canonicalHost:target.host===host,approvedOrigin:policy.origins.includes(origin),forwardedHost:request.headers.get("x-forwarded-host")===host,forwardedProto:request.headers.get("x-forwarded-proto")==="https",fetchSite:request.headers.get("sec-fetch-site")==="same-origin",fetchDest:request.headers.get("sec-fetch-dest")==="empty"};
-  if(Object.values(ingressChecks).includes(false)){console.info("TAMEION_INGRESS_REJECT",Object.entries(ingressChecks).filter(([,ok])=>!ok).map(([name])=>name).join(","));throw new AccessError("ORIGIN_REJECTED");}
+  if(target.host!==host||!policy.origins.includes(origin)||request.headers.get("x-forwarded-host")!==host||request.headers.get("x-forwarded-proto")!=="https"||request.headers.get("sec-fetch-site")!=="same-origin"||request.headers.get("sec-fetch-dest")!=="empty")throw new AccessError("ORIGIN_REJECTED");
   const claimed=request.headers.get("origin");
-  const requestChecks={postOrigin:!post||Boolean(claimed),originMatch:claimed===null||claimed===origin,noForwarded:!request.headers.has("forwarded")};
-  if(Object.values(requestChecks).includes(false)){console.info("TAMEION_INGRESS_REJECT",Object.entries(requestChecks).filter(([,ok])=>!ok).map(([name])=>name).join(","));throw new AccessError("ORIGIN_REJECTED");}
-  let ip:string;try{ip=canonicalIp(request.headers.get("x-vercel-forwarded-for")??"");}catch{console.info("TAMEION_INGRESS_REJECT","vercelIp");throw new AccessError("INGRESS_UNVERIFIED");}
+  if((post&&!claimed)||(claimed!==null&&claimed!==origin))throw new AccessError("ORIGIN_REJECTED");
+  const ip=canonicalIp(request.headers.get("x-vercel-forwarded-for")??"");
   return {origin,originDigest:digest(`tameion/origin/v1\0${origin}`),networkDigest:createHmac("sha256",policy.throttleKey).update(`tameion/network/vercel-direct-v1\0${ip}`).digest("hex")};
 }
 export async function readBoundedJson(request:Request,limit:number):Promise<Record<string,unknown>> {

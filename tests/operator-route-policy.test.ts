@@ -21,7 +21,7 @@ describe("#65 direct ingress before reservation",()=>{
  });
  it("uses the verified Vercel host when the framework request URL carries the immutable deployment host",()=>{
   const p=parseOperatorPolicy(env);
-  const hosted=new Request("https://generated-deployment.example.invalid/api/operator/session",{headers:{host:"operator.example.invalid","x-forwarded-host":"operator.example.invalid","x-forwarded-proto":"https","sec-fetch-site":"same-origin","sec-fetch-dest":"empty","x-vercel-forwarded-for":"192.0.2.1"}});
+  const hosted=new Request("https://generated-deployment.example.invalid/api/operator/session",{headers:{host:"operator.example.invalid",forwarded:'for=192.0.2.1;host=operator.example.invalid;proto=https',"x-forwarded-host":"operator.example.invalid","x-forwarded-proto":"https","sec-fetch-site":"same-origin","sec-fetch-dest":"empty","x-vercel-forwarded-for":"192.0.2.1"}});
   expect(resolveRequestIdentity(hosted,p,false).origin).toBe("https://operator.example.invalid");
  });
  it("does not treat environment mode alone as ingress approval",()=>{
