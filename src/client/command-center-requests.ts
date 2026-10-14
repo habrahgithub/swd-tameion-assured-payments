@@ -32,6 +32,30 @@ export function interpretPostResponse(status: number, text: string): PostInterpr
   };
 }
 
+/** The execute route never returns a permission to retry after effects start.
+ * Treat every unrecognised/transport/success response as reconciliation-only.
+ * These narrow status/code pairs are emitted strictly before effectsStarted in
+ * createFinancialHandlers (or its initial CSRF/body/method validation). Dynamic
+ * session/requester/worker failures are deliberately excluded: they can occur
+ * during later revalidation. This is presentation containment, not authority. */
+export function executionResponseNeedsReconciliation(result: { status: number; data: unknown }): boolean {
+  if (result.status < 400 || result.status >= 500 || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return true;
+  const reply = result.data as Record<string, unknown>;
+  // Production pre-effect refusals are exactly {code}. Extra fields cannot
+  // contradict or masquerade as that contract and release an uncertainty lock.
+  if (Object.keys(reply).length !== 1) return true;
+  switch (reply.code) {
+    case "BODY_REJECTED": return ![400, 408, 413].includes(result.status);
+    case "CONTENT_TYPE_REJECTED": return result.status !== 415;
+    case "METHOD_NOT_ALLOWED": return result.status !== 405;
+    case "CSRF_REJECTED":
+    case "CONTROLLED_SOURCE_REQUIRED":
+    case "EXACT_PACKET_NOT_APPROVED": return result.status !== 403;
+    case "CURRENT_PAE_REQUIRED": return result.status !== 409;
+    default: return true;
+  }
+}
+
 /** A response may be applied only if it still answers the current selection and
  * the latest request generation. Late responses for a superseded or cleared
  * selection are dropped so they can never render or act on another identity. */

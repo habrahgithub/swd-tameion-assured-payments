@@ -282,8 +282,9 @@ function response(body: unknown, status = 200): Response {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 function invokeClickHandler(button: HTMLButtonElement): Promise<unknown> {
@@ -1533,6 +1534,52 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
   });
 
+  it.each([
+    ["lost", 0, ""], ["gateway", 502, "<html>Bad gateway</html>"],
+    ["timeout", 504, "Gateway timeout"], ["empty-success", 200, ""],
+    ["malformed-success", 200, "{not json"], ["unrecognised-success", 200, '{"status":"PASS"}'],
+    ["unconfirmed-settlement", 200, '{"code":"RECONCILED","execution":{"status":"SETTLED"}}'],
+    ["unrecognised-refusal", 409, '{"code":"UNRECOGNISED","blocker":"INSUFFICIENT_BALANCE"}'],
+    ["mixed-known-refusal", 403, '{"code":"CSRF_REJECTED","outcome":"UNKNOWN"}'],
+    ["mixed-unknown", 503, '{"code":"OUTCOME_UNVERIFIED","blocker":"INSUFFICIENT_BALANCE","error":"Retry"}'],
+  ] as const)("retains no-retry after %s execute response and unchanged or lost readback", async (_case,status,body) => {
+    const id="TESTNET-CONTROLLED-TRANSPORT-UNCERTAIN", authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};
+    authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    let posted=false,loseReadback=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST") {posted=true;return status===0?Promise.reject(new TypeError("Failed to fetch")):Promise.resolve(new Response(body,{status}));}
+      if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
+      if(posted&&loseReadback)return Promise.resolve(response({},503));
+      return Promise.resolve(response(authorized));
+    });
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
+    expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toMatch(/do not retry or resubmit/i);
+    expect(screen.getByRole("alert").textContent).not.toMatch(/no payment was submitted|Retry after|did not succeed/i);
+    await waitFor(()=>expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull());
+    expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
+    loseReadback=true;fireEvent.click(screen.getByRole("button",{name:"Refresh current status"}));
+    await waitFor(()=>expect(fetchMock.mock.calls.filter(([url,init])=>String(url).endsWith(id)&&init?.method!=="POST").length).toBeGreaterThanOrEqual(3));
+    expect(screen.getByRole("alert").textContent).toMatch(/do not retry or resubmit/i);
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it("preserves definitive pre-effect CSRF refusal recovery without claiming an uncertain submission",async()=>{
+    const id="TESTNET-CONTROLLED-PRE-EFFECT",authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    fetchMock.mockImplementation((input,init)=>Promise.resolve(init?.method==="POST"?response({code:"CSRF_REJECTED"},403):response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized)));
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
+    expect(await screen.findByText(/The request did not succeed \(CSRF_REJECTED\)/)).toBeTruthy();
+    expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Pay testnet USDC"})).toBeTruthy());
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
   it.each(["matching","wrong-instruction","wrong-packet","unconfirmed","lost"])("supersedes release uncertainty only for durable matching readback: %s", async readback => {
     const id="TESTNET-CONTROLLED-RECEIPT", authorized=proxyPrepared(sealedDetail(id));
     Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
@@ -1571,7 +1618,7 @@ describe("Command Center mounted Operational Report", () => {
       if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
       const read=structuredClone(authorized);
       if(posted){
-        read.execution={obligation_id:id,status:evidence==="unknown"?"UNKNOWN":"BLOCKED",provider_ref:null};
+        read.execution={obligation_id:id,status:evidence==="unknown"?"UNKNOWN":"SETTLED",provider_ref:"SYNTHETIC-CONFIRMED-RECEIPT"};
         read.execution_gate="EXECUTION_ALREADY_RECORDED";
         read.settlement_evidence_binding={state:evidence==="missing-binding"?"UNAVAILABLE":"AVAILABLE_HISTORICAL",packet:{packet_sha256:evidence==="wrong-packet"?"e".repeat(64):"c".repeat(64)}};
         if(evidence==="wrong-instruction")read.sealed_pae_instruction_hash="e".repeat(64);
@@ -1586,7 +1633,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
   });
 
-  it("retains a late financial outcome across A to B to A without attributing it to B",async()=>{
+  it.each(["coded","lost","gateway"])("retains a late %s financial outcome across A to B to A without attributing it to B",async outcome=>{
     const id="TESTNET-CONTROLLED-LATE-A",other="OBL-LATE-B",authorized=proxyPrepared(sealedDetail(id));
     Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
     authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
@@ -1601,7 +1648,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
     expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
     failA=true;fireEvent.click(obligationRow(id));await screen.findByText(/Obligation detail is unavailable/);
-    await act(async()=>pending.resolve(response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503)));
+    await act(async()=>{if(outcome==="lost")pending.reject(new TypeError("Lost response"));else pending.resolve(outcome==="gateway"?new Response("Bad gateway",{status:502}):response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503));});
     expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
     fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
     expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();

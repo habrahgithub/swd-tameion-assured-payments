@@ -10,7 +10,7 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
-import { assessmentKeyDisposition, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { executionResponseNeedsReconciliation, assessmentKeyDisposition, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 import {
   buildHoldEscalateReport,
@@ -1458,9 +1458,7 @@ type ActionResult = { label: string; data: unknown; ok: boolean; status: number;
 
 function requiresSubmissionReconciliation(result: ActionResult | null): boolean {
   if (!result || result.label !== "execute" || result.readConfirmed) return false;
-  if (result.status === 0) return true;
-  return Boolean(result.data && typeof result.data === "object" && "code" in result.data &&
-    ["OUTCOME_UNVERIFIED", "RECONCILIATION_ONLY", "EXECUTION_ALREADY_RECORDED"].includes(String(result.data.code)));
+  return executionResponseNeedsReconciliation(result);
 }
 
 function confirmedFinancialReceipt(result: ActionResult, detail: ObligationDetail): string | null {
@@ -1652,12 +1650,16 @@ function ActionResultBanner({ result, title, focusOnMount = false }: { result: A
     if (typeof alert?.scrollIntoView === "function") alert.scrollIntoView({ block: "nearest" });
   }, [focusOnMount, result]);
   if (result.readConfirmed || (result.ok && !requiresSubmissionReconciliation(result))) return null;
+  const replyCode = result.data && typeof result.data === "object" && "code" in result.data ? result.data.code : null;
+  const message = requiresSubmissionReconciliation(result)
+    ? actionErrorMessage({code: ["RECONCILIATION_ONLY", "EXECUTION_ALREADY_RECORDED"].includes(String(replyCode)) ? replyCode : "OUTCOME_UNVERIFIED"}, "execute")
+    : actionErrorMessage(result.data, result.label);
   return (
     <div ref={alertRef} role="alert" aria-live="assertive" tabIndex={focusOnMount ? -1 : undefined} className="border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
       <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
         {title ?? `Refused (HTTP ${result.status})`}
       </p>
-      <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{actionErrorMessage(result.data, result.label)}</p>
+      <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{message}</p>
     </div>
   );
 }

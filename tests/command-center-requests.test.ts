@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  executionResponseNeedsReconciliation,
   interpretPostResponse,
   isCurrentRequest,
   parseJsonBody,
@@ -141,5 +142,31 @@ describe("recovery key release requires the complete receipt validator used for 
   });
   it("reports the receipt's identity for mismatch checks", () => {
     expect(assessmentReceiptIdentity(fullReceipt("OBL-B", "1"))).toEqual({ obligation_id: "OBL-B", aggregate_version: "1" });
+  });
+});
+
+describe("execute production response contract", () => {
+  it.each([
+    [400,"BODY_REJECTED"], [408,"BODY_REJECTED"], [413,"BODY_REJECTED"],
+    [415,"CONTENT_TYPE_REJECTED"], [405,"METHOD_NOT_ALLOWED"],
+    [403,"CSRF_REJECTED"], [403,"CONTROLLED_SOURCE_REQUIRED"],
+    [403,"EXACT_PACKET_NOT_APPROVED"], [409,"CURRENT_PAE_REQUIRED"],
+  ] as const)("recognises only pre-effect refusal %s %s", (status,code) => {
+    expect(executionResponseNeedsReconciliation({status,data:{code}})).toBe(false);
+    expect(executionResponseNeedsReconciliation({status:200,data:{code}})).toBe(true);
+    expect(executionResponseNeedsReconciliation({status:503,data:{code}})).toBe(true);
+    expect(executionResponseNeedsReconciliation({status,data:{code,execution:{status:"UNKNOWN"}}})).toBe(true);
+  });
+  it.each([
+    [0,null], [502,null], [504,null], [200,null], [200,{status:"PASS"}],
+    [200,{code:"RECONCILED",execution:{status:"SETTLED"}}],
+    [401,{code:"SESSION_REQUIRED"}], [403,{code:"REQUESTER_UNVERIFIED"}],
+    [409,{code:"UNRECOGNISED",blocker:"INSUFFICIENT_BALANCE"}],
+    [403,{code:"CSRF_REJECTED",retry_submission:false}],
+    [403,{code:"CSRF_REJECTED",outcome:"UNKNOWN"}],
+    [400,{code:"BODY_REJECTED",error:"Retry"}],
+    [409,{code:"CURRENT_PAE_REQUIRED",execution_gate:"RECONCILIATION_ONLY"}],
+  ])("keeps ambiguous response %s %j reconciliation-only", (status,data) => {
+    expect(executionResponseNeedsReconciliation({status:status as number,data})).toBe(true);
   });
 });
