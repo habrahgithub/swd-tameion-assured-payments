@@ -90,13 +90,21 @@ describe('pinned read-only balance',()=>{
   await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
   expect(client.getWalletTokenBalance).toHaveBeenCalledTimes(20);
  });
- it('accepts the documented nextPageAfter field when Link headers are absent',async()=>{
+ it('accepts an explicit nextPageAfter cursor and null terminal cursor when Link headers are absent',async()=>{
   const client=fixture();
   client.getWalletTokenBalance
    .mockResolvedValueOnce({headers:{},data:{tokenBalances:[],pagination:{nextPageAfter:'body-cursor'}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>)
-   .mockResolvedValueOnce({headers:{},data:{tokenBalances:[{amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}],pagination:{}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+   .mockResolvedValueOnce({headers:{},data:{tokenBalances:[{amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}}],pagination:{nextPageAfter:null}}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
   await expect(readPinnedBalance(pin,()=>client,async()=>{})).resolves.toMatchObject({amount:'12.3'});
   expect(client.getWalletTokenBalance.mock.calls).toEqual([[pin.wallet_id,undefined],[pin.wallet_id,'body-cursor']]);
+ });
+ it.each([{}, {nextPageAfter:undefined}])('rejects an ambiguous Circle pagination object %s',async pagination=>{
+  const client=fixture();
+  client.getWalletTokenBalance.mockResolvedValueOnce({headers:{},data:{tokenBalances:[
+   {amount:'12.3',token:{id:tokenId,blockchain:pin.network,decimals:18,symbol:'USDC',isNative:true}},
+  ],pagination}} as unknown as Awaited<ReturnType<typeof client.getWalletTokenBalance>>);
+  await expect(readPinnedBalance(pin,()=>client,async()=>{})).rejects.toMatchObject({code:'BALANCE_NOT_VERIFIED'});
+  expect(client.getWalletTokenBalance).toHaveBeenCalledOnce();
  });
  it('rejects malformed unrelated rows rather than hiding provider ambiguity',async()=>{
   const client=fixture(),value=await client.getWalletTokenBalance();value.data.tokenBalances[1].amount='NaN';client.getWalletTokenBalance.mockResolvedValueOnce(value);

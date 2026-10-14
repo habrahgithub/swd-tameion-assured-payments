@@ -62,6 +62,19 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "reconcile-page-2" });
   });
 
+  it("keeps reconciliation unknown when the terminal balance cursor is missing", async () => {
+    const api = createClient();
+    const adapter = await statusAdapter(api);
+    api.getWalletTokenBalance = vi.fn(async () => ({
+      data: { tokenBalances: [{ amount: "10.000000", token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true } }], pagination: {} },
+    }));
+
+    await expect(adapter.getStatus("circle-tx-1", "exact-demo-key"))
+      .resolves.toMatchObject({ status: "UNKNOWN" });
+    expect(api.getTransaction).not.toHaveBeenCalled();
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
   it.each(["STUCK", "INITIATED", "PENDING_RISK_SCREENING", "QUEUED", "SENT", "CONFIRMED"])("keeps intermediate provider state %s pending without resubmission", async state => {
     const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
       id: "circle-tx-1", state, blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,

@@ -71,13 +71,18 @@ function nextPageAfter(response: CircleBalancePage): string | null {
   const fromLink = linkPageAfter(response.headers);
   const fromBody = response.data.pagination;
   const bodyPresent = fromBody !== undefined;
-  const bodyNext = fromBody?.nextPageAfter ?? null;
+  const hasBodyCursor = fromBody !== undefined && Object.prototype.hasOwnProperty.call(fromBody, "nextPageAfter");
+  const bodyNext = fromBody?.nextPageAfter;
 
-  if (fromLink.present && bodyPresent && fromLink.next !== bodyNext) {
+  if (bodyPresent && (!hasBodyCursor || bodyNext === undefined) && !fromLink.present) {
+    throw new Error("CIRCLE_BALANCE_COMPLETENESS_UNVERIFIED");
+  }
+
+  if (fromLink.present && hasBodyCursor && fromLink.next !== bodyNext) {
     throw new Error("CIRCLE_BALANCE_PAGINATION_CONFLICT");
   }
   if (fromLink.present) return fromLink.next;
-  if (bodyPresent) return bodyNext;
+  if (bodyPresent && hasBodyCursor && bodyNext !== undefined) return bodyNext;
   throw new Error("CIRCLE_BALANCE_COMPLETENESS_UNVERIFIED");
 }
 

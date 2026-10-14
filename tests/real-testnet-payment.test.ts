@@ -115,6 +115,18 @@ describe("J2A real Arc Testnet demo preflight", () => {
     expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "balance-page-2" });
   });
 
+  it("blocks preflight when Circle returns an empty pagination object", async () => {
+    const api = client({
+      getWalletTokenBalance: vi.fn(async () => ({
+        data: { tokenBalances: [{ amount: "10.000000", token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true } }], pagination: {} },
+      })),
+    });
+
+    await expect(runJ2aReadOnlyPreflight(api, () => new Date(capturedAt)))
+      .resolves.toMatchObject({ readiness: "BLOCKED", blocker: "PROVIDER_QUERY_FAILED" });
+    expect(api.estimateTransferFee).not.toHaveBeenCalled();
+  });
+
   it("derives a genuine obligation proxy intent from the selected source identity and amount", async () => {
     const api = client({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
