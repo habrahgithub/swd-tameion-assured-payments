@@ -508,3 +508,17 @@ describe('requester validation precedes both final durable authority reads',()=>
    expect(worker.getExecutionRecord(f.sealed.payload.idempotency_key)?.status).toBe('BLOCKED');
  });
 });
+
+describe('R1 final release expiry is sampled after durable context await',()=>{
+ it.each([false,true])('expiry crossing=%s refuses before provider send',async crossed=>{
+  const f=authorizedFixture(),expiry=Date.now()+10000;let now=expiry-2,reads=0;
+  const check=vi.fn(()=>{if(now>=expiry)throw new Error('RELEASE_EXPIRED');});
+  const worker=f.worker({now:()=>new Date(now),assertRequesterAtProviderSend:check,reloadDurableExecutionContext:async()=>{
+   await Promise.resolve();if(++reads===2)now=crossed?expiry:expiry-1;
+   return {authorization:f.authorization,aggregate:f.store.get(ORG,OBLIGATION),trustedKeys:processTrustedKeyRegistry.export(),actorAuthorities:[f.actorAuthority],executionKillSwitched:false};
+  }});
+  if(crossed){await expect(worker.execute(f.sealed)).rejects.toMatchObject({code:'AUTH-REQUESTER'});expect(f.adapter.getSubmissionCount()).toBe(0);}
+  else {await worker.execute(f.sealed);expect(f.adapter.getSubmissionCount()).toBe(1);}
+  expect(check).toHaveBeenCalledOnce();expect(reads).toBe(2);
+ });
+});

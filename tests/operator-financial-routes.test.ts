@@ -25,7 +25,7 @@ import {SupabaseDemoStateRepository,DemoStateConflictError} from '../src/server/
 import type {AuthContext} from '../src/server/operator-auth';
 import {AccessError} from '../src/server/route-access-policy';
 import {sealTestAssessment,currentAssessmentReview} from './test-support/seal-assessment';
-function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean}={}){
+function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean}={}){
  const source=sourceFixture();const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
  initial.trustedKeys.loadServerSigningKey(DEMO_SIGNING_KEY_ID);
  let snapshot=initial.exportSnapshot(),revision=1,tx:Record<string,unknown>|undefined;
@@ -38,10 +38,10 @@ function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:
  estimateTransferFee:vi.fn(async()=>({data:{medium:{networkFee:'0.002000'}}})),listTransactions:vi.fn(async()=>({data:{transactions:tx?[tx]:[],pagination:{nextPageAfter:null}}})),
  getTransaction:vi.fn(async()=>({data:{transaction:tx}})),
  createTransaction:vi.fn(async(input)=>{tx={id:'synthetic-provider-tx-1',state:'COMPLETE',walletId:input.walletId,destinationAddress:input.destinationAddress,amounts:input.amount,tokenId:input.tokenId,refId:input.refId,blockchain:'ARC-TESTNET',networkFee:'0.002000',txHash:'0x'+'a'.repeat(64)};if(options.lostResponse)throw new Error('synthetic lost response');return {data:{id:tx.id}};})};
- const repo={loadExisting:vi.fn(async()=>({revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>})),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;return ++revision;})} as unknown as SupabaseDemoStateRepository;
- const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>)=>{
+ const repo={loadExisting:vi.fn(async()=>({revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>})),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
+ const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{
  let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
- state=await loadExistingFinancialState(repo,s.namespace,[s.source],{revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();}},adapter);return state;
+ state=await loadExistingFinancialState(repo,s.namespace,[s.source],{assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();}},adapter);return state;
  });
  const handler=createFinancialHandlers({guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
  const request=(body:unknown)=>new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'00000000-0000-4000-8000-000000000001'},body:JSON.stringify(body)});
@@ -105,7 +105,7 @@ it('bounded existing-state RPC rejects redirects/oversize without seed or creden
 it('provider-completeness boundary refuses hosted-style preflight before state/provider construction',async()=>{const h=controlledHarness();const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async()=>{throw new AccessError('PROVIDER_BALANCE_NOT_VERIFIED',503);}});const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'PROVIDER_BALANCE_NOT_VERIFIED'});expect(h.load).not.toHaveBeenCalled();expect(h.client.getWallet).not.toHaveBeenCalled();});
 it('passes authenticated revalidation into an admitted provider-completeness boundary before preflight',async()=>{
  const h=controlledHarness();await h.sealCurrent();
- const providerBoundary=vi.fn(async(revalidate:()=>Promise<void>)=>{await revalidate();});
+ const providerBoundary=vi.fn(async(revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{await revalidate();});
  const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary,preflight:(_client,now,intent)=>runJ2aReadOnlyPreflight(h.client,now,intent)});
  const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));
  expect(response.status).toBe(200);expect(providerBoundary).toHaveBeenCalledOnce();expect(h.auth.revalidate).toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
@@ -171,5 +171,73 @@ describe('release authority must remain current',()=>{
   if(fault==='changed credential')h.auth.session.credential_version=2;
   const result=await h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id);
   expect([403,409]).toContain(result.status);expect(h.snapshot().payment_release_approvals).toBeUndefined();expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
+
+describe('R1 durable release feedback',()=>{
+ it('reports uncertainty when approval commits but readback loses authentication',async()=>{
+  const h=controlledHarness({revokeAfterReleaseSave:true}),p=await preparedApproval(h,false);
+  const result=await h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false});
+  expect(h.snapshot().payment_release_approvals).toHaveLength(1);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
+
+import {projectObligationDetail} from '../src/server/obligation-read-model';
+import {paymentReleaseBindings} from '../src/domain/payment-release-approval';
+describe('R1 release capability and projection',()=>{
+ it('approval never calls any provider method',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false);
+  for(const fn of Object.values(h.client))vi.mocked(fn).mockReset().mockRejectedValue(new Error('PROVIDER FORBIDDEN DURING RELEASE'));
+  expect((await h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id)).status).toBe(200);
+  for(const fn of Object.values(h.client))expect(fn).not.toHaveBeenCalled();
+ });
+ it.each(['credential','actor','binding','expired','legacy','runtime','context'] as const)('projects %s as non-actionable without leaking release authority',async fault=>{
+  const h=controlledHarness(),p=await preparedApproval(h);
+  let context={namespace:h.source.namespace,operator_key:h.requester.operator_key,credential_version:1,...paymentReleaseBindings(h.source,h.requester)};
+  if(fault==='credential')context.credential_version++;
+  if(fault==='actor')h.snapshot().actor_authorities[0].authority_version='2';
+  if(fault==='binding')context.source_binding_sha256='0'.repeat(64);
+  const old=h.snapshot().payment_release_approvals![0];
+  if(fault==='expired'){h.snapshot().payment_release_approvals=[sealPaymentRelease({...old.record,expires_at:new Date(Date.parse(old.record.approved_at)+1).toISOString()})];vi.spyOn(Date,'now').mockReturnValue(Date.parse(old.record.approved_at)+2);}
+  if(fault==='legacy'){const {source_binding_sha256,requester_binding_sha256,...fields}=old.record as typeof old.record & {source_binding_sha256:string;requester_binding_sha256:string};h.snapshot().payment_release_approvals=[sealPaymentRelease({...fields,schema_version:'PORTAL-RELEASE-1'})];}
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{});
+  if(fault==='runtime')Object.defineProperty(state,'providerAdapter',{value:{name:'fake-testnet'}});
+  const response=projectObligationDetail(state,p.id,true,fault==='context'?undefined:context),view=await response.json();
+  expect(view.payment_release_current).toBe(false);expect(view.execution_gate).toBe(['runtime','context'].includes(fault)?'PORTAL_RELEASE_UNAVAILABLE':'PORTAL_RELEASE_RENEWAL_REQUIRED');
+  expect(Object.keys(view.payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('returns renewal-required instead of replacing stale consent for the same instruction',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h),old=h.snapshot().payment_release_approvals![0];
+  h.snapshot().payment_release_approvals=[sealPaymentRelease({...old.record,expires_at:new Date(Date.parse(old.record.approved_at)+1).toISOString()})];vi.spyOn(Date,'now').mockReturnValue(Date.parse(old.record.approved_at)+2);
+  const revision=h.revision(),r=await h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id);
+  expect(r.status).toBe(409);expect(await r.json()).toMatchObject({code:'PAYMENT_RELEASE_RENEWAL_REQUIRED'});expect(h.revision()).toBe(revision);
+  expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(403);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['credential','actor','operator','binding'] as const)('rejects %s substituted after approval before any provider call',async fault=>{
+  const h=controlledHarness(),p=await preparedApproval(h);
+  if(fault==='credential')h.auth.session.credential_version=2;
+  if(fault==='operator')h.auth.session.operator_key='OTHER-OWNER';
+  if(fault==='actor')h.snapshot().actor_authorities[0].authority_version='2';
+  if(fault==='binding'){const r=h.snapshot().payment_release_approvals![0].record;h.snapshot().payment_release_approvals=[sealPaymentRelease({...r,source_binding_sha256:'0'.repeat(64),schema_version:'PORTAL-RELEASE-2',requester_binding_sha256:paymentReleaseBindings(h.source,h.requester).requester_binding_sha256})];}
+  for(const fn of Object.values(h.client))vi.mocked(fn).mockClear();
+  expect([403,409]).toContain((await h.handler('execute',h.request(p.body),p.id)).status);
+  for(const fn of Object.values(h.client))expect(fn).not.toHaveBeenCalled();
+ });
+ it('restores old snapshots without consent and persists V2 approval across cold load/flush',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),old=await h.load(loadFinancialSourceAdmission(),async()=>{});
+  expect(old.getPaymentReleaseApproval(p.id)).toBeUndefined();await old.flush();
+  expect((await h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id)).status).toBe(200);
+  const loaded=await h.load(loadFinancialSourceAdmission(),async()=>{}),approval=loaded.getPaymentReleaseApproval(p.id);
+  expect(approval?.record).toMatchObject({schema_version:'PORTAL-RELEASE-2',...paymentReleaseBindings(h.source,h.requester)});await loaded.flush();
+  expect((await h.load(loadFinancialSourceAdmission(),async()=>{})).getPaymentReleaseApproval(p.id)).toEqual(approval);
+ });
+ it('release racing execute never bypasses durable consent or submits twice',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false);
+  await Promise.all([h.handler('release',h.request({...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id),h.handler('execute',h.request(p.body),p.id)]);
+  expect(h.snapshot().payment_release_approvals).toHaveLength(1);expect(vi.mocked(h.client.createTransaction).mock.calls.length).toBeLessThanOrEqual(1);
+  if(!h.snapshot().execution_ledger.length)expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(200);
+  expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
 });

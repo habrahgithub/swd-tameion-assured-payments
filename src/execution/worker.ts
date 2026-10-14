@@ -1,3 +1,4 @@
+import type {PaymentReleaseApproval} from '../domain/payment-release-approval';
 import { isCurrentSourceEligible } from "../server/source-records";
 import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate";
 import { T1_SINGLE_APPROVAL, type ActorAuthorityRecord } from "../authority/actor-authority";
@@ -56,6 +57,7 @@ export interface ExecutionWorkerOptions {
     actorAuthorities: ActorAuthorityRecord[];
     /** Kill-switch decision derived from the same latest durable authority snapshot. */
     executionKillSwitched: boolean;
+    paymentReleaseApproval?: PaymentReleaseApproval;
   }>;
   /** Resolve the approver against a current authority source; request fields are never a substitute. */
   resolveActorAuthority?: (
@@ -64,6 +66,8 @@ export interface ExecutionWorkerOptions {
   ) => CurrentActorAuthority | null | undefined;
   /** Authenticated HTTP capability; revalidate requester after provider preflight. */
   revalidateRequester?: () => Promise<void>;
+  /** Synchronous expiry/binding check after the final awaited durable read. */
+  assertRequesterAtProviderSend?: (approval:PaymentReleaseApproval|undefined) => void;
   now?: () => Date;
 }
 
@@ -535,6 +539,8 @@ export class ExecutionWorker {
       throw new ExecutionBlockedError("PAE expired during provider preflight; the reserved instruction was refused", "EXP-001");
     }
     this.requireCurrentSourceEligibility(payload.organization_id, obligationId);
+    try { this.options.assertRequesterAtProviderSend?.(durableContext?.paymentReleaseApproval); }
+    catch { throw new ExecutionBlockedError("Release or requester expired/changed at final provider boundary", "AUTH-REQUESTER"); }
   }
 
   private requireCurrentSourceEligibility(organizationId: string, obligationId: string): void {

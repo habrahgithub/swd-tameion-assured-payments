@@ -2202,3 +2202,19 @@ test("portal final release is visible on desktop and mobile and never auto-submi
     await page.close();
   }
 });
+
+test("stale consent and unavailable release never offer approval or payment", async ({ browser }) => {
+  for(const width of [390,1280])for(const gate of ['PORTAL_RELEASE_RENEWAL_REQUIRED','PORTAL_RELEASE_UNAVAILABLE']){
+    const page=await browser.newPage({viewport:{width,height:900}}),record=proxyLifecycleDetail('AUTHORIZED');
+    record.execution_gate=gate;record.payment_release_current=false;
+    record.payment_release_approval={approved_at:'2026-10-14T09:00:00.000Z',expires_at:'2026-10-14T09:01:00.000Z',actor_id:'SYNTHETIC-APPROVER'};
+    const writes=await openFixture(page,record);await expandLifecycleStages(page);
+    await page.getByRole('navigation',{name:'Payment lifecycle navigation'}).getByRole('button',{name:'Payment',exact:true}).click();await collapseLifecycleStages(page);
+    const card=page.getByRole('region',{name:'Payment status'});
+    await expect(card).toContainText(gate==='PORTAL_RELEASE_RENEWAL_REQUIRED'?'Release consent is no longer current':'Payment release is unavailable');
+    await expect(card).not.toContainText('Release approval recorded');
+    await expect(page.getByRole('button',{name:'Approve payment release'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Pay testnet USDC'})).toHaveCount(0);
+    expect(writes).toEqual([]);await page.close();
+  }
+});

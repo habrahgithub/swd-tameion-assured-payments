@@ -1,3 +1,4 @@
+import {projectObligationDetail} from "../src/server/obligation-read-model";
 import {sealPaymentRelease} from "../src/domain/payment-release-approval";
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -183,7 +184,7 @@ function approvePortalRelease(fixture: Awaited<ReturnType<typeof preparedAuthori
   if(fixture.state.getPaymentReleaseApproval(fixture.selectedId))return;
   const packet=getCurrentSettlementProxyPacket(fixture.state,fixture.selectedId)!;
   const actor=fixture.state.resolveDesignatedApprover();
-  fixture.state.recordPaymentReleaseApproval(sealPaymentRelease({schema_version:'PORTAL-RELEASE-1',
+  fixture.state.recordPaymentReleaseApproval(sealPaymentRelease({schema_version:'PORTAL-RELEASE-2',source_binding_sha256:'a'.repeat(64),requester_binding_sha256:'b'.repeat(64),
     organization_id:DEMO_ORGANIZATION_ID,obligation_id:fixture.selectedId,
     aggregate_version:fixture.state.store.get(DEMO_ORGANIZATION_ID,fixture.selectedId).aggregate_version,
     namespace:'SYNTHETIC-PORTAL',packet_sha256:packet.packet_sha256,pae_instruction_hash:fixture.sealed.instruction_hash,
@@ -196,10 +197,7 @@ function approvePortalRelease(fixture: Awaited<ReturnType<typeof preparedAuthori
 async function detailJson(state: DemoState, obligationId: string) {
   vi.stubEnv("TAMEION_STATE_NAMESPACE","SYNTHETIC-PORTAL");
   stateMocks.getDemoState.mockResolvedValue(state);
-  const response = await getObligationDetail(
-    new Request(`http://localhost/api/obligations/${obligationId}`),
-    { params: Promise.resolve({ id: obligationId }) },
-  );
+  const response = projectObligationDetail(state,obligationId,true,{namespace:'SYNTHETIC-PORTAL',operator_key:'SYNTHETIC-OWNER',credential_version:1,source_binding_sha256:'a'.repeat(64),requester_binding_sha256:'b'.repeat(64)});
   expect(response.status).toBe(200);
   return response.json();
 }
@@ -419,7 +417,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     setDetailBody(body);
     expect(body.truth.tameion_control_truth).toMatchObject({ pae_state: "REVOKED", execution_release_authority: "BLOCKED" });
     expect(body.execution_packet).toBeTruthy();
-    expect(body.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
+    expect(body.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
     expect(body.execution).toBeNull();
     expect(fixture.api.createTransaction).not.toHaveBeenCalled();
 

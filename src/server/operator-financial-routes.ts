@@ -1,4 +1,4 @@
-import {sealPaymentRelease,matchesPaymentRelease,type PaymentReleaseRecord} from '../domain/payment-release-approval';
+import {sealPaymentRelease,matchesPaymentRelease,paymentReleaseBindings,type PaymentReleaseRecord,type PaymentReleaseBinding,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {buildFinanceAgentContext,hasCurrentControlledInstruction} from "../agent/context-builder";
 import {z} from 'zod';
 import {operatorHandlers,type AuthContext} from './operator-auth';
@@ -21,7 +21,7 @@ export interface FinancialDependencies {
  guard:(request:Request,post:boolean)=>Promise<AuthContext>;
  source:()=>FinancialSourceAdmission;
  requester:()=>FinancialRequesterBinding;
- load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>)=>Promise<DemoState>;
+ load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>,assertAtSend?:(approval:PaymentReleaseApproval|undefined)=>void)=>Promise<DemoState>;
  preflight?:typeof runJ2aReadOnlyPreflight;
  /** Trusted capability boundary; never selected by HTTP or environment flags. */
  providerBoundary?:(revalidate:()=>Promise<void>)=>Promise<void>;
@@ -31,7 +31,7 @@ function reply(code:string,status:number,extra:Record<string,unknown>={}){return
 export function createFinancialHandlers(deps:FinancialDependencies){
  return async function action(kind:Action,request:Request,id?:string):Promise<Response>{
   if(request.method!=='POST')return methodNotAllowed();
-  let effectsStarted=false;
+  let effectsStarted=false,releaseSaveStarted=false;
   try{
    const auth=await deps.guard(request,true);
    requireJson(request);const raw=await readBoundedJson(request,4096);const body=bodies[kind].parse(raw);
@@ -41,7 +41,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    const sourceIdentity=JSON.stringify(source),requesterIdentity=JSON.stringify(requester);
    if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||!sameFinancialBinding(source,requester)||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
    const checkContext=async()=>{await auth.revalidate();if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
-   let requiredRelease: {record_sha256:string; expected:Partial<PaymentReleaseRecord>} | undefined;
+   let requiredRelease: {record_sha256:string; expected:Partial<PaymentReleaseRecord> & Partial<PaymentReleaseBinding>} | undefined;
    let load!:()=>Promise<DemoState>;
    const resolveCurrentRequester=async()=>{await checkContext();const current=await load();const actor=current.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
     if(current.getSealedPae(selected)){
@@ -52,7 +52,11 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     if(requiredRelease && (!matchesPaymentRelease(current.getPaymentReleaseApproval(selected),requiredRelease.expected)||current.getPaymentReleaseApproval(selected)?.record_sha256!==requiredRelease.record_sha256))throw new AccessError("PAYMENT_RELEASE_CHANGED",403);
     await checkContext();return actor;};
    const checkRequester=async()=>{await resolveCurrentRequester();};
-   load=()=>deps.load(source,checkRequester);
+   const assertAtSend=(approval:PaymentReleaseApproval|undefined)=>{
+    if(!requiredRelease)return;
+    if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity||!matchesPaymentRelease(approval,requiredRelease.expected)||approval?.record_sha256!==requiredRelease.record_sha256)throw new AccessError('PAYMENT_RELEASE_CHANGED',403);
+   };
+   load=()=>deps.load(source,checkRequester,assertAtSend);
    if(kind==='preflight'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
    const state=await load();const actor=state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
    if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
@@ -80,7 +84,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    }
    const sealed=state.getSealedPae(selected);if(!sealed)throw new AccessError('CURRENT_PAE_REQUIRED',409);
    const releaseIdentity = {
-    organization_id:source.organization_id,obligation_id:selected,namespace:source.namespace,
+    ...paymentReleaseBindings(source,requester),organization_id:source.organization_id,obligation_id:selected,namespace:source.namespace,
     pae_instruction_hash:sealed.instruction_hash,idempotency_key:sealed.payload.idempotency_key,
     actor_id:actor.actor_id,actor_role:actor.actor_role,authority_version:actor.authority_version,
     operator_key:auth.session.operator_key,credential_version:auth.session.credential_version,
@@ -96,12 +100,14 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     const expected={...releaseIdentity,aggregate_version:input.expected_version,packet_sha256:input.packet_sha256};
     const previous=state.getPaymentReleaseApproval(selected);
     if(previous){
-     if(!matchesPaymentRelease(previous,expected))throw new AccessError('PAYMENT_RELEASE_CONFLICT',409);
+     if(!matchesPaymentRelease(previous,expected))throw new AccessError('PAYMENT_RELEASE_RENEWAL_REQUIRED',409);
      await checkRequester();return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:previous});
     }
     await checkRequester();
-    const approval=sealPaymentRelease({...expected,schema_version:'PORTAL-RELEASE-1',approved_at:new Date().toISOString(),expires_at:new Date(Math.min(Date.parse(sealed.payload.expiry),Date.parse(source.expires_at),Date.parse(requester.expires_at),actor.expires_at?Date.parse(actor.expires_at):Infinity)).toISOString()});
-    state.recordPaymentReleaseApproval(approval);effectsStarted=true;await state.flush();
+    const expiry=Math.min(Date.parse(sealed.payload.expiry),Date.parse(source.expires_at),Date.parse(requester.expires_at),actor.expires_at?Date.parse(actor.expires_at):Infinity);
+    const now=Date.now();if(!Number.isFinite(expiry)||expiry<=now)throw new AccessError('PAYMENT_RELEASE_EXPIRED',409);
+    const approval=sealPaymentRelease({...expected,schema_version:'PORTAL-RELEASE-2',approved_at:new Date(now).toISOString(),expires_at:new Date(expiry).toISOString()});
+    state.recordPaymentReleaseApproval(approval);effectsStarted=true;releaseSaveStarted=true;await state.flush();
     requiredRelease={record_sha256:approval.record_sha256,expected};await checkRequester();
     return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:approval});
    }
@@ -125,6 +131,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    await checkRequester();await deps.providerBoundary?.(checkRequester);await checkRequester();effectsStarted=true;const execution=await state.worker.execute(sealed);
    return reply(execution.status==='SETTLED'?'RECONCILED':'RECONCILIATION_ONLY',execution.status==='UNKNOWN'?202:execution.status==='BLOCKED'?409:200,{execution});
   }catch(error){
+   if(releaseSaveStarted)return reply('OUTCOME_UNVERIFIED',503,{retry_submission:false,release_gate:'READ_ONLY_CONFIRMATION_REQUIRED',error:'Release approval may have been recorded. Refresh current status before taking another action.'});
    if(error instanceof AccessError)return reply(error.code,error.status);
    if(error instanceof z.ZodError)return reply('BODY_REJECTED',400);
    if(error instanceof DemoStatePersistenceError||effectsStarted)return reply('OUTCOME_UNVERIFIED',503,{execution_gate:'RECONCILIATION_ONLY',retry_submission:false});
@@ -134,7 +141,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
   }
  };
 }
-export const financialHandlers=createFinancialHandlers({providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate)=>{
+export const financialHandlers=createFinancialHandlers({providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate,assertAtSend)=>{
  const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);
- return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate});
+ return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate,assertRequesterAtProviderSend:assertAtSend});
 }});

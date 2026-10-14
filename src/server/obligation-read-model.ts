@@ -1,4 +1,4 @@
-import {matchesPaymentRelease} from '../domain/payment-release-approval';
+import {matchesPaymentRelease,type PaymentReleaseBinding} from '../domain/payment-release-approval';
 import { NextResponse } from "next/server";
 import { AuthorityError } from "../authority/aggregate";
 import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, type ExistingState } from "./load-existing-demo-state";
@@ -48,7 +48,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number}) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -73,6 +73,21 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
     execution = sealed ? state.worker.getExecutionRecord(sealed.payload.idempotency_key) : undefined;
     executionKillSwitched = state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID, id);
     executionPacket = getCurrentSettlementProxyPacket(state, id);
+    const release=state.getPaymentReleaseApproval?.(id);
+    let actor;try {actor=state.resolveDesignatedApprover?.();}catch { /* unavailable authority stays locked */ }
+    const releaseContextReady=Boolean(releaseContext?.source_binding_sha256&&releaseContext?.requester_binding_sha256&&actor&&state.providerAdapter.name==='arc-circle-live');
+    const releaseCurrent=Boolean(releaseContextReady&&executionPacket&&matchesPaymentRelease(release,{
+      ...releaseContext,packet_sha256:executionPacket?.packet_sha256,pae_instruction_hash:sealed?.instruction_hash,
+      organization_id:DEMO_ORGANIZATION_ID,obligation_id:id,aggregate_version:aggregate.aggregate_version,
+      actor_id:actor?.actor_id,actor_role:actor?.actor_role,authority_version:actor?.authority_version,
+    }));
+    const releaseActionable=aggregate.state==='AUTHORIZED'&&aggregate.pae_state==='UNUSED'&&aggregate.execution_state==='NONE'&&!executionKillSwitched;
+    const releaseGate=execution
+      ? ['UNKNOWN','SUBMITTING'].includes(execution.status)?'RECONCILIATION_ONLY':'EXECUTION_ALREADY_RECORDED'
+      : !executionPacket||!releaseActionable?'LOCKED_UNTIL_CURRENT_AUTHORIZATION'
+      : !releaseContextReady?'PORTAL_RELEASE_UNAVAILABLE'
+      : releaseCurrent?'PORTAL_APPROVED_EXACT_PACKET'
+      : release?'PORTAL_RELEASE_RENEWAL_REQUIRED':'PORTAL_RELEASE_APPROVAL_REQUIRED';
     const settlementEvidenceBinding = getSettlementEvidenceBinding(state, id, executionPacket);
     if (!record || !canonicalObligation) {
       return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
@@ -138,17 +153,9 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
       execution_packet: executionPacket,
       settlement_evidence_binding: settlementEvidenceBinding,
       sealed_pae_instruction_hash: sealed?.instruction_hash ?? null,
-      payment_release_approval: state.getPaymentReleaseApproval?.(id) ?? null,
-      execution_gate: execution
-        ? execution.status === "UNKNOWN" || execution.status === "SUBMITTING" ? "RECONCILIATION_ONLY" : "EXECUTION_ALREADY_RECORDED"
-        : executionPacket && releaseContext && state.providerAdapter.name === "arc-circle-live" &&
-          matchesPaymentRelease(state.getPaymentReleaseApproval?.(id), {
-            ...releaseContext,packet_sha256:executionPacket.packet_sha256,pae_instruction_hash:sealed?.instruction_hash,
-            obligation_id:id,organization_id:DEMO_ORGANIZATION_ID,aggregate_version:aggregate.aggregate_version,
-            ...(() => { let actor; try {actor=state.resolveDesignatedApprover?.();} catch {} return actor ? {actor_id:actor.actor_id,actor_role:actor.actor_role,authority_version:actor.authority_version} : {actor_id:"UNVERIFIED"}; })(),
-          })
-          ? "PORTAL_APPROVED_EXACT_PACKET"
-          : executionPacket ? "PORTAL_RELEASE_APPROVAL_REQUIRED" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
+      payment_release_approval: release ? {approved_at:release.record.approved_at,expires_at:release.record.expires_at,actor_id:release.record.actor_id} : null,
+      payment_release_current: releaseCurrent && releaseActionable && !execution,
+      execution_gate: releaseGate,
       execution_kill_switched: executionKillSwitched,
       assurance_evidence: assuranceEvidence,
     });

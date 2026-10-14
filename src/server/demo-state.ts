@@ -1154,6 +1154,7 @@ export async function loadExistingFinancialState(
       const current=await load();
       return {authorization:current.snapshot.authorization_history.slice().reverse().find(a=>a.sealed_pae.payload.organization_id===organizationId&&a.sealed_pae.payload.obligation_ids[0]===obligationId)??null,
         aggregate:current.store.get(organizationId,obligationId),trustedKeys:current.snapshot.trusted_keys,
+        paymentReleaseApproval:current.snapshot.payment_release_approvals?.find(a=>a.record.obligation_id===obligationId&&a.record.pae_instruction_hash===current.snapshot.sealed_paes.find(([id])=>id===obligationId)?.[1].instruction_hash),
         actorAuthorities:current.snapshot.actor_authorities,executionKillSwitched:current.store.isExecutionKillSwitched(organizationId,obligationId)};
     },
   },sourceRecords);

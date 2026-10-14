@@ -5,15 +5,22 @@ import type { SealedPae } from './schemas';
 const text = z.string().min(1).max(128).regex(/^[\x20-\x7e]+$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
-export const paymentReleaseRecordSchema = z.object({
-  schema_version: z.literal('PORTAL-RELEASE-1'),
+const releaseFields = z.object({
   organization_id: text, obligation_id: text, aggregate_version: integer,
   namespace: text, packet_sha256: hash, pae_instruction_hash: hash,
   idempotency_key: z.string().min(1).max(256),
   actor_id: text, actor_role: text, authority_version: z.string().regex(/^[1-9][0-9]*$/),
   operator_key: text, credential_version: integer,
   approved_at: z.iso.datetime({precision:3}), expires_at: z.iso.datetime({precision:3}),
-}).strict().refine(r => Date.parse(r.expires_at) > Date.parse(r.approved_at), 'Invalid release window');
+}).strict();
+export const paymentReleaseRecordSchema = z.discriminatedUnion('schema_version',[
+ releaseFields.extend({schema_version:z.literal('PORTAL-RELEASE-1')}).strict(),
+ releaseFields.extend({schema_version:z.literal('PORTAL-RELEASE-2'),source_binding_sha256:hash,requester_binding_sha256:hash}).strict(),
+]).refine(r => Date.parse(r.expires_at) > Date.parse(r.approved_at), 'Invalid release window');
+export type PaymentReleaseBinding = {source_binding_sha256:string;requester_binding_sha256:string};
+export function paymentReleaseBindings(source:unknown,requester:unknown):PaymentReleaseBinding {
+ return {source_binding_sha256:canonicalHash(source),requester_binding_sha256:canonicalHash(requester)};
+}
 export type PaymentReleaseRecord = z.infer<typeof paymentReleaseRecordSchema>;
 export type PaymentReleaseApproval = {record:PaymentReleaseRecord; record_sha256:string};
 const approvalSchema = z.object({record:paymentReleaseRecordSchema,record_sha256:hash}).strict();
@@ -38,10 +45,10 @@ export function parsePaymentReleases(value:unknown,paes:readonly SealedPae[]):Pa
   }
   return releases;
 }
-export function matchesPaymentRelease(approval:PaymentReleaseApproval|undefined,expected:Partial<PaymentReleaseRecord>,now=Date.now()):boolean {
+export function matchesPaymentRelease(approval:PaymentReleaseApproval|undefined,expected:Partial<PaymentReleaseRecord> & Partial<PaymentReleaseBinding>,now=Date.now()):boolean {
   if(!approval||!Number.isSafeInteger(now))return false;
   try{
     const {record:r}=parsePaymentRelease(approval);
-    return now>=Date.parse(r.approved_at)&&now<Date.parse(r.expires_at)&&Object.entries(expected).every(([key,value])=>r[key as keyof PaymentReleaseRecord]===value);
+    return r.schema_version==='PORTAL-RELEASE-2'&&now>=Date.parse(r.approved_at)&&now<Date.parse(r.expires_at)&&Object.entries(expected).every(([key,value])=>(r as Record<string,unknown>)[key]===value);
   }catch{return false;}
 }

@@ -146,7 +146,8 @@ interface ObligationDetail {
   };
   sealed_pae_instruction_hash?: string | null;
   execution_gate?: string;
-  payment_release_approval?: {record:{approved_at:string;expires_at:string;actor_id:string};record_sha256:string} | null;
+  payment_release_approval?: {approved_at:string;expires_at:string;actor_id:string} | null;
+  payment_release_current?: boolean;
   execution_kill_switched: boolean;
   assurance_evidence?: AssuranceEvidenceView;
 }
@@ -1827,6 +1828,8 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   if (detailState === "stale") return "Payment details are stale. Refresh current status before relying on or acting on this instruction.";
   if (!detail.pae_sealed) return "No sealed payment instruction is available. Complete the existing authorization and assurance steps before execution.";
   if (exactPacketSubmissionReady) return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
+  if (detail.execution_gate === "PORTAL_RELEASE_RENEWAL_REQUIRED") return "Release consent is no longer current. This instruction cannot be submitted. Renew payment authority through the authorized recovery process; do not retry this instruction.";
+  if (detail.execution_gate === "PORTAL_RELEASE_UNAVAILABLE") return "Payment release is unavailable. Current operator authority or the payment service could not be verified. Refresh current status; no payment can be submitted.";
   if (detail.execution_gate === "PORTAL_RELEASE_APPROVAL_REQUIRED") return "Review the exact payment details below and approve payment release. Approval records your consent; you will submit the payment separately.";
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
@@ -3322,7 +3325,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                       <Field label="Planning fee limit" value={`${detail.settlement_proxy.preflight.max_network_fee} USDC`} />
                       <Field label="Planning total limit" value={`${detail.settlement_proxy.preflight.max_total_debit} USDC`} />
                     </>}
-                    {detail.payment_release_approval && <Field label="Release approval recorded" value={detail.payment_release_approval.record.approved_at} />}
+                    {detail.payment_release_current && detail.payment_release_approval && <Field label="Release approval recorded" value={detail.payment_release_approval.approved_at} />}
                     <Field label="Instruction state" value={currentPaeDisplay(detail)} />
                     <Field label="Execution state" value={detail.execution?.status ?? "No execution has been recorded for this instruction."} />
                     <Field label="Source payable" value={`${sourcePayableState(detail)} · unchanged by testnet execution`} />

@@ -33,3 +33,19 @@ A new candidate deployment still needs valid ingress, source and requester provi
 RED demonstrated environment-only execution succeeding without a durable portal release. Regression coverage requires release persistence and cold reload, exact identity and expiry, forged body rejection, duplicate/concurrent approval, CAS uncertainty, revocation before send, no provider calls during approval, and at-most-once submission. UI checks cover CSRF, explicit consent, reset after approval, no automatic payment, mobile/desktop visibility, stale/blocked/revoked states and contrast.
 
 Stop at one review-ready candidate on the existing branch/PR. Local mocked verification is supporting evidence; live UAT, provider-backed settlement and independent financial/security assurance remain unverified until separately performed.
+
+## Pre-UAT correction R1
+
+Authority: [AXIS adjudication](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/65#issuecomment-6169098517), baseline `2315ccb58d042d502222ad78bd7b0585206c8588`.
+
+RCA: the first projection collapsed missing consent, stale consent and unavailable runtime into the same actionable state. The release route also returned a plain access refusal when readback failed after a successful save. The final requester callback ran before an awaited durable reload, leaving its earlier expiry observation stale at the send boundary. These defects arose at the read-projection, save/readback and final-send seams; fixing presentation alone would leave the underlying decisions inconsistent.
+
+R1 distinguishes current, renewal-required and unavailable release states, exposes only approval time/expiry/actor metadata to the browser, and reports post-save failures as unverified outcomes requiring read-only confirmation. It does not renew or replace consent for the same PAE. Approval remains separate from submission and uses a checkbox.
+
+New `PORTAL-RELEASE-2` records bind the canonical financial source and requester envelopes. Those verified envelopes include the deployment/origin/ingress binding. Version-1 records remain readable archival evidence and grant no execution capability; missing consent on old snapshots remains missing. Nothing silently upgrades historic authority. The optional existing snapshot field and CAS are reused without SQL changes.
+
+The digest is unkeyed integrity evidence, not author authentication. Authenticity relies on the authenticated server, verified operator/requester and actor authority, server-only repository capability, protected database grants, and the signed PAE. A privileged database writer could fabricate an additional release record for a signed instruction. Direct envelope binding prevents stale or foreign-envelope reuse but does not remove that trusted-database risk. Independent/AXIS security disposition is required before live release; no production risk acceptance or new signing architecture is implied.
+
+After the last awaited durable reload, the canonical worker invokes a synchronous requester capability that verifies current source/requester envelopes and validity plus the freshly loaded exact release record. Expiry equality refuses before `createTransaction`. This addresses time spent in the RPC, but no software check promises zero latency between validation and network arrival. Existing claim, PAE, fee, actor and at-most-once semantics remain authoritative.
+
+Regression evidence covers all-provider-method denial during approval, stale/legacy/credential/actor/envelope/read-context/runtime cases, post-save authentication loss, old snapshot load/flush, concurrent release versus execute, and final expiry crossing with a just-before-expiry control. Source inspection confirms snapshot RPCs return/store the full JSON object; a live database roundtrip remains unverified. Existing legacy env-gated handlers remain internal test fixtures; the HTTP route census and import constraints must continue to show no hosted bypass.
