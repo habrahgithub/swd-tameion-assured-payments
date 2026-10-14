@@ -1,0 +1,48 @@
+.shell {width:100%;max-width:1400px;min-height:100svh;margin:auto;padding:28px 44px;display:flex;flex-direction:column}
+.content {display:grid;grid-template-columns:minmax(0,1fr) 390px;align-items:center;gap:56px;flex:1;padding:44px 0}
+.brand {display:block;width:224px;border-radius:8px;background:#0b132b;padding:5px 10px;box-sizing:content-box}
+.brand img {display:block;width:224px;height:50px}
+.brand:focus-visible,.motionControl:focus-visible {outline:2px solid var(--color-ink);outline-offset:5px}
+.introduction {min-width:0}
+.eyebrow {font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--color-ink-muted);margin-bottom:15px}
+.headline {font-family:Georgia,'Times New Roman',serif;font-weight:400;font-size:clamp(36px,3.6vw,53px);line-height:1.13;letter-spacing:-.035em;color:var(--color-ink);max-width:650px;margin:0}
+.headline span {display:block}
+.support {color:var(--color-ink-muted);font-size:16px;line-height:1.7;margin:20px 0 26px}
+.journey {margin:0;border:1px solid var(--color-border);border-radius:16px;background:var(--color-surface);overflow:hidden}
+.desktopScene {display:block;width:100%;height:auto}
+.mobileScene {display:none;background:#0b132b}
+.caption {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 14px;color:var(--color-ink-muted);font-size:11px;line-height:1.5;min-height:62px}
+.motionControl {display:flex;align-items:center;gap:7px;flex-shrink:0;min-height:44px;padding:0 10px;border:1px solid var(--color-border-strong);border-radius:6px;background:var(--color-surface);font-size:12px;font-weight:600;color:var(--color-ink);cursor:pointer}
+.motionControl:disabled {cursor:default}
+.boundary {margin:18px 0 0;color:var(--color-ink-muted);font-size:12px;line-height:1.7}
+.documents,.particles,.ai,.human,.assurance,.wallets,.orbitGlow,.outgoing,.returnPulse,.scan,.satellite {animation-duration:18s;animation-iteration-count:infinite;animation-timing-function:linear;animation-play-state:paused;transform-box:fill-box;transform-origin:center}
+.documents {animation-name:floatInvoices}
+.particles {animation-name:particles}
+.ai {animation-name:aiLight}
+.scan {animation-name:scan}
+.human {animation-name:humanLight}
+.assurance {animation-name:assuranceLight}
+.wallets {animation-name:walletLight}
+.orbitGlow {animation-name:orbitLight}
+.satellite {animation-name:satellite}
+.outgoing {animation-name:outgoing;stroke-dasharray:7 93;opacity:0}
+.returnPulse {animation-name:reconcile;stroke-dasharray:6 94;opacity:0}
+.journey[data-motion="running"] :is(.documents,.particles,.ai,.human,.assurance,.wallets,.orbitGlow,.outgoing,.returnPulse,.scan,.satellite) {animation-play-state:running}
+.journey[data-motion="static"] :is(.documents,.particles,.ai,.human,.assurance,.wallets,.orbitGlow,.outgoing,.returnPulse,.scan,.satellite) {animation:none}
+.journey[data-motion="static"] .orbitGlow {opacity:.22}
+.journey[data-motion="static"] .scan {opacity:0}
+@keyframes floatInvoices {0%,100%{transform:translateY(0)}10%{transform:translateY(-7px)}24%{transform:translateY(0)}70%{transform:translateY(-3px)}}
+@keyframes particles {0%,3%,24%,100%{opacity:.15;transform:translateX(0)}12%,18%{opacity:1;transform:translateX(16px)}}
+@keyframes aiLight {0%,12%,32%,100%{opacity:.75}18%,27%{opacity:1}}
+@keyframes scan {0%,14%,32%,100%{opacity:0;transform:translateY(0)}17%{opacity:1;transform:translateY(0)}29%{opacity:1;transform:translateY(36px)}}
+@keyframes humanLight {0%,31%,100%{opacity:.7}38%,91%{opacity:1}}
+@keyframes assuranceLight {0%,42%,100%{opacity:.68}49%,91%{opacity:1}}
+@keyframes walletLight {0%,53%,100%{opacity:.7}61%,91%{opacity:1}}
+@keyframes orbitLight {0%,54%,100%{opacity:0}62%,78%{opacity:.65}86%{opacity:.2}}
+@keyframes outgoing {0%,53%{opacity:0;stroke-dashoffset:0}54%{opacity:1;stroke-dashoffset:0}77%{opacity:1;stroke-dashoffset:-100}78%,100%{opacity:0;stroke-dashoffset:-100}}
+@keyframes reconcile {0%,78%{opacity:0;stroke-dashoffset:0}79%{opacity:.8;stroke-dashoffset:0}96%{opacity:.8;stroke-dashoffset:-100}97%,100%{opacity:0;stroke-dashoffset:-100}}
+@keyframes satellite {0%,54%,100%{transform:rotate(0)}78%,96%{transform:rotate(45deg)}}
+@media(prefers-reduced-motion:reduce) {.journey :is(.documents,.particles,.ai,.human,.assurance,.wallets,.orbitGlow,.outgoing,.returnPulse,.scan,.satellite){animation:none!important}.orbitGlow{opacity:.22}.scan{opacity:0}}
+@media(max-width:1100px) {.shell{padding:24px 28px}.content{gap:30px;grid-template-columns:minmax(0,1fr) 360px}.headline{font-size:40px}}
+@media(max-width:1024px) {.shell{padding:18px 22px}.content{grid-template-columns:1fr;gap:24px;padding:28px 0;align-items:start}.content>section{width:100%;max-width:520px;justify-self:center}.introduction{max-width:620px;width:100%;justify-self:center}.headline{font-size:38px}.support{margin:12px 0 18px;font-size:14px}.desktopBreak{display:none}.desktopScene{display:none}.mobileScene{display:block;width:100%;height:190px}.boundary{display:none}.caption{min-height:56px}.brand{width:174px;padding:3px 8px}.brand img{width:174px;height:39px}}
+@media(max-width:400px) {.shell{padding:14px 16px}.brand{width:145px}.brand img{width:145px;height:33px}.headline{font-size:32px}.content{padding:22px 0;gap:20px}.mobileScene{height:185px}.caption{padding:6px 10px;font-size:10px;gap:6px}.motionControl{padding:0 8px;font-size:11px}.support{font-size:13px}}

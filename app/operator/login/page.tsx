@@ -2,6 +2,8 @@
 import {useState,type FormEvent} from 'react';
 import {OperatorAccessCard,OperatorAccessShell} from '../../operator-access-ui';
 import {ThemeControl} from '../../theme-control';
+import {LoginBrand,LoginIntroduction} from './login-branding';
+import styles from './login-branding.module.css';
 export default function OperatorLogin(){
  const [busy,setBusy]=useState(false),[message,setMessage]=useState('Ready for secure sign-in.');
  async function submit(event:FormEvent<HTMLFormElement>){
@@ -12,12 +14,7 @@ export default function OperatorLogin(){
   }catch{setMessage('Sign-in could not be verified. Access may be unavailable or rate limited. Try again after the stated access limit.');}
   finally{form.reset();setBusy(false);}
  }
- const details=<dl className="mt-7 grid gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1">
-    <div className="border-s-2 border-[var(--color-border-strong)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Private obligation review</dt><dd className="mt-1 text-[var(--color-ink-muted)]">Business records remain available only to approved finance users.</dd></div>
-    <div className="border-s-2 border-[var(--color-border-strong)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Current settlement balance</dt><dd className="mt-1 text-[var(--color-ink-muted)]">The USDC balance refreshes after sign-in and can be refreshed again at any time.</dd></div>
-    <div className="border-s-2 border-[var(--color-accent)] ps-3"><dt className="font-semibold text-[var(--color-ink)]">Separate payment approval</dt><dd className="mt-1 text-[var(--color-ink-muted)]">Signing in does not approve or release a payment.</dd></div>
-    </dl>;
- return <OperatorAccessShell eyebrow="Secure finance access" title="Sign in to Tameion" description="Open the private payment workspace to review obligations and check the current Arc Testnet USDC settlement balance." details={details} brandHref="/" accessory={<ThemeControl/>}>
+ return <OperatorAccessShell eyebrow="Secure finance access" title="Sign in to Tameion" description="Open the private payment workspace to review obligations and check the current Arc Testnet USDC settlement balance." brand={<LoginBrand/>} introduction={<LoginIntroduction/>} shellClassName={styles.shell} contentClassName={styles.content} brandHref="/" accessory={<ThemeControl/>}>
    <OperatorAccessCard heading="Finance user sign-in" description="Use your approved finance account.">
     <form onSubmit={submit} className="mt-6 space-y-5">
      <label className="block text-sm font-semibold text-[var(--color-ink)]">Finance user name<input className="mt-2 block min-h-11 w-full rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 py-2 font-normal text-[var(--color-ink)] outline-none transition focus:border-[var(--color-ink)] focus:ring-2 focus:ring-[var(--color-border-strong)] disabled:cursor-not-allowed disabled:bg-[var(--color-bg)]" name="username" autoComplete="username" required maxLength={128} disabled={busy}/></label>
