@@ -68,3 +68,30 @@ Job #65 comment anchors:
 - Disclosure restraint: 6174354631
 
 These requirements remain substantive; PRIME's latest separate-PR instruction supersedes their same-candidate placement.
+
+
+## Post-E2E UAT extraction (15 October 2026)
+
+The conversation and repository were reconciled after the first complete UAT flow. This branch admits the presentation-only items that can be corrected without changing financial authority or source contracts.
+
+### Resolved in this bundle
+
+- Remove the client-generated Payment review report and its dead-end action. Assessment findings, explanation and remediation remain in the authoritative assessment view.
+- Remove the hard-coded Training scenario and illustrative payment-journey placeholder from the authenticated workspace.
+- Remove the duplicate selected-obligation wallet/proposed-settlement panel; the wallet summary remains the single balance location.
+- Show compact queue facts: obligation, recorded supplier status, amount, due date and Assessment result. Remove the queue-level PAY recommendation label.
+- Reduce the fixed action strip to selection-confirmation facts: obligation reference, supplier status and authoritative amount/currency, plus the current primary action.
+- Use Assessment result terminology throughout user-facing presentation.
+- Keep genuine obligations and Arc Testnet demo entries visibly separated.
+
+### Preserved safety behavior
+
+- Assessment and linked-instruction idempotency keys remain browser-persisted because this presentation bundle does not admit a database-backed action-intent replacement.
+- Workflow state, receipts, assessment results and payment authority continue to come from the server detail model.
+- Wallet availability does not gate obligation review or assessment; affordability remains a later preflight control.
+
+### Separate authority required
+
+- Genuine supplier identity is absent from the current trusted source schema. The UI renders a source-backed name when present and `Not recorded` otherwise. Adding supplier identity to genuine records requires a source-contract/projection change.
+- Backend-owned resume acknowledgements and durable action intents require an architecture and persistence Job. This bundle does not delete the existing safety keys or introduce a competing state authority.
+- Live provider calls, payment execution, database history changes, production deployment and custom-domain promotion remain outside this UI Job.

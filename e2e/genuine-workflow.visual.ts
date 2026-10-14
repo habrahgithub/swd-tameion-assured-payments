@@ -42,7 +42,7 @@ for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine
  await page.locator(`button[data-obligation-id="${records[0].obligation_id}"]`).click();
  await page.getByRole('button',{name:'Run AI Assessment',exact:true}).click();
  if(expected==='HOLD'){
-  await expect(page.getByRole('heading',{name:'Recommendation — HOLD',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Assessment result — HOLD',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Create linked testnet instruction',exact:true})).toHaveCount(0);
   expect(posts).toEqual([`/api/obligations/${records[0].obligation_id}/advisory`]);expect(snapshot.linked_settlement_instructions).toBeUndefined();expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);
   await page.screenshot({path:info.outputPath(`genuine-hold-${width}.png`),fullPage:true});return;

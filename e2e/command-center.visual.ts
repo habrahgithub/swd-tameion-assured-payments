@@ -79,8 +79,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByText("Control and audit records")).toHaveCount(0);
     await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Payment review report/)).toHaveCount(0);
-    const funding = page.getByRole("region", { name: "Wallet funding and payment readiness" });
-    await expect(funding).toContainText("USDC balance not verified");
+    await expect(page.getByRole("region", { name: "Wallet funding and payment readiness" })).toHaveCount(0);
     const wallet = page.getByRole("region", { name: "Read-only wallet balance" });
     await expect(wallet).toContainText("Balance not verified");
     const balanceRefresh = wallet.getByRole("button", { name: "Refresh wallet balance" });
@@ -558,7 +557,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
     await expandLifecycleStages(page);
     await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
     const card = page.getByRole("region", { name: "Assessment result" });
-    const heading = card.getByRole("heading", { name: "Recommendation — PAY" });
+    const heading = card.getByRole("heading", { name: "Assessment result — PAY" });
     await expect(heading).toBeVisible();
     await expect(heading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
     await expect(card.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
@@ -591,7 +590,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   await page.getByRole("button", { name: "View all stages", exact: true }).click();
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
   const mobileCard = page.getByRole("region", { name: "Assessment result" });
-  const mobileHeading = mobileCard.getByRole("heading", { name: "Recommendation — PAY" });
+  const mobileHeading = mobileCard.getByRole("heading", { name: "Assessment result — PAY" });
   await expect(mobileHeading).toBeVisible();
   await expect(mobileHeading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
   await expect(mobileCard.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
@@ -658,7 +657,7 @@ test(`Screens 2–6: ${stage} renders truthfully on ${viewport.label}`, async ({
       expect(openedDetails.filter((text) => !text.includes("View all stages"))).toEqual([]);
       await expect(page.getByText("Payment activity", { exact: false })).toBeVisible();
       await expect(page.getByText("Control and audit records", { exact: true }).locator("xpath=..")).not.toHaveAttribute("open");
-      await expect(page.getByText("Training scenario", { exact: true }).locator("xpath=.." )).not.toHaveAttribute("open");
+      await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
       for (const row of await main.locator('button[data-obligation-id]').all()) {
         await expect(row).toContainText(/\d[\d,.]*\s+(USD|AED)/);
         await expect(row).toContainText(/\d{4}-\d{2}-\d{2}|Not captured/);
@@ -793,40 +792,8 @@ test(`SETTLED evidence: ${evidenceCase} stays explicit on ${viewport.label}`, as
       await developerEvidence.click();
       await expect(page.getByRole("main")).toContainText(scenario.expected);
       await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-developer-evidence.png`), fullPage: true });
-      const additional = page.getByText("Related payment information", { exact: true });
-      await additional.click();
-      await page.getByRole("button", { name: "Payment review report" }).click();
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const reportState = await page.evaluate(() => {
-        const primary = [...document.querySelectorAll<HTMLElement>('main button[data-primary-action="true"]')];
-        return {
-          browser: navigator.userAgent,
-          viewport: { width: window.innerWidth, height: window.innerHeight },
-          scrollY: window.scrollY,
-          openDisclosureCount: document.querySelectorAll("main details[open]").length,
-          primary: primary.map((element) => {
-            const bounds = element.getBoundingClientRect();
-            return { label: element.innerText, bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right } };
-          }),
-          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-        };
-      });
-      expect(reportState.scrollY).toBe(0);
-      expect(reportState.primary.length).toBeLessThanOrEqual(1);
-      expect(reportState.horizontalOverflow).toBe(false);
-      const reportCapture = {
-        fixture: scenario.name,
-        view: "Operational Report panel · viewport-only scrollY=0",
-        detailSource: "existing producer-shaped mocked detail route; proxyLifecycleDetail('SETTLED') with explicit evidence override",
-        runtime: "LIVE read-model fixture label only; no live provider calls",
-        font: "DejaVu Sans forced for audit geometry",
-        ...reportState,
-        navigationMutationCount: writes.length,
-      };
-      captures.push(reportCapture);
-      console.log("F7_REPORT_CAPTURE", JSON.stringify(reportCapture));
-      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report-scroll0.png`), fullPage: false });
-      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report-full.png`), fullPage: true });
+      await expect(page.getByText("Related payment information", { exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Payment review report" })).toHaveCount(0);
       expect(writes).toEqual([]);
       await page.close();
   await testInfo.attach("f7-settled-evidence-browser-manifest.json", {
@@ -876,7 +843,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       const detailResponse = fixture.payDetailById[scenario.selectedId];
       const card = page.getByRole("region", { name: "Assessment result" });
       const selectedSource = page.getByRole("region", { name: "Selected source obligation" });
-      const payResult = card.getByText("Recommendation — PAY", { exact: true });
+      const payResult = card.getByText("Assessment result — PAY", { exact: true });
       const reason = card.getByText("The current assessment found no validated payment blocker; separate payment controls still apply.", { exact: true });
       const eligibility = page.getByTestId("payment-eligibility");
       const action = page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: scenario.action, exact: true });
@@ -966,7 +933,7 @@ test("manual obligation selection stays bound when multiple queue rows show PAY 
     await collapseLifecycleStages(page);
 
     const card = page.getByRole("region", { name: "Assessment result" });
-    await expect(card).toContainText("Recommendation — PAY");
+    await expect(card).toContainText("Assessment result — PAY");
     await expect(card.getByTestId("payment-eligibility")).toBeVisible();
     await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("software services");
     await expect(card).not.toContainText("OBL-UAT-01");
@@ -1006,7 +973,7 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
     await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-1-${viewport.label}.png`), fullPage: true });
     await page.getByRole("button", { name: "View Assessment" }).click();
     await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
-    await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Recommendation — PAY");
+    await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Assessment result — PAY");
     await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
     const assessmentCard = page.getByRole("region", { name: "Assessment result" });
     const review = page.getByRole("region",{name:"Current obligation action"}).getByRole("button", { name: "Review current PAY assessment" });
@@ -1016,7 +983,7 @@ test("fresh PAY after proxy preparation does not show stale PAE recovery on desk
     await page.evaluate(() => window.scrollTo(0, 0));
     const currentPosition = page.locator('[aria-label="Guided lifecycle"]').getByText("Workflow now: Assessment", { exact: true });
     const sourceIdentity = page.getByRole("region", { name: "Selected source obligation" }).locator("h2");
-    const payResult = assessmentCard.getByText("Recommendation — PAY", { exact: true });
+    const payResult = assessmentCard.getByText("Assessment result — PAY", { exact: true });
     const assessmentReason = assessmentCard.getByText(freshPay.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"), { exact: true });
     const measured = await Promise.all([sourceIdentity, page.getByText("Step 2 of 6 · Assessment", { exact: true }), currentPosition, payResult, assessmentReason, review].map(async (locator) => ({
       label: await locator.innerText(),
@@ -1051,7 +1018,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await page.setViewportSize({ width: 1365, height: 900 });
   const unexpectedWrites = await openFixture(page);
   await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
-  await expect(queueItem(page, "OBL-UAT-01")).toContainText("PAY recommendation (advisory)");
+  await expect(queueItem(page, "OBL-UAT-01")).toContainText("Assessment result · PAY");
   await expect(page.getByRole("button", { name: "View all stages", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" })).toHaveCount(0);
   await expect(page.getByText("No payment intent created")).toBeHidden();
@@ -1081,17 +1048,8 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
   await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("no review evidence in this detail; authorization remains locked");
   await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
-  await page.getByText("Training scenario", { exact: true }).click();
-  await page.getByText("Illustrative payment journey", { exact: true }).click();
-  const beforePlayback = unexpectedWrites.length;
-  await page.getByRole("button", { name: "View example" }).click();
-  const playback = page.getByRole("region", { name: "Read-only sample playback" });
-  await expect(playback).toContainText("No approval, payment-control review, external settlement request, or settlement is performed");
-  await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination — expected block");
-  expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
-  await page.getByRole("button", { name: "Hide example" }).click();
-  await page.getByText("Illustrative payment journey", { exact: true }).click();
-  await page.getByText("Training scenario", { exact: true }).click();
+  await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Illustrative payment journey", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
   const sourceProxy = page.getByRole("region", { name: "Selected source obligation" });
@@ -1383,24 +1341,9 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
     "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
   ]);
-  await page.getByText("Training scenario", { exact: true }).click();
-  await assertMobileTarget(page.locator("summary").filter({ hasText: "Training scenario" }), "Training scenario");
-  await page.getByText("Illustrative payment journey", { exact: true }).click();
-  await assertMobileTarget(page.locator("summary").filter({ hasText: "Illustrative payment journey" }), "Illustrative payment journey");
-  await page.getByText("Related payment information", { exact: true }).click();
-  await assertMobileTarget(page.getByRole("button", { name: "Payment review report" }), "Operational Report");
-  const beforePlayback = unexpectedWrites.length;
-  await page.getByRole("button", { name: "View example" }).click();
-  await assertMobileTarget(page.getByRole("button", { name: "Hide example" }), "Sample playback");
-  await assertMobileTarget(page.locator("summary").filter({ hasText: "Evidence & technical details" }), "Sample evidence disclosure");
-  const playback = page.getByRole("region", { name: "Read-only sample playback" });
-  await expect(playback).toContainText("No approval, payment-control review, external settlement request, or settlement is performed");
-  await expect(playback.getByRole("region", { name: "Illustrative same-intent branches" })).toContainText("Changed destination — expected block");
-  expect(unexpectedWrites.slice(beforePlayback)).toEqual([]);
-  await page.getByRole("button", { name: "Hide example" }).click();
-  await page.getByText("Illustrative payment journey", { exact: true }).click();
-  await page.getByText("Training scenario", { exact: true }).click();
-  await page.getByText("Related payment information", { exact: true }).click();
+  await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Illustrative payment journey", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Payment review report" })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("125.00 USD");
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("OUTSTANDING");
@@ -1745,7 +1688,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
         await expect(viewAssessment).toHaveCount(1);
         await viewAssessment.click();
         await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
-        await expect(statePage.getByRole("main")).toContainText("Recommendation — PAY");
+        await expect(statePage.getByRole("main")).toContainText("Assessment result — PAY");
         expect(observedRequests.filter((request) => request.startsWith("POST "))).toEqual([]);
         await statePage.evaluate(() => window.scrollTo(0, 0));
         const assessmentFilename = `stage1-selected-003-assessment-${viewport.label}.png`;
@@ -1756,7 +1699,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
           filename: assessmentFilename,
           sha256: createHash("sha256").update(assessmentPng).digest("hex"),
           state: "selected-003-assessment",
-          queueHeading: "Recommendation — PAY",
+          queueHeading: "Assessment result — PAY",
           sourceProvenance: "Actual OBL-J0C-003 source record and local detail GET; isolated NOT_LIVE_AI PAY assessment overlay only.",
           assessmentProviderMode: mode,
           selectedIds: ["OBL-J0C-003"],
@@ -2042,7 +1985,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       await page.getByRole("button", { name: "Run AI Assessment" }).click();
       const feedback = page.getByRole("status", { name: "Assessment request status" });
       await expect(feedback).toBeVisible();
-      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "not a current recommendation" : "Assessment result is unavailable");
+      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "not a current assessment result" : "Assessment result is unavailable");
       await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
       const viewStages = ["Obligation", "Assessment"] as const;
@@ -2133,7 +2076,7 @@ for (const viewport of [{width:1365,height:951},{width:390,height:844},{width:32
           overflow:document.documentElement.scrollWidth>window.innerWidth};
       });
       expect(geometry.text).toContain("OBL-UAT-01");expect(geometry.text).toContain("125.00 USD");
-      expect(geometry.text).toMatch(/Workflow now: Assessment/);expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.text).toContain("Supplier not recorded");expect(geometry.top).toBeGreaterThanOrEqual(0);
       expect(geometry.bottom).toBeLessThanOrEqual(viewport.height);expect(geometry.overflow).toBe(false);
       expect(geometry.actionBox!.height).toBeGreaterThanOrEqual(44);
       await expect(page.locator('button[data-primary-action="true"]:enabled')).toHaveCount(1);
@@ -2172,7 +2115,9 @@ for(const width of [1365,390,320]){
     const disclosure=page.getByText("View payment instruction details",{exact:true});
     await expect(disclosure.locator("..")).not.toHaveAttribute("open","");
     const strip=page.getByRole("region",{name:"Current obligation action"});
-    await expect(strip).toContainText("Authorization recorded");
+    await expect(strip).toContainText("OBL-UAT-01");
+    await expect(strip).toContainText("Supplier not recorded");
+    await expect(strip).toContainText("125.00 USD");
     await expect(strip).not.toContainText("Review current PAY assessment before authorization");
     await page.screenshot({path:testInfo.outputPath(`authorization-summary-${width}.png`),fullPage:true});
     await disclosure.click();

@@ -13,9 +13,6 @@ import {
   obligationListState,
   obligationsFetchErrorMessage,
   pendingPrerequisiteLabel,
-  reportSummaryUnavailableReason,
-  operationalReportSummaryLabel,
-  operationalReportDetailPrompt,
   workflowState,
 } from "../app/command-center";
 
@@ -126,41 +123,6 @@ describe("Command Center aggregate version label", () => {
   });
 });
 
-describe("Command Center operational report availability", () => {
-  it("flags the HOLD/ESCALATE summary as unavailable rather than showing false zeros", () => {
-    expect(reportSummaryUnavailableReason("error")).not.toBeNull();
-    expect(reportSummaryUnavailableReason("loading")).not.toBeNull();
-  });
-
-  it("treats a verified-empty or populated list as a real, reportable summary", () => {
-    expect(reportSummaryUnavailableReason("empty")).toBeNull();
-    expect(reportSummaryUnavailableReason("ready")).toBeNull();
-  });
-
-  it("keeps the lifecycle summary aligned with list availability", () => {
-    const summary = { total: 0, hold: 0, escalate: 0, unassessed: 0, pay: 0 };
-    expect(operationalReportSummaryLabel("loading", summary)).toContain("loading");
-    expect(operationalReportSummaryLabel("error", summary)).toContain("unavailable");
-    expect(operationalReportSummaryLabel("empty", summary)).toContain("No payment obligations");
-    expect(operationalReportSummaryLabel("ready", { ...summary, total: 2, unassessed: 2 })).toContain("Incomplete");
-  });
-
-  it("describes PAY assurance and authorization as separate gates, not a current missing state", () => {
-    const label = operationalReportSummaryLabel("ready", { total: 3, hold: 0, escalate: 0, unassessed: 0, pay: 3 });
-    expect(label).toContain("PAY recommendations are advisory");
-    expect(label).toContain("payment requires separate assurance and human authorization");
-    expect(label).not.toContain("still requires");
-  });
-
-  it("does not describe a selected but unresolved detail as no selection", () => {
-    expect(operationalReportDetailPrompt("none")).toContain("Select an obligation");
-    expect(operationalReportDetailPrompt("loading")).toContain("loading");
-    expect(operationalReportDetailPrompt("failed")).toContain("unavailable");
-    expect(operationalReportDetailPrompt("stale")).toContain("stale");
-    expect(reconciliationLeadLine("stale", { status: "SUBMITTED" })).toContain("Last-known");
-  });
-});
-
 describe("Command Center decision-specific authorization state", () => {
   it("names assessment as the first unmet prerequisite when no current assessment exists", () => {
     expect(pendingPrerequisiteLabel(null)).toContain("Assessment required");
@@ -259,10 +221,11 @@ describe("queue completion: incomplete assessment is never a completed no-candid
     expect(label).toContain("no PAY candidate");
   });
 
-  it("reports PAY candidates as advisory, not authorized", () => {
+  it("reports PAY assessment results without implying authorization", () => {
     const label = queueCompletionLabel({ total: 5, unassessed: 0, hold: 3, escalate: 0, pay: 2 });
-    expect(label).toContain("2 PAY recommendation");
+    expect(label).toContain("2 PAY results");
     expect(label).toContain("Assessment complete");
+    expect(label).toContain("requires separate assurance and human authorization");
     expect(label).not.toContain("Completed");
   });
 });
