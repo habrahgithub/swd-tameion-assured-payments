@@ -40,7 +40,7 @@ return async function POST(request: Request) {
 
     const intent = state.createSettlementProxyIntent(obligationId);
     await revalidate();
-    const preflight = await preflightRun(undefined, undefined, intent);
+    const preflight = await preflightRun(undefined, undefined, intent, revalidate);
     await revalidate();
     if (preflight.readiness !== "READY") return NextResponse.json(preflight, { status: 409 });
     const stored = state.bindSettlementProxy(preflight, aggregate.aggregate_version);

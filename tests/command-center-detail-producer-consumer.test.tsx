@@ -66,7 +66,7 @@ function circleClient(providerDecimals = 6): J2aCircleClient {
     getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
       amount: "10000.000000",
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: providerDecimals, isNative: true },
-    }] } })),
+    }], pagination: { nextPageAfter: null } } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
     listTransactions: vi.fn(async () => ({ data: { transactions: [] } })),
     getTransaction: vi.fn(async () => ({ data: { transaction: undefined } })),

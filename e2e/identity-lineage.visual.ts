@@ -34,7 +34,7 @@ async function genuinePreparedReadModel() {
     getWalletTokenBalance: async () => ({ data: { tokenBalances: [{
       amount: "10000.000000",
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
-    }] } }),
+    }], pagination: { nextPageAfter: null } } }),
     estimateTransferFee: async () => ({ data: { medium: { networkFee: "0.001000" } } }),
     listTransactions: async () => ({ data: { transactions: [] } }),
     getTransaction: async () => ({ data: { transaction: undefined } }),

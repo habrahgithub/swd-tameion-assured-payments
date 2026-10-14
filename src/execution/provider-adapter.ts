@@ -18,6 +18,7 @@ import {
 import { USDC_DECIMALS, atomicToDecimal, decimalToAtomic } from "../domain/numeric";
 import { decimalToAtomicAtScale } from "../j0d-spike/intent";
 import { sameEvmAddressIdentity } from "./evm-address";
+import { readCompleteCircleBalanceRows } from "../server/circle-balance-pagination";
 
 /**
  * Provider adapter boundary: the only place allowed to talk to a real
@@ -100,7 +101,7 @@ export class ProviderNotConfiguredError extends ProviderPreSubmitBlockedError {
 
 export interface J2aCircleClient {
   getWallet(input: { id: string }): Promise<unknown>;
-  getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<unknown>;
+  getWalletTokenBalance(input: { id: string; includeAll?: boolean; pageSize?: number; pageAfter?: string }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
   listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
   getTransaction(input: { id: string }): Promise<unknown>;
@@ -276,7 +277,10 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     const authorized = idempotencyKey ? this.authorizedPreflight?.(idempotencyKey) : null;
     if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     const client = this.client();
-    const balances = tokenBalancesSchema.safeParse(await client.getWalletTokenBalance({ id: authorized.source_wallet.id, includeAll: true }));
+    let rows: unknown[];
+    try { rows = await readCompleteCircleBalanceRows(client, authorized.source_wallet.id); }
+    catch { return { status: "UNKNOWN" }; }
+    const balances = tokenBalancesSchema.safeParse({ data: { tokenBalances: rows } });
     if (!balances.success) return { status: "UNKNOWN" };
     const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) =>
       typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&

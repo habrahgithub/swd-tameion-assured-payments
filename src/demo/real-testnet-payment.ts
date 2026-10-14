@@ -2,6 +2,7 @@ import {loadFinancialSourceAdmission} from "../server/financial-source-admission
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 import { z } from "zod";
+import { readCompleteCircleBalanceRows } from "../server/circle-balance-pagination";
 
 import type { AuthorityAggregate } from "../authority/aggregate";
 import type { DurableAssessmentRecord, SealedPae } from "../domain/schemas";
@@ -128,7 +129,7 @@ const transactionsResponseSchema = z.object({ data: z.object({ transactions: z.a
 
 export interface J2aPreflightClient {
   getWallet(input: { id: string }): Promise<unknown>;
-  getWalletTokenBalance(input: { id: string; includeAll?: boolean }): Promise<unknown>;
+  getWalletTokenBalance(input: { id: string; includeAll?: boolean; pageSize?: number; pageAfter?: string }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
   listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
 }
@@ -297,6 +298,7 @@ export async function runJ2aReadOnlyPreflight(
   client?: J2aPreflightClient,
   now: () => Date = () => new Date(),
   genuineIntent?: GenuineSettlementProxyIntent,
+  revalidate: () => Promise<void> = async () => {},
 ): Promise<J2aPreflightResult> {
   const intent = genuineIntent ?? {
     organization_id: J2A_DEMO_ORGANIZATION_ID,
@@ -352,8 +354,8 @@ export async function runJ2aReadOnlyPreflight(
     }
     if (sourceTruth.state !== "LIVE" || destinationTruth.state !== "LIVE") return blocked("WALLET_NOT_LIVE", now);
 
-    const balanceResponse = await providerClient.getWalletTokenBalance({ id: J2A_DEMO_SOURCE.id, includeAll: true });
-    const balancesParsed = balanceResponseSchema.safeParse(balanceResponse);
+    const balanceRows = await readCompleteCircleBalanceRows(providerClient, J2A_DEMO_SOURCE.id, revalidate);
+    const balancesParsed = balanceResponseSchema.safeParse({ data: { tokenBalances: balanceRows } });
     if (!balancesParsed.success) return blocked("INVALID_PROVIDER_BALANCE", now);
     const nativeUsdc = balancesParsed.data.data.tokenBalances.filter(({ token }) =>
       typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&

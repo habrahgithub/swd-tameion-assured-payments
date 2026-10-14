@@ -11,7 +11,7 @@ import {
 } from "../src/demo/real-testnet-payment";
 
 function createClient(overrides: Partial<J2aCircleClient> = {}): J2aCircleClient {
-  return {
+  const api: J2aCircleClient = {
     getWallet: vi.fn(async ({ id }) => ({ data: { wallet: {
       id,
       address: id === J2A_DEMO_SOURCE.id ? J2A_DEMO_SOURCE.address : J2A_DEMO_DESTINATION.address,
@@ -33,6 +33,14 @@ function createClient(overrides: Partial<J2aCircleClient> = {}): J2aCircleClient
     createTransaction: vi.fn(async () => ({ data: { id: "circle-tx-1", state: "INITIATED" } })),
     ...overrides,
   };
+  const balanceReader = api.getWalletTokenBalance;
+  api.getWalletTokenBalance = vi.fn(async input => {
+    const response = await balanceReader(input);
+    if (!response || typeof response !== "object" || !("data" in response) || !response.data || typeof response.data !== "object") return response;
+    const data = response.data as Record<string, unknown>;
+    return { ...response, data: { ...data, pagination: data.pagination ?? { nextPageAfter: null } } };
+  });
+  return api;
 }
 
 async function statusAdapter(api: J2aCircleClient) {
@@ -42,6 +50,18 @@ async function statusAdapter(api: J2aCircleClient) {
 }
 
 describe("Arc Circle provider adapter for J2A", () => {
+  it("does not reconcile a transaction until every Circle balance page is read", async () => {
+    const api = createClient();
+    const adapter = await statusAdapter(api);
+    api.getWalletTokenBalance = vi.fn()
+      .mockResolvedValueOnce({ data: { tokenBalances: [], pagination: { nextPageAfter: "reconcile-page-2" } } })
+      .mockResolvedValueOnce({ data: { tokenBalances: [{ amount: "10.000000", token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true } }], pagination: { nextPageAfter: null } } });
+    const result = await adapter.getStatus("circle-tx-1", "exact-demo-key");
+    expect(result.status).toBe("PENDING");
+    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(1, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50 });
+    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "reconcile-page-2" });
+  });
+
   it.each(["STUCK", "INITIATED", "PENDING_RISK_SCREENING", "QUEUED", "SENT", "CONFIRMED"])("keeps intermediate provider state %s pending without resubmission", async state => {
     const api = createClient({ getTransaction: vi.fn(async () => ({ data: { transaction: {
       id: "circle-tx-1", state, blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,

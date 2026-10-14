@@ -44,7 +44,7 @@ function circleClient(options: { loseCreateResponse?: boolean; pendingStatusRead
     getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
       amount: "100.000000",
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
-    }] } })),
+    }], pagination: { nextPageAfter: null } } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
     listTransactions: vi.fn(async () => ({ data: { transactions: transaction ? [transaction] : [] } })),
     getTransaction: vi.fn(async ({ id }) => {

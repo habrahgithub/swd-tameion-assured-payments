@@ -40,7 +40,7 @@ function providerTransaction(overrides: Record<string, unknown> = {}) {
 }
 
 function client(overrides: Partial<J2aPreflightClient> = {}): J2aPreflightClient {
-  return {
+  const api: J2aPreflightClient = {
     getWallet: vi.fn(async ({ id }: { id: string }) => ({
       data: { wallet: id === J2A_DEMO_SOURCE.id ? wallet(J2A_DEMO_SOURCE.id, J2A_DEMO_SOURCE.address) : wallet(J2A_DEMO_DESTINATION.id, J2A_DEMO_DESTINATION.address) },
     })),
@@ -54,6 +54,14 @@ function client(overrides: Partial<J2aPreflightClient> = {}): J2aPreflightClient
     listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction()] } })),
     ...overrides,
   };
+  const balanceReader = api.getWalletTokenBalance;
+  api.getWalletTokenBalance = vi.fn(async input => {
+    const response = await balanceReader(input);
+    if (!response || typeof response !== "object" || !("data" in response) || !response.data || typeof response.data !== "object") return response;
+    const data = response.data as Record<string, unknown>;
+    return { ...response, data: { ...data, pagination: data.pagination ?? { nextPageAfter: null } } };
+  });
+  return api;
 }
 
 describe("J2A real Arc Testnet demo preflight", () => {
@@ -81,7 +89,7 @@ describe("J2A real Arc Testnet demo preflight", () => {
     });
     expect(result.evidence_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(api.getWallet).toHaveBeenCalledTimes(2);
-    expect(api.getWalletTokenBalance).toHaveBeenCalledWith({ id: J2A_DEMO_SOURCE.id, includeAll: true });
+    expect(api.getWalletTokenBalance).toHaveBeenCalledWith({ id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50 });
     expect(api.estimateTransferFee).toHaveBeenCalledWith(expect.objectContaining({
       walletId: J2A_DEMO_SOURCE.id,
       tokenId: "native-arc-usdc",
@@ -94,6 +102,17 @@ describe("J2A real Arc Testnet demo preflight", () => {
       pageSize: 50,
       order: "DESC",
     });
+  });
+
+  it("requires and reads every Circle balance page before preflight can be ready", async () => {
+    const api = client({ getWalletTokenBalance: vi.fn()
+      .mockResolvedValueOnce({ data: { tokenBalances: [{ amount: "1", token: { id: "other", symbol: "ETH", blockchain: "ARC-TESTNET", decimals: 18, isNative: true } }], pagination: { nextPageAfter: "balance-page-2" } } })
+      .mockResolvedValueOnce({ data: { tokenBalances: [{ amount: "10.000000", token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true } }], pagination: { nextPageAfter: null } } })
+    });
+    const result = await runJ2aReadOnlyPreflight(api, () => new Date(capturedAt));
+    expect(result.readiness).toBe("READY");
+    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(1, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50 });
+    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "balance-page-2" });
   });
 
   it("derives a genuine obligation proxy intent from the selected source identity and amount", async () => {
