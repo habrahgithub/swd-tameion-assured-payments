@@ -2833,7 +2833,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     } };
   } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
-  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
+  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment?.decision === "PAY" && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
     workspaceAction={label:"Create linked testnet instruction",actor:"You · draft only, payment authority required",run:()=>{
       const assessment=detail.current_assessment!;
       const storageKey=`tameion.link-request.${selectedId}.${assessment.assessment_hash}`;

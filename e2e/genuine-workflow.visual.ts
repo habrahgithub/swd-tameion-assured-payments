@@ -12,8 +12,9 @@ import type {AuthContext} from '../src/server/operator-auth';
 const originalNvidiaKey=process.env.NVIDIA_API_KEY;
 test.beforeEach(()=>{delete process.env.NVIDIA_API_KEY;});
 test.afterEach(()=>{if(originalNvidiaKey===undefined)delete process.env.NVIDIA_API_KEY;else process.env.NVIDIA_API_KEY=originalNvidiaKey;});
-for(const width of [1365,390])test(`genuine advisory to linked draft stays separate and locked at ${width}`,async({page},info)=>{
+for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine ${expected} advisory stays separate and locked at ${width}`,async({page},info)=>{
  const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
+ if(expected==='HOLD'){Object.assign(records[0],{issue_date:null,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null});}
  let snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),revision=7;
  const digest=(v:unknown)=>createHash('sha256').update(canonicalize(v)).digest('hex'),{assessments,...base}=snapshot.authority;
  const bytes=Buffer.from(JSON.stringify({schema_version:3,record_count:5,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:'ORG-DEMO-001',state_binding:{namespace:'FICTIONAL-VIEW',revision,authority_sha256:digest(snapshot.authority),workflow_base_sha256:digest(base)},records}));
@@ -40,6 +41,12 @@ for(const width of [1365,390])test(`genuine advisory to linked draft stays separ
  if(width<768)await page.getByRole('button',{name:'Choose an obligation',exact:true}).first().click();
  await page.locator(`button[data-obligation-id="${records[0].obligation_id}"]`).click();
  await page.getByRole('button',{name:'Run AI Assessment',exact:true}).click();
+ if(expected==='HOLD'){
+  await expect(page.getByRole('heading',{name:'Recommendation — HOLD',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Create linked testnet instruction',exact:true})).toHaveCount(0);
+  expect(posts).toEqual([`/api/obligations/${records[0].obligation_id}/advisory`]);expect(snapshot.linked_settlement_instructions).toBeUndefined();expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);
+  await page.screenshot({path:info.outputPath(`genuine-hold-${width}.png`),fullPage:true});return;
+ }
  await expect(page.getByRole('button',{name:'Create linked testnet instruction',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Create linked testnet instruction',exact:true}).click();
  await expect(page.getByRole('region',{name:'Linked Arc Testnet instructions'})).toContainText('Draft · payment authority required');

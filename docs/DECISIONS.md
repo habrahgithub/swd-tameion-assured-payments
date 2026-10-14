@@ -196,3 +196,31 @@ financial action or provider-send revalidation. Existing USD1 controlled-shape,
 expiry, actor, signing, preflight, assurance, release and no-retry controls remain.
 The draft is not another payable, and testnet activity never discharges the
 genuine supplier liability. No automatic reset of historical attempts is added.
+
+
+The bounded pre-SQL correction requires a current source-bound PAY assessment
+before draft creation; HOLD and ESCALATE remain review/reassessment only. Genuine
+advisory history is limited to four assessment operations/receipts per obligation;
+original-key replay and recovery still work at that limit. No history is deleted.
+Every genuine CAS write must fit a conservative1,750,000-byte UTF8 pretty-JSON
+budget, including pending provider results, leaving margin under the2MiB response
+bound. Full state beyond the budget fails closed rather than truncating evidence.
+
+Genuine requests use a45-second budget, reserve at most20seconds for the entire
+provider retry sequence, retain15seconds for persistence/recovery, and permit
+only two persistence attempts. Each5-second RPC requires remaining budget before
+it starts. Genuine reservations older than45seconds become UNKNOWN through the
+original key; cancellation or lost persistence never starts a second model call.
+These genuine-only timing bounds do not change classic controlled assessment
+configuration. Source-backed invoice/date findings are never waived for PAY.
+
+Linked activation is revalidated asynchronously at the worker's final provider
+send boundary, after its controlled-state reload and before the synchronous
+amount/actor/trust/kill-switch/expiry/release checks. Drift blocks provider create.
+Access failures after financial effects may have begun return OUTCOME_UNVERIFIED
+with no retry; pre-effect denials retain their exact codes. Source projection
+wrappers preserve status. Only client body validation is classified BODY_REJECTED;
+malformed server-owned state fails as unavailable/uncertain instead.
+
+USD1/USD-only linked activation remains the accepted UAT limitation; this patch
+does not widen currencies, conversion policy or financial source authority.

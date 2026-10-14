@@ -16,13 +16,16 @@ import type { DurableAssessmentRecord } from "../../../../../domain/schemas";
 
 export const maxDuration = 65;
 
-const MAX_PERSISTENCE_ATTEMPTS = 4;
-const RESERVED_OPERATION_TIMEOUT_MS = 70_000;
+const DEFAULT_MAX_PERSISTENCE_ATTEMPTS = 4;
+const DEFAULT_RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {}) {
+export interface AssessmentHandlerOptions {reservationTimeoutMs?:number;maxPersistenceAttempts?:number;providerSignal?:()=>AbortSignal}
+export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {},options:AssessmentHandlerOptions={}) {
 const getDemoState = load;
+const MAX_PERSISTENCE_ATTEMPTS=options.maxPersistenceAttempts??DEFAULT_MAX_PERSISTENCE_ATTEMPTS;
+const RESERVED_OPERATION_TIMEOUT_MS=options.reservationTimeoutMs??DEFAULT_RESERVED_OPERATION_TIMEOUT_MS;
 function reservationExpired(operation: AssessmentOperation): boolean {
   return operation.status === "RESERVED" && Date.now() - (operation.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS;
 }
@@ -282,7 +285,10 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
         : "UNVERIFIED_CURRENT_TRUST" as const,
   };
   await revalidate();
-  const decision = await assessObligation(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay), provider);
+  const providerSignal=options.providerSignal?.();
+  let decision:Awaited<ReturnType<typeof assessObligation>>;
+  try{decision=await assessObligation(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay),provider,providerSignal?{signal:providerSignal}:{});}
+  catch(error){if(providerSignal?.aborted)return markUnknownAndReply(state,idempotencyKey);throw error;}
   await revalidate();
   if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
 

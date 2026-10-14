@@ -39,8 +39,8 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
       else {const {projectObligationDetail}=await import('./obligation-read-model');
         let bindings;try {if(controlledMember)bindings=paymentReleaseBindings(controlled,loadFinancialRequesterBinding());}catch { /* readable, but no release capability */ }
         response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{...bindings,namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined,controlledMember?"DEMO_ARC_TESTNET":binding?"GENUINE_COMPANY":"UNVERIFIED",binding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===id)):undefined);}
-      if(id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256){
-        const data=await response.json();response=privateJson({...data,advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]});
+      if(id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256&&response.ok){
+        const data=await response.json();response=privateJson({...data,advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]},response.status);
       }
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}

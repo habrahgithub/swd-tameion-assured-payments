@@ -8,9 +8,9 @@ import {isCurrentSourceEligible,loadPublicSourceRecords} from '../src/server/sou
 vi.unmock('../src/server/source-records');
 let directory:string|undefined;
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();if(directory)rmSync(directory,{recursive:true,force:true});directory=undefined;});
-function sourceFixture(){
+function sourceFixture(linked=false){
  const sample=syntheticSourceRecords()[0];const {counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...commercial}=sample as typeof sample & Record<string,unknown>;const source={...commercial,obligation_id:'TESTNET-CONTROLLED-FRESH-001',amount:'1.00',currency:'USD',business_purpose_confirmed:false,issue_date:null,due_date:null,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null,service_category:'TESTNET_ONLY controlled test obligation',commercial_terms:'TESTNET_ONLY NON_ECONOMIC NOT_VENDOR_PAYMENT',source_evidence:[{evidence_id:'CONTROLLED-TESTNET-001',content_sha256:'a'.repeat(64)}]};
- const now=Date.now();const packet={purpose:'TESTNET_FINANCIAL_SOURCE',approval_id:'SYNTHETIC-INDEPENDENT-SOURCE-APPROVAL',organization_id:'ORG-DEMO-001',deployment_id:'dpl_synthetic',namespace:'synthetic-financial',valid_from:new Date(now-1000).toISOString(),expires_at:new Date(now+600000).toISOString(),intent_id:'SYNTHETIC-FRESH-INTENT-001',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT',principal:'1.000000',estimated_fee_ceiling:'0.002000',estimated_total_ceiling:'1.002000',source};
+ const now=Date.now();const packet={...(linked?{linked_instruction:{source_obligation_id:'FICTIONAL-GENUINE',instruction_content_sha256:'b'.repeat(64)}}:{}),purpose:'TESTNET_FINANCIAL_SOURCE',approval_id:'SYNTHETIC-INDEPENDENT-SOURCE-APPROVAL',organization_id:'ORG-DEMO-001',deployment_id:'dpl_synthetic',namespace:'synthetic-financial',valid_from:new Date(now-1000).toISOString(),expires_at:new Date(now+600000).toISOString(),intent_id:'SYNTHETIC-FRESH-INTENT-001',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT',principal:'1.000000',estimated_fee_ceiling:'0.002000',estimated_total_ceiling:'1.002000',source};
  directory=mkdtempSync(join(tmpdir(),'tameion-financial-'));mkdirSync(join(directory,'.tameion'));const bytes=JSON.stringify(packet);writeFileSync(join(directory,'.tameion/financial-source.json'),bytes);vi.spyOn(process,'cwd').mockReturnValue(directory);vi.stubEnv('TAMEION_FINANCIAL_SOURCE_SHA256',createHash('sha256').update(bytes).digest('hex'));vi.stubEnv('VERCEL_DEPLOYMENT_ID',packet.deployment_id);vi.stubEnv('TAMEION_STATE_NAMESPACE',packet.namespace);return packet;
 }
 describe('independent controlled testnet source admission',()=>{
@@ -25,25 +25,25 @@ import {SupabaseDemoStateRepository,DemoStateConflictError} from '../src/server/
 import type {AuthContext} from '../src/server/operator-auth';
 import {AccessError} from '../src/server/route-access-policy';
 import {sealTestAssessment,currentAssessmentReview} from './test-support/seal-assessment';
-function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean,finalExpiryOffset?:number}={}){
- const source=sourceFixture();const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
+function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean,finalExpiryOffset?:number,linkedChangedOnFinalRead?:boolean,omitFinalLinkHook?:boolean}={}){
+ const source=sourceFixture(Boolean(options.linkedChangedOnFinalRead));const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
  initial.trustedKeys.loadServerSigningKey(DEMO_SIGNING_KEY_ID);
  let snapshot=initial.exportSnapshot(),revision=1,tx:Record<string,unknown>|undefined;
  const requester={purpose:'FINANCIAL_REQUESTER_ACTOR_BINDING',approval_id:'INDEPENDENT-REQUESTER-APPROVAL',organization_id:source.organization_id,deployment_id:source.deployment_id,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:'SYNTHETIC-OWNER',credential_version:1,actor_id:initial.resolveDesignatedApprover().actor_id,source_sha256:process.env.TAMEION_FINANCIAL_SOURCE_SHA256,intent_id:source.intent_id};
  const bytes=JSON.stringify(requester);writeFileSync(join(directory!,'.tameion/financial-requester.json'),bytes);vi.stubEnv('TAMEION_FINANCIAL_REQUESTER_SHA256',createHash('sha256').update(bytes).digest('hex'));
- let advanceOnNextRead=false;let revoked=false;const auth={session:{valid:true,operator_key:requester.operator_key,credential_version:1},revalidate:vi.fn(async()=>{if(revoked)throw new AccessError('SESSION_REQUIRED',401);})} as unknown as AuthContext;
+ let advanceOnNextRead=false;let linkDriftOnNextRead=false;let linkChanged=false;let revoked=false;const auth={session:{valid:true,operator_key:requester.operator_key,credential_version:1},revalidate:vi.fn(async()=>{if(revoked)throw new AccessError('SESSION_REQUIRED',401);})} as unknown as AuthContext;
  const client:J2aCircleClient={
  getWallet:vi.fn(async({id})=>({data:{wallet:{id,address:id===J2A_DEMO_SOURCE.id?J2A_DEMO_SOURCE.address:J2A_DEMO_DESTINATION.address,blockchain:'ARC-TESTNET',walletSetId:J2A_DEMO_WALLET_SET_ID,state:'LIVE'}}})),
  getWalletTokenBalance:vi.fn(async()=>({data:{tokenBalances:[{amount:'100.000000',token:{id:'TEST-NATIVE-USDC',symbol:'USDC',blockchain:'ARC-TESTNET',decimals:6,isNative:true}}],pagination:{nextPageAfter:null}}})),
  estimateTransferFee:vi.fn(async()=>({data:{medium:{networkFee:'0.002000'}}})),listTransactions:vi.fn(async()=>({data:{transactions:tx?[tx]:[],pagination:{nextPageAfter:null}}})),
  getTransaction:vi.fn(async()=>({data:{transaction:tx}})),
  createTransaction:vi.fn(async(input)=>{tx={id:'synthetic-provider-tx-1',state:'COMPLETE',walletId:input.walletId,destinationAddress:input.destinationAddress,amounts:input.amount,tokenId:input.tokenId,refId:input.refId,blockchain:'ARC-TESTNET',networkFee:'0.002000',txHash:'0x'+'a'.repeat(64)};if(options.lostResponse)throw new Error('synthetic lost response');return {data:{id:tx.id}};})};
- const repo={loadExisting:vi.fn(async()=>{if(advanceOnNextRead){advanceOnNextRead=false;vi.spyOn(Date,'now').mockReturnValue(Date.parse(snapshot.payment_release_approvals![0].record.expires_at)+options.finalExpiryOffset!);}return {revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>};}),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
- const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{
+ const repo={loadExisting:vi.fn(async()=>{if(linkDriftOnNextRead){linkDriftOnNextRead=false;linkChanged=true;}if(advanceOnNextRead){advanceOnNextRead=false;vi.spyOn(Date,'now').mockReturnValue(Date.parse(snapshot.payment_release_approvals![0].record.expires_at)+options.finalExpiryOffset!);}return {revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>};}),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
+ const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"],revalidateLinkAtSend?:()=>Promise<void>)=>{
  let validations=0;let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
- state=await loadExistingFinancialState(repo,s.namespace,[s.source],{assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();if(options.finalExpiryOffset!==undefined&&++validations===2)advanceOnNextRead=true;}},adapter);return state;
+ state=await loadExistingFinancialState(repo,s.namespace,[s.source],{revalidateLinkedInstructionAtProviderSend:options.omitFinalLinkHook?undefined:revalidateLinkAtSend,assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();validations++;if(options.finalExpiryOffset!==undefined&&validations===2)advanceOnNextRead=true;if(options.linkedChangedOnFinalRead&&validations===2)linkDriftOnNextRead=true;}},adapter);return state;
  });
- const handler=createFinancialHandlers({guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
+ const handler=createFinancialHandlers({verifyLink:async()=>{if(linkChanged)throw new AccessError('LINK_SOURCE_STALE',409);},guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
  const request=(body:unknown)=>new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'00000000-0000-4000-8000-000000000001'},body:JSON.stringify(body)});
  let assessmentKey=10;
  const sealCurrent=async()=>{
@@ -330,5 +330,24 @@ describe('Job65 production existing-state restoration',()=>{
   const result=await guarded('execute',h.request(p.body),p.id);
   expect(result.status).toBe(403);expect(await result.json()).toEqual({code:'PAYMENT_RELEASE_REQUIRED'});
   expect(h.revision()).toBe(revision);expect(h.snapshot().execution_ledger).toEqual([]);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
+
+describe('post-effect response classification',()=>{
+ it('returns uncertainty when an AccessError interrupts durable execution claim',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h);vi.mocked(h.repo.compareAndSet).mockRejectedValueOnce(new AccessError('SESSION_REQUIRED',401));
+  const result=await h.handler('execute',h.request(p.body),p.id);expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false});expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('preserves exact AccessError before effects',async()=>{const h=controlledHarness(),p=await preparedApproval(h);h.revoke();const result=await h.handler('execute',h.request(p.body),p.id);expect(result.status).toBe(401);expect(await result.json()).toMatchObject({code:'SESSION_REQUIRED'});expect(h.client.createTransaction).not.toHaveBeenCalled();});
+});
+
+describe('linked source at final provider send',()=>{
+ it('rejects drift during final controlled reload before Circle create',async()=>{
+  const h=controlledHarness({linkedChangedOnFinalRead:true}),p=await preparedApproval(h);const result=await h.handler('execute',h.request(p.body),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false});expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.snapshot().execution_ledger[0].status).toBe('BLOCKED');
+ });
+ it('detects the missing-final-hook fault that permits provider send and settlement',async()=>{
+  const h=controlledHarness({linkedChangedOnFinalRead:true,omitFinalLinkHook:true}),p=await preparedApproval(h);const result=await h.handler('execute',h.request(p.body),p.id);
+  expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(result.status).toBe(200);
  });
 });
