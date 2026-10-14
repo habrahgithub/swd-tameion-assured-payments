@@ -68,7 +68,7 @@ function circleClient(providerDecimals = 6): J2aCircleClient {
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: providerDecimals, isNative: true },
     }], pagination: { nextPageAfter: null } } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
-    listTransactions: vi.fn(async () => ({ data: { transactions: [] } })),
+    listTransactions: vi.fn(async () => ({ data: { transactions: [], pagination: { nextPageAfter: null } } })),
     getTransaction: vi.fn(async () => ({ data: { transaction: undefined } })),
     createTransaction: vi.fn(async () => ({ data: { id: "mock-circle-transaction" } })),
   };

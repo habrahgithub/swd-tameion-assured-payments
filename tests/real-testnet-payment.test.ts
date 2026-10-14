@@ -51,12 +51,19 @@ function client(overrides: Partial<J2aPreflightClient> = {}): J2aPreflightClient
       }] },
     })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
-    listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction()] } })),
+    listTransactions: vi.fn(async () => ({ data: { transactions: [providerTransaction()], pagination: { nextPageAfter: null } } })),
     ...overrides,
   };
   const balanceReader = api.getWalletTokenBalance;
+  const transactionReader = api.listTransactions;
   api.getWalletTokenBalance = vi.fn(async input => {
     const response = await balanceReader(input);
+    if (!response || typeof response !== "object" || !("data" in response) || !response.data || typeof response.data !== "object") return response;
+    const data = response.data as Record<string, unknown>;
+    return { ...response, data: { ...data, pagination: data.pagination ?? { nextPageAfter: null } } };
+  });
+  api.listTransactions = vi.fn(async input => {
+    const response = await transactionReader(input);
     if (!response || typeof response !== "object" || !("data" in response) || !response.data || typeof response.data !== "object") return response;
     const data = response.data as Record<string, unknown>;
     return { ...response, data: { ...data, pagination: data.pagination ?? { nextPageAfter: null } } };
@@ -113,6 +120,25 @@ describe("J2A real Arc Testnet demo preflight", () => {
     expect(result.readiness).toBe("READY");
     expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(1, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50 });
     expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "balance-page-2" });
+  });
+
+  it("finds an exact prior outbound beyond the first Circle transaction page", async () => {
+    const api = client({ listTransactions: vi.fn()
+      .mockResolvedValueOnce({ data: { transactions: [providerTransaction({ refId: "unrelated" })], pagination: { nextPageAfter: "transaction-page-2" } } })
+      .mockResolvedValueOnce({ data: { transactions: [providerTransaction({
+        transactionType: "OUTBOUND", destinationAddress: J2A_DEMO_DESTINATION.address, amounts: [J2A_TRANSFER_AMOUNT],
+      })], pagination: { nextPageAfter: null } } }) });
+
+    await expect(runJ2aReadOnlyPreflight(api, () => new Date(capturedAt)))
+      .resolves.toMatchObject({ readiness: "BLOCKED", blocker: "PRIOR_MATCHING_OUTBOUND" });
+    expect(api.listTransactions).toHaveBeenNthCalledWith(1, { txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" });
+    expect(api.listTransactions).toHaveBeenNthCalledWith(2, { txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC", pageAfter: "transaction-page-2" });
+  });
+
+  it("blocks preflight when transaction-list completeness is ambiguous", async () => {
+    const api = client({ listTransactions: vi.fn(async () => ({ data: { transactions: [], pagination: {} } })) });
+    await expect(runJ2aReadOnlyPreflight(api, () => new Date(capturedAt)))
+      .resolves.toMatchObject({ readiness: "BLOCKED" });
   });
 
   it("blocks preflight when Circle returns an empty pagination object", async () => {

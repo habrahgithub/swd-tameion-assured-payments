@@ -2,7 +2,7 @@ import {loadFinancialSourceAdmission} from "../server/financial-source-admission
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 import { z } from "zod";
-import { readCompleteCircleBalanceRows } from "../server/circle-balance-pagination";
+import { readCompleteCircleBalanceRows, readCompleteCircleCollectionRows } from "../server/circle-balance-pagination";
 
 import type { AuthorityAggregate } from "../authority/aggregate";
 import type { DurableAssessmentRecord, SealedPae } from "../domain/schemas";
@@ -125,13 +125,12 @@ const balanceResponseSchema = z.object({ data: z.object({ tokenBalances: z.array
   }).passthrough().optional(),
 }).passthrough()) }).passthrough() }).passthrough();
 const feeResponseSchema = z.object({ data: z.object({ medium: z.object({ networkFee: z.unknown() }).passthrough() }).passthrough() }).passthrough();
-const transactionsResponseSchema = z.object({ data: z.object({ transactions: z.array(z.unknown()) }).passthrough() }).passthrough();
 
 export interface J2aPreflightClient {
   getWallet(input: { id: string }): Promise<unknown>;
   getWalletTokenBalance(input: { id: string; includeAll?: boolean; pageSize?: number; pageAfter?: string }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
-  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
+  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC"; pageAfter?: string }): Promise<unknown>;
 }
 
 type J2aWallet = { id: string; address: string; network: "ARC_TESTNET"; state: "LIVE"; wallet_set_id: string; name?: string };
@@ -375,13 +374,16 @@ export async function runJ2aReadOnlyPreflight(
     if (!sourceBalanceResult.success || decimalToAtomicAtScale(sourceBalanceResult.data, tokenDecimals) === null) return blocked("INVALID_PROVIDER_BALANCE", now);
     const sourceBalance = sourceBalanceResult.data;
 
-    const [feeResponse, transactionsResponse] = await Promise.all([
+    const [feeResponse, transactions] = await Promise.all([
       providerClient.estimateTransferFee({ walletId: J2A_DEMO_SOURCE.id, tokenId, amount: [transferAmount], destinationAddress: J2A_DEMO_DESTINATION.address }),
-      providerClient.listTransactions({ txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" }),
+      readCompleteCircleCollectionRows({
+        getPage: ({ pageSize, pageAfter }) => providerClient.listTransactions({
+          txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize, order: "DESC", ...(pageAfter ? { pageAfter } : {}),
+        }),
+      }, "transactions", revalidate),
     ]);
     const feeParsed = feeResponseSchema.safeParse(feeResponse);
-    const transactionsParsed = transactionsResponseSchema.safeParse(transactionsResponse);
-    if (!feeParsed.success || !transactionsParsed.success) return blocked("PROVIDER_QUERY_FAILED", now);
+    if (!feeParsed.success) return blocked("PROVIDER_QUERY_FAILED", now);
     const fee = feeParsed.data.data.medium.networkFee;
     const feeResult = providerDecimalSchema.safeParse(fee);
     if (!feeResult.success || decimalToAtomicAtScale(feeResult.data, tokenDecimals) === null) return blocked("INVALID_FEE_ESTIMATE", now);
@@ -396,7 +398,7 @@ export async function runJ2aReadOnlyPreflight(
     if (feeAtomic > maxFeeAtomic) return blocked("FEE_CAP_EXCEEDED", now);
     if (providerTransferAtomic + feeAtomic > maxTotalDebitAtomic) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
     if (sourceBalanceAtomic < providerTransferAtomic + feeAtomic) return blocked("INSUFFICIENT_BALANCE", now);
-    if (transactionsParsed.data.data.transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals, transferAmount))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
+    if (transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals, transferAmount))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
 
     const capturedAt = now().toISOString();
     const businessPaymentInstruction: BusinessPaymentInstruction = {

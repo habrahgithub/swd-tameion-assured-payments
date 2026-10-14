@@ -18,7 +18,7 @@ import {
 import { USDC_DECIMALS, atomicToDecimal, decimalToAtomic } from "../domain/numeric";
 import { decimalToAtomicAtScale } from "../j0d-spike/intent";
 import { sameEvmAddressIdentity } from "./evm-address";
-import { readCompleteCircleBalanceRows } from "../server/circle-balance-pagination";
+import { readCompleteCircleBalanceRows, readCompleteCircleCollectionRows } from "../server/circle-balance-pagination";
 
 /**
  * Provider adapter boundary: the only place allowed to talk to a real
@@ -103,7 +103,7 @@ export interface J2aCircleClient {
   getWallet(input: { id: string }): Promise<unknown>;
   getWalletTokenBalance(input: { id: string; includeAll?: boolean; pageSize?: number; pageAfter?: string }): Promise<unknown>;
   estimateTransferFee(input: { walletId: string; tokenId: string; amount: string[]; destinationAddress: string }): Promise<unknown>;
-  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC" }): Promise<unknown>;
+  listTransactions(input: { txType: "OUTBOUND"; walletIds: string[]; pageSize: number; order: "DESC"; pageAfter?: string }): Promise<unknown>;
   getTransaction(input: { id: string }): Promise<unknown>;
   createTransaction(input: { amount: string[]; destinationAddress: string; tokenId: string; walletId: string; fee: { type: "level"; config: { feeLevel: "MEDIUM" } }; idempotencyKey: string; refId: string }): Promise<unknown>;
 }
@@ -118,7 +118,6 @@ const circleTransactionSchema = z.object({
   }).passthrough().optional() }).passthrough(),
 }).passthrough();
 const createdTransactionSchema = z.object({ data: z.object({ id: z.string() }).passthrough() }).passthrough();
-const listedTransactionsSchema = z.object({ data: z.object({ transactions: z.array(z.unknown()) }).passthrough() }).passthrough();
 const tokenBalancesSchema = z.object({ data: z.object({ tokenBalances: z.array(z.object({
   token: z.object({
     id: z.unknown().optional(), symbol: z.unknown().optional(), blockchain: z.unknown().optional(), decimals: z.unknown().optional(),
@@ -309,11 +308,15 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
   async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
     const authorized = this.authorizedPreflight?.(idempotencyKey);
     if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
-    const response = listedTransactionsSchema.safeParse(await this.client().listTransactions({
-      txType: "OUTBOUND", walletIds: [authorized.source_wallet.id], pageSize: 50, order: "DESC",
-    }));
-    if (!response.success) return { status: "UNKNOWN" };
-    const found = response.data.data.transactions.filter((value) => {
+    let transactions: unknown[];
+    try {
+      transactions = await readCompleteCircleCollectionRows({
+        getPage: ({ pageSize, pageAfter }) => this.client().listTransactions({
+          txType: "OUTBOUND", walletIds: [authorized.source_wallet.id], pageSize, order: "DESC", ...(pageAfter ? { pageAfter } : {}),
+        }),
+      }, "transactions");
+    } catch { return { status: "UNKNOWN" }; }
+    const found = transactions.filter((value) => {
       const item = z.object({ refId: z.unknown().optional() }).passthrough().safeParse(value);
       return item.success && item.data.refId === deriveJ2aCircleRefId(idempotencyKey);
     });

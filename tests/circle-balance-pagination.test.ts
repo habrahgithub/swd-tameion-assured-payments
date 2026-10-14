@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { readCompleteCircleBalanceRows } from "../src/server/circle-balance-pagination";
+import { readCompleteCircleBalanceRows, readCompleteCircleCollectionRows } from "../src/server/circle-balance-pagination";
 
 describe("Circle balance pagination completeness", () => {
   it.each([
@@ -43,5 +43,16 @@ describe("Circle balance pagination completeness", () => {
 
     await expect(readCompleteCircleBalanceRows(client, "WALLET"))
       .resolves.toEqual([{ id: "USDC" }]);
+  });
+
+  it("uses the same bounded completion contract for other Circle collections", async () => {
+    const client = { getPage: vi.fn()
+      .mockResolvedValueOnce({ data: { transactions: [{ id: "first" }], pagination: { nextPageAfter: "cursor-2" } } })
+      .mockResolvedValueOnce({ data: { transactions: [{ id: "second" }], pagination: { nextPageAfter: null } } }) };
+
+    await expect(readCompleteCircleCollectionRows(client, "transactions"))
+      .resolves.toEqual([{ id: "first" }, { id: "second" }]);
+    expect(client.getPage).toHaveBeenNthCalledWith(1, { pageSize: 50 });
+    expect(client.getPage).toHaveBeenNthCalledWith(2, { pageSize: 50, pageAfter: "cursor-2" });
   });
 });

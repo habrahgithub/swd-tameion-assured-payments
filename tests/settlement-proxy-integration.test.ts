@@ -46,7 +46,7 @@ function circleClient(options: { loseCreateResponse?: boolean; pendingStatusRead
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
     }], pagination: { nextPageAfter: null } } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
-    listTransactions: vi.fn(async () => ({ data: { transactions: transaction ? [transaction] : [] } })),
+    listTransactions: vi.fn(async () => ({ data: { transactions: transaction ? [transaction] : [], pagination: { nextPageAfter: null } } })),
     getTransaction: vi.fn(async ({ id }) => {
       if (transaction?.id !== id) return { data: { transaction: undefined } };
       statusReadCount += 1;

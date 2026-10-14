@@ -24,7 +24,7 @@ function createClient(overrides: Partial<J2aCircleClient> = {}): J2aCircleClient
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true, tokenAddress: null },
     }] } })),
     estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001000" } } })),
-    listTransactions: vi.fn(async () => ({ data: { transactions: [] } })),
+    listTransactions: vi.fn(async () => ({ data: { transactions: [], pagination: { nextPageAfter: null } } })),
     getTransaction: vi.fn(async () => ({ data: { transaction: {
       id: "circle-tx-1", state: "INITIATED", blockchain: "ARC-TESTNET", walletId: J2A_DEMO_SOURCE.id,
       destinationAddress: J2A_DEMO_DESTINATION.address, amounts: ["5.000000"], tokenId: "native-arc-usdc",
@@ -437,7 +437,7 @@ describe("Arc Circle provider adapter for J2A", () => {
 
   it("does not submit during status-by-idempotency-key reconciliation", async () => {
     const api = createClient({
-      listTransactions: vi.fn(async () => ({ data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }] } })),
+      listTransactions: vi.fn(async () => ({ data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }], pagination: { nextPageAfter: null } } })),
     });
     const adapter = await statusAdapter(api);
     vi.mocked(api.listTransactions).mockClear();
@@ -448,6 +448,32 @@ describe("Arc Circle provider adapter for J2A", () => {
       txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC",
     });
     expect(api.getTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds an idempotency match beyond the first Circle transaction page", async () => {
+    const api = createClient();
+    const adapter = await statusAdapter(api);
+    vi.mocked(api.listTransactions).mockClear()
+      .mockResolvedValueOnce({ data: { transactions: [{ id: "other-tx", refId: "unrelated" }], pagination: { nextPageAfter: "transaction-page-2" } } })
+      .mockResolvedValueOnce({ data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }], pagination: { nextPageAfter: null } } });
+
+    await expect(adapter.getStatusByIdempotencyKey("exact-demo-key"))
+      .resolves.toMatchObject({ status: "PENDING", transaction_id: "circle-tx-1" });
+    expect(api.listTransactions).toHaveBeenNthCalledWith(1, { txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC" });
+    expect(api.listTransactions).toHaveBeenNthCalledWith(2, { txType: "OUTBOUND", walletIds: [J2A_DEMO_SOURCE.id], pageSize: 50, order: "DESC", pageAfter: "transaction-page-2" });
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps idempotency reconciliation UNKNOWN when transaction-list completeness is missing", async () => {
+    const api = createClient();
+    const adapter = await statusAdapter(api);
+    vi.mocked(api.listTransactions).mockClear().mockResolvedValueOnce({
+      data: { transactions: [{ id: "circle-tx-1", refId: deriveJ2aCircleRefId("exact-demo-key") }], pagination: {} },
+    });
+
+    await expect(adapter.getStatusByIdempotencyKey("exact-demo-key")).resolves.toMatchObject({ status: "UNKNOWN" });
+    expect(api.getTransaction).not.toHaveBeenCalled();
+    expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
   it("fails closed before submission on a fee cap or prior exact outbound", async () => {

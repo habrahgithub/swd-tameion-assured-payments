@@ -36,7 +36,7 @@ async function genuinePreparedReadModel() {
       token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true },
     }], pagination: { nextPageAfter: null } } }),
     estimateTransferFee: async () => ({ data: { medium: { networkFee: "0.001000" } } }),
-    listTransactions: async () => ({ data: { transactions: [] } }),
+    listTransactions: async () => ({ data: { transactions: [], pagination: { nextPageAfter: null } } }),
     getTransaction: async () => ({ data: { transaction: undefined } }),
     createTransaction: async () => { throw new Error("Transaction creation is forbidden in this read-only capture fixture."); },
   };

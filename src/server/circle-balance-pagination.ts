@@ -6,7 +6,6 @@ const MAX_BALANCE_PAGES = 20;
 const pageSchema = z.object({
   headers: z.unknown().optional(),
   data: z.object({
-    tokenBalances: z.array(z.unknown()).max(CIRCLE_BALANCE_PAGE_SIZE),
     pagination: z.object({
       nextPageAfter: z.string().min(1).max(2048).nullable().optional(),
     }).passthrough().optional(),
@@ -22,6 +21,10 @@ export interface CircleBalancePageClient {
     pageSize: typeof CIRCLE_BALANCE_PAGE_SIZE;
     pageAfter?: string;
   }): Promise<unknown>;
+}
+
+export interface CircleCollectionPageClient {
+  getPage(input: { pageSize: typeof CIRCLE_BALANCE_PAGE_SIZE; pageAfter?: string }): Promise<unknown>;
 }
 
 function linkValue(headers: unknown): unknown {
@@ -92,20 +95,34 @@ export async function readCompleteCircleBalanceRows(
   walletId: string,
   revalidate: () => Promise<void> = async () => {},
 ): Promise<unknown[]> {
+  return readCompleteCircleCollectionRows({
+    getPage: ({ pageSize, pageAfter }) => client.getWalletTokenBalance({
+      id: walletId,
+      includeAll: true,
+      pageSize,
+      ...(pageAfter ? { pageAfter } : {}),
+    }),
+  }, "tokenBalances", revalidate);
+}
+
+/** Fetches every bounded Circle collection page or fails closed on ambiguous completion. */
+export async function readCompleteCircleCollectionRows(
+  client: CircleCollectionPageClient,
+  collectionKey: string,
+  revalidate: () => Promise<void> = async () => {},
+): Promise<unknown[]> {
   const rows: unknown[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
 
   for (let page = 0; page < MAX_BALANCE_PAGES; page += 1) {
     await revalidate();
-    const response = pageSchema.parse(await client.getWalletTokenBalance({
-      id: walletId,
-      includeAll: true,
+    const response = pageSchema.parse(await client.getPage({
       pageSize: CIRCLE_BALANCE_PAGE_SIZE,
       ...(cursor ? { pageAfter: cursor } : {}),
     }));
     await revalidate();
-    rows.push(...response.data.tokenBalances);
+    rows.push(...z.array(z.unknown()).max(CIRCLE_BALANCE_PAGE_SIZE).parse(response.data[collectionKey]));
 
     const next = nextPageAfter(response);
     if (next === null) return rows;
