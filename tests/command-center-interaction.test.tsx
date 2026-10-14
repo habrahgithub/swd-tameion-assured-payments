@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 
-import { CommandCenter } from "../app/command-center";
+import { CommandCenter, isRetryableProviderValidationFailure } from "../app/command-center";
+import { assessmentReviewSnapshot } from "../src/client/assessment-review-snapshot";
 
 function obligationRow(id: string): HTMLButtonElement {
   const row = screen.getByRole("main").querySelector<HTMLButtonElement>(`button[data-obligation-id="${id}"]`);
@@ -1784,6 +1785,51 @@ describe("Command Center mounted Operational Report", () => {
     expect((screen.getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByTestId("current-next-step")).toBeNull();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
+  });
+
+  it("permits a deliberate retry after a non-live assessment output fails validation", async () => {
+    const held = assessedDetail("OBL-A", "HOLD");
+    held.current_assessment.provider_used = "DETERMINISTIC_FALLBACK";
+    held.current_assessment.provider_mode = "NOT_LIVE_AI";
+    held.current_assessment.race.result.validated_findings = [{
+      code: "MODEL_OUTPUT_INVALID",
+      severity: "HOLD",
+      reason: "The advisory assessment output failed application validation.",
+    }];
+    held.current_assessment.race.result.decision_summary = "The advisory assessment output failed application validation.";
+    held.current_assessment.race.remediation = [{
+      finding_code: "MODEL_OUTPUT_INVALID",
+      reason: "The advisory assessment output failed application validation.",
+      required_action: "Resolve the advisory output validation failure before requesting a new assessment.",
+      required_evidence: ["A valid schema-conforming advisory assessment"],
+      owner_role: "AI Operations",
+      reassess_after_resolution: true,
+    }];
+    const heldSnapshot = assessmentReviewSnapshot(held.current_assessment);
+    expect(heldSnapshot).not.toBeNull();
+    expect(isRetryableProviderValidationFailure(heldSnapshot)).toBe(true);
+    localStorage.removeItem("tameion.assessment-request.OBL-A");
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [{ ...obligation("OBL-A", true), decision: "HOLD" }] }));
+      if (url === "/api/obligations/OBL-A/assess" && init?.method === "POST") {
+        return Promise.resolve(response({ error: "Assessment service unavailable." }, 503));
+      }
+      if (url === "/api/obligations/OBL-A") return Promise.resolve(response(structuredClone(held)));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    renderWithExplicitFirstSelection("verified-session-csrf");
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    navigateStage("Assessment");
+    const action = await screen.findByRole("button", { name: "Run AI Assessment" });
+    expect(screen.getByRole("region", { name: "Current obligation action" }).contains(action)).toBe(true);
+    fireEvent.click(action);
+    await waitFor(() => {
+      const assessment = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST");
+      expect(assessment?.[1]?.headers).toMatchObject({ "X-Tameion-CSRF": "verified-session-csrf" });
+      expect(assessment?.[1]?.body).toBe("{}");
+    });
   });
 
   it("submits a current reviewed PAY authorization with the verified session CSRF token", async () => {

@@ -409,6 +409,14 @@ export type DetailState = "none" | "loading" | "failed" | "loaded" | "stale";
 
 export type AssessmentPrimaryAction = "none" | "assess" | "review" | "continue";
 
+export function isRetryableProviderValidationFailure(assessment: AssessmentReviewSnapshot | null): boolean {
+  return Boolean(
+    assessment?.decision === "HOLD" &&
+    assessment.provider_truth?.provider_mode === "NOT_LIVE_AI" &&
+    assessment.race?.result.validated_findings.some((finding) => finding.code === "MODEL_OUTPUT_INVALID"),
+  );
+}
+
 export function authorizationPanelCopy(state: DetailState, hasSelection: boolean, paeSealed = false, hasSettlementProxy = false, authorizationRecordedBlocked = false): string {
   if (!hasSelection || state === "none") return "Select an obligation to review its approval and payment-instruction status.";
   if (state === "loading") return "Loading the current obligation; approval status is not yet available.";
@@ -438,10 +446,12 @@ export function assessmentPrimaryAction(state: {
   reviewed: boolean;
   allAssessed: boolean;
   routeAssuranceReady: boolean;
+  retryableProviderFailure: boolean;
 }): AssessmentPrimaryAction {
   if (state.detailState !== "loaded" || !state.hasSelection || state.paeSealed) return "none";
   if (state.authorizationRecordedBlocked) return "none";
   if (!state.hasCurrentAssessment) return "assess";
+  if (state.retryableProviderFailure) return "assess";
   if (state.decision !== "PAY") return "none";
   if (!state.assessmentReviewAvailable) return "none";
   if (!state.reviewed) return "review";
@@ -2248,6 +2258,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   const hasCurrentAssessment = Boolean(detailState === "loaded" &&
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
+  const retryableProviderFailure = hasCurrentAssessment && isRetryableProviderValidationFailure(currentAssessment);
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
@@ -2272,6 +2283,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     reviewed: Boolean(authorizationAssessment),
     allAssessed,
     routeAssuranceReady,
+    retryableProviderFailure,
   });
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
     if (detailState === "none") return stage === "Obligation" ? "No obligation selected" : "Waiting for selection";
@@ -2504,6 +2516,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               ? "The current PAY recommendation has no review evidence in this detail; authorization remains locked."
               : currentAssessment?.decision === "PAY" && authorizationAssessment && !routeAssuranceReady
                 ? "The PAY recommendation has been reviewed, but payment-route assurance is not ready. Authorization remains locked."
+              : retryableProviderFailure
+                ? "The prior non-live assessment failed validation. Run AI Assessment again after the provider correction."
                 : currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE"
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";

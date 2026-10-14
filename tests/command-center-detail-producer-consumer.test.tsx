@@ -1698,7 +1698,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(card.textContent).not.toContain(race.evidence.evidence_ids[0]);
     if (race.result.validated_findings[0]) expect(card.textContent).not.toContain(race.result.validated_findings[0].code);
     expect(card.textContent).not.toMatch(/\bPASS\b|passed/i);
-    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(decision === "PAY" ? 1 : 0);
+    const retryableProviderValidationFailure = assessment.provider_mode === "NOT_LIVE_AI" &&
+      race.result.validated_findings.some((finding: { code: string }) => finding.code === "MODEL_OUTPUT_INVALID");
+    expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(decision === "PAY" || retryableProviderValidationFailure ? 1 : 0);
     expect(within(card).queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
