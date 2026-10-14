@@ -1854,6 +1854,44 @@ test("dark-mode exact payment confirmation keeps accessible contrast without sub
   expect(writes).toEqual([]);
 });
 
+test("blocked payment-detail preparation is focused and visible on mobile without retry", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const writes = await openFixture(page, liveWinnerForPreparation());
+  const preflightRequests: Array<{ headers: Record<string, string>; body: unknown }> = [];
+  await page.route("**/api/internal/demo/real-testnet-payment/preflight", async (route) => {
+    const request = route.request();
+    preflightRequests.push({ headers: request.headers(), body: request.postDataJSON() });
+    await route.fulfill({
+      status: 409,
+      json: { readiness: "BLOCKED", blocker: "FEE_CAP_EXCEEDED", captured_at: "2026-10-14T08:00:00.000Z" },
+    });
+  });
+
+  await page.getByRole("button", { name: "View Assessment" }).click();
+  const action = page.getByRole("button", { name: "Prepare testnet payment details" });
+  await expect(action).toBeVisible();
+  await action.click();
+
+  const alert = page.getByText("Payment details not prepared", { exact: true }).locator("..");
+  await expect(alert).toHaveAttribute("role", "alert");
+  await expect(alert).toContainText("Payment details not prepared");
+  await expect(alert).toContainText("approved network-fee limit");
+  await expect(alert).toContainText("No payment was submitted");
+  await expect(alert).toBeFocused();
+  await expect(action).toBeEnabled();
+  const bounds = await alert.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, viewportHeight: window.innerHeight, scrollY: window.scrollY };
+  });
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
+  expect(preflightRequests).toHaveLength(1);
+  expect(preflightRequests[0]?.headers["x-tameion-csrf"]).toBe("MOCK-ONLY-CSRF");
+  expect(preflightRequests[0]?.body).toEqual({ obligation_id: "OBL-UAT-01", expected_version: 1 });
+  expect(writes).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("blocked-payment-detail-mobile-visible.png"), fullPage: false });
+});
+
 test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in the first viewport", async ({ browser }, testInfo) => {
   const viewports = [
     { width: 1173, height: 751, label: "desktop-1173x751" },

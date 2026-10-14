@@ -1576,6 +1576,17 @@ function AssessmentFeedbackBanner({ feedback, onRefreshQueue }: { feedback: Asse
 }
 
 function actionErrorMessage(data: unknown): string {
+  if (data && typeof data === "object" && "blocker" in data && typeof (data as { blocker: unknown }).blocker === "string") {
+    const blockerMessages: Record<string, string> = {
+      FEE_CAP_EXCEEDED: "The current estimated network fee exceeds the approved network-fee limit. No payment was submitted.",
+      TOTAL_DEBIT_CAP_EXCEEDED: "The estimated total debit exceeds the approved total-debit limit. No payment was submitted.",
+      INSUFFICIENT_BALANCE: "The verified testnet USDC balance is not sufficient for this payment and its network fee. No payment was submitted.",
+      PRIOR_MATCHING_OUTBOUND: "A matching outbound testnet transaction already exists. The payment was not submitted again.",
+      PROVIDER_QUERY_FAILED: "Settlement readiness could not be confirmed with Circle. No payment was submitted.",
+    };
+    return blockerMessages[(data as { blocker: string }).blocker] ??
+      "Settlement readiness could not be verified. No payment was submitted.";
+  }
   if (data && typeof data === "object" && "error" in data && typeof (data as { error: unknown }).error === "string") {
     return (data as { error: string }).error;
   }
@@ -1585,12 +1596,19 @@ function actionErrorMessage(data: unknown): string {
   return "The request did not succeed.";
 }
 
-function ActionResultBanner({ result }: { result: ActionResult }) {
+function ActionResultBanner({ result, title, focusOnMount = false }: { result: ActionResult; title?: string; focusOnMount?: boolean }) {
+  const alertRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (result.ok || !focusOnMount) return;
+    const alert = alertRef.current;
+    alert?.focus({ preventScroll: true });
+    if (typeof alert?.scrollIntoView === "function") alert.scrollIntoView({ block: "nearest" });
+  }, [focusOnMount, result]);
   if (result.ok) return null;
   return (
-    <div role="alert" aria-live="assertive" className="border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
+    <div ref={alertRef} role="alert" aria-live="assertive" tabIndex={focusOnMount ? -1 : undefined} className="border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
       <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
-        Refused (HTTP {result.status})
+        {title ?? `Refused (HTTP ${result.status})`}
       </p>
       <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{actionErrorMessage(result.data)}</p>
     </div>
@@ -3139,6 +3157,11 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           <div>
             {panel === "assessment" && (
               <div className="w-full max-w-3xl">
+                {currentResult?.label === "proxy preflight" && (
+                  <div className="mb-3">
+                    <ActionResultBanner result={currentResult} title="Payment details not prepared" focusOnMount />
+                  </div>
+                )}
                 {assessmentResult ? (
                   <AssessmentResultCard
                     assessment={assessmentResult}

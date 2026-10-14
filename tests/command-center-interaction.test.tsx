@@ -1165,6 +1165,93 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
   });
 
+  it("explains a refused testnet payment-detail preparation without retrying it", async () => {
+    const pay = assessedDetail("OBL-PREFLIGHT-FEE-CAP", "PAY");
+    pay.current_assessment.provider_mode = "LIVE_AI";
+    pay.current_assessment.provider_used = "test-live-ai";
+
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") {
+        return Promise.resolve(response({
+          obligations: [{
+            ...obligation("OBL-PREFLIGHT-FEE-CAP", true),
+            decision: "PAY",
+            provider_mode: "LIVE_AI",
+          }],
+        }));
+      }
+      if (url === "/api/internal/demo/real-testnet-payment/preflight" && init?.method === "POST") {
+        return Promise.resolve(response({
+          readiness: "BLOCKED",
+          blocker: "FEE_CAP_EXCEEDED",
+          captured_at: "2026-10-14T08:00:00.000Z",
+        }, 409));
+      }
+      if (url === "/api/obligations/OBL-PREFLIGHT-FEE-CAP") {
+        return Promise.resolve(response(structuredClone(pay)));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    renderWithExplicitFirstSelection("verified-session-csrf");
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    const prepare = await screen.findByRole("button", { name: "Prepare testnet payment details" });
+    fireEvent.click(prepare);
+
+    const refusal = await screen.findByRole("alert");
+    expect(refusal.textContent).toContain("estimated network fee exceeds the approved network-fee limit");
+    expect(refusal.textContent).toContain("No payment was submitted");
+    expect(document.activeElement).toBe(refusal);
+    const preflightCalls = fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/internal/demo/real-testnet-payment/preflight" && init?.method === "POST",
+    );
+    expect(preflightCalls).toHaveLength(1);
+    expect(preflightCalls[0]?.[1]?.headers).toMatchObject({
+      "Content-Type": "application/json",
+      "X-Tameion-CSRF": "verified-session-csrf",
+    });
+    expect(JSON.parse(String(preflightCalls[0]?.[1]?.body))).toEqual({
+      obligation_id: "OBL-PREFLIGHT-FEE-CAP",
+      expected_version: 1,
+    });
+  });
+
+  it("uses safe finance wording for an unknown payment-detail blocker", async () => {
+    const pay = assessedDetail("OBL-PREFLIGHT-UNKNOWN", "PAY");
+    pay.current_assessment.provider_mode = "LIVE_AI";
+    pay.current_assessment.provider_used = "test-live-ai";
+
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") {
+        return Promise.resolve(response({ obligations: [{
+          ...obligation("OBL-PREFLIGHT-UNKNOWN", true), decision: "PAY", provider_mode: "LIVE_AI",
+        }] }));
+      }
+      if (url === "/api/internal/demo/real-testnet-payment/preflight" && init?.method === "POST") {
+        return Promise.resolve(response({ readiness: "BLOCKED", blocker: "NEW_SAFE_BLOCKER" }, 409));
+      }
+      if (url === "/api/obligations/OBL-PREFLIGHT-UNKNOWN") {
+        return Promise.resolve(response(structuredClone(pay)));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Prepare testnet payment details" }));
+
+    const refusal = await screen.findByRole("alert");
+    expect(refusal.textContent).toContain("Settlement readiness could not be verified");
+    expect(refusal.textContent).toContain("No payment was submitted");
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      String(input) === "/api/internal/demo/real-testnet-payment/preflight" && init?.method === "POST",
+    )).toHaveLength(1);
+  });
+
   it("plays a deterministic same-identity sample without invoking payment routes", async () => {
     const assessed = assessedDetail("OBL-A", "HOLD");
     fetchMock.mockImplementation((input) => {
