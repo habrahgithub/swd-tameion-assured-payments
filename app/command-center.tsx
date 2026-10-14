@@ -48,6 +48,10 @@ export interface ObservedWalletBalance {
   network: string;
 }
 
+export function selectedObligationInitialStage(decision: string | null | undefined): "Obligation" | "Assessment" {
+  return decision === "HOLD" || decision === "ESCALATE" ? "Assessment" : "Obligation";
+}
+
 type AssuranceEvidenceView =
   | { state: "NOT_CREATED" | "UNAVAILABLE" | "INVALID"; message: string; control_results: [] }
   | { state: "AVAILABLE_CURRENT_BINDING" | "AVAILABLE_HISTORICAL"; message: string; control_results: ControlResultView[]; overall: "PASS"; assurance_id: string; recorded_at: string; aggregate_version: string; policy_version: string };
@@ -454,11 +458,13 @@ export function assessmentPrimaryAction(state: {
   allAssessed: boolean;
   routeAssuranceReady: boolean;
   retryableProviderFailure: boolean;
+  remediableHold: boolean;
 }): AssessmentPrimaryAction {
   if (state.detailState !== "loaded" || !state.hasSelection || state.paeSealed) return "none";
   if (state.authorizationRecordedBlocked) return "none";
   if (!state.hasCurrentAssessment) return "assess";
   if (state.retryableProviderFailure) return "assess";
+  if (state.remediableHold) return "assess";
   if (state.decision !== "PAY") return "none";
   if (!state.assessmentReviewAvailable) return "none";
   if (!state.reviewed) return "review";
@@ -1291,6 +1297,13 @@ function financeFacingAssessmentText(value: string): string {
     .replaceAll("provider outcome", "settlement outcome");
 }
 
+function financeFacingDate(value: string | null | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
 function AssessmentResultCard({
   assessment,
   nextAction,
@@ -1331,6 +1344,10 @@ function AssessmentResultCard({
     : assessment.decision === "ESCALATE"
       ? "text-[var(--status-hold-text)]"
       : "text-[var(--color-ink)]";
+  const recordedDueDate = financeFacingDate(race?.evidence.authoritative_facts.due_date);
+  const assessmentDate = financeFacingDate(race?.evidence.authoritative_facts.as_of_date);
+  const isNormalizationHold = assessment.decision === "HOLD" && findings.some((finding) => finding.code === "NORMALIZATION_REVIEW_REQUIRED");
+  const reassessmentLabel = assessment.decision === "HOLD" ? "Reassess after correction" : "Run AI Assessment again";
 
   return (
     <section aria-label="Assessment result" className="space-y-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5 sm:space-y-3 sm:p-4" data-testid="assessment-result-card">
@@ -1345,6 +1362,35 @@ function AssessmentResultCard({
       </header>
 
       <p className="text-[14px] leading-5 text-[var(--color-ink)]">{financeFacingAssessmentText(summary)}</p>
+
+      {assessment.decision === "HOLD" && (
+        <section aria-label="Why this payment is on hold" className="space-y-2 rounded border border-[var(--status-hold-text)]/50 bg-[var(--color-canvas)] p-3">
+          <h4 className="text-[14px] font-semibold text-[var(--color-ink)]">Why this payment is on HOLD</h4>
+          {isNormalizationHold && (
+            <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
+              The recorded due-date fields did not pass Tameion&apos;s date consistency check.
+              {recordedDueDate && <> Recorded due date: <strong className="text-[var(--color-ink)]">{recordedDueDate}</strong>.</>}
+              {assessmentDate && <> Assessment date: <strong className="text-[var(--color-ink)]">{assessmentDate}</strong>.</>}
+            </p>
+          )}
+          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+            {findings.map((finding) => <li key={finding.code}>{financeFacingAssessmentText(finding.reason)}</li>)}
+          </ul>
+          {race?.remediation.map((item) => (
+            <div key={item.finding_code} className="space-y-1 border-t border-[var(--color-border)] pt-2 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+              <p><strong className="text-[var(--color-ink)]">Required correction:</strong> {financeFacingAssessmentText(item.required_action)}</p>
+              <p><strong className="text-[var(--color-ink)]">Evidence needed:</strong> {item.required_evidence.join("; ")}</p>
+              <p><strong className="text-[var(--color-ink)]">Owner:</strong> {item.owner_role}</p>
+            </div>
+          ))}
+          {canReassess && (
+            <div className="pt-1" data-testid="assessment-hold-rerun">
+              <PrimaryButton onClick={onReassess} disabled={busy}>{reassessmentLabel}</PrimaryButton>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Correct the source or validation issue first. The new assessment is advisory; the previous assessment remains in history.</p>
+            </div>
+          )}
+        </section>
+      )}
 
       <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">What this means:</strong> {meaning}</p>
 
@@ -1361,7 +1407,9 @@ function AssessmentResultCard({
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-1" data-testid="assessment-action-area">
         <div className="min-w-0">
           <p className="text-[12px] font-semibold text-[var(--color-ink)]">What to do next</p>
-          {!primaryAction && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{nextAction}</p>}
+          {!primaryAction && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessment.decision === "HOLD" && race?.remediation.length
+            ? "Complete the required correction above, then run a new advisory assessment."
+            : nextAction}</p>}
           {!primaryAction && nextOwner && <p className="text-[12px] text-[var(--color-ink-muted)]">Next owner/role: <strong className="text-[var(--color-ink)]">{nextOwner}</strong></p>}
         </div>
         {primaryAction && <PrimaryButton onClick={primaryAction.onClick} disabled={busy}>{primaryAction.label}</PrimaryButton>}
@@ -1409,7 +1457,7 @@ function AssessmentResultCard({
               {paymentEligibility.routeNote && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{paymentEligibility.routeNote}</p>}
             </section>
           )}
-          {canReassess && (
+          {canReassess && assessment.decision !== "HOLD" && (
             <div className="border-t border-[var(--color-border)] pt-3">
               {reassessmentIsPrimary ? (
                 <div data-testid="assessment-rerun"><PrimaryButton onClick={onReassess} disabled={busy}>Run AI Assessment again</PrimaryButton></div>
@@ -2066,7 +2114,6 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     selectedRef.current = selectedId;
     selectionGeneration.current += 1;
     detailGeneration.current += 1;
-    setViewedStage("Obligation");
     setDisplayedAssessment(null);
     setDetail(null);
     setDetailIsStale(false);
@@ -2301,7 +2348,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     setDetailIsStale(false);
     setDetailError(null);
     setSelectedId(obligationId);
-    setViewedStage("Obligation");
+    setViewedStage(selectedObligationInitialStage(obligations.find((obligation) => obligation.obligation_id === obligationId)?.decision));
     setLastResult(null);
     setAssessmentFeedback(null);
     setDisplayedAssessment(null);
@@ -2356,6 +2403,9 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
   const retryableProviderFailure = hasCurrentAssessment && isRetryableProviderValidationFailure(currentAssessment);
+  const remediableHold = Boolean(hasCurrentAssessment && currentAssessment?.decision === "HOLD" &&
+    detail?.advisory_action_eligible === true && currentAssessment.race?.remediation.length &&
+    currentAssessment.race.remediation.every((item) => item.reassess_after_resolution));
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
@@ -2381,6 +2431,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     allAssessed,
     routeAssuranceReady,
     retryableProviderFailure,
+    remediableHold,
   });
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
     if (detailState === "none") return stage === "Obligation" ? "No obligation selected" : "Waiting for selection";
@@ -2629,7 +2680,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";
   const optionalReassessmentAvailable = detailState === "loaded" && !detail?.pae_sealed &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
+    (remediableHold || (hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady));
   const reviewCurrentAssessment = () => {
     if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
     setDisplayedAssessment(currentAssessment);
@@ -2832,7 +2883,11 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       }));
     } };
   } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
-    workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
+    workspaceAction = {
+      label: remediableHold ? "Reassess after correction" : "Run AI Assessment",
+      actor: "Finance Agent · advisory review",
+      run: () => { void runAssessment(); },
+    };
   } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment?.decision === "PAY" && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
     workspaceAction={label:"Create linked testnet instruction",actor:"You · draft only, payment authority required",run:()=>{
       const assessment=detail.current_assessment!;
@@ -3726,7 +3781,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             )}
           </div>
 
-          {!isInitialObligationScreen && <details className={`rounded-lg border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
+          {!isInitialObligationScreen && detailState === "loaded" && <details className={`rounded-lg border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
             <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Related payment information</summary>
             <nav aria-label="Secondary tools" className="border-t border-[var(--color-border)] pt-2">
               <button

@@ -1954,7 +1954,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(assessmentStage.textContent).toContain("Treasury Operations");
     expect(assessmentStage.textContent).toContain("What this means");
     expect(assessmentStage.textContent).toContain("Returned findings");
-    expect(assessmentStage.textContent).not.toContain("Verified destination readiness and source-wallet trust-seed record");
+    expect(assessmentStage.textContent).toContain("Verified destination readiness and source-wallet trust-seed record");
     expect(within(assessmentStage).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
@@ -2500,7 +2500,7 @@ describe("guided lifecycle navigation", () => {
 
     const before = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
     fireEvent.click(within(rail).getByRole("button", { name: "Authorization" }));
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Reviewing: Obligation · Workflow now: Assessment");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Workflow now: Assessment");
     expect((within(rail).getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: /^Continue to / })).toBeNull();
     fireEvent.click(within(rail).getByRole("button", { name: "Obligation" }));

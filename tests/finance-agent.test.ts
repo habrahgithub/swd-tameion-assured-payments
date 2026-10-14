@@ -216,6 +216,24 @@ describe("Finance Agent (P0 core tests 12-14 + capability boundary)", () => {
     expect(decision.race.result.validated_findings).toEqual([]);
   });
 
+  it("treats explicit null optional date-contract fields as absent for a genuine stated due date", async () => {
+    const genuine = record({
+      obligation_id: "OBL-SWD-20261014-001",
+      issue_date: null,
+      due_date: "2026-10-14",
+      due_date_status: "STATED_ON_SOURCE",
+      effective_due_date: null,
+      effective_due_date_basis: null,
+      effective_due_date_provenance: null,
+    });
+    const context = buildFinanceAgentContext(genuine, 1, "2026-10-14");
+    const decision = await assessObligation(context, new DeterministicFallbackProvider());
+
+    expect(context.due_date_position).toBe("DUE_TODAY");
+    expect(decision.decision).toBe("PAY");
+    expect(decision.race.result.validated_findings).toEqual([]);
+  });
+
   it("retains a genuine obligation blocker when an invoice is overdue", async () => {
     const overdue = record({
       issue_date: "2020-01-02",
