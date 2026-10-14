@@ -1787,10 +1787,10 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
 
-  it("permits a deliberate retry after a non-live assessment output fails validation", async () => {
+  it("permits a deliberate retry after a live assessment output fails validation", async () => {
     const held = assessedDetail("OBL-A", "HOLD");
-    held.current_assessment.provider_used = "DETERMINISTIC_FALLBACK";
-    held.current_assessment.provider_mode = "NOT_LIVE_AI";
+    held.current_assessment.provider_used = "NVIDIA Build";
+    held.current_assessment.provider_mode = "LIVE_AI";
     held.current_assessment.race.result.validated_findings = [{
       code: "MODEL_OUTPUT_INVALID",
       severity: "HOLD",

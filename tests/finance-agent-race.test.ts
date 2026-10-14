@@ -91,11 +91,13 @@ describe("#17 CARE and RACE grounding", () => {
   });
 
   it("encodes the CARE boundary in the provider prompt and strictly validates actionable RACE", async () => {
-    expect(CARE_PROMPT_VERSION).toBe("tameion-finance-care-v5");
+    expect(CARE_PROMPT_VERSION).toBe("tameion-finance-care-v6");
     expect(CARE_PROMPT_SHA256).toBe(createHash("sha256").update(CARE_SYSTEM_PROMPT, "utf8").digest("hex"));
     expect(CARE_SYSTEM_PROMPT).toMatch(/C — CONTEXT[\s\S]*A — ACTION[\s\S]*R — ROLE[\s\S]*E — EXPECTATION/);
     expect(CARE_SYSTEM_PROMPT).toMatch(/OVERDUE is a timing and urgency fact, not an assessment blocker/i);
     expect(CARE_SYSTEM_PROMPT).toMatch(/do not require proof of payment\s+solely because an invoice is overdue/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/lack of signing or payment authority is not an obligation-assessment blocker/i);
+    expect(CARE_SYSTEM_PROMPT).toMatch(/valid open controlled instruction[\s\S]*propose PAY/i);
     const context = trustedTestContext(record("OBL-CARE"));
     const result = await assessObligation(context, new RecommendationProvider(recommendation(context.obligation_id, { evidence_ids: context.evidence_ids })));
     expect(result.race.action_taken.checks.join(" ")).not.toMatch(/destination readiness/i);

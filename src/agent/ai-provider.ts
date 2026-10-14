@@ -22,7 +22,7 @@ export interface AiProvider {
   assess(context: FinanceAgentContext, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
-export const CARE_PROMPT_VERSION = "tameion-finance-care-v5";
+export const CARE_PROMPT_VERSION = "tameion-finance-care-v6";
 export const CARE_SYSTEM_PROMPT = `C — CONTEXT
 You receive an application-built JSON context containing obligation identity and aggregate version,
 authoritative financial facts, supplied evidence IDs, original issue date, raw source due-date truth,
@@ -53,7 +53,10 @@ controlled purpose, evidence and exact timestamp window. Calendar as_of_date doe
 that window. Do not invent an invoice, business purpose, supplier fact or commercial due date.
 This explicit instruction basis can satisfy timing/purpose readiness only for that controlled
 source; absent/invalid/closed provenance must not recommend PAY. It grants no signing or payment
-authority. All other assessment/model-output validation rules remain unchanged.
+authority. The lack of signing or payment authority is not an obligation-assessment blocker; it is
+a separate downstream control. For a valid open controlled instruction with supported evidence and
+no application-owned finding, propose PAY. PAY remains advisory and does not approve, sign or move
+money. All other assessment/model-output validation rules remain unchanged.
 
 A — ACTION
 Assess the obligation and propose exactly one decision: PAY, HOLD, or ESCALATE. Recommend only

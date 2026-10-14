@@ -412,7 +412,6 @@ export type AssessmentPrimaryAction = "none" | "assess" | "review" | "continue";
 export function isRetryableProviderValidationFailure(assessment: AssessmentReviewSnapshot | null): boolean {
   return Boolean(
     assessment?.decision === "HOLD" &&
-    assessment.provider_truth?.provider_mode === "NOT_LIVE_AI" &&
     assessment.race?.result.validated_findings.some((finding) => finding.code === "MODEL_OUTPUT_INVALID"),
   );
 }
