@@ -14,7 +14,7 @@ import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
 import { POST as postAssessment } from "../src/server/legacy-routes/obligations/[id]/assess/route";
-import { CommandCenter, SourceObligationLineage, useExecutionConfirmation, workflowState } from "../app/command-center";
+import { CommandCenter, SourceObligationLineage, selectedObligationInitialStage, useExecutionConfirmation, workflowState } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -313,6 +313,12 @@ async function renderProducerJson(
 }
 
 describe("real detail GET producer-consumer packet controls", () => {
+  it("opens a blocked assessment directly when an obligation is resumed", () => {
+    expect(selectedObligationInitialStage("HOLD")).toBe("Assessment");
+    expect(selectedObligationInitialStage("ESCALATE")).toBe("Assessment");
+    expect(selectedObligationInitialStage("PAY")).toBe("Obligation");
+    expect(selectedObligationInitialStage(null)).toBe("Obligation");
+  });
   beforeEach(() => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
@@ -1706,7 +1712,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     for (const remediation of race.remediation) expect(card.textContent).toContain(remediation.required_action);
     const expectedOwner = decision === "HOLD" ? race.remediation[0]?.owner_role
       : decision === "ESCALATE" ? race.remediation[0]?.escalation_target
-        : "Authorized operator";
+        : "Authorized user";
     const hasPrimaryAssessmentAction = Boolean(card.querySelector('button[data-primary-action="true"]'));
     if (expectedOwner && !hasPrimaryAssessmentAction) expect(card.textContent).toContain(`Next owner/role: ${expectedOwner}`);
     else expect(card.textContent).not.toContain("Next owner/role:");
@@ -1720,6 +1726,45 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(decision === "PAY" || retryableProviderValidationFailure ? 1 : 0);
     expect(within(card).queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("keeps a genuine HOLD explanation and bounded remediation on the assessment page", async () => {
+    const fixture = await assessedProducerState("HOLD");
+    fixture.body.financial_action_eligible = false;
+    fixture.body.advisory_action_eligible = true;
+    fixture.body.current_assessment.race.result.validated_findings = [{
+      code: "NORMALIZATION_REVIEW_REQUIRED",
+      severity: "HOLD",
+      reason: "A normalized obligation field requires review against its source.",
+    }];
+    fixture.body.current_assessment.race.remediation = [{
+      finding_code: "NORMALIZATION_REVIEW_REQUIRED",
+      reason: "A normalized obligation field requires review against its source.",
+      required_action: "Review the normalized field and correct it from authoritative source evidence.",
+      required_evidence: ["Source evidence supporting the corrected normalized field"],
+      owner_role: "Finance Operations",
+      reassess_after_resolution: true,
+    }];
+    Object.assign(fixture.body.current_assessment.race.evidence.authoritative_facts, {
+      due_date: "2026-10-14",
+      as_of_date: "2026-10-14",
+      due_date_position: "INVALID",
+      issue_date: null,
+      effective_due_date: null,
+      effective_due_date_basis: null,
+      effective_due_date_provenance: null,
+    });
+    const { main } = await renderProducerJson(fixture.body, [], fixture.queue);
+    navigateStage("Assessment");
+
+    const card = screen.getByRole("region", { name: "Assessment result" });
+    const explanation = within(card).getByRole("region", { name: "Why this payment is on hold" });
+    expect(explanation.textContent).toContain("Recorded due date: 14 Oct 2026");
+    expect(explanation.textContent).toContain("Assessment date: 14 Oct 2026");
+    expect(explanation.textContent).toContain("Required correction");
+    expect(explanation.textContent).toContain("Source evidence supporting the corrected normalized field");
+    expect(within(card).getByRole("button", { name: "Reassess after correction" })).toBeTruthy();
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Reassess after correction");
   });
 
   it("promotes only the existing eligible reassessment option and keeps the simple entry untouched", async () => {

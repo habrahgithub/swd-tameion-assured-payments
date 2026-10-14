@@ -67,6 +67,8 @@ export interface ExecutionWorkerOptions {
   /** Authenticated HTTP capability; revalidate requester after provider preflight. */
   revalidateRequester?: () => Promise<void>;
   /** Synchronous expiry/binding check after the final awaited durable read. */
+  /** Async linked-source read after final controlled reload, before synchronous expiry/release gates. */
+  revalidateLinkedInstructionAtProviderSend?:()=>Promise<void>;
   assertRequesterAtProviderSend?: (approval:PaymentReleaseApproval|undefined) => void;
   now?: () => Date;
 }
@@ -478,6 +480,9 @@ export class ExecutionWorker {
     if (this.adapter.name === "arc-circle-live" && !durableContext) {
       throw new ExecutionBlockedError("Current durable execution authority is unavailable at the provider-send boundary", "AUTH-001");
     }
+
+    try {await this.options.revalidateLinkedInstructionAtProviderSend?.();}
+    catch {throw new ExecutionBlockedError("Linked genuine source or assessment changed at provider send", "AUTH-LINK");}
 
     const latestAggregate = durableContext?.aggregate ?? this.store.get(payload.organization_id, obligationId);
     if (durableContext) {

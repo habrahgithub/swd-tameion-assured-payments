@@ -1,3 +1,4 @@
+import {verifyLinkedActivation} from './linked-instruction-activation';
 import {sealPaymentRelease,matchesPaymentRelease,paymentReleaseBindings,type PaymentReleaseRecord,type PaymentReleaseBinding,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {buildFinanceAgentContext,hasCurrentControlledInstruction} from "../agent/context-builder";
 import {z} from 'zod';
@@ -21,9 +22,10 @@ export interface FinancialDependencies {
  guard:(request:Request,post:boolean)=>Promise<AuthContext>;
  source:()=>FinancialSourceAdmission;
  requester:()=>FinancialRequesterBinding;
- load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>,assertAtSend?:(approval:PaymentReleaseApproval|undefined)=>void)=>Promise<DemoState>;
+ load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>,assertAtSend?:(approval:PaymentReleaseApproval|undefined)=>void,revalidateLinkAtSend?:()=>Promise<void>)=>Promise<DemoState>;
  preflight?:typeof runJ2aReadOnlyPreflight;
  /** Trusted capability boundary; never selected by HTTP or environment flags. */
+ verifyLink?:(source:FinancialSourceAdmission)=>Promise<void>;
  providerBoundary?:(revalidate:()=>Promise<void>)=>Promise<void>;
 }
 function reply(code:string,status:number,extra:Record<string,unknown>={}){return Response.json({code,...extra},{status,headers:{'Cache-Control':'no-store',Pragma:'no-cache'}});}
@@ -38,13 +40,15 @@ export function createFinancialHandlers(deps:FinancialDependencies){
   let effectsStarted=false,releaseSaveStarted=false;
   try{
    const auth=await deps.guard(request,true);
-   requireJson(request);const raw=await readBoundedJson(request,4096);const body=bodies[kind].parse(raw);
+   requireJson(request);const raw=await readBoundedJson(request,4096);const parsed=bodies[kind].safeParse(raw);if(!parsed.success)throw new AccessError('BODY_REJECTED',400);const body=parsed.data;
    const selected=kind==='preflight'?(body as z.infer<typeof bodies.preflight>).obligation_id:id;
    if(!selected||!/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/.test(selected)||selected.length>128)throw new AccessError('CONTROLLED_SOURCE_REQUIRED',403);
    const source=deps.source(),requester=deps.requester();
    const sourceIdentity=JSON.stringify(source),requesterIdentity=JSON.stringify(requester);
    if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||!sameFinancialBinding(source,requester)||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
-   const checkContext=async()=>{await auth.revalidate();if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
+   // Reconciliation reads an existing exact execution; mutable genuine advisory
+   // currentness gates new actions, never status recovery of an UNKNOWN send.
+   const checkContext=async()=>{await auth.revalidate();if(kind!=='reconcile'&&source.linked_instruction){if(!deps.verifyLink)throw new AccessError('LINK_SOURCE_UNVERIFIED',403);await deps.verifyLink(source);}if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
    let requiredRelease: {record_sha256:string; expected:Partial<PaymentReleaseRecord> & Partial<PaymentReleaseBinding>} | undefined;
    let load!:()=>Promise<DemoState>;
    const resolveCurrentRequester=async()=>{await checkContext();const current=await load();const actor=current.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
@@ -60,7 +64,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     if(!requiredRelease)throw new AccessError('PAYMENT_RELEASE_REQUIRED',403);
     if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity||!matchesPaymentRelease(approval,requiredRelease.expected)||approval?.record_sha256!==requiredRelease.record_sha256)throw new AccessError('PAYMENT_RELEASE_CHANGED',403);
    };
-   load=()=>deps.load(source,checkRequester,assertAtSend);
+   load=()=>deps.load(source,checkRequester,assertAtSend,source.linked_instruction&&kind!=='reconcile'?checkContext:undefined);
    if(kind==='preflight'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
    const state=await load();const actor=state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
    if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
@@ -136,8 +140,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    return reply(execution.status==='SETTLED'?'RECONCILED':'RECONCILIATION_ONLY',execution.status==='UNKNOWN'?202:execution.status==='BLOCKED'?409:200,{execution});
   }catch(error){
    if(releaseSaveStarted)return reply('OUTCOME_UNVERIFIED',503,{retry_submission:false,release_gate:'READ_ONLY_CONFIRMATION_REQUIRED',error:'Release approval may have been recorded. Refresh current status before taking another action.'});
-   if(error instanceof AccessError)return reply(error.code,error.status);
-   if(error instanceof z.ZodError)return reply('BODY_REJECTED',400);
+   if(error instanceof AccessError){if(effectsStarted)return reply('OUTCOME_UNVERIFIED',503,{execution_gate:'RECONCILIATION_ONLY',retry_submission:false});return reply(error.code,error.status);}
    if(error instanceof DemoStatePersistenceError||effectsStarted)return reply('OUTCOME_UNVERIFIED',503,{execution_gate:'RECONCILIATION_ONLY',retry_submission:false});
    if(error instanceof AuthorityError||error instanceof ExecutionBlockedError)return reply(error.code,409);
    if(error instanceof AssuranceFailedError)return reply('ASSURANCE_NOT_PASS',422);
@@ -145,7 +148,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
   }
  };
 }
-export const financialHandlers=createFinancialHandlers({providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate,assertAtSend)=>{
+export const financialHandlers=createFinancialHandlers({verifyLink:verifyLinkedActivation,providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate,assertAtSend,revalidateLinkAtSend)=>{
  const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);
- return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate,assertRequesterAtProviderSend:assertAtSend});
+ return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate,assertRequesterAtProviderSend:assertAtSend,revalidateLinkedInstructionAtProviderSend:revalidateLinkAtSend});
 }});

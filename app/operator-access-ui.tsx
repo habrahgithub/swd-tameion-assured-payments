@@ -1,4 +1,5 @@
 import type {ReactNode} from 'react';
+import {TameionBrand} from './tameion-brand';
 
 type AccessShellProps={
  eyebrow:string;
@@ -16,8 +17,7 @@ type AccessShellProps={
 };
 
 function Brand({href}:{href?:string}){
- const content=<span className="flex items-center gap-3"><img src="/icon.svg" alt="" width="38" height="38" className="size-[38px] rounded-lg shadow-sm"/><span><span className="block text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--color-ink-muted)]">Tameion</span><span className="mt-0.5 block text-base font-semibold tracking-[-0.015em] text-[var(--color-ink)]">Assured Payment — Command Center</span></span></span>;
- return href?<a href={href} className="block w-fit rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--color-ink)]">{content}</a>:content;
+ return <TameionBrand href={href}/>;
 }
 
 export function OperatorAccessShell({eyebrow,title,description,boundary,details,brandHref,accessory,brand,introduction,shellClassName,contentClassName,children}:AccessShellProps){
@@ -25,7 +25,7 @@ export function OperatorAccessShell({eyebrow,title,description,boundary,details,
   <header className="flex items-center justify-between gap-4 border-b border-[var(--color-border)] pb-4">{brand??<Brand href={brandHref}/>}{accessory}</header>
   <section className={contentClassName??"grid flex-1 items-center gap-9 py-10 lg:grid-cols-[minmax(0,1fr)_26rem] lg:gap-20 lg:py-14"}>
    {introduction??<div className="max-w-xl">
-    <div className="mb-6 flex size-14 items-center justify-center rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-soft)]"><img src="/icon.svg" alt="" width="38" height="38" className="size-[38px] rounded-lg"/></div>
+    <div className="mb-6 flex size-14 items-center justify-center rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-soft)]"><TameionBrand compact/></div>
     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">{eyebrow}</p>
     <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] text-[var(--color-ink)] sm:text-[42px] sm:leading-[1.08]">{title}</h1>
     <p className="mt-4 max-w-lg text-base leading-7 text-[var(--color-ink-muted)]">{description}</p>

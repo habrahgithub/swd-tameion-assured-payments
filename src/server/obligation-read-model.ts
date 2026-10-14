@@ -1,3 +1,4 @@
+import {contentHash} from '../domain/linked-instruction';
 import {matchesPaymentRelease,type PaymentReleaseBinding} from '../domain/payment-release-approval';
 import { NextResponse } from "next/server";
 import { AuthorityError } from "../authority/aggregate";
@@ -10,7 +11,8 @@ import { projectAssuranceEvidence } from "./assurance-evidence-projection";
  * recovery or persistence. Source admission belongs to the calling GET boundary.
  * Browser fixtures use these same projections with independently invented data.
  */
-export function projectObligationListData(state: ExistingState) {
+export type ObligationSourceGroup = "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
+export function projectObligationListData(state: ExistingState, sourceGroup: ObligationSourceGroup = "UNVERIFIED", bindAdvisorySource=false) {
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);
@@ -25,9 +27,10 @@ export function projectObligationListData(state: ExistingState) {
     // bound to the obligation's current version — the same staleness rule
     // approve() itself enforces (AUT-009); a stale assessment must not be
     // shown as "assessed" here either.
-    const isCurrent = sealed?.record.aggregate_version === String(current.aggregate_version);
+    const isCurrent = sealed?.record.aggregate_version === String(current.aggregate_version) && (!bindAdvisorySource||sealed?.record.source_record_sha256===contentHash(state.getRecord(o.obligation_id)));
     return {
       ...o,
+      source_group: sourceGroup,
       assessed: isCurrent,
       decision: isCurrent ? sealed?.record.decision : null,
       provider_mode: isCurrent ? sealed?.record.provider_mode : null,
@@ -48,7 +51,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED", advisorySourceHash?:string) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -93,6 +96,7 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
       return NextResponse.json({ error: "Obligation source record not found" }, { status: 404 });
     }
     const settlementRuntime = state.providerAdapter.name === "fake-testnet" ? "SIMULATED" as const : "LIVE" as const;
+    if(advisorySourceHash&&currentAssessment?.record.source_record_sha256!==advisorySourceHash)currentAssessment=undefined;
     const truth = buildPaymentTruthLayers({
       obligation: canonicalObligation,
       source_obligation_state: record.state_at_event_baseline,
@@ -130,6 +134,7 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
     });
     return NextResponse.json({
       financial_action_eligible: financialActionEligible,
+      source_group: sourceGroup,
       truth,
       aggregate,
       record,

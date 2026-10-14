@@ -84,6 +84,7 @@ describe("offline packaging and same-reservation pre-upload guard", () => {
     for (const missing of [undefined,null,{},[common],{...common,extra:true},{...common,deployment_id:"SUCCESSOR"},{...common,authenticated_readback:false}]) expect(() => gate(missing,protection)).toThrow();
     for (const missing of [undefined,null,{}, {...protection,anonymous_access_denied:false},{...protection,anonymous_generated_denied:false},{...protection,team_id:"OTHER"}]) expect(() => gate(common,missing)).toThrow();
     expect(gate(common,protection)).toEqual({hosted_evidence_inputs:"CONSISTENT_SUPPLIED_RECEIPTS_NOT_REMOTE_ATTESTATION",hosted_uat:"REQUIRES_SEPARATE_OWNER_AUTHORITY",fakeAuthCalls:1,fakeProviderCalls:1});
-  });
+    // Fourteen sequential Node processes need bounded startup headroom on CI.
+  }, 15_000);
 
 });

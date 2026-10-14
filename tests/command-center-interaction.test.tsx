@@ -309,6 +309,21 @@ describe("Command Center mounted Operational Report", () => {
     vi.unstubAllGlobals();
   });
 
+  it("groups server-admitted company obligations separately from testnet demo and unknown records",async()=>{
+    const company={...obligation("COMPANY"),source_group:"GENUINE_COMPANY"};
+    const demo={...obligation("DEMO"),source_group:"DEMO_ARC_TESTNET"};
+    fetchMock.mockResolvedValue(response({obligations:[company,demo,obligation("UNKNOWN")]}));
+    rtlRender(<CommandCenter/>);
+    await waitFor(()=>expect(obligationRow("COMPANY")).toBeTruthy());
+    expect(within(screen.getByRole("region",{name:"Company obligations"})).getByRole("button").dataset.obligationId).toBe("COMPANY");
+    expect(within(screen.getByRole("region",{name:"Demo · Arc Testnet"})).getByRole("button").dataset.obligationId).toBe("DEMO");
+    expect(within(screen.getByRole("region",{name:"Other review records"})).getByRole("button").dataset.obligationId).toBe("UNKNOWN");
+  });
+  it("shows an honest empty demo section instead of inventing a dollar entry",async()=>{
+    fetchMock.mockResolvedValue(response({obligations:[{...obligation("COMPANY"),source_group:"GENUINE_COMPANY"}]}));
+    rtlRender(<CommandCenter/>);await screen.findByText(/No approved demo entries are available/);
+    expect(within(screen.getByRole("region",{name:"Demo · Arc Testnet"})).queryByRole("button")).toBeNull();
+  });
   it("keeps the single selected-identity action in a permanent contextual strip", async () => {
     fetchMock.mockImplementation(input => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-A"), obligation("OBL-B")] }))
@@ -1939,7 +1954,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(assessmentStage.textContent).toContain("Treasury Operations");
     expect(assessmentStage.textContent).toContain("What this means");
     expect(assessmentStage.textContent).toContain("Returned findings");
-    expect(assessmentStage.textContent).not.toContain("Verified destination readiness and source-wallet trust-seed record");
+    expect(assessmentStage.textContent).toContain("Verified destination readiness and source-wallet trust-seed record");
     expect(within(assessmentStage).queryByRole("button", { name: /resolve/i })).toBeNull();
 
     const lifecycle = screen.getByRole("list", { name: "Payment lifecycle" });
@@ -1981,7 +1996,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(trace.textContent).toContain("Raw due date: Not captured on source");
     expect(trace.textContent).toContain("Effective due date: 2026-09-01");
     expect(trace.textContent).toContain("INVOICE_DATE_CASH_TERM");
-    expect(trace.textContent).toContain("authorized operator attestation (UAT-AUTH-REF-1)");
+    expect(trace.textContent).toContain("authorized user attestation (UAT-AUTH-REF-1)");
     expect(trace.textContent).toContain("Assessment as of: 2026-10-04 (overdue)");
     expect(trace.textContent).toContain("simulated demo fixture; it is not source evidence or current product trust");
   });
@@ -2485,7 +2500,7 @@ describe("guided lifecycle navigation", () => {
 
     const before = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
     fireEvent.click(within(rail).getByRole("button", { name: "Authorization" }));
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Reviewing: Obligation · Workflow now: Assessment");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Workflow now: Assessment");
     expect((within(rail).getByRole("button", { name: "Authorization" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: /^Continue to / })).toBeNull();
     fireEvent.click(within(rail).getByRole("button", { name: "Obligation" }));

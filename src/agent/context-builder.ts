@@ -52,8 +52,8 @@ export function buildFinanceAgentContext(
     ? trustedCurrentReadiness ? "READY" : currentReadiness.destination_status === "READY" ? "NOT_READY_SIMULATED_FIXTURE" : currentReadiness.destination_status
     : sourceDestinationStatus === "READY" ? "NOT_READY_SOURCE_EVIDENCE_ONLY" : sourceDestinationStatus;
   if (!isCalendarDate(asOfDate)) throw new Error("Application assessment as-of date is invalid.");
-  const hasEffectiveDateFields = record.issue_date !== undefined || record.effective_due_date !== undefined ||
-    record.effective_due_date_basis !== undefined || record.effective_due_date_provenance !== undefined;
+  const hasEffectiveDateFields = record.issue_date != null || record.effective_due_date != null ||
+    record.effective_due_date_basis != null || record.effective_due_date_provenance != null;
   const requiresEffectiveDateContract = /^OBL-J0C-[0-9]{3}$/.test(record.obligation_id) || hasEffectiveDateFields;
   const rawDueDateConsistent = record.due_date_status === "NOT_STATED_ON_SOURCE"
     ? record.due_date === null
@@ -94,12 +94,14 @@ export function buildFinanceAgentContext(
     currency: record.currency,
     service_category: record.service_category,
     recurrence: record.recurrence,
-    issue_date: record.issue_date,
     due_date: record.due_date,
     due_date_status: record.due_date_status,
-    effective_due_date: record.effective_due_date,
-    effective_due_date_basis: record.effective_due_date_basis,
-    effective_due_date_provenance: record.effective_due_date_provenance,
+    ...(requiresEffectiveDateContract ? {
+      issue_date: record.issue_date,
+      effective_due_date: record.effective_due_date,
+      effective_due_date_basis: record.effective_due_date_basis,
+      effective_due_date_provenance: record.effective_due_date_provenance,
+    } : {}),
     state_at_event_baseline: record.state_at_event_baseline,
     business_purpose_confirmed: record.business_purpose_confirmed,
     ...(controlled?{controlled_instruction:controlled}:{}),

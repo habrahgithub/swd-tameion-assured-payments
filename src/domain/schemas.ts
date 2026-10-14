@@ -63,6 +63,7 @@ export type ControlResult = z.infer<typeof controlResultSchema>;
 export const durableAssessmentRecordSchema = z
   .object({
     assessment_id: boundedAscii(),
+    source_record_sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     organization_id: boundedAscii(),
     obligation_id: boundedAscii(),
     aggregate_version: canonicalIntegerString,

@@ -161,3 +161,66 @@ fixtures through the shared production code. Withdrawn-source and requester
 denials, retired synthetic HTTP routes, signing trust and execution guards remain
 in force. Original003 remains `OUTCOME_UNVERIFIED / NO_RETRY`; the historical
 hosted HTTP 500 outcome has not been inspected or resolved by this correction.
+
+### 2026-10-14 — Genuine advisory and separately linked testnet drafts
+
+Job #65 admits advisory assessment of genuine company records separately from
+payment authority. V1/V2 private catalogs retain their exact revision/hash
+read-only contract. Explicit V3 `GENUINE_ADVISORY_SOURCE` catalogs additionally
+pin the canonical authority object with `assessments` removed; their approved
+minimum revision permits assessment history and instruction-draft CAS writes
+without permitting aggregate/source/version changes. The catalog bytes still
+pin the genuine records. Changing those facts requires a new approved binding.
+
+The advisory adapter reuses the durable assessment reservation/result engine
+without constructing a signer, Circle adapter or payment worker. Existing
+financial/recovery identities cannot be reopened through this capability.
+New genuine assessment receipts also seal the exact source-record SHA256;
+draft creation, activation and current-assessment projection require that hash.
+Reapproved source text at an unchanged aggregate version cannot reuse an older
+assessment. Missing commercial facts remain findings; no invoice, supplier or destination
+verification is invented to obtain PAY.
+
+The portal can append an immutable, separately identified Arc Testnet instruction
+draft bound to source content/version and the exact current assessment. Creation
+is idempotent and CAS-protected, performs no provider call, and grants no payment
+permission. The additive CAS migration protects the complete linked-history
+prefix against overlapping old writers. Application parse/restore/export retains
+it on unrelated writes. Migration application and V3 catalog activation require
+separate reviewed operational authority; shipping this code alone activates neither.
+
+Linked financial admission still requires the existing exact controlled
+source/requester packet and separate namespace. An additional gate verifies the
+linked draft, current genuine source/version and current assessment before any
+financial action or provider-send revalidation. Existing USD1 controlled-shape,
+expiry, actor, signing, preflight, assurance, release and no-retry controls remain.
+The draft is not another payable, and testnet activity never discharges the
+genuine supplier liability. No automatic reset of historical attempts is added.
+
+
+The bounded pre-SQL correction requires a current source-bound PAY assessment
+before draft creation; HOLD and ESCALATE remain review/reassessment only. Genuine
+advisory history is limited to four assessment operations/receipts per obligation;
+original-key replay and recovery still work at that limit. No history is deleted.
+Every genuine CAS write must fit a conservative1,750,000-byte UTF8 pretty-JSON
+budget, including pending provider results, leaving margin under the2MiB response
+bound. Full state beyond the budget fails closed rather than truncating evidence.
+
+Genuine requests use a45-second budget, reserve at most20seconds for the entire
+provider retry sequence, retain15seconds for persistence/recovery, and permit
+only two persistence attempts. Each5-second RPC requires remaining budget before
+it starts. Genuine reservations older than45seconds become UNKNOWN through the
+original key; cancellation or lost persistence never starts a second model call.
+These genuine-only timing bounds do not change classic controlled assessment
+configuration. Source-backed invoice/date findings are never waived for PAY.
+
+Linked activation is revalidated asynchronously at the worker's final provider
+send boundary, after its controlled-state reload and before the synchronous
+amount/actor/trust/kill-switch/expiry/release checks. Drift blocks provider create.
+Access failures after financial effects may have begun return OUTCOME_UNVERIFIED
+with no retry; pre-effect denials retain their exact codes. Source projection
+wrappers preserve status. Only client body validation is classified BODY_REJECTED;
+malformed server-owned state fails as unavailable/uncertain instead.
+
+USD1/USD-only linked activation remains the accepted UAT limitation; this patch
+does not widen currencies, conversion policy or financial source authority.

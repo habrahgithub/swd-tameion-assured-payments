@@ -1,4 +1,6 @@
 "use client";
+import type {LinkedInstruction} from "../src/domain/linked-instruction";
+import {TameionBrand} from "./tameion-brand";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { decimalToAtomic, USDC_DECIMALS } from "../src/domain/numeric";
@@ -22,6 +24,7 @@ import {
 } from "../src/client/hold-escalate-report";
 
 interface ObligationSummary {
+  source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   obligation_id: string;
   service_category: string;
   amount: string;
@@ -43,6 +46,10 @@ export interface ObservedWalletBalance {
   asset: "USDC";
   captured_at: string;
   network: string;
+}
+
+export function selectedObligationInitialStage(decision: string | null | undefined): "Obligation" | "Assessment" {
+  return decision === "HOLD" || decision === "ESCALATE" ? "Assessment" : "Obligation";
 }
 
 type AssuranceEvidenceView =
@@ -67,6 +74,9 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  advisory_action_eligible?: boolean;
+  linked_testnet_instructions?: LinkedInstruction[];
+  source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   financial_action_eligible: boolean;
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
@@ -179,7 +189,7 @@ function sourceServiceContext(record: Record<string, unknown>): string | null {
     PDF_INVOICE: "invoice",
     PDF_TAX_INVOICE: "tax invoice",
     USER_SUPPLIED_EMAIL_INVOICE_EXCERPT: "user-supplied email invoice excerpt",
-    AUTHORIZED_OPERATOR_ATTESTATION: "operator attestation",
+    AUTHORIZED_OPERATOR_ATTESTATION: "user attestation",
   };
   const sourceLabel = typeof sourceType?.source_type === "string" ? sourceLabels[sourceType.source_type] : undefined;
   const includesSource = sourceLabel && commercialTerms.toLocaleLowerCase().includes(sourceLabel.toLocaleLowerCase());
@@ -332,7 +342,7 @@ function sourceDateProvenance(record: Record<string, unknown>): string {
     return `Source invoice date · evidence ${provenance.evidence_id}`;
   }
   if (provenance.provenance_class === "AUTHORIZED_OPERATOR_ATTESTATION" && typeof provenance.authority_reference === "string") {
-    return `Authorized operator attestation · ${provenance.authority_reference}`;
+    return `Authorized user attestation · ${provenance.authority_reference}`;
   }
   return "Not captured";
 }
@@ -448,11 +458,13 @@ export function assessmentPrimaryAction(state: {
   allAssessed: boolean;
   routeAssuranceReady: boolean;
   retryableProviderFailure: boolean;
+  remediableHold: boolean;
 }): AssessmentPrimaryAction {
   if (state.detailState !== "loaded" || !state.hasSelection || state.paeSealed) return "none";
   if (state.authorizationRecordedBlocked) return "none";
   if (!state.hasCurrentAssessment) return "assess";
   if (state.retryableProviderFailure) return "assess";
+  if (state.remediableHold) return "assess";
   if (state.decision !== "PAY") return "none";
   if (!state.assessmentReviewAvailable) return "none";
   if (!state.reviewed) return "review";
@@ -1081,7 +1093,7 @@ function decisionTone(decision: "PAY" | "HOLD" | "ESCALATE"): Tone {
 function ProviderTruthRow({ truth }: { truth?: ProviderRuntimeTruth }) {
   if (!truth) return null;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <RuntimeBadge mode={truth.provider_mode} />
       <span className="text-[11px] text-[var(--color-ink-muted)]">
         Recommendation source recorded · advisory only
@@ -1136,7 +1148,7 @@ function AssessmentTraceView({ race }: { race: RaceAssessment }) {
             </p>
             {step.items.length > 0 ? (
               <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink)]">
-                {step.items.map((item, index) => <li key={index}>{item}</li>)}
+                {step.items.map((item, index) => <li key={index}>{item.replace("authorized operator attestation", "authorized user attestation")}</li>)}
               </ul>
             ) : (
               <p className="text-[12px] text-[var(--color-ink-muted)]">{step.empty_reason}</p>
@@ -1285,6 +1297,13 @@ function financeFacingAssessmentText(value: string): string {
     .replaceAll("provider outcome", "settlement outcome");
 }
 
+function financeFacingDate(value: string | null | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
 function AssessmentResultCard({
   assessment,
   nextAction,
@@ -1325,6 +1344,10 @@ function AssessmentResultCard({
     : assessment.decision === "ESCALATE"
       ? "text-[var(--status-hold-text)]"
       : "text-[var(--color-ink)]";
+  const recordedDueDate = financeFacingDate(race?.evidence.authoritative_facts.due_date);
+  const assessmentDate = financeFacingDate(race?.evidence.authoritative_facts.as_of_date);
+  const isNormalizationHold = assessment.decision === "HOLD" && findings.some((finding) => finding.code === "NORMALIZATION_REVIEW_REQUIRED");
+  const reassessmentLabel = assessment.decision === "HOLD" ? "Reassess after correction" : "Run AI Assessment again";
 
   return (
     <section aria-label="Assessment result" className="space-y-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5 sm:space-y-3 sm:p-4" data-testid="assessment-result-card">
@@ -1339,6 +1362,35 @@ function AssessmentResultCard({
       </header>
 
       <p className="text-[14px] leading-5 text-[var(--color-ink)]">{financeFacingAssessmentText(summary)}</p>
+
+      {assessment.decision === "HOLD" && (
+        <section aria-label="Why this payment is on hold" className="space-y-2 rounded border border-[var(--status-hold-text)]/50 bg-[var(--color-canvas)] p-3">
+          <h4 className="text-[14px] font-semibold text-[var(--color-ink)]">Why this payment is on HOLD</h4>
+          {isNormalizationHold && (
+            <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
+              The recorded due-date fields did not pass Tameion&apos;s date consistency check.
+              {recordedDueDate && <> Recorded due date: <strong className="text-[var(--color-ink)]">{recordedDueDate}</strong>.</>}
+              {assessmentDate && <> Assessment date: <strong className="text-[var(--color-ink)]">{assessmentDate}</strong>.</>}
+            </p>
+          )}
+          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+            {findings.map((finding) => <li key={finding.code}>{financeFacingAssessmentText(finding.reason)}</li>)}
+          </ul>
+          {race?.remediation.map((item) => (
+            <div key={item.finding_code} className="space-y-1 border-t border-[var(--color-border)] pt-2 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+              <p><strong className="text-[var(--color-ink)]">Required correction:</strong> {financeFacingAssessmentText(item.required_action)}</p>
+              <p><strong className="text-[var(--color-ink)]">Evidence needed:</strong> {item.required_evidence.join("; ")}</p>
+              <p><strong className="text-[var(--color-ink)]">Owner:</strong> {item.owner_role}</p>
+            </div>
+          ))}
+          {canReassess && (
+            <div className="pt-1" data-testid="assessment-hold-rerun">
+              <PrimaryButton onClick={onReassess} disabled={busy}>{reassessmentLabel}</PrimaryButton>
+              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Correct the source or validation issue first. The new assessment is advisory; the previous assessment remains in history.</p>
+            </div>
+          )}
+        </section>
+      )}
 
       <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">What this means:</strong> {meaning}</p>
 
@@ -1355,7 +1407,9 @@ function AssessmentResultCard({
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-1" data-testid="assessment-action-area">
         <div className="min-w-0">
           <p className="text-[12px] font-semibold text-[var(--color-ink)]">What to do next</p>
-          {!primaryAction && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{nextAction}</p>}
+          {!primaryAction && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessment.decision === "HOLD" && race?.remediation.length
+            ? "Complete the required correction above, then run a new advisory assessment."
+            : nextAction}</p>}
           {!primaryAction && nextOwner && <p className="text-[12px] text-[var(--color-ink-muted)]">Next owner/role: <strong className="text-[var(--color-ink)]">{nextOwner}</strong></p>}
         </div>
         {primaryAction && <PrimaryButton onClick={primaryAction.onClick} disabled={busy}>{primaryAction.label}</PrimaryButton>}
@@ -1403,7 +1457,7 @@ function AssessmentResultCard({
               {paymentEligibility.routeNote && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{paymentEligibility.routeNote}</p>}
             </section>
           )}
-          {canReassess && (
+          {canReassess && assessment.decision !== "HOLD" && (
             <div className="border-t border-[var(--color-border)] pt-3">
               {reassessmentIsPrimary ? (
                 <div data-testid="assessment-rerun"><PrimaryButton onClick={onReassess} disabled={busy}>Run AI Assessment again</PrimaryButton></div>
@@ -1869,7 +1923,7 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   if (!detail.pae_sealed) return "No sealed payment instruction is available. Complete the existing authorization and assurance steps before execution.";
   if (exactPacketSubmissionReady) return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
   if (detail.execution_gate === "PORTAL_RELEASE_RENEWAL_REQUIRED") return "Release consent is no longer current. This instruction cannot be submitted. Renew payment authority through the authorized recovery process; do not retry this instruction.";
-  if (detail.execution_gate === "PORTAL_RELEASE_UNAVAILABLE") return "Payment release is unavailable. Current operator authority or the payment service could not be verified. Refresh current status; no payment can be submitted.";
+  if (detail.execution_gate === "PORTAL_RELEASE_UNAVAILABLE") return "Payment release is unavailable. Current user authority or the payment service could not be verified. Refresh current status; no payment can be submitted.";
   if (detail.execution_gate === "PORTAL_RELEASE_APPROVAL_REQUIRED") return "Review the exact payment details below and approve payment release. Approval records your consent; you will submit the payment separately.";
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
@@ -2060,7 +2114,6 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     selectedRef.current = selectedId;
     selectionGeneration.current += 1;
     detailGeneration.current += 1;
-    setViewedStage("Obligation");
     setDisplayedAssessment(null);
     setDetail(null);
     setDetailIsStale(false);
@@ -2236,7 +2289,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
         if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/assess`, {}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${detail.advisory_action_eligible===true?"advisory":"assess"}`, {}, {
         "Idempotency-Key": assessmentRequestKey.current.key,
       });
       if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
@@ -2295,7 +2348,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     setDetailIsStale(false);
     setDetailError(null);
     setSelectedId(obligationId);
-    setViewedStage("Obligation");
+    setViewedStage(selectedObligationInitialStage(obligations.find((obligation) => obligation.obligation_id === obligationId)?.decision));
     setLastResult(null);
     setAssessmentFeedback(null);
     setDisplayedAssessment(null);
@@ -2350,6 +2403,9 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
   const retryableProviderFailure = hasCurrentAssessment && isRetryableProviderValidationFailure(currentAssessment);
+  const remediableHold = Boolean(hasCurrentAssessment && currentAssessment?.decision === "HOLD" &&
+    detail?.advisory_action_eligible === true && currentAssessment.race?.remediation.length &&
+    currentAssessment.race.remediation.every((item) => item.reassess_after_resolution));
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
@@ -2375,6 +2431,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     allAssessed,
     routeAssuranceReady,
     retryableProviderFailure,
+    remediableHold,
   });
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
     if (detailState === "none") return stage === "Obligation" ? "No obligation selected" : "Waiting for selection";
@@ -2623,7 +2680,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";
   const optionalReassessmentAvailable = detailState === "loaded" && !detail?.pae_sealed &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
+    (remediableHold || (hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady));
   const reviewCurrentAssessment = () => {
     if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
     setDisplayedAssessment(currentAssessment);
@@ -2819,14 +2876,25 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       }));
     } };
   } else if (viewedStage === "Assessment" && proxyPreparationReady && detail?.financial_action_eligible === true) {
-    workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized operator", run: () => {
+    workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized user", run: () => {
       void run("proxy preflight", () => postCommand("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
-  } else if (detail?.financial_action_eligible === true && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
-    workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
+  } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+    workspaceAction = {
+      label: remediableHold ? "Reassess after correction" : "Run AI Assessment",
+      actor: "Finance Agent · advisory review",
+      run: () => { void runAssessment(); },
+    };
+  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment?.decision === "PAY" && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
+    workspaceAction={label:"Create linked testnet instruction",actor:"You · draft only, payment authority required",run:()=>{
+      const assessment=detail.current_assessment!;
+      const storageKey=`tameion.link-request.${selectedId}.${assessment.assessment_hash}`;
+      let key=localStorage.getItem(storageKey);if(!key){key=crypto.randomUUID();localStorage.setItem(storageKey,key);}
+      void run("linked instruction",()=>postCommand(`/api/obligations/${selectedId}/testnet-instruction`,{expected_version:detail.aggregate.aggregate_version,assessment_id:assessment.assessment_id,assessment_hash:assessment.assessment_hash},{"Idempotency-Key":key!}));
+    }};
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
   } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
@@ -2977,12 +3045,12 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-3 px-4 py-3 md:gap-4 md:px-6 md:py-4">
       <header className="relative -mx-4 flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2.5 md:-mx-6 md:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          <img src="/icon.svg" alt="" width="34" height="34" className="hidden size-[34px] rounded-lg shadow-sm sm:block"/>
+          <TameionBrand compact/>
           <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
-          <h1 className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="sr-only sm:not-sr-only"> — Command Center</span>:" — Command Center"}</h1>
+          <h1 aria-label="Assured Payment — Command Center" className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="hidden sm:inline"> — Command Center</span>:" — Command Center"}</h1>
           </div>
         </div>
         {operatorControls}
@@ -3014,8 +3082,18 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             Payment obligations
           </p>
           <p className="mb-2 text-[12px] text-[var(--color-ink)]">{listPresentation === "ready" ? `${obligations.length} obligations` : queueHeaderLabel(listPresentation, reportSummary)}</p>
+          {([
+            {key:"GENUINE_COMPANY",label:"Company obligations",empty:"No company obligations are available."},
+            {key:"DEMO_ARC_TESTNET",label:"Demo · Arc Testnet",empty:"No approved demo entries are available. Testnet entries are separate from company payables."},
+            {key:"UNVERIFIED",label:"Other review records",empty:""},
+          ] as const).map(group => {
+            const members=obligations.filter(o => (o.source_group??"UNVERIFIED")===group.key);
+            if(group.key==="UNVERIFIED"&&!members.length)return null;
+            return <section key={group.key} aria-label={group.label} className="mb-3">
+            <h2 className="mb-2 text-xs font-semibold">{group.label}</h2>
+            {listPresentation==="ready"&&!members.length&&<p className="mb-2 text-xs leading-5 text-[var(--color-ink-muted)]">{group.empty}</p>}
           <ul className="border-y border-[var(--color-border)]">
-            {obligations.map((o) => {
+            {members.map((o) => {
               const workflowRecorded = Boolean(o.pae_sealed || o.aggregate_state === "AUTHORIZED" || o.execution_status);
               const statusColor = o.assessed
                 ? o.decision === "ESCALATE"
@@ -3059,6 +3137,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               );
             })}
           </ul>
+          </section>;
+          })}
           {obligationListState(obligationsStatus, obligationsError, obligations.length) !== "ready" && (
             <div className="space-y-2 border-b border-[var(--color-border)] px-3 py-4">
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading payment obligations…</p>}
@@ -3085,6 +3165,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected obligation</p>
+                {selected.source_group&&selected.source_group!=="UNVERIFIED"&&<p className="mt-1 text-xs text-[var(--color-ink-muted)]">{selected.source_group==="GENUINE_COMPANY"?"Company obligation · Review only":"Demo · Arc Testnet · Does not settle a company payable"}</p>}
                 <h2 className={viewedStage === "Assessment"
                   ? "mt-1 break-words text-[18px] font-semibold leading-6 text-[var(--color-ink)] md:text-[25px]"
                   : "mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]"}>
@@ -3157,9 +3238,15 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && (
             <section role="status" aria-label="View-only obligation" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only obligation</p>
-              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.</p>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">{detail.advisory_action_eligible===true?"You can request an advisory assessment and create a separate linked Arc Testnet instruction draft. Payment preparation and execution require independently approved controlled authority. The genuine payable remains outstanding.":"This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation."}</p>
             </section>
           )}
+
+          {detail?.advisory_action_eligible===true && (detail.linked_testnet_instructions?.length??0)>0 && <section aria-label="Linked Arc Testnet instructions" className="rounded border border-[var(--color-border)] p-3">
+            <h2 className="font-semibold">Linked Arc Testnet instructions</h2>
+            <p className="text-sm">Drafts require separate controlled approval before preparation or payment. Testnet activity does not pay the genuine supplier.</p>
+            {detail.linked_testnet_instructions?.map(row=><div key={row.instruction_id} className="mt-2 min-w-0 border-t border-[var(--color-border)] pt-2 text-sm"><p className="break-all">{row.instruction_id}</p><p>Draft · payment authority required</p></div>)}
+          </section>}
 
           {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Obligation" ? "space-y-2 border-b border-[var(--color-border)] pb-2" : "border-b border-[var(--color-border)] pb-1 md:space-y-2 md:pb-2"}>
             {viewedStage === "Obligation" ? <div className="rounded border border-[var(--color-border)] px-3 py-2">
@@ -3694,7 +3781,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             )}
           </div>
 
-          {!isInitialObligationScreen && <details className={`rounded-lg border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
+          {!isInitialObligationScreen && detailState === "loaded" && <details className={`rounded-lg border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
             <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Related payment information</summary>
             <nav aria-label="Secondary tools" className="border-t border-[var(--color-border)] pt-2">
               <button
@@ -3834,7 +3921,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                   <Field label="Effective due date / basis / authority" value={currentAssessment?.race
                     ? buildAssessmentTrace(currentAssessment.race).find((step) => step.step === "SUPPLIED_FACTS")?.items
                       .filter((item) => item.startsWith("Effective due date:") || item.startsWith("Effective date basis:") || item.startsWith("Effective date authority:"))
-                      .join(" · ") ?? "Not captured"
+                      .join(" · ").replace("authorized operator attestation", "authorized user attestation") ?? "Not captured"
                     : `${sourceText(detail.record, "effective_due_date")} · ${sourceText(detail.record, "effective_due_date_basis")} · ${sourceDateProvenance(detail.record)}`} />
                   <Field label="Assessment as of" value={currentAssessment?.race?.evidence.authoritative_facts.as_of_date ?? "Not captured"} />
                   <Field label="Source document references" value={currentAssessment?.race?.evidence.evidence_ids.join(", ") || "Not captured"} />

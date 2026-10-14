@@ -2,9 +2,10 @@
 
 import {useEffect,useId,useState} from 'react';
 import styles from './login-branding.module.css';
+import {TameionBrand} from '../../tameion-brand';
 
 export function LoginBrand(){
- return <a href="/" aria-label="Tameion home" className={styles.brand}><img src="/brand/tameion-wordmark.svg" alt="Tameion" width="224" height="50"/></a>;
+ return <TameionBrand href="/" className={styles.brand}/>;
 }
 
 export function LoginIntroduction(){
