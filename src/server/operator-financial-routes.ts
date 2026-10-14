@@ -27,6 +27,10 @@ export interface FinancialDependencies {
  providerBoundary?:(revalidate:()=>Promise<void>)=>Promise<void>;
 }
 function reply(code:string,status:number,extra:Record<string,unknown>={}){return Response.json({code,...extra},{status,headers:{'Cache-Control':'no-store',Pragma:'no-cache'}});}
+function releaseReply(approval:PaymentReleaseApproval){
+ const {approved_at,expires_at,actor_id}=approval.record;
+ return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:{approved_at,expires_at,actor_id}});
+}
 /** One capability adapter; no hosted switch and no body-supplied actor identity. */
 export function createFinancialHandlers(deps:FinancialDependencies){
  return async function action(kind:Action,request:Request,id?:string):Promise<Response>{
@@ -53,7 +57,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     await checkContext();return actor;};
    const checkRequester=async()=>{await resolveCurrentRequester();};
    const assertAtSend=(approval:PaymentReleaseApproval|undefined)=>{
-    if(!requiredRelease)return;
+    if(!requiredRelease)throw new AccessError('PAYMENT_RELEASE_REQUIRED',403);
     if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity||!matchesPaymentRelease(approval,requiredRelease.expected)||approval?.record_sha256!==requiredRelease.record_sha256)throw new AccessError('PAYMENT_RELEASE_CHANGED',403);
    };
    load=()=>deps.load(source,checkRequester,assertAtSend);
@@ -101,7 +105,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     const previous=state.getPaymentReleaseApproval(selected);
     if(previous){
      if(!matchesPaymentRelease(previous,expected))throw new AccessError('PAYMENT_RELEASE_RENEWAL_REQUIRED',409);
-     await checkRequester();return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:previous});
+     await checkRequester();return releaseReply(previous);
     }
     await checkRequester();
     const expiry=Math.min(Date.parse(sealed.payload.expiry),Date.parse(source.expires_at),Date.parse(requester.expires_at),actor.expires_at?Date.parse(actor.expires_at):Infinity);
@@ -109,7 +113,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     const approval=sealPaymentRelease({...expected,schema_version:'PORTAL-RELEASE-2',approved_at:new Date(now).toISOString(),expires_at:new Date(expiry).toISOString()});
     state.recordPaymentReleaseApproval(approval);effectsStarted=true;releaseSaveStarted=true;await state.flush();
     requiredRelease={record_sha256:approval.record_sha256,expected};await checkRequester();
-    return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:approval});
+    return releaseReply(approval);
    }
    if(kind==='reconcile'){
     const input=body as z.infer<typeof bodies.reconcile>;

@@ -1489,6 +1489,22 @@ describe("Command Center mounted Operational Report", () => {
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
   });
 
+  it.each([false,true])("shows unverified release-save feedback with readback lost=%s",async lostReadback=>{
+    const id="TESTNET-CONTROLLED-UNCERTAIN-RELEASE",authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    let posted=false;
+    fetchMock.mockImplementation((input,init)=>{if(init?.method==="POST")posted=true;return Promise.resolve(init?.method==="POST"
+      ? new Response(JSON.stringify({code:"OUTCOME_UNVERIFIED",error:"Release approval may have been recorded. Refresh current status before taking another action.",retry_submission:false}),{status:503})
+      : lostReadback&&posted&&String(input)!=="/api/obligations"?new Response(JSON.stringify({code:"SESSION_REQUIRED"}),{status:401})
+      : response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized));});
+    renderWithExplicitFirstSelection("verified-session-csrf");await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Approve payment release"}));
+    expect(await screen.findByText(/Release approval may have been recorded/)).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();
+  });
+
   it("labels a sealed authorization as an Arc Testnet proxy subject to exact-packet and pre-send gates", async () => {
     const authorized = proxyPrepared(sealedDetail("OBL-SEALED-PROXY"));
     authorized.aggregate.destination_verification_status = "VERIFIED";

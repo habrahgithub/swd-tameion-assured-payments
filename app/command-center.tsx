@@ -2367,6 +2367,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           return "The current payment release record is unavailable. Payment authority must be renewed before submission.";
         }
         if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Approval recorded; payment controls incomplete; no payment can be released";
+        if (["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? "")) return paymentStageStatus(detail, false, detailState);
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet instruction prepared; final payment approval is pending";
         if (detail.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)) return "Arc Testnet proxy prepared; fresh assessment required before authorization";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
@@ -2481,6 +2482,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         ? "This obligation was cancelled. No authorization or execution action is available."
       : detail?.settlement_proxy && (detail.pae_sealed || detail.execution) && ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
         ? `Execution record is unavailable. The sealed Arc Testnet payment authority is ${["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) ? detail.truth.tameion_control_truth.pae_state.toLowerCase() : detail.truth.tameion_control_truth.execution_release_authority.toLowerCase()}; execution history is unavailable. The source payable remains ${sourcePayableState(detail)}.`
+      : detail && ["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? "")
+        ? paymentStageStatus(detail, false, detailState)
       : noCurrentExactExecutionPacket
         ? "The current payment release record is unavailable. Payment authority must be renewed before submission."
       : detail?.settlement_proxy && currentAssessment && !hasCurrentAssessment
@@ -3002,6 +3005,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading payment obligations…</p>}
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
+            {currentResult && ["release", "execute"].includes(currentResult.label) && <ActionResultBanner result={currentResult} title={currentResult.label === "release" ? "Release approval status" : "Payment submission status"} focusOnMount />}
             <section aria-label="Selected source obligation" className={viewedStage === "Assessment"
               ? "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-[var(--color-border)] pb-2 sm:gap-3 sm:pb-3"
               : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>

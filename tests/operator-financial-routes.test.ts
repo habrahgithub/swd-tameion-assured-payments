@@ -25,23 +25,23 @@ import {SupabaseDemoStateRepository,DemoStateConflictError} from '../src/server/
 import type {AuthContext} from '../src/server/operator-auth';
 import {AccessError} from '../src/server/route-access-policy';
 import {sealTestAssessment,currentAssessmentReview} from './test-support/seal-assessment';
-function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean}={}){
+function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean,finalExpiryOffset?:number}={}){
  const source=sourceFixture();const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
  initial.trustedKeys.loadServerSigningKey(DEMO_SIGNING_KEY_ID);
  let snapshot=initial.exportSnapshot(),revision=1,tx:Record<string,unknown>|undefined;
  const requester={purpose:'FINANCIAL_REQUESTER_ACTOR_BINDING',approval_id:'INDEPENDENT-REQUESTER-APPROVAL',organization_id:source.organization_id,deployment_id:source.deployment_id,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:'SYNTHETIC-OWNER',credential_version:1,actor_id:initial.resolveDesignatedApprover().actor_id,source_sha256:process.env.TAMEION_FINANCIAL_SOURCE_SHA256,intent_id:source.intent_id};
  const bytes=JSON.stringify(requester);writeFileSync(join(directory!,'.tameion/financial-requester.json'),bytes);vi.stubEnv('TAMEION_FINANCIAL_REQUESTER_SHA256',createHash('sha256').update(bytes).digest('hex'));
- let revoked=false;const auth={session:{valid:true,operator_key:requester.operator_key,credential_version:1},revalidate:vi.fn(async()=>{if(revoked)throw new AccessError('SESSION_REQUIRED',401);})} as unknown as AuthContext;
+ let advanceOnNextRead=false;let revoked=false;const auth={session:{valid:true,operator_key:requester.operator_key,credential_version:1},revalidate:vi.fn(async()=>{if(revoked)throw new AccessError('SESSION_REQUIRED',401);})} as unknown as AuthContext;
  const client:J2aCircleClient={
  getWallet:vi.fn(async({id})=>({data:{wallet:{id,address:id===J2A_DEMO_SOURCE.id?J2A_DEMO_SOURCE.address:J2A_DEMO_DESTINATION.address,blockchain:'ARC-TESTNET',walletSetId:J2A_DEMO_WALLET_SET_ID,state:'LIVE'}}})),
  getWalletTokenBalance:vi.fn(async()=>({data:{tokenBalances:[{amount:'100.000000',token:{id:'TEST-NATIVE-USDC',symbol:'USDC',blockchain:'ARC-TESTNET',decimals:6,isNative:true}}],pagination:{nextPageAfter:null}}})),
  estimateTransferFee:vi.fn(async()=>({data:{medium:{networkFee:'0.002000'}}})),listTransactions:vi.fn(async()=>({data:{transactions:tx?[tx]:[],pagination:{nextPageAfter:null}}})),
  getTransaction:vi.fn(async()=>({data:{transaction:tx}})),
  createTransaction:vi.fn(async(input)=>{tx={id:'synthetic-provider-tx-1',state:'COMPLETE',walletId:input.walletId,destinationAddress:input.destinationAddress,amounts:input.amount,tokenId:input.tokenId,refId:input.refId,blockchain:'ARC-TESTNET',networkFee:'0.002000',txHash:'0x'+'a'.repeat(64)};if(options.lostResponse)throw new Error('synthetic lost response');return {data:{id:tx.id}};})};
- const repo={loadExisting:vi.fn(async()=>({revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>})),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
+ const repo={loadExisting:vi.fn(async()=>{if(advanceOnNextRead){advanceOnNextRead=false;vi.spyOn(Date,'now').mockReturnValue(Date.parse(snapshot.payment_release_approvals![0].record.expires_at)+options.finalExpiryOffset!);}return {revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>};}),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
  const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{
- let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
- state=await loadExistingFinancialState(repo,s.namespace,[s.source],{assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();}},adapter);return state;
+ let validations=0;let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
+ state=await loadExistingFinancialState(repo,s.namespace,[s.source],{assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();if(options.finalExpiryOffset!==undefined&&++validations===2)advanceOnNextRead=true;}},adapter);return state;
  });
  const handler=createFinancialHandlers({guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
  const request=(body:unknown)=>new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'00000000-0000-4000-8000-000000000001'},body:JSON.stringify(body)});
@@ -239,5 +239,33 @@ describe('R1 release capability and projection',()=>{
   expect(h.snapshot().payment_release_approvals).toHaveLength(1);expect(vi.mocked(h.client.createTransaction).mock.calls.length).toBeLessThanOrEqual(1);
   if(!h.snapshot().execution_ledger.length)expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(200);
   expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+});
+
+describe('review F2 release reply minimization',()=>{
+ it('returns only approval timestamps and actor on fresh and duplicate responses',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),body={...p.body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'};
+  for(let i=0;i<2;i++){
+   const response=await h.handler('release',h.request(body),p.id);expect(response.status).toBe(200);
+   expect(Object.keys((await response.json()).payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);
+  }
+ });
+});
+
+import {createObligationReaders} from '../src/server/operator-obligation-routes';
+describe('review F3 production boundary proofs',()=>{
+ it('real GET reader derives the same envelope bindings as the release handler',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h);
+  const reader=createObligationReaders(async()=>h.auth,async(_records,_binding,namespace)=>{expect(namespace).toBe(h.source.namespace);return h.load(loadFinancialSourceAdmission(),async()=>{});},()=>[],loadFinancialSourceAdmission);
+  const response=await reader.detail(new Request('https://synthetic.invalid/api/obligations/'+p.id),p.id);
+  expect(response.status).toBe(200);const data=await response.json();expect(data.execution_gate).toBe('PORTAL_APPROVED_EXACT_PACKET');expect(data.payment_release_current).toBe(true);
+  expect(Object.keys(data.payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each([-1,0])('actual final durable read crosses release expiry offset%s',async offset=>{
+  const h=controlledHarness({finalExpiryOffset:offset}),p=await preparedApproval(h);
+  const r=h.snapshot().payment_release_approvals![0].record;h.snapshot().payment_release_approvals=[sealPaymentRelease({...r,expires_at:new Date(Date.now()+5000).toISOString()})];
+  const result=await h.handler('execute',h.request(p.body),p.id);
+  if(offset===0){expect(result.status).toBe(503);expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.snapshot().execution_ledger[0]?.status).toBe('BLOCKED');}
+  else {expect(result.status).toBe(200);expect(h.client.createTransaction).toHaveBeenCalledOnce();}
  });
 });
