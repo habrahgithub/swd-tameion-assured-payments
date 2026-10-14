@@ -80,8 +80,8 @@ export interface StatusResult {
 export interface ProviderAdapter {
   readonly name: string;
   submitTransfer(params: SubmitTransferParams): Promise<SubmitTransferResult>;
-  getStatus(providerRef: string, idempotencyKey?: string): Promise<StatusResult>;
-  getStatusByIdempotencyKey?(idempotencyKey: string): Promise<StatusResult>;
+  getStatus(providerRef: string, idempotencyKey?: string, revalidate?: () => Promise<void>): Promise<StatusResult>;
+  getStatusByIdempotencyKey?(idempotencyKey: string, revalidate?: () => Promise<void>): Promise<StatusResult>;
 }
 
 /** Rejection before any provider write was attempted; the worker may safely mark the intent BLOCKED. */
@@ -272,12 +272,12 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     return { providerRef: created.data.data.id, status: "SUBMITTED" };
   }
 
-  async getStatus(providerRef: string, idempotencyKey?: string): Promise<StatusResult> {
+  async getStatus(providerRef: string, idempotencyKey?: string, revalidate: () => Promise<void> = async () => {}): Promise<StatusResult> {
     const authorized = idempotencyKey ? this.authorizedPreflight?.(idempotencyKey) : null;
     if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     const client = this.client();
     let rows: unknown[];
-    try { rows = await readCompleteCircleBalanceRows(client, authorized.source_wallet.id); }
+    try { rows = await readCompleteCircleBalanceRows(client, authorized.source_wallet.id, revalidate); }
     catch { return { status: "UNKNOWN" }; }
     const balances = tokenBalancesSchema.safeParse({ data: { tokenBalances: rows } });
     if (!balances.success) return { status: "UNKNOWN" };
@@ -295,6 +295,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     if (nativeUsdcToken.id !== authorized.provider_token.id || nativeUsdcToken.decimals !== authorized.provider_token.decimals) {
       return { status: "UNKNOWN" };
     }
+    await revalidate();
     return statusForCircleTransaction(
       await client.getTransaction({ id: providerRef }),
       nativeUsdcToken.id,
@@ -305,7 +306,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     );
   }
 
-  async getStatusByIdempotencyKey(idempotencyKey: string): Promise<StatusResult> {
+  async getStatusByIdempotencyKey(idempotencyKey: string, revalidate: () => Promise<void> = async () => {}): Promise<StatusResult> {
     const authorized = this.authorizedPreflight?.(idempotencyKey);
     if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     let transactions: unknown[];
@@ -314,7 +315,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         getPage: ({ pageSize, pageAfter }) => this.client().listTransactions({
           txType: "OUTBOUND", walletIds: [authorized.source_wallet.id], pageSize, order: "DESC", ...(pageAfter ? { pageAfter } : {}),
         }),
-      }, "transactions");
+      }, "transactions", revalidate);
     } catch { return { status: "UNKNOWN" }; }
     const found = transactions.filter((value) => {
       const item = z.object({ refId: z.unknown().optional() }).passthrough().safeParse(value);
@@ -323,6 +324,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     if (found.length !== 1) return { status: "UNKNOWN" };
     const transaction = z.object({ id: z.unknown().optional() }).passthrough().safeParse(found[0]);
     if (!transaction.success || typeof transaction.data.id !== "string") return { status: "UNKNOWN" };
-    return this.getStatus(transaction.data.id, idempotencyKey);
+    await revalidate();
+    return this.getStatus(transaction.data.id, idempotencyKey, revalidate);
   }
 }

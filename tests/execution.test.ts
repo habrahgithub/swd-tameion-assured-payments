@@ -4,7 +4,7 @@ import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggreg
 import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
 import { ExecutionWorker as BaseExecutionWorker, ExecutionBlockedError, type ExecutionWorkerOptions, type WorkerAuthorizationArtifacts } from "../src/execution/worker";
 import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
-import { ProviderPreSubmitBlockedError } from "../src/execution/provider-adapter";
+import { ProviderPreSubmitBlockedError, type ProviderAdapter } from "../src/execution/provider-adapter";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
 
 const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
@@ -15,6 +15,7 @@ class ExecutionWorker extends BaseExecutionWorker {
     store: AuthorityStore,
     adapter: ConstructorParameters<typeof BaseExecutionWorker>[1],
     onDurableStateChange?: () => Promise<void>,
+    overrides: Partial<ExecutionWorkerOptions> = {},
   ) {
     const options: ExecutionWorkerOptions = {
       loadAuthorizationArtifacts: (organizationId, obligationId) => authorizationByIdentity.get(`${organizationId}/${obligationId}`),
@@ -32,7 +33,7 @@ class ExecutionWorker extends BaseExecutionWorker {
         } : undefined;
       },
     };
-    super(store, adapter, onDurableStateChange, undefined, options);
+    super(store, adapter, onDurableStateChange, undefined, { ...options, ...overrides });
   }
 }
 
@@ -309,6 +310,64 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(adapter.getSubmissionCount()).toBe(1);
   });
 
+  it("does not persist a reconciliation result if requester authority changes during the provider read", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const fakeAdapter = new FakeProviderAdapter();
+    fakeAdapter.queueOutcome("TIMEOUT");
+    const adapter: ProviderAdapter = fakeAdapter;
+    let requesterRevoked = false;
+    let durableWrites = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (requesterRevoked) throw new Error("requester revoked");
+      },
+    });
+    const initial = await worker.execute(sealed);
+    expect(initial.status).toBe("UNKNOWN");
+    const writesBeforeReconciliation = durableWrites;
+    const getStatus = adapter.getStatus.bind(adapter);
+    adapter.getStatus = async (providerRef, idempotencyKey, revalidate) => {
+      await revalidate?.();
+      requesterRevoked = true;
+      return getStatus(providerRef, idempotencyKey);
+    };
+
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(initial);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect(durableWrites).toBe(writesBeforeReconciliation);
+    expect(fakeAdapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("rolls back in-memory reconciliation if requester validation fails immediately before durable save", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("TIMEOUT");
+    let reconciling = false;
+    let reconciliationChecks = 0;
+    let durableWrites = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (reconciling && ++reconciliationChecks === 3) throw new Error("requester revoked before save");
+      },
+    });
+    const initial = await worker.execute(sealed);
+    expect(initial.status).toBe("UNKNOWN");
+    adapter.resolvePending(initial.provider_ref!, "CONFIRMED");
+    reconciling = true;
+    const writesBeforeReconciliation = durableWrites;
+
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked before save");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(initial);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect(durableWrites).toBe(writesBeforeReconciliation);
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
   it("keeps a provider PENDING response UNKNOWN with its reference for read-only reconciliation", async () => {
     const { sealed, store } = setupAuthorizedFixture();
     let status: "PENDING" | "CONFIRMED" = "PENDING";
@@ -398,6 +457,36 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     expect(recovered?.status).toBe("UNKNOWN");
     expect(adapter.getSubmissionCount()).toBe(0);
     expect(worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("UNKNOWN");
+  });
+
+  it("restores SUBMITTING state if requester authority changes before recovery is saved", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let validations = 0;
+    let durableWrites = 0;
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (++validations === 2) throw new Error("requester revoked before recovery save");
+      },
+    });
+    const submitting = {
+      obligation_id: sealed.payload.obligation_ids[0],
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING" as const,
+      atomic_amount: sealed.payload.atomic_amount,
+      destination_address: sealed.payload.destination_address,
+    };
+    worker.restoreSnapshot([submitting]);
+    const aggregateBefore = store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]);
+
+    await expect(worker.recoverSubmittingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked before recovery save");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(submitting);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0])).toEqual(aggregateBefore);
+    expect(durableWrites).toBe(0);
+    expect(adapter.getSubmissionCount()).toBe(0);
   });
 
   it("marks a typed pre-submit provider refusal BLOCKED without classifying it as UNKNOWN", async () => {

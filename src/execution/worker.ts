@@ -659,17 +659,20 @@ export class ExecutionWorker {
     if (!record || record.status !== "UNKNOWN") {
       throw new ExecutionBlockedError("No pending UNKNOWN execution for this idempotency key", "OPS-008");
     }
+    await this.options.revalidateRequester?.();
     const status = record.provider_ref
-      ? await this.adapter.getStatus(record.provider_ref, idempotencyKey)
+      ? await this.adapter.getStatus(record.provider_ref, idempotencyKey, this.options.revalidateRequester)
       : this.adapter.getStatusByIdempotencyKey
-        ? await this.adapter.getStatusByIdempotencyKey(idempotencyKey)
+        ? await this.adapter.getStatusByIdempotencyKey(idempotencyKey, this.options.revalidateRequester)
         : { status: "UNKNOWN" as const };
+    await this.options.revalidateRequester?.();
     const previousAggregate = this.store.get(organizationId, record.obligation_id);
     const finalRecord = status.status === "UNKNOWN"
       ? { ...record, provider_evidence: status }
       : this.finalizeFromStatus(record, status, organizationId);
     this.executionLedger.set(idempotencyKey, finalRecord);
     try {
+      await this.options.revalidateRequester?.();
       await this.onDurableStateChange?.();
     } catch (persistenceError) {
       // Provider observation is evidence, not proof of a committed local
@@ -686,10 +689,19 @@ export class ExecutionWorker {
   async recoverSubmittingByIdempotencyKey(idempotencyKey: string, organizationId: string): Promise<ExecutionRecord | undefined> {
     const record = this.executionLedger.get(idempotencyKey);
     if (!record || record.status !== "SUBMITTING") return record;
+    await this.options.revalidateRequester?.();
+    const previousAggregate = this.store.get(organizationId, record.obligation_id);
     this.store.markUnknown(organizationId, record.obligation_id);
     const recovered: ExecutionRecord = { ...record, status: "UNKNOWN", provider_evidence: null };
     this.executionLedger.set(idempotencyKey, recovered);
-    await this.onDurableStateChange?.();
+    try {
+      await this.options.revalidateRequester?.();
+      await this.onDurableStateChange?.();
+    } catch (error) {
+      this.store.restoreAggregateSnapshot(previousAggregate);
+      this.executionLedger.set(idempotencyKey, { ...record });
+      throw error;
+    }
     return recovered;
   }
 

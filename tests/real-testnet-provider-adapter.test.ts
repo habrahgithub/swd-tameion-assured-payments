@@ -50,6 +50,24 @@ async function statusAdapter(api: J2aCircleClient) {
 }
 
 describe("Arc Circle provider adapter for J2A", () => {
+  it("stops transaction pagination as soon as requester revalidation fails", async () => {
+    const api = createClient();
+    const adapter = await statusAdapter(api);
+    api.listTransactions = vi.fn(async () => ({
+      data: { transactions: [], pagination: { nextPageAfter: "transactions-page-2" } },
+    }));
+    let revalidations = 0;
+
+    await expect(adapter.getStatusByIdempotencyKey("exact-demo-key", async () => {
+      revalidations += 1;
+      if (revalidations === 2) throw new Error("requester revoked");
+    })).resolves.toMatchObject({ status: "UNKNOWN" });
+
+    expect(revalidations).toBe(2);
+    expect(api.listTransactions).toHaveBeenCalledOnce();
+    expect(api.createTransaction).not.toHaveBeenCalled();
+  });
+
   it("does not reconcile a transaction until every Circle balance page is read", async () => {
     const api = createClient();
     const adapter = await statusAdapter(api);
