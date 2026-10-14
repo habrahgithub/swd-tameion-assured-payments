@@ -67,6 +67,18 @@ describe('guarded canonical controlled testnet financial lifecycle',()=>{
   expect((await h.handler('execute',h.request(body),id)).status).toBe(409);expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.repo.loadOrSeed).not.toHaveBeenCalled();
   expect(h.snapshot().authority.aggregates[0]).toMatchObject({state:'RECONCILED'});
  });
+ it('rejects every genuine private-view identity even when caller claims financial eligibility',async()=>{
+  const h=controlledHarness();const ids=[...syntheticSourceRecords().map(r=>r.obligation_id),'FICTIONAL-OWNER-ENTRY'];
+  for(const id of ids)for(const action of ['assess','preflight','approve','release','execute','reconcile'] as const){
+    const base={expected_version:1,packet_sha256:'a'.repeat(64),pae_instruction_hash:'b'.repeat(64)};
+    const bodies={assess:{},preflight:{obligation_id:id,expected_version:1},approve:{expected_version:1,reviewed_assessment_id:'fictional',reviewed_assessment_hash:'a'.repeat(64),reason_text:'fictional'},release:{...base,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'},execute:{...base,confirmation:'SUBMIT EXACT TESTNET SETTLEMENT PROXY'},reconcile:{idempotency_key:'fictional',pae_instruction_hash:'b'.repeat(64)}};
+    const response=await h.handler(action,h.request(bodies[action]),id);
+    expect(response.status).toBe(403);expect(await response.json()).toMatchObject({code:'CONTROLLED_SOURCE_REQUIRED'});
+    const forged=await h.handler(action,h.request({...bodies[action],financial_action_eligible:true,source_group:'DEMO_ARC_TESTNET'}),id);
+    expect(forged.status).toBe(400);expect(await forged.json()).toMatchObject({code:'BODY_REJECTED'});
+  }
+  expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.load).not.toHaveBeenCalled();
+ });
  it('denies before source/state/provider work when unauthenticated',async()=>{const source=vi.fn(),requester=vi.fn(),load=vi.fn();const action=createFinancialHandlers({guard:async()=>{throw new AccessError('SESSION_REQUIRED',401);},source,requester,load});expect((await action('approve',new Request('https://test.invalid',{method:'POST'}),'TESTNET-CONTROLLED-1')).status).toBe(401);expect(source).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();});
  it.each([null,[],{actor_id:'FORGED'},{expected_version:-1}])('rejects malformed/body-supplied authority before state: %s',async body=>{const h=controlledHarness();expect((await h.handler('approve',h.request(body),h.source.source.obligation_id)).status).toBe(400);expect(h.load).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();});
  it('never accepts historical003 even with a valid viewer',async()=>{const h=controlledHarness();expect((await h.handler('approve',h.request({expected_version:1,reviewed_assessment_id:'x',reviewed_assessment_hash:'a'.repeat(64),reason_text:'not authority'}),'OBL-J0C-003')).status).toBe(403);expect(h.load).not.toHaveBeenCalled();});

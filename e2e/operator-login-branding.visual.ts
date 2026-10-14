@@ -46,7 +46,7 @@ for(const color of ['light','dark'] as const){
   await page.keyboard.press('Tab');await expect(page.getByRole('button',{name:`Color theme: ${color}`})).toBeFocused();
   await page.keyboard.press('Tab');await expect(page.getByRole('button',{name:'Pause illustration'})).toBeFocused();
   await page.keyboard.press('Space');await expect(page.getByTestId('login-journey')).toHaveAttribute('data-motion','paused');
-  await page.keyboard.press('Tab');await expect(page.getByLabel('Finance user name')).toBeFocused();
+  await page.keyboard.press('Tab');await expect(page.getByLabel('Username')).toBeFocused();
   expect(errors).toEqual([]);
   expect(requests.every(url=>new URL(url).origin==='http://127.0.0.1:3190')).toBe(true);
   expect(requests.some(url=>url.endsWith('/brand/tameion-wordmark.svg'))).toBe(true);
@@ -70,7 +70,7 @@ for(const state of ['running','paused','reduced'] as const){
   await page.goto('/operator/login');
   if(state==='paused')await page.getByRole('button',{name:'Pause illustration'}).click();
   await expect(page.getByTestId('login-journey')).toHaveAttribute('data-motion',state==='reduced'?'static':state);
-  await page.getByLabel('Finance user name').fill('mock-finance');await page.getByLabel('Password').fill('mock-password');
+  await page.getByLabel('Username').fill('mock-finance');await page.getByLabel('Password').fill('mock-password');
   await page.getByRole('button',{name:'Sign in securely'}).click();
   await expect(page).toHaveURL('http://127.0.0.1:3190/?refresh_balance=1');
   expect(calls.map(call=>call.path)).toEqual(['/api/operator/csrf','/api/operator/login']);

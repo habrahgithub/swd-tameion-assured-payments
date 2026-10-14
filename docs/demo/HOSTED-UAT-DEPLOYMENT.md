@@ -114,7 +114,7 @@ Sources inspected: installed Vercel CLI 59.26.0 `dist/commands/deploy/index.js` 
 
 The public source set and financial `isCurrentSourceEligible` stay withdrawn/false. Operator VIEW admission never revives authorization, payment, original003 or financial HTTP lanes. Actual source disclosure/provisioning requires separate owner privacy permission; no historical file/screenshot/test fixture becomes genuine input.
 
-A separately approved canonical JSON packet at fixed `.tameion/operator-source.json` contains `purpose:"OPERATOR_VIEW_ONLY"`, `organization_id:"ORG-DEMO-001"`, exactly five strict canonical commercial records and `state_binding:{namespace,revision,authority_sha256}`. The binding identifies an independently existing compatible namespace, exact read-only RPC revision and SHA256 of the existing authority snapshot serialized by the repository's JSON canonicalizer. Owner approval covers exact source/state association; it is not an aggregate migration/seed permission. Canonical byte serialization is `JSON.stringify` with no surrounding whitespace; duplicate/unknown keys, invalid UTF8, oversized/nonfile/symlink input, duplicate IDs or wrong count reject. Each record uses the established LiveUsageObligationRecord fields; only evidence_id/content_sha256 are permitted in source_evidence. Raw documents, routes, account credentials and arbitrary extra fields are excluded.
+A separately approved legacy V1 canonical JSON packet at fixed `.tameion/operator-source.json` contains `purpose:"OPERATOR_VIEW_ONLY"`, `organization_id:"ORG-DEMO-001"`, exactly five strict canonical commercial records and `state_binding:{namespace,revision,authority_sha256}`. The binding identifies an independently existing compatible namespace, exact read-only RPC revision and SHA256 of the existing authority snapshot serialized by the repository's JSON canonicalizer. Owner approval covers exact source/state association; it is not an aggregate migration/seed permission. Canonical byte serialization is `JSON.stringify` with no surrounding whitespace; duplicate/unknown keys, invalid UTF8, oversized/nonfile/symlink input, duplicate IDs or wrong count reject. Each record uses the established LiveUsageObligationRecord fields; only evidence_id/content_sha256 are permitted in source_evidence. Raw documents, routes, account credentials and arbitrary extra fields are excluded.
 
 Independently approved expected bytes SHA must be configured privately as `TAMEION_OPERATOR_SOURCE_SHA256`; the artifact cannot approve itself. `TAMEION_STATE_NAMESPACE` must name the same independently existing namespace. Missing both private input and approval keeps the public empty withdrawal. Any present invalid/unapproved artifact or missing approved input fails closed. Authentication/exact deployment policy precedes source reading, and session/source is revalidated across the state await. Anonymous responses do not reveal file existence or IDs.
 
@@ -162,3 +162,37 @@ Before hosted UAT or a provider write, the responsible owner must return these s
 7. A final explicit owner execution decision for one exact current instruction, amount/fee/total, source/destination/network, authority expiry and one-attempt/no-retry packet. Provider submission/status tuple and reconciliation evidence are required for a real testnet completion. An uncertain result is held for read-only reconciliation; never infer successful settlement or absence of payment from a 503.
 
 Original003 remains OUTCOME_UNKNOWN / NO_RETRY. No push, deployment, live SQL/RPC, Circle call, payment or execution decision occurred in this bundle. The legacy environment-gated execute module has only test importers in the transitive literal-import census; no production HTTP route reaches it. The generic optional worker callback is deferred because nonportal callers remain supported, while the production portal callback is required and tested.
+
+### Versioned company-view catalog and privacy entry
+
+The private operator catalog accepts the legacy five-record document unchanged.
+An explicitly approved V2 catalog adds `schema_version: 2`,
+`provenance: "GENUINE_COMPANY_OBLIGATIONS"` and a declared `record_count` from 1
+through 50 matching the unique records exactly. Both formats retain canonical
+JSON-byte hashing and the existing namespace/revision/authority digest binding.
+Packaging only writes approved bytes; it does not create missing obligations.
+Every catalog member must already have a matching authoritative source amount
+and currency. New company entries require a separately reviewed additive state
+provisioning packet and refreshed catalog; no bootstrap runs during GET.
+
+The authenticated reader marks admitted company records and independently
+admitted Arc Testnet demo records with separate server-owned provenance. A
+company catalog never grants assessment, authorization, release or execution
+permission. An owner attestation is not an independently verified invoice;
+source wording and missing bill references must retain that distinction.
+
+Star Wealth Dynamics LLC is the internal design partner display name; the
+existing organization ID and authentication namespace remain unchanged. The
+company queue and Demo · Arc Testnet queue are distinct. An empty demo queue
+means no approved demo entry is available, not a missing or completed transfer.
+
+Signed-out root visitors with a missing session continue to the existing branded
+login. Existing sessions on reload/reopen start behind a privacy curtain with no
+private queue or balance reads. “Open workspace” verifies the existing session
+before mounting the dashboard and requesting its read-only balance. This is
+content privacy, not reauthentication or a new security policy. Successful login
+sets a non-sensitive one-time navigation marker; only fresh navigation consumes
+it for direct entry. A query flag alone, reload/back navigation, unavailable
+storage or simulated BFcache restore cannot bypass the curtain. Logout and
+expiry remove private content. BFcache coverage must distinguish simulated
+restore events from proven native browser caching behavior.

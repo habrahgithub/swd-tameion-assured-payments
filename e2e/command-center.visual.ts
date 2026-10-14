@@ -41,6 +41,7 @@ async function collapseLifecycleStages(page: Page) {
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "GET" && /^\/api\/obligations(?:\/[^/]+)?$/.test(pathname)) {
@@ -64,7 +65,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   const writes: string[] = [];
   page.on("request", (request) => {
-    if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) {
+    if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/") && new URL(request.url()).pathname !== "/api/wallet/balance/refresh") {
       writes.push(`${request.method()} ${new URL(request.url()).pathname}`);
     }
   });
@@ -143,6 +144,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toHaveCount(0);
   await queueItem(page, first.obligation_id).click();
@@ -171,6 +173,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await openMobileQueue(page);
   await queueItem(page, first.obligation_id).click();
@@ -439,6 +442,7 @@ async function openFixture(
   const unexpectedWrites: string[] = [];
   await page.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
     const url = new URL(route.request().url());
     if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
     if (url.pathname === "/api/obligations") return route.fulfill({ json: {
@@ -459,6 +463,7 @@ async function openFixture(
     return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
   });
   await page.goto("/");
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   const selectedId = String(selectedDetail.record?.obligation_id ?? "OBL-UAT-01");
   const selectedRow = page.locator(`button[data-obligation-id="${selectedId}"]`);
   if (await page.evaluate(() => window.innerWidth <= 768)) {
@@ -578,6 +583,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await openMobileQueue(page);
   await queueItem(page, "OBL-UAT-01").click();
@@ -599,7 +605,8 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
   expect(unexpectedWrites).toEqual([]);
 });
 
-test("Screens 2–6 render as truthful, read-only producer-shaped stages on desktop and mobile", async ({ browser }, testInfo) => {
+for (const viewport of [{ width: 1280, height: 1000, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) for (const stage of ["Assessment","Authorization","Assurance","Payment","Reconciliation"] as const) {
+test(`Screens 2–6: ${stage} renders truthfully on ${viewport.label}`, async ({ browser }, testInfo) => {
   const authorized = proxyLifecycleDetail("AUTHORIZED");
   authorized.assurance_evidence = {
     state: "AVAILABLE_CURRENT_BINDING",
@@ -624,8 +631,7 @@ test("Screens 2–6 render as truthful, read-only producer-shaped stages on desk
     { stage: "Reconciliation", detail: settled, file: "screen-6-reconciliation" },
   ] as const;
 
-  for (const viewport of [{ width: 1280, height: 1000, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
-    for (const scenario of scenarios) {
+  const scenario=scenarios.find(candidate=>candidate.stage===stage)!;
       const page = await browser.newPage({ viewport });
       const unexpectedWrites = await openFixture(page, scenario.detail);
       const stageButton = page.getByRole("button", { name: scenario.stage, exact: true });
@@ -705,11 +711,11 @@ test("Screens 2–6 render as truthful, read-only producer-shaped stages on desk
       await page.screenshot({ path: testInfo.outputPath(`${scenario.file}-${viewport.label}.png`), fullPage: true });
       expect(unexpectedWrites).toEqual([]);
       await page.close();
-    }
-  }
 });
+}
 
-test("SETTLED evidence classification stays explicit in native desktop/mobile receipt captures", async ({ browser }, testInfo) => {
+for (const viewport of [{width:1173,height:751,label:"desktop-1173x751"},{width:390,height:844,label:"mobile-390x844"}]) for (const evidenceCase of ["unavailable","mismatch","verified"] as const) {
+test(`SETTLED evidence: ${evidenceCase} stays explicit on ${viewport.label}`, async ({ browser }, testInfo) => {
   const verified = proxyLifecycleDetail("SETTLED");
   const unavailable = structuredClone(verified);
   delete unavailable.execution.provider_evidence;
@@ -723,11 +729,7 @@ test("SETTLED evidence classification stays explicit in native desktop/mobile re
   ] as const;
   const captures: Array<Record<string, unknown>> = [];
 
-  for (const viewport of [
-    { width: 1173, height: 751, label: "desktop-1173x751" },
-    { width: 390, height: 844, label: "mobile-390x844" },
-  ]) {
-    for (const scenario of cases) {
+  const scenario=cases.find(candidate=>candidate.name===evidenceCase)!;
       const page = await browser.newPage({ viewport });
       const writes = await openFixture(page, scenario.detail);
       await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
@@ -827,13 +829,12 @@ test("SETTLED evidence classification stays explicit in native desktop/mobile re
       await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-report-full.png`), fullPage: true });
       expect(writes).toEqual([]);
       await page.close();
-    }
-  }
   await testInfo.attach("f7-settled-evidence-browser-manifest.json", {
     body: Buffer.from(JSON.stringify(captures, null, 2)),
     contentType: "application/json",
   });
 });
+}
 
 test("Assessment PAY dispositions and legal actions fit the audited first viewport for genuine source identities", async ({ browser }, testInfo) => {
   const viewports = [
@@ -1271,6 +1272,7 @@ test("stale detail offers only a mocked read refresh after an assessment respons
   unassessed.current_assessment = null;
   await page.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
@@ -1288,6 +1290,7 @@ test("stale detail offers only a mocked read refresh after an assessment respons
     return route.fulfill({ status: 404, json: { error: "This fixture does not permit other actions." } });
   });
   await page.goto("/");
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   await queueItem(page, "OBL-UAT-01").click();
   await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
@@ -1308,7 +1311,7 @@ test("read-only wallet summary stays readable without overflow at 200% mobile zo
   await expect(refresh).toBeEnabled();
   await expect(wallet).toContainText("Balance not verified");
   await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
-  const dimensions = await wallet.evaluate(element => ({document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, wallet: element.getBoundingClientRect().toJSON()}));
+  const dimensions = await wallet.evaluate(element => ({document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, wallet: element.getBoundingClientRect().toJSON(),offenders:Array.from(document.querySelectorAll("body *")).map(e=>({tag:e.tagName,text:e.textContent?.slice(0,55),right:e.getBoundingClientRect().right,width:e.getBoundingClientRect().width})).filter(e=>e.right>document.documentElement.clientWidth+1).slice(0,12)}));
   expect(dimensions.document, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewport);
   expect(dimensions.wallet.right).toBeLessThanOrEqual(dimensions.viewport);
   await expect(refresh).toBeEnabled();
@@ -1511,6 +1514,7 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
   const requests: string[] = [];
   await page.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
     const { pathname } = new URL(route.request().url());
     requests.push(`${route.request().method()} ${pathname}`);
     if (pathname === "/api/obligations" && route.request().method() === "GET") {
@@ -1522,6 +1526,7 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
     return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
   });
   await page.goto("/");
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
   await openMobileQueue(page);
   await expect(page.locator('button[data-obligation-id="OBL-UAT-01"]')).toBeVisible();
   await page.locator('button[data-obligation-id="OBL-UAT-01"]').click();
@@ -1602,6 +1607,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
       const delayedQueue = new Promise<void>((resolve) => { releaseLoading = resolve; });
       await statePage.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
         const request = route.request();
         const url = new URL(request.url());
         observedRequests.push(`${request.method()} ${url.pathname}`);
@@ -1620,6 +1626,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
         return route.fulfill({ status: 404, json: { error: "Read-only queue-state fixture; no other route is enabled." } });
       });
       await statePage.goto("/");
+      await statePage.getByRole("button",{name:"Open workspace",exact:true}).click();
       await statePage.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
       await statePage.evaluate(() => document.fonts.ready.then(() => true));
 
@@ -2008,6 +2015,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       const mutations: string[] = [];
       await page.route("**/api/**", async (route) => {
     if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
         const request = route.request();
         const url = new URL(request.url());
         requests.push(`${request.method()} ${url.pathname}`);
@@ -2023,6 +2031,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       });
 
       await page.goto("/");
+  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
       await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
       if (viewport.width <= 768) await openMobileQueue(page);
       await queueItem(page, "OBL-J0C-003").click();

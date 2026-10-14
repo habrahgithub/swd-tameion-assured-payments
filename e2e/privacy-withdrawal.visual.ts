@@ -17,7 +17,7 @@ test("anonymous private reads are denied without synthetic fallback", async ({ p
   expect(packet.status()).toBe(503);
   expect(await packet.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
   await page.goto("/");
-  await expect(page.getByRole("link",{name:"Sign in"})).toBeVisible();
+  await expect(page.getByRole("link",{name:"Sign in securely"})).toBeVisible();
   await expect(page.locator("button[data-obligation-id]")).toHaveCount(0);
   expect(writes).toEqual([]);
 });

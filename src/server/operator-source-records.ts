@@ -32,7 +32,14 @@ export const operatorSourceRecordSchema = z.object({
 });
 export interface OperatorStateBinding { namespace: string; revision: number; authority_sha256: string }
 export interface OperatorSourceView { records: readonly LiveUsageObligationRecord[]; state_binding: OperatorStateBinding }
-const packetSchema = z.object({ state_binding: z.object({ namespace: text(), revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), authority_sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), purpose: z.literal("OPERATOR_VIEW_ONLY"), organization_id: z.literal("ORG-DEMO-001"), records: z.array(operatorSourceRecordSchema).length(5) }).strict();
+const packetFields = { state_binding: z.object({ namespace: text(), revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), authority_sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), purpose: z.literal("OPERATOR_VIEW_ONLY"), organization_id: z.literal("ORG-DEMO-001") };
+// V1 remains exactly five records. V2 is an explicitly approved genuine-view
+// catalog, not a controlled financial source or permission to seed missing state.
+const packetSchema = z.union([
+  z.object({ ...packetFields, records: z.array(operatorSourceRecordSchema).length(5) }).strict(),
+  z.object({ ...packetFields, schema_version: z.literal(2), provenance: z.literal("GENUINE_COMPANY_OBLIGATIONS"), record_count: z.number().int().min(1).max(50), records: z.array(operatorSourceRecordSchema).min(1).max(50) }).strict()
+    .refine(packet => packet.record_count === packet.records.length),
+]);
 export function parseOperatorSource(bytes: Uint8Array, expectedHash: string): OperatorSourceView {
   if (!/^[a-f0-9]{64}$/.test(expectedHash) || bytes.byteLength > MAX_OPERATOR_SOURCE_BYTES || createHash("sha256").update(bytes).digest("hex") !== expectedHash) throw new Error("OPERATOR_SOURCE_UNAVAILABLE");
   try {
@@ -42,7 +49,7 @@ export function parseOperatorSource(bytes: Uint8Array, expectedHash: string): Op
     // duplicate keys instead of silently accepting JSON.parse's last value.
     if (JSON.stringify(value) !== contents) throw new Error();
     const packet = packetSchema.parse(value);
-    if (new Set(packet.records.map(record => record.obligation_id)).size !== 5) throw new Error();
+    if (new Set(packet.records.map(record => record.obligation_id)).size !== packet.records.length) throw new Error();
     return structuredClone({records:packet.records,state_binding:packet.state_binding});
   } catch { throw new Error("OPERATOR_SOURCE_UNAVAILABLE"); }
 }

@@ -1706,7 +1706,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     for (const remediation of race.remediation) expect(card.textContent).toContain(remediation.required_action);
     const expectedOwner = decision === "HOLD" ? race.remediation[0]?.owner_role
       : decision === "ESCALATE" ? race.remediation[0]?.escalation_target
-        : "Authorized operator";
+        : "Authorized user";
     const hasPrimaryAssessmentAction = Boolean(card.querySelector('button[data-primary-action="true"]'));
     if (expectedOwner && !hasPrimaryAssessmentAction) expect(card.textContent).toContain(`Next owner/role: ${expectedOwner}`);
     else expect(card.textContent).not.toContain("Next owner/role:");

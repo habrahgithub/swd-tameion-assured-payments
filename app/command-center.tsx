@@ -1,4 +1,5 @@
 "use client";
+import {TameionBrand} from "./tameion-brand";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { decimalToAtomic, USDC_DECIMALS } from "../src/domain/numeric";
@@ -22,6 +23,7 @@ import {
 } from "../src/client/hold-escalate-report";
 
 interface ObligationSummary {
+  source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   obligation_id: string;
   service_category: string;
   amount: string;
@@ -67,6 +69,7 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   financial_action_eligible: boolean;
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
@@ -179,7 +182,7 @@ function sourceServiceContext(record: Record<string, unknown>): string | null {
     PDF_INVOICE: "invoice",
     PDF_TAX_INVOICE: "tax invoice",
     USER_SUPPLIED_EMAIL_INVOICE_EXCERPT: "user-supplied email invoice excerpt",
-    AUTHORIZED_OPERATOR_ATTESTATION: "operator attestation",
+    AUTHORIZED_OPERATOR_ATTESTATION: "user attestation",
   };
   const sourceLabel = typeof sourceType?.source_type === "string" ? sourceLabels[sourceType.source_type] : undefined;
   const includesSource = sourceLabel && commercialTerms.toLocaleLowerCase().includes(sourceLabel.toLocaleLowerCase());
@@ -332,7 +335,7 @@ function sourceDateProvenance(record: Record<string, unknown>): string {
     return `Source invoice date · evidence ${provenance.evidence_id}`;
   }
   if (provenance.provenance_class === "AUTHORIZED_OPERATOR_ATTESTATION" && typeof provenance.authority_reference === "string") {
-    return `Authorized operator attestation · ${provenance.authority_reference}`;
+    return `Authorized user attestation · ${provenance.authority_reference}`;
   }
   return "Not captured";
 }
@@ -1081,7 +1084,7 @@ function decisionTone(decision: "PAY" | "HOLD" | "ESCALATE"): Tone {
 function ProviderTruthRow({ truth }: { truth?: ProviderRuntimeTruth }) {
   if (!truth) return null;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <RuntimeBadge mode={truth.provider_mode} />
       <span className="text-[11px] text-[var(--color-ink-muted)]">
         Recommendation source recorded · advisory only
@@ -1136,7 +1139,7 @@ function AssessmentTraceView({ race }: { race: RaceAssessment }) {
             </p>
             {step.items.length > 0 ? (
               <ul className="list-disc ps-5 text-[12px] text-[var(--color-ink)]">
-                {step.items.map((item, index) => <li key={index}>{item}</li>)}
+                {step.items.map((item, index) => <li key={index}>{item.replace("authorized operator attestation", "authorized user attestation")}</li>)}
               </ul>
             ) : (
               <p className="text-[12px] text-[var(--color-ink-muted)]">{step.empty_reason}</p>
@@ -1869,7 +1872,7 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   if (!detail.pae_sealed) return "No sealed payment instruction is available. Complete the existing authorization and assurance steps before execution.";
   if (exactPacketSubmissionReady) return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
   if (detail.execution_gate === "PORTAL_RELEASE_RENEWAL_REQUIRED") return "Release consent is no longer current. This instruction cannot be submitted. Renew payment authority through the authorized recovery process; do not retry this instruction.";
-  if (detail.execution_gate === "PORTAL_RELEASE_UNAVAILABLE") return "Payment release is unavailable. Current operator authority or the payment service could not be verified. Refresh current status; no payment can be submitted.";
+  if (detail.execution_gate === "PORTAL_RELEASE_UNAVAILABLE") return "Payment release is unavailable. Current user authority or the payment service could not be verified. Refresh current status; no payment can be submitted.";
   if (detail.execution_gate === "PORTAL_RELEASE_APPROVAL_REQUIRED") return "Review the exact payment details below and approve payment release. Approval records your consent; you will submit the payment separately.";
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
@@ -2819,7 +2822,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       }));
     } };
   } else if (viewedStage === "Assessment" && proxyPreparationReady && detail?.financial_action_eligible === true) {
-    workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized operator", run: () => {
+    workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized user", run: () => {
       void run("proxy preflight", () => postCommand("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
@@ -2977,12 +2980,12 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-3 px-4 py-3 md:gap-4 md:px-6 md:py-4">
       <header className="relative -mx-4 flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2.5 md:-mx-6 md:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          <img src="/icon.svg" alt="" width="34" height="34" className="hidden size-[34px] rounded-lg shadow-sm sm:block"/>
+          <TameionBrand compact/>
           <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
-          <h1 className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="sr-only sm:not-sr-only"> — Command Center</span>:" — Command Center"}</h1>
+          <h1 aria-label="Assured Payment — Command Center" className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="hidden sm:inline"> — Command Center</span>:" — Command Center"}</h1>
           </div>
         </div>
         {operatorControls}
@@ -3014,8 +3017,18 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             Payment obligations
           </p>
           <p className="mb-2 text-[12px] text-[var(--color-ink)]">{listPresentation === "ready" ? `${obligations.length} obligations` : queueHeaderLabel(listPresentation, reportSummary)}</p>
+          {([
+            {key:"GENUINE_COMPANY",label:"Company obligations",empty:"No company obligations are available."},
+            {key:"DEMO_ARC_TESTNET",label:"Demo · Arc Testnet",empty:"No approved demo entries are available. Testnet entries are separate from company payables."},
+            {key:"UNVERIFIED",label:"Other review records",empty:""},
+          ] as const).map(group => {
+            const members=obligations.filter(o => (o.source_group??"UNVERIFIED")===group.key);
+            if(group.key==="UNVERIFIED"&&!members.length)return null;
+            return <section key={group.key} aria-label={group.label} className="mb-3">
+            <h2 className="mb-2 text-xs font-semibold">{group.label}</h2>
+            {listPresentation==="ready"&&!members.length&&<p className="mb-2 text-xs leading-5 text-[var(--color-ink-muted)]">{group.empty}</p>}
           <ul className="border-y border-[var(--color-border)]">
-            {obligations.map((o) => {
+            {members.map((o) => {
               const workflowRecorded = Boolean(o.pae_sealed || o.aggregate_state === "AUTHORIZED" || o.execution_status);
               const statusColor = o.assessed
                 ? o.decision === "ESCALATE"
@@ -3059,6 +3072,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               );
             })}
           </ul>
+          </section>;
+          })}
           {obligationListState(obligationsStatus, obligationsError, obligations.length) !== "ready" && (
             <div className="space-y-2 border-b border-[var(--color-border)] px-3 py-4">
               {obligationListState(obligationsStatus, obligationsError, obligations.length) === "loading" && <p role="status" className="text-[13px] text-[var(--color-ink-muted)]">Loading payment obligations…</p>}
@@ -3085,6 +3100,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected obligation</p>
+                {selected.source_group&&selected.source_group!=="UNVERIFIED"&&<p className="mt-1 text-xs text-[var(--color-ink-muted)]">{selected.source_group==="GENUINE_COMPANY"?"Company obligation · Review only":"Demo · Arc Testnet · Does not settle a company payable"}</p>}
                 <h2 className={viewedStage === "Assessment"
                   ? "mt-1 break-words text-[18px] font-semibold leading-6 text-[var(--color-ink)] md:text-[25px]"
                   : "mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]"}>
@@ -3834,7 +3850,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                   <Field label="Effective due date / basis / authority" value={currentAssessment?.race
                     ? buildAssessmentTrace(currentAssessment.race).find((step) => step.step === "SUPPLIED_FACTS")?.items
                       .filter((item) => item.startsWith("Effective due date:") || item.startsWith("Effective date basis:") || item.startsWith("Effective date authority:"))
-                      .join(" · ") ?? "Not captured"
+                      .join(" · ").replace("authorized operator attestation", "authorized user attestation") ?? "Not captured"
                     : `${sourceText(detail.record, "effective_due_date")} · ${sourceText(detail.record, "effective_due_date_basis")} · ${sourceDateProvenance(detail.record)}`} />
                   <Field label="Assessment as of" value={currentAssessment?.race?.evidence.authoritative_facts.as_of_date ?? "Not captured"} />
                   <Field label="Source document references" value={currentAssessment?.race?.evidence.evidence_ids.join(", ") || "Not captured"} />

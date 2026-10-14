@@ -51,7 +51,7 @@ describe('login conceptual motion',()=>{
 it('preserves CSRF bootstrap, credentials, failure wording and form reset while paused',async()=>{
  const fetcher=vi.fn().mockResolvedValueOnce(Response.json({csrf_token:'MOCK-ONLY'})).mockResolvedValueOnce(Response.json({authenticated:false},{status:403}));vi.stubGlobal('fetch',fetcher);
  render(<OperatorLogin/>);fireEvent.click(screen.getByRole('button',{name:'Pause illustration'}));
- fireEvent.change(screen.getByLabelText('Finance user name'),{target:{value:'mock-finance'}});
+ fireEvent.change(screen.getByLabelText('Username'),{target:{value:'mock-finance'}});
  fireEvent.change(screen.getByLabelText('Password'),{target:{value:'mock-password'}});
  fireEvent.submit(screen.getByRole('button',{name:'Sign in securely'}).closest('form')!);
  await screen.findByText('Sign-in could not be verified. Access may be unavailable or rate limited. Try again after the stated access limit.');

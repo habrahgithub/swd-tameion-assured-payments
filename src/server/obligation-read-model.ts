@@ -10,7 +10,8 @@ import { projectAssuranceEvidence } from "./assurance-evidence-projection";
  * recovery or persistence. Source admission belongs to the calling GET boundary.
  * Browser fixtures use these same projections with independently invented data.
  */
-export function projectObligationListData(state: ExistingState) {
+export type ObligationSourceGroup = "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
+export function projectObligationListData(state: ExistingState, sourceGroup: ObligationSourceGroup = "UNVERIFIED") {
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
     const current = state.store.get(DEMO_ORGANIZATION_ID, o.obligation_id);
@@ -28,6 +29,7 @@ export function projectObligationListData(state: ExistingState) {
     const isCurrent = sealed?.record.aggregate_version === String(current.aggregate_version);
     return {
       ...o,
+      source_group: sourceGroup,
       assessed: isCurrent,
       decision: isCurrent ? sealed?.record.decision : null,
       provider_mode: isCurrent ? sealed?.record.provider_mode : null,
@@ -48,7 +50,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED") {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -130,6 +132,7 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
     });
     return NextResponse.json({
       financial_action_eligible: financialActionEligible,
+      source_group: sourceGroup,
       truth,
       aggregate,
       record,
