@@ -1453,7 +1453,36 @@ function PrimaryButton({
   );
 }
 
-type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null };
+type FinancialReceiptBinding = { instructionHash: string; packetHash: string; aggregateVersion: number };
+type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null; financialBinding?: FinancialReceiptBinding; readConfirmed?: boolean };
+
+function requiresSubmissionReconciliation(result: ActionResult | null): boolean {
+  if (!result || result.label !== "execute" || result.readConfirmed) return false;
+  if (result.status === 0) return true;
+  return Boolean(result.data && typeof result.data === "object" && "code" in result.data &&
+    ["OUTCOME_UNVERIFIED", "RECONCILIATION_ONLY", "EXECUTION_ALREADY_RECORDED"].includes(String(result.data.code)));
+}
+
+function confirmedFinancialReceipt(result: ActionResult, detail: ObligationDetail): string | null {
+  const expected = result.financialBinding;
+  if (!expected || result.obligationId !== detail.record.obligation_id ||
+      expected.instructionHash !== detail.sealed_pae_instruction_hash) return null;
+  if (result.label === "release" && detail.payment_release_current === true && detail.payment_release_approval &&
+      detail.execution_gate === "PORTAL_APPROVED_EXACT_PACKET" && !detail.execution &&
+      expected.packetHash === detail.execution_packet?.packet_sha256 &&
+      expected.aggregateVersion === detail.aggregate.aggregate_version) {
+    return "Refreshed status confirms release approval for this same instruction. Review the exact details before choosing Pay testnet USDC; no payment is submitted automatically.";
+  }
+  // Historical packet validation binds the recorded execution to its sealed PAE.
+  // UNKNOWN and SUBMITTING remain unresolved even when durably recorded.
+  if (result.label === "execute" && detail.execution?.obligation_id === result.obligationId &&
+      ["SETTLED", "FAILED", "BLOCKED", "SUBMITTED"].includes(detail.execution.status) &&
+      detail.settlement_evidence_binding?.state === "AVAILABLE_HISTORICAL" &&
+      detail.settlement_evidence_binding.packet?.packet_sha256 === expected.packetHash) {
+    return "Refreshed status confirms an execution record for this same instruction. Review its reconciliation evidence; do not retry or resubmit. This receipt alone does not establish successful settlement.";
+  }
+  return null;
+}
 type StageCompletionReceipt = { obligationId: string; message: string };
 type AssessmentFeedback = {
   obligationId: string;
@@ -1584,7 +1613,16 @@ function AssessmentFeedbackBanner({ feedback, onRefreshQueue }: { feedback: Asse
   );
 }
 
-function actionErrorMessage(data: unknown): string {
+function actionErrorMessage(data: unknown, label?: string): string {
+  if (data && typeof data === "object" && "code" in data) {
+    const reply = data as { code?: unknown; release_gate?: unknown };
+    if (reply.code === "OUTCOME_UNVERIFIED" && label === "execute" && reply.release_gate !== "READ_ONLY_CONFIRMATION_REQUIRED") {
+      return "Payment may have been submitted. No automatic retry was made; do not retry or resubmit. Refresh current status and use read-only reconciliation for this same instruction.";
+    }
+    if (label === "execute" && (reply.code === "RECONCILIATION_ONLY" || reply.code === "EXECUTION_ALREADY_RECORDED")) {
+      return "An execution attempt is recorded or its outcome remains unresolved. Do not retry or resubmit. Refresh current status and review read-only reconciliation evidence for this same instruction.";
+    }
+  }
   if (data && typeof data === "object" && "blocker" in data && typeof (data as { blocker: unknown }).blocker === "string") {
     const blockerMessages: Record<string, string> = {
       FEE_CAP_EXCEEDED: "The current estimated network fee exceeds the approved network-fee limit. No payment was submitted.",
@@ -1608,18 +1646,18 @@ function actionErrorMessage(data: unknown): string {
 function ActionResultBanner({ result, title, focusOnMount = false }: { result: ActionResult; title?: string; focusOnMount?: boolean }) {
   const alertRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (result.ok || !focusOnMount) return;
+    if (result.readConfirmed || (result.ok && !requiresSubmissionReconciliation(result)) || !focusOnMount) return;
     const alert = alertRef.current;
     alert?.focus({ preventScroll: true });
     if (typeof alert?.scrollIntoView === "function") alert.scrollIntoView({ block: "nearest" });
   }, [focusOnMount, result]);
-  if (result.ok) return null;
+  if (result.readConfirmed || (result.ok && !requiresSubmissionReconciliation(result))) return null;
   return (
     <div ref={alertRef} role="alert" aria-live="assertive" tabIndex={focusOnMount ? -1 : undefined} className="border-s-[3px] border-s-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-2">
       <p className="text-[13px] font-semibold uppercase tracking-wide text-[var(--color-danger)]">
         {title ?? `Refused (HTTP ${result.status})`}
       </p>
-      <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{actionErrorMessage(result.data)}</p>
+      <p className="mt-0.5 text-[13px] text-[var(--color-ink)]">{actionErrorMessage(result.data, result.label)}</p>
     </div>
   );
 }
@@ -1890,6 +1928,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   const [detailIsStale, setDetailIsStale] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
+  const financialResults = useRef(new Map<string, ActionResult>());
   const [assessmentFeedback, setAssessmentFeedback] = useState<AssessmentFeedback | null>(null);
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
@@ -2025,6 +2064,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     setDetailIsStale(false);
     setDetailError(null);
     setStageCompletionReceipt(null);
+    setLastResult(financialResults.current.get(selectedId) ?? null);
     setAssessmentFeedback(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
@@ -2037,9 +2077,27 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     }
   }, [displayedAssessment, detail, selectedId]);
 
+  const selectedFinancialResult = financialResults.current.get(selectedId) ?? null;
+  useEffect(() => {
+    if (!selectedFinancialResult || selectedFinancialResult.readConfirmed || !detail || detailIsStale || detailError) return;
+    const message = confirmedFinancialReceipt(selectedFinancialResult, detail);
+    if (!message) return;
+    const confirmed = {...selectedFinancialResult, readConfirmed: true};
+    financialResults.current.set(selectedId, confirmed);
+    if (lastResult === selectedFinancialResult) setLastResult(confirmed);
+    setStageCompletionReceipt({obligationId: selectedId, message});
+  }, [lastResult, selectedFinancialResult, detail, detailIsStale, detailError, selectedId]);
+
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string) => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
+    const financialBinding = ["release", "execute"].includes(label) && detail.sealed_pae_instruction_hash && detail.execution_packet?.packet_sha256
+      ? {instructionHash: detail.sealed_pae_instruction_hash, packetHash: detail.execution_packet.packet_sha256, aggregateVersion: detail.aggregate.aggregate_version}
+      : undefined;
+    const saveResult = (result: ActionResult) => {
+      if (financialBinding) financialResults.current.set(targetId, result);
+      if (stillCurrent() || (financialBinding && selectedRef.current === targetId)) setLastResult(result);
+    };
     const priorPosition = authoritativeLifecyclePosition(targetId, detailState, detail);
     const generation = selectionGeneration.current;
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
@@ -2052,6 +2110,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     let assessmentReceiptConfirmed = false;
     try {
       const result = await action();
+      saveResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId, financialBinding });
       if (!stillCurrent()) return;
       if (label === "assess") {
         assessmentResponse = result;
@@ -2064,20 +2123,16 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       } else {
         actionSucceeded = result.ok;
       }
-      setLastResult({ label, data: result.data, ok: result.ok, status: result.status, obligationId: targetId });
       if (label === "approve" && !result.ok && result.status === 409) setDisplayedAssessment(null);
     } catch {
+      saveResult({label, data: label === "execute"
+        ? {code: "OUTCOME_UNVERIFIED"}
+        : {error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again."},
+        ok: false, status: 0, obligationId: targetId, financialBinding});
       if (!stillCurrent()) return;
       if (label === "assess") {
         setAssessmentFeedback(assessmentFeedbackForResponse({ status: 0, data: { error: "No response was received." } }, targetId, assessmentExpectedVersion ?? "", generation));
       }
-      setLastResult({
-        label,
-        data: { error: "The action could not be confirmed. No automatic retry was made; reload current state before acting again." },
-        ok: false,
-        status: 0,
-        obligationId: targetId,
-      });
     } finally {
       if (stillCurrent()) {
         const refreshed = await refreshDetail(targetId, true, generation);
@@ -2259,14 +2314,15 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   const detailState: DetailState = detail && detailIsStale ? "stale" : detail ? "loaded" : detailError ? "failed" : selectedId ? "loading" : "none";
   const killSwitchView = killSwitchPresentation(detailState, detail?.execution_kill_switched);
   const routeAssuranceReady = isRouteAssuranceReady(detail);
-  const exactPacketSubmissionReady = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
+  const unresolvedSubmission = requiresSubmissionReconciliation(selectedFinancialResult);
+  const exactPacketSubmissionReady = Boolean(!unresolvedSubmission && detailState === "loaded" && !detailIsStale && selectedId && detail &&
     detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
     detail.settlement_proxy?.preflight.obligation_id === selectedId &&
     detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
     detail.execution === null && detail.execution_gate === "PORTAL_APPROVED_EXACT_PACKET" &&
     detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
     detail.execution_kill_switched === false);
-  const currentPacketNeedsRelease = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
+  const currentPacketNeedsRelease = Boolean(!unresolvedSubmission && detailState === "loaded" && !detailIsStale && selectedId && detail &&
     detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
     detail.settlement_proxy?.preflight.obligation_id === selectedId &&
     detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
@@ -2346,14 +2402,19 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         if (!hasCurrentPayAssessment) return "Locked — current PAY assessment required";
         if (!routeAssuranceReady) return "Approval locked — route assurance not ready";
         return authorizationAssessment ? "Awaiting human approval" : "Review the current PAY assessment";
-      case "Assurance":
+      case "Assurance": {
+        const releaseGuidance = detail.pae_sealed && !detail.execution && !detail.execution_kill_switched &&
+          !invalidReleaseAuthority && !["REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.pae_state) &&
+          ["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? "")
+          ? ` ${paymentStageStatus(detail, false, detailState)}` : "";
         if (detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Approval recorded · payment controls incomplete; no payment can be released.";
         if (detail.assurance_evidence?.state === "AVAILABLE_CURRENT_BINDING" || detail.assurance_evidence?.state === "AVAILABLE_HISTORICAL" || detail.assurance_evidence?.state === "INVALID" || detail.assurance_evidence?.state === "UNAVAILABLE") {
-          return assuranceStateSummary(detail.assurance_evidence);
+          return assuranceStateSummary(detail.assurance_evidence) + releaseGuidance;
         }
-        if (detail.pae_sealed) return "An approved instruction is sealed, but current payment-control evidence is unavailable.";
+        if (detail.pae_sealed) return "An approved instruction is sealed, but current payment-control evidence is unavailable." + releaseGuidance;
         if (hasCurrentPayAssessment && routeAssuranceReady) return "Final assurance runs after human approval";
         return "Final assurance not run";
+      }
       case "Payment":
         if (detail.settlement_proxy && detail.execution?.status === "SETTLED") return `${settledEvidenceSummary(detail)}; source payable remains ${sourcePayableState(detail)}`;
         if (detail.settlement_proxy && detail.execution?.status === "UNKNOWN") return "Outcome unknown — reconcile this same intent; resubmission blocked";
@@ -2406,8 +2467,10 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     ? `Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`
     : `Reviewing: ${viewedStage} · Workflow now: ${stageBusinessLabel(currentLifecycleStage)}`;
   const currentPositionBlocked = detailState !== "loaded" || detailIsStale || !detail ||
-    (currentLifecycleStage === "Assurance" && !detail.pae_sealed) ||
+    (currentLifecycleStage === "Assurance" && (!detail.pae_sealed ||
+      ["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? ""))) ||
     (currentLifecycleStage === "Payment" && (
+      ["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? "") ||
       detail.execution_kill_switched === true ||
       ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail.truth.tameion_control_truth.execution_release_authority)
     )) ||
@@ -2665,7 +2728,11 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     detail.truth.tameion_control_truth.execution_release_authority === "REVOKED" &&
     detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION" &&
     detail.execution_packet == null && detail.sealed_pae_instruction_hash == null);
+  const releaseRecoveryRequired = Boolean(detailState === "loaded" && detail && !detail.execution &&
+    !detail.execution_kill_switched && detail.aggregate.state !== "CANCELLED" &&
+    ["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? ""));
   const currentException = Boolean(selectedId && (
+    releaseRecoveryRequired ||
     detailState === "failed" || detailState === "stale" ||
     (Boolean(currentAssessment) && !hasCurrentAssessment) ||
     detail?.aggregate.state === "CANCELLED" ||
@@ -2682,10 +2749,10 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       (viewedStage === "Payment" || viewedStage === "Reconciliation")) ||
     (Boolean(detail?.execution?.status === "SETTLED") && viewedStage === "Reconciliation") ||
     (viewedStage === "Payment" && Boolean(
-      noCurrentExactExecutionPacket || detail?.execution_kill_switched ||
+      releaseRecoveryRequired || noCurrentExactExecutionPacket || detail?.execution_kill_switched ||
       ["BLOCKED", "REVOKED", "EXPIRED"].includes(detail?.truth.tameion_control_truth.execution_release_authority ?? ""),
     )) ||
-    (viewedStage === "Assurance" && Boolean(detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution)) ||
+    (viewedStage === "Assurance" && (releaseRecoveryRequired || Boolean(detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution))) ||
     (viewedStage === "Assessment" && Boolean(
       (Boolean(currentAssessment) && !hasCurrentAssessment) ||
       detail?.aggregate.state === "CANCELLED" ||
@@ -2714,6 +2781,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   } else if (!selectedId && listPresentation === "empty") {
     workspaceAction = { label: "Refresh payment obligations", actor: "You · read-only refresh", run: () => { void refreshObligations(true); } };
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
+    workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
+  } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
     workspaceAction = { label: "View Assessment", actor: "You · read-only navigation", run: () => showStage("Assessment") };
@@ -2774,7 +2843,9 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     : firstUnmetPrerequisite?.startsWith("Payment-route assurance")
       ? "External-evidence owner unavailable"
       : "Unassigned · no permitted product action is available");
-  const recoveryNextAction = workspaceAction?.label ?? (detail?.execution?.status === "FAILED"
+  const recoveryNextAction = workspaceAction?.label ?? (releaseRecoveryRequired && detail
+    ? paymentStageStatus(detail, false, detailState)
+    : detail?.execution?.status === "FAILED"
     ? "No repeat payment is available here. Review the settlement record and payment authority before preparing a new instruction."
     : detail?.execution?.status === "BLOCKED" || noCurrentExactExecutionPacket
       ? "No payment can be submitted. Renew payment authority before preparing a new release record."
@@ -2850,6 +2921,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     : detail?.execution?.status === "SETTLED" ? "Testnet outcome recorded; source payable remains unchanged."
     : detail?.settlement_proxy && killSwitchView === "engaged" ? "A payment stop is active; authorization and execution are unavailable."
     : detail?.settlement_proxy && killSwitchView === "unknown" ? "Payment stop state is not verified; authorization and execution are unavailable."
+    : releaseRecoveryRequired && detail ? paymentStageStatus(detail, false, detailState)
     : contextualAction ? "Payment authority remains separate."
     : detail?.pae_sealed || detail?.aggregate.state === "AUTHORIZED" ? `Authorization recorded. ${lifecycleStatus(currentLifecycleStage)}`
     : firstUnmetPrerequisite ? firstUnmetPrerequisite.split(/(?<=\.)\s/)[0]
@@ -3005,7 +3077,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading payment obligations…</p>}
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
-            {currentResult && ["release", "execute"].includes(currentResult.label) && <ActionResultBanner result={currentResult} title={currentResult.label === "release" ? "Release approval status" : "Payment submission status"} focusOnMount />}
+            {selectedFinancialResult && <ActionResultBanner result={selectedFinancialResult} title={selectedFinancialResult.label === "release" ? "Release approval status" : "Payment submission status"} focusOnMount />}
             <section aria-label="Selected source obligation" className={viewedStage === "Assessment"
               ? "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-[var(--color-border)] pb-2 sm:gap-3 sm:pb-3"
               : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>

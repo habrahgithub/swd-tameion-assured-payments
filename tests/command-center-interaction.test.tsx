@@ -1505,6 +1505,184 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();
   });
 
+  it.each([
+    [false,"OUTCOME_UNVERIFIED",503],[true,"OUTCOME_UNVERIFIED",503],
+    [false,"RECONCILIATION_ONLY",409],[true,"RECONCILIATION_ONLY",409],
+    [false,"RECONCILIATION_ONLY",202],[true,"RECONCILIATION_ONLY",202],
+    [false,"EXECUTION_ALREADY_RECORDED",409],[true,"EXECUTION_ALREADY_RECORDED",409],
+  ] as const)("explains execute uncertainty with lost readback=%s code=%s", async (lostReadback,code,status) => {
+    const id = "TESTNET-CONTROLLED-EXECUTE-UNCERTAIN", authorized = proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate, {destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};
+    authorized.sealed_pae_instruction_hash="d".repeat(64); authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    let posted=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST"){posted=true; return Promise.resolve(response({code,retry_submission:false,execution_gate:"RECONCILIATION_ONLY",...(status===202?{execution:{obligation_id:id,status:"UNKNOWN"}}:{})},status));}
+      if(posted && lostReadback && String(input)!=="/api/obligations")return Promise.resolve(response({code:"STATE_UNAVAILABLE"},503));
+      return Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized));
+    });
+    renderWithExplicitFirstSelection(); await screen.findByRole("region",{name:"Genuine obligation workspace"}); navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/})); fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
+    expect(await screen.findByText(code==="OUTCOME_UNVERIFIED"?/Payment may have been submitted/:/An execution attempt is recorded/)).toBeTruthy();
+    await waitFor(()=>expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1));
+    expect(screen.getByRole("alert").textContent).toMatch(/do not retry.*read-only reconciliation/i);
+    expect(screen.getByRole("alert").textContent).not.toMatch(/no payment was submitted/i);
+    await waitFor(()=>expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull());
+    fireEvent.click(screen.getByRole("button",{name:"Refresh current status"}));
+    await waitFor(()=>expect(fetchMock.mock.calls.filter(([url,init])=>String(url).endsWith(id)&&init?.method!=="POST").length).toBeGreaterThanOrEqual(3));
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it.each(["matching","wrong-instruction","wrong-packet","unconfirmed","lost"])("supersedes release uncertainty only for durable matching readback: %s", async readback => {
+    const id="TESTNET-CONTROLLED-RECEIPT", authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    let posted=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST"){posted=true;return Promise.resolve(response({code:"OUTCOME_UNVERIFIED",release_gate:"READ_ONLY_CONFIRMATION_REQUIRED",error:"Release approval may have been recorded. Refresh current status before taking another action.",retry_submission:false},503));}
+      if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
+      if(posted && readback==="lost")return Promise.resolve(response({},503));
+      const restored=structuredClone(authorized);
+      if(posted && readback!=="unconfirmed"){
+        restored.execution_gate="PORTAL_APPROVED_EXACT_PACKET";restored.payment_release_current=true;
+        restored.payment_release_approval={actor_id:"SYNTHETIC",approved_at:new Date().toISOString(),expires_at:new Date(Date.now()+10000).toISOString()};
+        if(readback==="wrong-instruction")restored.sealed_pae_instruction_hash="e".repeat(64);
+        if(readback==="wrong-packet")restored.execution_packet.packet_sha256="e".repeat(64);
+      }
+      return Promise.resolve(response(restored));
+    });
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Approve payment release"}));
+    if(readback==="matching"){
+      expect(await screen.findByText(/Refreshed status confirms release approval for this same instruction/)).toBeTruthy();
+      expect(screen.queryByText(/Release approval may have been recorded/)).toBeNull();
+      expect((screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}) as HTMLInputElement).checked).toBe(false);
+    }else expect(await screen.findByText(/Release approval may have been recorded/)).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it.each(["matching","wrong-instruction","wrong-packet","unknown","missing-binding"])("retains execute uncertainty unless exact durable execution proves resolution: %s",async evidence=>{
+    const id="TESTNET-CONTROLLED-EXECUTE-RECEIPT",authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    let posted=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST"){posted=true;return Promise.resolve(response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503));}
+      if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
+      const read=structuredClone(authorized);
+      if(posted){
+        read.execution={obligation_id:id,status:evidence==="unknown"?"UNKNOWN":"BLOCKED",provider_ref:null};
+        read.execution_gate="EXECUTION_ALREADY_RECORDED";
+        read.settlement_evidence_binding={state:evidence==="missing-binding"?"UNAVAILABLE":"AVAILABLE_HISTORICAL",packet:{packet_sha256:evidence==="wrong-packet"?"e".repeat(64):"c".repeat(64)}};
+        if(evidence==="wrong-instruction")read.sealed_pae_instruction_hash="e".repeat(64);
+      }
+      return Promise.resolve(response(read));
+    });
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
+    if(evidence==="matching")expect(await screen.findByText(/Refreshed status confirms an execution record for this same instruction/)).toBeTruthy();
+    else expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
+    expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it("retains a late financial outcome across A to B to A without attributing it to B",async()=>{
+    const id="TESTNET-CONTROLLED-LATE-A",other="OBL-LATE-B",authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    const pending=deferred<Response>();let failA=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST")return pending.promise;
+      const url=String(input);
+      return Promise.resolve(url==="/api/obligations"?response({obligations:[obligation(id,true),obligation(other)]}):url.endsWith(other)?response(detail(other)):failA?response({},503):response(authorized));
+    });
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
+    fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
+    expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
+    failA=true;fireEvent.click(obligationRow(id));await screen.findByText(/Obligation detail is unavailable/);
+    await act(async()=>pending.resolve(response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503)));
+    expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
+    fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
+    expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
+    fireEvent.click(obligationRow(id));expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it.each(["PORTAL_RELEASE_RENEWAL_REQUIRED","PORTAL_RELEASE_UNAVAILABLE"])("aligns rollup, workspace and recovery with %s",async gate=>{
+    const id="TESTNET-CONTROLLED-RECOVERY",authorized=proxyPrepared(sealedDetail(id));
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate=gate;
+    fetchMock.mockImplementation(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized)));
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});openStageNavigator();
+    const copy=gate==="PORTAL_RELEASE_RENEWAL_REQUIRED"?/Release consent is no longer current/:/Payment release is unavailable/;
+    expect(screen.getByRole("list",{name:"Payment lifecycle"}).textContent).toMatch(copy);
+    navigateStage("Payment");
+    expect(screen.getByRole("region",{name:"Exception recovery"}).textContent).toMatch(copy);
+    expect(screen.getByRole("region",{name:"Payment status"}).textContent).toMatch(copy);
+    expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).toMatch(copy);
+    expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();
+    expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+  });
+
+  it.each(["PORTAL_RELEASE_RENEWAL_REQUIRED","PORTAL_RELEASE_UNAVAILABLE"])("shows blocked release guidance at production AUTHORIZED N+1 Assurance: %s",async gate=>{
+    const id="TESTNET-CONTROLLED-NPLUS1-RELEASE",authorized=approvedNPlusOneDetail(id,true);
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate=gate;
+    fetchMock.mockImplementation(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,false)]}:authorized)));
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});openStageNavigator();
+    const copy=gate==="PORTAL_RELEASE_RENEWAL_REQUIRED"?/Release consent is no longer current/:/Payment release is unavailable/;
+    const lifecycle=screen.getByRole("list",{name:"Payment lifecycle"});
+    expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Assurance");
+    expect(lifecycle.textContent).toMatch(copy);
+    navigateStage("Assurance");
+    expect(screen.getByRole("region",{name:"Exception recovery"}).textContent).toMatch(copy);
+    expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).toMatch(copy);
+    expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+  });
+
+  it.each([
+    ["kill", /payment stop is active/i], ["expired", /Payment authority is expired/i],
+    ["UNKNOWN", /Outcome unknown/i], ["SUBMITTING", /Submission is in progress/i],
+    ["BLOCKED", /Execution is blocked/i], ["FAILED", /settlement attempt failed/i],
+    ["SETTLED", /Simulated record/],
+  ] as const)("keeps %s ahead of renewal and unavailable guidance",async(state,copy)=>{
+    for(const gate of ["PORTAL_RELEASE_RENEWAL_REQUIRED","PORTAL_RELEASE_UNAVAILABLE"]){
+      const id="TESTNET-CONTROLLED-PRIORITY",authorized=proxyPrepared(sealedDetail(id));
+      authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate=gate;
+      if(state==="kill")authorized.execution_kill_switched=true;
+      else if(state==="expired"){authorized.truth.tameion_control_truth.pae_state="EXPIRED";authorized.truth.tameion_control_truth.execution_release_authority="EXPIRED";}
+      else {authorized.execution={obligation_id:id,status:state,provider_ref:null};authorized.aggregate.execution_state=state;authorized.truth.tameion_control_truth.execution_state=state;}
+      fetchMock.mockImplementation(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized)));
+      renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+      const card=screen.getByRole("region",{name:"Payment status"});expect(within(card).getByRole("heading",{name:copy})).toBeTruthy();
+      expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
+      expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).not.toMatch(/Release consent is no longer current|Payment release is unavailable/);
+      cleanup();fetchMock.mockReset();
+    }
+  });
+
+  it("supersedes lost release readback on a later explicit matching refresh",async()=>{
+    const id="TESTNET-CONTROLLED-REFRESH-RECEIPT",authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    let posted=false,available=false;
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST"){posted=true;return Promise.resolve(response({code:"OUTCOME_UNVERIFIED",release_gate:"READ_ONLY_CONFIRMATION_REQUIRED",error:"Release approval may have been recorded.",retry_submission:false},503));}
+      if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
+      if(posted&&!available)return Promise.resolve(response({},503));
+      const read=structuredClone(authorized);
+      if(posted){read.payment_release_current=true;read.execution_gate="PORTAL_APPROVED_EXACT_PACKET";read.payment_release_approval={actor_id:"SYNTHETIC",approved_at:new Date().toISOString(),expires_at:new Date(Date.now()+10000).toISOString()};}
+      return Promise.resolve(response(read));
+    });
+    renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Approve payment release"}));
+    expect(await screen.findByText(/Release approval may have been recorded/)).toBeTruthy();
+    await screen.findByRole("button",{name:"Refresh current status"});available=true;fireEvent.click(screen.getByRole("button",{name:"Refresh current status"}));
+    expect(await screen.findByText(/Refreshed status confirms release approval for this same instruction/)).toBeTruthy();expect(screen.queryByText(/Release approval may have been recorded/)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
   it("labels a sealed authorization as an Arc Testnet proxy subject to exact-packet and pre-send gates", async () => {
     const authorized = proxyPrepared(sealedDetail("OBL-SEALED-PROXY"));
     authorized.aggregate.destination_verification_status = "VERIFIED";

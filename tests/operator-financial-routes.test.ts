@@ -269,3 +269,54 @@ describe('review F3 production boundary proofs',()=>{
   else {expect(result.status).toBe(200);expect(h.client.createTransaction).toHaveBeenCalledOnce();}
  });
 });
+
+import {loadExistingDemoState} from '../src/server/load-existing-demo-state';
+describe('Job65 production existing-state restoration',()=>{
+ it.each(['matching','operator','credential','source-binding','requester-binding','expired','namespace','runtime','actor','tampered'] as const)('restores real V2 RPC snapshot through production reader: %s',async fault=>{
+  const h=controlledHarness(),p=await preparedApproval(h);
+  vi.stubEnv('CIRCLE_API_KEY','SYNTHETIC_NOT_A_CREDENTIAL');vi.stubEnv('CIRCLE_ENTITY_SECRET','SYNTHETIC_NOT_A_CREDENTIAL');
+  const snapshot=structuredClone(h.snapshot()),old=snapshot.payment_release_approvals![0];
+  if(fault==='source-binding'||fault==='requester-binding')snapshot.payment_release_approvals=[sealPaymentRelease({...old.record,[fault==='source-binding'?'source_binding_sha256':'requester_binding_sha256']:'0'.repeat(64)})];
+  if(fault==='namespace')snapshot.payment_release_approvals=[sealPaymentRelease({...old.record,namespace:'foreign-namespace'})];
+  if(fault==='expired'){
+   snapshot.payment_release_approvals=[sealPaymentRelease({...old.record,expires_at:new Date(Date.parse(old.record.approved_at)+1).toISOString()})];
+   vi.spyOn(Date,'now').mockReturnValue(Date.parse(old.record.approved_at)+2);
+  }
+  if(fault==='actor')snapshot.actor_authorities[0].authority_version='2';
+  if(fault==='tampered')snapshot.payment_release_approvals![0].record_sha256='0'.repeat(64);
+  if(fault==='runtime')vi.stubEnv('CIRCLE_ENTITY_SECRET','');
+  const auth={...h.auth,session:{...h.auth.session,...(fault==='operator'?{operator_key:'OTHER'}:fault==='credential'?{credential_version:2}:{})}};
+  const rpc={call:vi.fn(async()=>({revision:h.revision(),snapshot:structuredClone(snapshot)}))};
+  const reader=createObligationReaders(async()=>auth,async(records,binding,namespace)=>loadExistingDemoState(rpc,namespace,records,binding),()=>[],loadFinancialSourceAdmission);
+  const result=await reader.detail(new Request('https://synthetic.invalid/api/obligations/'+p.id),p.id);
+  if(fault==='tampered'){expect(result.status).toBe(503);}else{
+   expect(result.status).toBe(200);const data=await result.json();
+   expect(data.payment_release_current).toBe(fault==='matching');
+   expect(data.execution_gate).toBe(fault==='matching'?'PORTAL_APPROVED_EXACT_PACKET':fault==='runtime'?'PORTAL_RELEASE_UNAVAILABLE':fault==='namespace'?'PORTAL_RELEASE_APPROVAL_REQUIRED':'PORTAL_RELEASE_RENEWAL_REQUIRED');
+   if(fault==='namespace')expect(data.payment_release_approval).toBeNull();
+   else expect(Object.keys(data.payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);
+  }
+  expect(rpc.call).toHaveBeenCalledExactlyOnceWith('tameion_state_load_existing',{namespace:h.source.namespace,expected_schema_version:2});
+  expect(h.repo.loadOrSeed).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('an expired controlled source disappears from active reads without any durable deletion',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h),snapshot=structuredClone(h.snapshot());
+  const rpc={call:vi.fn(async()=>({revision:h.revision(),snapshot}))};
+  const reader=createObligationReaders(async()=>h.auth,(records,binding,namespace)=>loadExistingDemoState(rpc,namespace,records,binding),()=>[]);
+  vi.spyOn(Date,'now').mockReturnValue(Date.parse(h.source.expires_at));
+  const list=await reader.list(new Request('https://synthetic.invalid/api/obligations'));
+  expect(await list.json()).toMatchObject({obligations:[],total_count:0});
+  expect((await reader.detail(new Request('https://synthetic.invalid/api/obligations/'+p.id),p.id)).status).toBe(404);
+  expect(rpc.call).not.toHaveBeenCalled();expect(h.snapshot()).toEqual(snapshot);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('production route callback refuses provider-send without the required release context',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false);
+  const guarded=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(_source,_revalidate,assertAtSend)=>{
+   expect(assertAtSend).toBeTypeOf('function');assertAtSend!(undefined);throw new Error('UNREACHABLE');
+  }});
+  const revision=h.revision();
+  const result=await guarded('execute',h.request(p.body),p.id);
+  expect(result.status).toBe(403);expect(await result.json()).toEqual({code:'PAYMENT_RELEASE_REQUIRED'});
+  expect(h.revision()).toBe(revision);expect(h.snapshot().execution_ledger).toEqual([]);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
