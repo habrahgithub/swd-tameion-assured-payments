@@ -2,6 +2,10 @@
 
 This runbook prepares a separately approved **Preview** deployment of the exact accepted candidate. Offline tests and local Next traces do not establish a deployed runtime. No production promotion, SQL, credential provisioning, payment execution, or retry of original 003 is admitted by this document.
 
+## Portal payment release candidate
+
+The portal release implementation is described in [the Job 65 design](../design/PORTAL-PAYMENT-RELEASE.md). After that candidate is independently accepted and provisioned, the authenticated designated approver records exact final release in the portal, then submits separately. `J2A_EXECUTION_AUTHORIZED_PACKET_SHA256` alone does not authorize execution in that implementation. Deployment, ingress and source/requester approvals remain required. Do not rebind a live sealed instruction silently to a new deployment.
+
 ## Approval bindings
 
 The preferred ingress policy uses an independently approved exact deployment ID. A deployment environment snapshot is fixed at creation; the inspected Vercel 59.26.0 continuation sends files, not replacement environment variables. Package the owner-approved nonsecret record as private server build input after reserving the actual deployment. Never copy runtime facts into a generated approval, override `VERCEL_DEPLOYMENT_ID`, or substitute a custom Skew Protection ID.

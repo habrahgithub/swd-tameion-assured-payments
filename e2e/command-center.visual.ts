@@ -317,7 +317,7 @@ function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "
       product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
     },
     pae_sealed: true,
-    execution_gate: status === "AUTHORIZED" ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_AFTER_SUBMISSION",
+    execution_gate: status === "AUTHORIZED" ? "PORTAL_RELEASE_APPROVAL_REQUIRED" : "LOCKED_AFTER_SUBMISSION",
     execution_packet: status === "AUTHORIZED" ? { packet_sha256: "e".repeat(64), packet: { obligation_id: "OBL-UAT-01" } } : settled ? {
       packet_sha256: "f".repeat(64),
       packet: {
@@ -741,7 +741,7 @@ test("SETTLED evidence classification stays explicit in native desktop/mobile re
       const receipt = page.getByRole("region", { name: "Reconciliation receipt" });
       await expect(receipt).toContainText(scenario.expected);
       await expect(receipt).toContainText("OUTSTANDING · remains outstanding in the source record");
-      await expect(page.getByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /Pay testnet USDC|Retry payment|Resubmit/i })).toHaveCount(0);
       await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
       if (scenario.noSuccess) {
         await expect(page.getByRole("main")).not.toContainText(/TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i);
@@ -1453,7 +1453,7 @@ test("Assurance Continue is a 44px read-only navigation control in the first vie
     await continueButton.click();
     await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
     expect(writes.slice(before)).toEqual([]);
-    expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
+    expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
     await page.close();
   }
 });
@@ -1784,7 +1784,7 @@ test("active kill switch takes precedence over a waiting exact-packet gate", asy
   await expect(page.getByRole("region", { name: "Payment status" })).toContainText("A payment stop is active. No execution is permitted.");
   await expect(page.getByRole("region", { name: "Exception recovery" })).not.toContainText("Current issue:");
   await expect(page.getByRole("region", { name: "Payment status" })).not.toContainText("Final payment authorization");
-  await expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
 
@@ -1792,7 +1792,7 @@ test("revoked release authority overrides retained packet and exact gate on desk
   const revoked = proxyLifecycleDetail("AUTHORIZED");
   revoked.truth.tameion_control_truth.pae_state = "REVOKED";
   revoked.truth.tameion_control_truth.execution_release_authority = "BLOCKED";
-  revoked.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+  revoked.execution_gate = "PORTAL_APPROVED_EXACT_PACKET";
   revoked.execution_kill_switched = false;
 
   for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
@@ -1805,8 +1805,8 @@ test("revoked release authority overrides retained packet and exact gate on desk
     const payment = page.getByRole("region", { name: "Payment status" });
     await expect(payment.locator("h3")).toContainText("Payment authority is revoked");
     await expect(payment).not.toContainText("ready for confirmation");
-    await expect(page.getByRole("button", { name: "Execute Test Payment" })).toHaveCount(0);
-    await expect(page.getByRole("textbox", { name: /Confirm exact testnet intent/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name: /I have reviewed the exact testnet/ })).toHaveCount(0);
     expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath(`screen-5-revoked-${viewport.label}.png`), fullPage: true });
@@ -1817,15 +1817,15 @@ test("revoked release authority overrides retained packet and exact gate on desk
 
 test("dark-mode exact payment confirmation keeps accessible contrast without submitting", async ({ page }) => {
   const exactPacket = proxyLifecycleDetail("AUTHORIZED");
-  exactPacket.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+  exactPacket.execution_gate = "PORTAL_APPROVED_EXACT_PACKET";
   const writes = await openFixture(page, exactPacket);
   await expandLifecycleStages(page);
   await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment", exact: true }).click();
   await collapseLifecycleStages(page);
-  const confirmation = page.getByRole("textbox", { name: /Confirm exact testnet intent/ });
+  const confirmation = page.getByRole("checkbox", { name: /I have reviewed the exact testnet/ });
   await expect(confirmation).toBeVisible();
-  await confirmation.fill("SUBMIT EXACT TESTNET SETTLEMENT PROXY");
-  const execute = page.getByRole("button", { name: "Execute Test Payment" });
+  await confirmation.check();
+  const execute = page.getByRole("button", { name: "Pay testnet USDC" });
   await expect(execute).toBeEnabled();
   for (const mode of ["explicit", "system"] as const) {
     await page.emulateMedia({ colorScheme: mode === "system" ? "dark" : "light" });
@@ -2172,3 +2172,33 @@ for(const width of [1365,390,320]){
     expect(writes).toEqual([]);
   });
 }
+
+test("portal final release is visible on desktop and mobile and never auto-submits", async ({ browser }) => {
+  for(const width of [390,1280]) {
+    const page=await browser.newPage({viewport:{width,height:900}});
+    const exact=proxyLifecycleDetail("AUTHORIZED");
+    exact.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    const writes=await openFixture(page,exact);
+    let releases=0;
+    await page.route("**/api/obligations/*/release",async route=>{
+      expect(route.request().headers()["x-tameion-csrf"]).toBe("MOCK-ONLY-CSRF");
+      expect(route.request().postDataJSON()).toMatchObject({packet_sha256:exact.execution_packet.packet_sha256,pae_instruction_hash:exact.sealed_pae_instruction_hash,confirmation:"APPROVE EXACT TESTNET SETTLEMENT PROXY"});
+      releases++;
+      exact.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+      await route.fulfill({json:{code:"PAYMENT_RELEASE_APPROVED"}});
+    });
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation",{name:"Payment lifecycle navigation"}).getByRole("button",{name:"Payment",exact:true}).click();
+    await collapseLifecycleStages(page);
+    const approve=page.getByRole("button",{name:"Approve payment release"});
+    await expect(approve).toBeVisible();await expect(approve).toBeDisabled();
+    await page.getByRole("checkbox",{name:/I have reviewed the exact testnet/}).check();
+    await approve.click();
+    const pay=page.getByRole("button",{name:"Pay testnet USDC"});
+    await expect(pay).toBeVisible();await expect(pay).toBeDisabled();
+    await expect(page.getByRole("checkbox",{name:/I have reviewed the exact testnet/})).not.toBeChecked();
+    expect(releases).toBe(1);expect(writes).toEqual([]);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
+    await page.close();
+  }
+});

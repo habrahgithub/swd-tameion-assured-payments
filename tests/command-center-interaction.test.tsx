@@ -1459,6 +1459,36 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.querySelector('[aria-current="step"]')?.textContent).toContain("Payment");
   });
 
+  it("records portal release with CSRF, resets consent and never auto-submits payment", async () => {
+    const id="TESTNET-CONTROLLED-PORTAL-RELEASE";
+    const authorized=proxyPrepared(sealedDetail(id));
+    authorized.aggregate.destination_verification_status="VERIFIED";
+    authorized.aggregate.destination_operational_status="ACTIVE";
+    authorized.aggregate.source_wallet_status="ACTIVE";
+    authorized.aggregate.product_trust_provenance="CURRENT_PRODUCT_EVIDENCE";
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};
+    authorized.sealed_pae_instruction_hash="d".repeat(64);
+    authorized.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==="POST"){
+        expect(String(input)).toBe(`/api/obligations/${id}/release`);
+        expect(new Headers(init.headers).get("X-Tameion-CSRF")).toBe("verified-session-csrf");
+        expect(JSON.parse(String(init.body))).toEqual({expected_version:authorized.aggregate.aggregate_version,packet_sha256:"c".repeat(64),pae_instruction_hash:"d".repeat(64),confirmation:"APPROVE EXACT TESTNET SETTLEMENT PROXY"});
+        authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+        return Promise.resolve(response({code:"PAYMENT_RELEASE_APPROVED"}));
+      }
+      return Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:authorized));
+    });
+    renderWithExplicitFirstSelection("verified-session-csrf");await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
+    const approve=screen.getByRole("button",{name:"Approve payment release"}) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));expect(approve.disabled).toBe(false);fireEvent.click(approve);
+    const pay=await screen.findByRole("button",{name:"Pay testnet USDC"}) as HTMLButtonElement;
+    await waitFor(()=>expect(pay.disabled).toBe(true));
+    expect((screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}) as HTMLInputElement).checked).toBe(false);
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
   it("labels a sealed authorization as an Arc Testnet proxy subject to exact-packet and pre-send gates", async () => {
     const authorized = proxyPrepared(sealedDetail("OBL-SEALED-PROXY"));
     authorized.aggregate.destination_verification_status = "VERIFIED";
@@ -1467,7 +1497,7 @@ describe("Command Center mounted Operational Report", () => {
     authorized.aggregate.product_trust_provenance = "CURRENT_PRODUCT_EVIDENCE";
     authorized.execution_packet = { packet_sha256: "c".repeat(64), packet: { obligation_id: "OBL-SEALED-PROXY" } };
     authorized.sealed_pae_instruction_hash = "d".repeat(64);
-    authorized.execution_gate = "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION";
+    authorized.execution_gate = "PORTAL_RELEASE_APPROVAL_REQUIRED";
     fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
       ? Promise.resolve(response({ obligations: [obligation("OBL-SEALED-PROXY", true)] }))
       : Promise.resolve(response(authorized)));

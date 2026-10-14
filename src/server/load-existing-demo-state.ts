@@ -1,3 +1,5 @@
+import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
+import {ActorAuthorityRegistry} from '../authority/actor-authority';
 import {createHash} from "node:crypto";
 import {canonicalize} from "json-canonicalize";
 import type {OperatorStateBinding} from "./operator-source-records";
@@ -13,7 +15,7 @@ import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState=Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState=Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
 export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding):Promise<ExistingState> {
@@ -26,10 +28,14 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     if(binding&&(binding.namespace!==namespace||binding.revision!==result.revision||createHash("sha256").update(canonicalize(s.authority)).digest("hex")!==binding.authority_sha256))throw new Error();
     const store=AuthorityStore.fromSnapshot(s.authority),trustedKeys=new TrustedKeyRegistry();trustedKeys.restore(s.trusted_keys);
     const sealed=new Map(s.sealed_paes.map(([id,pae])=>[id,sealedPaeSchema.parse(pae)]));
+    const releases=parsePaymentReleases(s.payment_release_approvals,s.authorization_history.map(a=>a.sealed_pae));
+    const actorAuthorities=new ActorAuthorityRegistry(s.actor_authorities);
     const records=structuredClone(sourceRecords);
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     return {store,trustedKeys,
+      resolveDesignatedApprover:(organizationId=DEMO_ORGANIZATION_ID,now=new Date())=>actorAuthorities.resolveDesignatedApprover(organizationId,now),
+      getPaymentReleaseApproval:id=>releases.find(a=>a.record.namespace===namespace&&a.record.pae_instruction_hash===sealed.get(id)?.instruction_hash),
       listObligations:()=>records.map(r=>({obligation_id:r.obligation_id,service_category:r.service_category,amount:r.amount,currency:r.currency,recurrence:r.recurrence,due_date:r.due_date,commercial_terms:r.commercial_terms})),
       getRecord:id=>records.find(r=>r.obligation_id===id),
       getCanonicalObligation:id=>{const r=records.find(r=>r.obligation_id===id);return r?adaptDirectEvidenceObligation(r):undefined;},

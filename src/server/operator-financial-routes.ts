@@ -1,3 +1,4 @@
+import {sealPaymentRelease,matchesPaymentRelease,type PaymentReleaseRecord} from '../domain/payment-release-approval';
 import {buildFinanceAgentContext,hasCurrentControlledInstruction} from "../agent/context-builder";
 import {z} from 'zod';
 import {operatorHandlers,type AuthContext} from './operator-auth';
@@ -14,7 +15,7 @@ import {getCurrentSettlementProxyPacket} from './settlement-proxy-packet';
 import type {runJ2aReadOnlyPreflight} from '../demo/real-testnet-payment';
 
 const integer=z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),hash=z.string().regex(/^[a-f0-9]{64}$/);
-const bodies={assess:z.object({}).strict(),preflight:z.object({obligation_id:z.string().min(1).max(128),expected_version:integer}).strict(),approve:z.object({expected_version:integer,reviewed_assessment_id:z.string().min(1).max(128),reviewed_assessment_hash:hash,reason_text:z.string().min(1).max(1024)}).strict(),execute:z.object({expected_version:integer,packet_sha256:hash,pae_instruction_hash:hash,confirmation:z.literal('SUBMIT EXACT TESTNET SETTLEMENT PROXY')}).strict(),reconcile:z.object({idempotency_key:z.string().min(1).max(256).regex(/^[\x20-\x7e]+$/),pae_instruction_hash:hash}).strict()};
+const bodies={assess:z.object({}).strict(),preflight:z.object({obligation_id:z.string().min(1).max(128),expected_version:integer}).strict(),approve:z.object({expected_version:integer,reviewed_assessment_id:z.string().min(1).max(128),reviewed_assessment_hash:hash,reason_text:z.string().min(1).max(1024)}).strict(),release:z.object({expected_version:integer,packet_sha256:hash,pae_instruction_hash:hash,confirmation:z.literal('APPROVE EXACT TESTNET SETTLEMENT PROXY')}).strict(),execute:z.object({expected_version:integer,packet_sha256:hash,pae_instruction_hash:hash,confirmation:z.literal('SUBMIT EXACT TESTNET SETTLEMENT PROXY')}).strict(),reconcile:z.object({idempotency_key:z.string().min(1).max(256).regex(/^[\x20-\x7e]+$/),pae_instruction_hash:hash}).strict()};
 type Action=keyof typeof bodies;
 export interface FinancialDependencies {
  guard:(request:Request,post:boolean)=>Promise<AuthContext>;
@@ -40,6 +41,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    const sourceIdentity=JSON.stringify(source),requesterIdentity=JSON.stringify(requester);
    if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||!sameFinancialBinding(source,requester)||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
    const checkContext=async()=>{await auth.revalidate();if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
+   let requiredRelease: {record_sha256:string; expected:Partial<PaymentReleaseRecord>} | undefined;
    let load!:()=>Promise<DemoState>;
    const resolveCurrentRequester=async()=>{await checkContext();const current=await load();const actor=current.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
     if(current.getSealedPae(selected)){
@@ -47,10 +49,11 @@ export function createFinancialHandlers(deps:FinancialDependencies){
      const assessment=current.store.getAssessmentHistory(DEMO_ORGANIZATION_ID,selected).find(a=>a.hash===authorization?.approval_record.assessment_hash);
      if(!assessment?.record.race||!authorization||authorization.approval_record.assessment_hash!==assessment.hash||!hasCurrentControlledInstruction({...buildFinanceAgentContext(source.source,assessment.record.aggregate_version),...assessment.record.race.evidence.authoritative_facts}))throw new AccessError('CONTROLLED_ASSESSMENT_PROVENANCE_REQUIRED',409);
     }
+    if(requiredRelease && (!matchesPaymentRelease(current.getPaymentReleaseApproval(selected),requiredRelease.expected)||current.getPaymentReleaseApproval(selected)?.record_sha256!==requiredRelease.record_sha256))throw new AccessError("PAYMENT_RELEASE_CHANGED",403);
     await checkContext();return actor;};
    const checkRequester=async()=>{await resolveCurrentRequester();};
    load=()=>deps.load(source,checkRequester);
-   if(kind==='preflight'||kind==='execute'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
+   if(kind==='preflight'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
    const state=await load();const actor=state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
    if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
    await checkContext();
@@ -76,6 +79,32 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     return reply('EXACT_PACKET_REVIEW_REQUIRED',200,{aggregate:result.aggregate,pae_instruction_hash:result.sealed.instruction_hash,packet_sha256:packet.packet_sha256,packet:packet.packet});
    }
    const sealed=state.getSealedPae(selected);if(!sealed)throw new AccessError('CURRENT_PAE_REQUIRED',409);
+   const releaseIdentity = {
+    organization_id:source.organization_id,obligation_id:selected,namespace:source.namespace,
+    pae_instruction_hash:sealed.instruction_hash,idempotency_key:sealed.payload.idempotency_key,
+    actor_id:actor.actor_id,actor_role:actor.actor_role,authority_version:actor.authority_version,
+    operator_key:auth.session.operator_key,credential_version:auth.session.credential_version,
+   };
+   if(kind==='release'){
+    const aggregate=state.store.get(DEMO_ORGANIZATION_ID,selected);
+    if(aggregate.state!=='AUTHORIZED'||aggregate.pae_state!=='UNUSED'||aggregate.execution_state!=='NONE')throw new AccessError('PAYMENT_RELEASE_UNAVAILABLE',409);
+    const approvedActor=sealed.payload.approval_evidence[0];
+    if(approvedActor.actor_id!==actor.actor_id||approvedActor.actor_role!==actor.actor_role||approvedActor.authority_version!==actor.authority_version)throw new AccessError('PAYMENT_AUTHORITY_CHANGED',409);
+    const input=body as z.infer<typeof bodies.release>,packet=getCurrentSettlementProxyPacket(state,selected);
+    if(state.worker.getExecutionRecord(sealed.payload.idempotency_key))throw new AccessError('EXECUTION_ALREADY_RECORDED',409);
+    if(state.store.isExecutionKillSwitched(DEMO_ORGANIZATION_ID,selected)||!packet||packet.packet_sha256!==input.packet_sha256||sealed.instruction_hash!==input.pae_instruction_hash||state.store.get(DEMO_ORGANIZATION_ID,selected).aggregate_version!==input.expected_version)throw new AccessError('EXACT_PACKET_NOT_APPROVED',403);
+    const expected={...releaseIdentity,aggregate_version:input.expected_version,packet_sha256:input.packet_sha256};
+    const previous=state.getPaymentReleaseApproval(selected);
+    if(previous){
+     if(!matchesPaymentRelease(previous,expected))throw new AccessError('PAYMENT_RELEASE_CONFLICT',409);
+     await checkRequester();return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:previous});
+    }
+    await checkRequester();
+    const approval=sealPaymentRelease({...expected,schema_version:'PORTAL-RELEASE-1',approved_at:new Date().toISOString(),expires_at:new Date(Math.min(Date.parse(sealed.payload.expiry),Date.parse(source.expires_at),Date.parse(requester.expires_at),actor.expires_at?Date.parse(actor.expires_at):Infinity)).toISOString()});
+    state.recordPaymentReleaseApproval(approval);effectsStarted=true;await state.flush();
+    requiredRelease={record_sha256:approval.record_sha256,expected};await checkRequester();
+    return reply('PAYMENT_RELEASE_APPROVED',200,{payment_release_approval:approval});
+   }
    if(kind==='reconcile'){
     const input=body as z.infer<typeof bodies.reconcile>;
     if(input.idempotency_key!==sealed.payload.idempotency_key||input.pae_instruction_hash!==sealed.instruction_hash)throw new AccessError('IDENTITY_MISMATCH',409);
@@ -88,8 +117,12 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    const input=body as z.infer<typeof bodies.execute>,packet=getCurrentSettlementProxyPacket(state,selected);
    const prior=state.worker.getExecutionRecord(sealed.payload.idempotency_key);
    if(prior)return reply('EXECUTION_ALREADY_RECORDED',409,{execution:prior,execution_gate:'RECONCILIATION_ONLY'});
-   if(!packet||packet.packet_sha256!==input.packet_sha256||sealed.instruction_hash!==input.pae_instruction_hash||state.store.get(DEMO_ORGANIZATION_ID,selected).aggregate_version!==input.expected_version||process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256!==packet.packet_sha256)throw new AccessError('EXACT_PACKET_NOT_APPROVED',403);
-   await checkRequester();effectsStarted=true;const execution=await state.worker.execute(sealed);
+   if(!packet||packet.packet_sha256!==input.packet_sha256||sealed.instruction_hash!==input.pae_instruction_hash||state.store.get(DEMO_ORGANIZATION_ID,selected).aggregate_version!==input.expected_version)throw new AccessError('EXACT_PACKET_NOT_APPROVED',403);
+   const expected={...releaseIdentity,aggregate_version:input.expected_version,packet_sha256:input.packet_sha256};
+   const release=state.getPaymentReleaseApproval(selected);
+   if(!matchesPaymentRelease(release,expected))throw new AccessError('EXACT_PACKET_NOT_APPROVED',403);
+   requiredRelease={record_sha256:release!.record_sha256,expected};
+   await checkRequester();await deps.providerBoundary?.(checkRequester);await checkRequester();effectsStarted=true;const execution=await state.worker.execute(sealed);
    return reply(execution.status==='SETTLED'?'RECONCILED':'RECONCILIATION_ONLY',execution.status==='UNKNOWN'?202:execution.status==='BLOCKED'?409:200,{execution});
   }catch(error){
    if(error instanceof AccessError)return reply(error.code,error.status);

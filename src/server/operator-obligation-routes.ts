@@ -34,7 +34,7 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
       const selectedState=controlledMember?controlledState:operatorState;
       if(packet){const sealed=selectedState!.getSealedPae(id!);if(!sealed)return privateJson({error:'No sealed PAE for this obligation.'},409);const {buildJ2PrimeApprovalPacket,renderJ2PrimeApprovalPacketText}=await import('../pipeline/prime-approval-packet');const value=buildJ2PrimeApprovalPacket(sealed);response=privateJson({packet:value,text:renderJ2PrimeApprovalPacketText(value)});}
       else if(id===undefined){const {projectObligationListData}=await import('./obligation-read-model');const parts=[operatorState,controlledState].filter((state):state is ExistingState=>state!==undefined).map(projectObligationListData);const obligations=parts.flatMap(part=>part.obligations);response=privateJson({obligations,assessed_count:obligations.filter(item=>item.assessed).length,total_count:obligations.length});}
-      else {const {projectObligationDetail}=await import('./obligation-read-model');response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible);}
+      else {const {projectObligationDetail}=await import('./obligation-read-model');response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined);}
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}
   }

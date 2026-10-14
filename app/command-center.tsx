@@ -146,6 +146,7 @@ interface ObligationDetail {
   };
   sealed_pae_instruction_hash?: string | null;
   execution_gate?: string;
+  payment_release_approval?: {record:{approved_at:string;expires_at:string;actor_id:string};record_sha256:string} | null;
   execution_kill_switched: boolean;
   assurance_evidence?: AssuranceEvidenceView;
 }
@@ -1826,7 +1827,7 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   if (detailState === "stale") return "Payment details are stale. Refresh current status before relying on or acting on this instruction.";
   if (!detail.pae_sealed) return "No sealed payment instruction is available. Complete the existing authorization and assurance steps before execution.";
   if (exactPacketSubmissionReady) return "The exact testnet instruction is ready for confirmation. Final pre-send checks still apply.";
-  if (detail.execution_gate === "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION") return "The approved instruction is awaiting final payment authorization. It cannot be submitted until that approval is recorded.";
+  if (detail.execution_gate === "PORTAL_RELEASE_APPROVAL_REQUIRED") return "Review the exact payment details below and approve payment release. Approval records your consent; you will submit the payment separately.";
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
 
@@ -2140,6 +2141,8 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
               ? "Arc Testnet settlement proxy preparation is recorded. A fresh assessment is required before authorization."
               : label === "approve" && refreshed.aggregate.state === "AUTHORIZED"
                 ? "Authorization is recorded. Assurance remains a separate release control."
+                : label === "release" && refreshed.execution_gate === "PORTAL_APPROVED_EXACT_PACKET"
+                  ? "Payment release approval is recorded. Review and choose Pay testnet USDC to submit once."
                 : label === "execute" && refreshed.execution
                   ? "An execution record is available. Continue with read-only reconciliation for this same instruction."
                   : null;
@@ -2257,20 +2260,20 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
     detail.settlement_proxy?.preflight.obligation_id === selectedId &&
     detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
-    detail.execution === null && detail.execution_gate === "PRIME_AUTHORIZED_EXACT_PACKET" &&
+    detail.execution === null && detail.execution_gate === "PORTAL_APPROVED_EXACT_PACKET" &&
     detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
     detail.execution_kill_switched === false);
-  const exactPacketConfirmationIdentity = exactPacketSubmissionReady && detail && selectedId
-    ? JSON.stringify([selectedId, detail.execution_packet!.packet_sha256, detail.sealed_pae_instruction_hash])
-    : null;
-  const executionConfirmation = useExecutionConfirmation(exactPacketConfirmationIdentity);
-  const currentPacketAwaitingPrime = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
+  const currentPacketNeedsRelease = Boolean(detailState === "loaded" && !detailIsStale && selectedId && detail &&
     detail.record.obligation_id === selectedId && detail.pae_sealed === true &&
     detail.settlement_proxy?.preflight.obligation_id === selectedId &&
     detail.execution_packet?.packet && detail.execution_packet.packet_sha256 && detail.sealed_pae_instruction_hash &&
-    detail.execution === null && detail.execution_gate === "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" &&
+    detail.execution === null && detail.execution_gate === "PORTAL_RELEASE_APPROVAL_REQUIRED" &&
     detail.truth.tameion_control_truth.execution_release_authority === "TAMEION_PAE_REVERIFY_REQUIRED" &&
     detail.execution_kill_switched === false);
+  const exactPacketConfirmationIdentity = (exactPacketSubmissionReady || currentPacketNeedsRelease) && detail && selectedId
+    ? JSON.stringify([selectedId, detail.execution_packet!.packet_sha256, detail.sealed_pae_instruction_hash, detail.execution_gate])
+    : null;
+  const executionConfirmation = useExecutionConfirmation(exactPacketConfirmationIdentity);
   const noCurrentExactExecutionPacket = Boolean(detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy &&
     !detail.execution && (!detail.execution_packet || !detail.sealed_pae_instruction_hash ||
       detail.execution_gate === "LOCKED_UNTIL_CURRENT_AUTHORIZATION"));
@@ -2714,10 +2717,20 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); } };
   } else if (viewedStage !== "Reconciliation" && detailState === "loaded" && detail?.execution?.status === "SETTLED") {
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
+  } else if (viewedStage === "Payment" && currentPacketNeedsRelease && detail?.financial_action_eligible === true) {
+    workspaceAction = { label: "Approve payment release", actor: "Authorized finance approver", exactConfirmation: true, run: () => {
+      if (!currentPacketNeedsRelease || !executionConfirmation.isBound || !executionConfirmation.matchesExact || !detail?.execution_packet || !detail.sealed_pae_instruction_hash) return;
+      void run("release", () => postCommand(`/api/obligations/${selectedId}/release`, {
+        expected_version: detail.aggregate.aggregate_version,
+        packet_sha256: detail.execution_packet!.packet_sha256,
+        pae_instruction_hash: detail.sealed_pae_instruction_hash,
+        confirmation: "APPROVE EXACT TESTNET SETTLEMENT PROXY",
+      }));
+    } };
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
-    workspaceAction = { label: "Execute Test Payment", actor: "Authorized finance user · final payment approval recorded", exactConfirmation: true, run: () => {
+    workspaceAction = { label: "Pay testnet USDC", actor: "Authorized finance user · final payment approval recorded", exactConfirmation: true, run: () => {
       if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
           !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
@@ -3126,7 +3139,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                       ? "Unassigned · no permitted product action is available"
                       : noCurrentExactExecutionPacket || detail?.execution_kill_switched === true
                         ? "Unassigned · no permitted product action is available"
-                      : currentPacketAwaitingPrime
+                      : currentPacketNeedsRelease
                       ? "Final payment authorization"
                       : detail?.settlement_proxy && detail.execution?.status === "UNKNOWN"
                         ? "Unassigned · read-only reconciliation only"
@@ -3139,15 +3152,15 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                 )}
                 {visibleWorkspaceAction?.exactConfirmation && (
                   <label className="mt-3 grid max-w-lg gap-1 text-[12px] font-medium text-[var(--color-ink)]">
-                    Confirm exact testnet intent
+                    I have reviewed the exact testnet amount, recipient and estimated fees
                     <input
                       className="min-h-11 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]"
-                      value={executionConfirmation.value}
-                      onChange={(event) => executionConfirmation.setValue(event.target.value)}
-                      placeholder="SUBMIT EXACT TESTNET SETTLEMENT PROXY"
-                      aria-describedby="execution-confirmation-guidance"
+                      type="checkbox"
+                      checked={executionConfirmation.matchesExact}
+                      onChange={(event) => executionConfirmation.setValue(event.target.checked ? "SUBMIT EXACT TESTNET SETTLEMENT PROXY" : "")}
+                      aria-describedby="payment-release-confirmation-guidance"
                     />
-                    <span id="execution-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">Final payment authorization and pre-release checks must still pass.</span>
+                    <span id="payment-release-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">Approval does not submit payment. Estimated fees are checked again before submission.</span>
                   </label>
                 )}
               </div>
@@ -3301,25 +3314,33 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
                       ? `${detail.settlement_proxy.preflight.amount} ${detail.settlement_proxy.preflight.asset} · ${detail.settlement_proxy.preflight.network}`
                       : `${detail.aggregate.amount} ${detail.aggregate.asset} · ${detail.aggregate.network}`} />
                     <Field label="Testnet payment destination" value={detail.settlement_proxy
-                      ? compactProxyDestination(detail.settlement_proxy.preflight.destination_wallet.name, detail.settlement_proxy.preflight.destination_wallet.address)
+                      ? detail.settlement_proxy.preflight.destination_wallet.address
                       : "No controlled proxy recipient is recorded."} />
+                    {detail.settlement_proxy && <>
+                      <Field label="Source wallet" value={detail.settlement_proxy.preflight.source_wallet.address} />
+                      <Field label="Estimated network fee" value={`${detail.settlement_proxy.preflight.estimated_network_fee} USDC`} />
+                      <Field label="Planning fee limit" value={`${detail.settlement_proxy.preflight.max_network_fee} USDC`} />
+                      <Field label="Planning total limit" value={`${detail.settlement_proxy.preflight.max_total_debit} USDC`} />
+                    </>}
+                    {detail.payment_release_approval && <Field label="Release approval recorded" value={detail.payment_release_approval.record.approved_at} />}
                     <Field label="Instruction state" value={currentPaeDisplay(detail)} />
                     <Field label="Execution state" value={detail.execution?.status ?? "No execution has been recorded for this instruction."} />
                     <Field label="Source payable" value={`${sourcePayableState(detail)} · unchanged by testnet execution`} />
                   </dl>
+                  {detail.settlement_proxy && !detail.execution && <p className="text-[12px] text-[var(--color-ink-muted)]">Testnet USDC only. Network fees are estimates, checked against the planning limits before submission; they are not a guaranteed final fee.</p>}
                   {detail.execution?.status === "SETTLED" && <p className="border-t border-[var(--color-border)] pt-2 text-[12px] text-[var(--color-warning)]">The Arc Testnet transaction does not discharge the real-world payable.</p>}
-                  {detail.execution === null && exactPacketSubmissionReady && <p className="text-[12px] text-[var(--color-ink-muted)]">Confirm the exact instruction only if the current gate is open. Release and pre-send checks remain authoritative.</p>}
+                  {detail.execution === null && exactPacketSubmissionReady && <p className="text-[12px] text-[var(--color-ink-muted)]">Release approval is recorded. Confirm this instruction again, then choose Pay testnet USDC to submit once.</p>}
                   {workspaceAction?.exactConfirmation && (
                     <label className="grid max-w-lg gap-1 text-[12px] font-medium text-[var(--color-ink)]">
-                      Confirm exact testnet intent
+                      I have reviewed the exact testnet amount, recipient and estimated fees
                       <input
                         className="min-h-11 rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 py-2 text-[13px] text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]"
-                        value={executionConfirmation.value}
-                        onChange={(event) => executionConfirmation.setValue(event.target.value)}
-                        placeholder="SUBMIT EXACT TESTNET SETTLEMENT PROXY"
+                        type="checkbox"
+                        checked={executionConfirmation.matchesExact}
+                        onChange={(event) => executionConfirmation.setValue(event.target.checked ? "SUBMIT EXACT TESTNET SETTLEMENT PROXY" : "")}
                         aria-describedby="execution-confirmation-guidance"
                       />
-                      <span id="execution-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">Final payment authorization and pre-release checks must still pass.</span>
+                      <span id="execution-confirmation-guidance" className="font-normal text-[var(--color-ink-muted)]">Approval does not submit payment. Estimated fees are checked again before submission.</span>
                     </label>
                   )}
                   {exceptionRecoveryCard}
@@ -3833,7 +3854,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             <p className={`${contextualAction ? "hidden sm:block" : "line-clamp-2"} text-sm leading-5 text-[var(--color-ink-muted)]`}>{contextualStatus}</p>
             {!contextualAction && <p className="hidden text-sm text-[var(--color-ink-muted)] sm:block">Owner: {recoveryOwner}</p>}
           </div>
-          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy} disabled={busy || (contextualAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{busy&&activeActionLabel==='assess'?'Assessing obligation…':contextualAction.label}</PrimaryButton>}
+          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy} disabled={busy || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
         </div>
       </section>
     </main>

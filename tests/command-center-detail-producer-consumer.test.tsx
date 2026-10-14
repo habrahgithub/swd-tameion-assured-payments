@@ -1,3 +1,4 @@
+import {sealPaymentRelease} from "../src/domain/payment-release-approval";
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
@@ -177,7 +178,23 @@ function livePayAssessedState() {
   return { state, selectedId: selected.obligation_id };
 }
 
+
+function approvePortalRelease(fixture: Awaited<ReturnType<typeof preparedAuthorizedState>>) {
+  if(fixture.state.getPaymentReleaseApproval(fixture.selectedId))return;
+  const packet=getCurrentSettlementProxyPacket(fixture.state,fixture.selectedId)!;
+  const actor=fixture.state.resolveDesignatedApprover();
+  fixture.state.recordPaymentReleaseApproval(sealPaymentRelease({schema_version:'PORTAL-RELEASE-1',
+    organization_id:DEMO_ORGANIZATION_ID,obligation_id:fixture.selectedId,
+    aggregate_version:fixture.state.store.get(DEMO_ORGANIZATION_ID,fixture.selectedId).aggregate_version,
+    namespace:'SYNTHETIC-PORTAL',packet_sha256:packet.packet_sha256,pae_instruction_hash:fixture.sealed.instruction_hash,
+    idempotency_key:fixture.sealed.payload.idempotency_key,actor_id:actor.actor_id,actor_role:actor.actor_role,
+    authority_version:actor.authority_version,operator_key:'SYNTHETIC-OWNER',credential_version:1,
+    approved_at:new Date().toISOString(),expires_at:fixture.sealed.payload.expiry,
+  }));
+}
+
 async function detailJson(state: DemoState, obligationId: string) {
+  vi.stubEnv("TAMEION_STATE_NAMESPACE","SYNTHETIC-PORTAL");
   stateMocks.getDemoState.mockResolvedValue(state);
   const response = await getObligationDetail(
     new Request(`http://localhost/api/obligations/${obligationId}`),
@@ -188,6 +205,7 @@ async function detailJson(state: DemoState, obligationId: string) {
 }
 
 async function listJson(state: DemoState) {
+  vi.stubEnv("TAMEION_STATE_NAMESPACE","SYNTHETIC-PORTAL");
   stateMocks.getDemoState.mockResolvedValue(state);
   const response = await getObligationList(new Request("http://localhost/api/obligations"));
   expect(response.status).toBe(200);
@@ -382,16 +400,16 @@ describe("real detail GET producer-consumer packet controls", () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
     const validOpenGate = await detailJson(fixture.state, fixture.selectedId);
-    expect(validOpenGate.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(validOpenGate.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
     const otherId = fixture.state.liveUsageRecords.find((record) => record.obligation_id !== fixture.selectedId)?.obligation_id;
     if (!otherId) throw new Error("A second frozen obligation is required to exercise selection identity refresh.");
     const otherBody = await detailJson(fixture.state, otherId);
     const { main, setDetailBody } = await renderProducerJson(validOpenGate, [otherBody]);
     navigateStage("Payment");
-    fireEvent.change(screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }), { target: { value: exactConfirmation } });
-    expect(screen.getByRole("button", { name: "Execute Test Payment" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ }));
+    expect(screen.getByRole("button", { name: "Pay testnet USDC" })).toBeTruthy();
 
     fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
     await expect(fixture.state.worker.execute(fixture.sealed)).rejects.toMatchObject({ code: "WDG-001" });
@@ -401,7 +419,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     setDetailBody(body);
     expect(body.truth.tameion_control_truth).toMatchObject({ pae_state: "REVOKED", execution_release_authority: "BLOCKED" });
     expect(body.execution_packet).toBeTruthy();
-    expect(body.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(body.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
     expect(body.execution).toBeNull();
     expect(fixture.api.createTransaction).not.toHaveBeenCalled();
 
@@ -413,13 +431,13 @@ describe("real detail GET producer-consumer packet controls", () => {
     const payment = screen.getByRole("region", { name: "Payment status" });
     expect(payment.querySelector("h3")?.textContent).toMatch(/revoked|blocked/i);
     expect(payment.textContent).not.toMatch(/ready for confirmation/i);
-    expect(within(payment).queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(within(payment).queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(payment.querySelector("h3")?.textContent).toMatch(/payment authority is revoked/i);
     expect(screen.getByRole("region", { name: "Exception recovery" }).textContent).toContain("Unassigned · no permitted product action is available");
     expect(payment.textContent).not.toContain("exact packet gate passed");
     expect(main.querySelector('button[data-primary-action="true"]')).toBeNull();
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -427,9 +445,9 @@ describe("real detail GET producer-consumer packet controls", () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
     const ready = await detailJson(fixture.state, fixture.selectedId);
-    expect(ready.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(ready.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
     expect(ready.truth.tameion_control_truth.execution_release_authority).toBe("TAMEION_PAE_REVERIFY_REQUIRED");
 
     fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
@@ -484,7 +502,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       const payment = screen.getByRole("region", { name: "Payment status" });
       expect(payment.querySelector("h3")?.textContent, scenario.name).toMatch(scenario.expected);
       expect(payment.textContent, scenario.name).toContain("Testnet payment destination");
-      const executeActions = screen.queryAllByRole("button", { name: "Execute Test Payment" });
+      const executeActions = screen.queryAllByRole("button", { name: "Pay testnet USDC" });
       expect(executeActions.length, scenario.name).toBe(scenario.execute ? 1 : 0);
       expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]').length, scenario.name).toBeLessThanOrEqual(1);
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"), scenario.name).toHaveLength(0);
@@ -497,7 +515,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const paymentStage = screen.getByRole("button", { name: /^Payment$/ }) as HTMLButtonElement;
     expect(paymentStage.disabled).toBe(true);
     expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -505,7 +523,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
     const approvedAggregate = fixture.state.store.get(DEMO_ORGANIZATION_ID, fixture.selectedId);
     sealTestAssessment(fixture.state.store, DEMO_ORGANIZATION_ID, fixture.selectedId, approvedAggregate.aggregate_version, {
       decision: "PAY",
@@ -590,7 +608,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       const payment = screen.getByRole("region", { name: "Payment status" });
       expect(payment.textContent, scenario.name).toContain(scenario.expected);
       expect(payment.textContent, scenario.name).toContain("OUTSTANDING");
-      expect(screen.queryByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Pay testnet USDC|Retry payment|Resubmit/i })).toBeNull();
       expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
 
       navigateStage("Reconciliation");
@@ -741,7 +759,7 @@ describe("real detail GET producer-consumer packet controls", () => {
       expect(receipt.textContent).toMatch(/historical/i);
       expect(receipt.textContent).toContain("CONFIRMED");
       expect(receipt.textContent).toContain("OUTSTANDING");
-      expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
       expect(fixture.api.createTransaction).toHaveBeenCalledTimes(1);
     },
@@ -788,7 +806,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(receipt.textContent).toContain("The recorded settlement amount and destination cannot be verified. Review the settlement record and do not send the instruction again.");
     expect(receipt.textContent).toContain("OUTSTANDING · remains outstanding in the source record");
     expect(main.textContent).not.toMatch(/TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION|Settlement matches the authorized obligation exactly/i);
-    expect(screen.queryByRole("button", { name: /Execute Test Payment|Retry payment|Resubmit/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Pay testnet USDC|Retry payment|Resubmit/i })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -796,7 +814,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
     const body = await detailJson(fixture.state, fixture.selectedId);
     body.execution = {
       status: "UNKNOWN",
@@ -818,7 +836,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     await screen.findByText("Last-known obligation details are stale.");
     expect((screen.getByRole("button", { name: /^Payment$/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
     finishRefresh(new Response(JSON.stringify(body), { status: 200 }));
@@ -829,17 +847,17 @@ describe("real detail GET producer-consumer packet controls", () => {
     const fixture = await preparedAuthorizedState();
     const packet = getCurrentSettlementProxyPacket(fixture.state, fixture.selectedId);
     expect(packet).toBeTruthy();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
     const openGate = await detailJson(fixture.state, fixture.selectedId);
     const otherId = fixture.state.liveUsageRecords.find((record) => record.obligation_id !== fixture.selectedId)?.obligation_id;
     if (!otherId) throw new Error("A second frozen obligation is required to exercise selection identity refresh.");
     const otherBody = await detailJson(fixture.state, otherId);
     const { setDetailBody } = await renderProducerJson(openGate, [otherBody]);
     navigateStage("Payment");
-    const submit = () => screen.getByRole("button", { name: "Execute Test Payment" });
-    const confirm = () => screen.getByRole("textbox", { name: /Confirm exact testnet intent/ });
+    const submit = () => screen.getByRole("button", { name: "Pay testnet USDC" });
+    const confirm = () => screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ });
 
-    fireEvent.change(confirm(), { target: { value: exactConfirmation } });
+    fireEvent.click(confirm());
     expect(submit().hasAttribute("disabled")).toBe(false);
 
     fixture.state.store.activateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
@@ -851,13 +869,13 @@ describe("real detail GET producer-consumer packet controls", () => {
     fireEvent.click(obligationRow(fixture.selectedId));
     await waitFor(() => expect(obligationRow(fixture.selectedId).getAttribute("aria-current")).toBe("true"));
     expect(screen.queryByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
     fixture.state.store.deactivateKillSwitch("TRANSACTION_DISABLED", fixture.selectedId);
     const recovered = await detailJson(fixture.state, fixture.selectedId);
     expect(recovered.execution_kill_switched).toBe(false);
-    expect(recovered.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(recovered.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
     setDetailBody(recovered);
     fireEvent.click(obligationRow(otherId));
     await waitFor(() => expect(obligationRow(otherId).getAttribute("aria-current")).toBe("true"));
@@ -865,11 +883,11 @@ describe("real detail GET producer-consumer packet controls", () => {
     await waitFor(() => expect(obligationRow(fixture.selectedId).getAttribute("aria-current")).toBe("true"));
     navigateStage("Payment");
     expect(confirm().getAttribute("value")).not.toBe(exactConfirmation);
-    expect((confirm() as HTMLInputElement).value).toBe("");
+    expect((confirm() as HTMLInputElement).checked).toBe(false);
     expect(submit().hasAttribute("disabled")).toBe(true);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
-    fireEvent.change(confirm(), { target: { value: exactConfirmation } });
+    fireEvent.click(confirm());
     expect(submit().hasAttribute("disabled")).toBe(false);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -909,32 +927,32 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(packet).toBeTruthy();
 
     const awaitingPrime = await detailJson(fixture.state, fixture.selectedId);
-    expect(awaitingPrime.execution_gate).toBe("LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION");
+    expect(awaitingPrime.execution_gate).toBe("PORTAL_RELEASE_APPROVAL_REQUIRED");
     await renderProducerJson(awaitingPrime);
     navigateStage("Payment");
-    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("awaiting final payment authorization");
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Payment status" }).textContent).toContain("approve payment release");
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     cleanup();
     fetchMock.mockReset();
-    process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 = packet!.packet_sha256;
+    approvePortalRelease(fixture);
 
     const openGate = await detailJson(fixture.state, fixture.selectedId);
-    expect(openGate.execution_gate).toBe("PRIME_AUTHORIZED_EXACT_PACKET");
+    expect(openGate.execution_gate).toBe("PORTAL_APPROVED_EXACT_PACKET");
     await renderProducerJson({
       ...openGate,
       assurance_evidence: { state: "UNAVAILABLE", message: "Payment control record is expected but unavailable.", control_results: [] },
     });
     navigateStage("Payment");
-    const submit = screen.getByRole("button", { name: "Execute Test Payment" });
-    const confirmation = screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement;
-    fireEvent.change(confirmation, { target: { value: exactConfirmation } });
+    const submit = screen.getByRole("button", { name: "Pay testnet USDC" });
+    const confirmation = screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ }) as HTMLInputElement;
+    fireEvent.click(confirmation);
     expect(submit.hasAttribute("disabled")).toBe(false);
     navigateStage("Authorization");
     navigateStage("Obligation");
     navigateStage("Payment");
-    expect((screen.getByRole("textbox", { name: /Confirm exact testnet intent/ }) as HTMLInputElement).value).toBe(exactConfirmation);
-    expect(screen.getByRole("button", { name: "Execute Test Payment" }).hasAttribute("disabled")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Execute Test Payment" }));
+    expect((screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("button", { name: "Pay testnet USDC" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Pay testnet USDC" }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1));
     const [postUrl, postInit] = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
     expect(String(postUrl)).toBe(`/api/obligations/${fixture.selectedId}/execute`);
@@ -1434,7 +1452,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const queue = await listJson(state);
     const selectedId = queue.obligations[0]?.obligation_id;
     if (!selectedId) throw new Error("Frozen source set is empty.");
-    stateMocks.getDemoState.mockResolvedValue(state);
+    vi.stubEnv("TAMEION_STATE_NAMESPACE","SYNTHETIC-PORTAL");
+  stateMocks.getDemoState.mockResolvedValue(state);
     vi.stubEnv("NVIDIA_API_KEY", "");
     try {
       const response = await postAssessment(new Request(`http://localhost/api/obligations/${selectedId}/assess`, {
@@ -1560,7 +1579,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Payment");
     expect(screen.getByRole("region", { name: "Payment status" }).textContent).toMatch(/payment authority is revoked/i);
     expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Execute Test Payment" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(main.querySelector('button[data-primary-action="true"]')).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -2021,7 +2040,7 @@ describe("real detail GET producer-consumer packet controls", () => {
   it("gives Screen 5 a concise execution status while retaining the exact single submission path", async () => {
     const fixture = await preparedAuthorizedState();
     const body = await detailJson(fixture.state, fixture.selectedId);
-    body.execution_gate = "PRIME_AUTHORIZED_EXACT_PACKET";
+    body.execution_gate = "PORTAL_APPROVED_EXACT_PACKET";
     body.execution_packet = { packet_sha256: "e".repeat(64), packet: { obligation_id: fixture.selectedId } };
     body.sealed_pae_instruction_hash = "d".repeat(64);
     await renderProducerJson(body);
@@ -2030,8 +2049,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const payment = screen.getByRole("region", { name: "Payment status" });
     expect(payment.textContent).toContain(`${body.settlement_proxy.preflight.amount} ${body.settlement_proxy.preflight.asset} · ${body.settlement_proxy.preflight.network}`);
     expect(payment.textContent).toContain("No execution has been recorded for this instruction.");
-    expect(screen.getByRole("textbox", { name: /Confirm exact testnet intent/ })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Execute Test Payment" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Pay testnet USDC" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -2136,5 +2155,5 @@ describe("real detail GET producer-consumer packet controls", () => {
 vi.mock("../src/server/operator-obligation-routes", async original => {
  const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
  const {getDemoState}=await import("../src/server/demo-state");
- return {...actual,obligationReaders:actual.createObligationReaders(async()=>({revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
+ return {...actual,obligationReaders:actual.createObligationReaders(async()=>({session:{operator_key:"SYNTHETIC-OWNER",credential_version:1},revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
 });

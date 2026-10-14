@@ -1,3 +1,4 @@
+import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {loadFinancialSourceAdmission} from "./financial-source-admission";
 import { createHash } from "node:crypto";
 
@@ -87,6 +88,7 @@ export interface DemoStateSnapshot {
   execution_ledger: ExecutionRecord[];
   provider_adapter: FakeProviderAdapterSnapshot;
   settlement_proxies?: StoredSettlementProxy[];
+  payment_release_approvals?: PaymentReleaseApproval[];
 }
 
 export interface StoredSettlementProxy {
@@ -297,6 +299,7 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
     execution_ledger: executionLedger,
     provider_adapter: providerAdapter,
     settlement_proxies: settlementProxies,
+    payment_release_approvals: parsePaymentReleases(snapshot.payment_release_approvals, authorizationHistory.map(a=>a.sealed_pae)),
   };
 }
 
@@ -392,6 +395,7 @@ export class DemoState {
   readonly liveUsageRecords: LiveUsageObligationRecord[];
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
   private readonly authorizationHistory: DemoAuthorizationArtifacts[];
+  private readonly paymentReleaseApprovals: PaymentReleaseApproval[];
   private readonly assessmentOperations: Map<string, AssessmentOperation>;
   private readonly settlementProxies: Map<string, StoredSettlementProxy>;
   private repository?: SupabaseDemoStateRepository;
@@ -415,6 +419,7 @@ export class DemoState {
     this.adapter = new FakeProviderAdapter(snapshot?.provider_adapter);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
+    this.paymentReleaseApprovals = parsePaymentReleases(snapshot?.payment_release_approvals,this.authorizationHistory.map(a=>a.sealed_pae));
     this.assessmentOperations = new Map(
       (snapshot?.assessment_operations ?? []).map((operation) => [operation.idempotency_key, { ...operation }]),
     );
@@ -752,6 +757,18 @@ export class DemoState {
       entry.sealed_pae.payload.obligation_ids.length === 1 && entry.sealed_pae.payload.obligation_ids[0] === obligationId);
   }
 
+  getPaymentReleaseApproval(id: string): PaymentReleaseApproval | undefined {
+    const pae=this.getSealedPae(id);
+    const approval=this.paymentReleaseApprovals.find(a=>a.record.pae_instruction_hash===pae?.instruction_hash);
+    return approval ? structuredClone(approval) : undefined;
+  }
+
+  recordPaymentReleaseApproval(approval: PaymentReleaseApproval): void {
+    const parsed=parsePaymentReleases([approval],this.authorizationHistory.map(a=>a.sealed_pae))[0];
+    if(this.paymentReleaseApprovals.some(a=>a.record.pae_instruction_hash===parsed.record.pae_instruction_hash))throw new Error("Release approval already recorded");
+    this.paymentReleaseApprovals.push(parsed);
+  }
+
   resolveDesignatedApprover(organizationId = DEMO_ORGANIZATION_ID, now = new Date()): ActorAuthorityRecord {
     return this.actorAuthorities.resolveDesignatedApprover(organizationId, now);
   }
@@ -785,6 +802,7 @@ export class DemoState {
       assessment_operations: [...this.assessmentOperations.values()].map((operation) => ({ ...operation })),
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      ...(this.paymentReleaseApprovals.length ? {payment_release_approvals:structuredClone(this.paymentReleaseApprovals)} : {}),
       trusted_keys: this.trustedKeys.export(),
       actor_authorities: this.actorAuthorities.export(),
       actor_authority_registry_initialized: this.actorAuthorityRegistryInitialized,
@@ -819,6 +837,7 @@ export class J2aRealTestnetDemoState {
   readonly worker: ExecutionWorker;
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
   private readonly authorizationHistory: DemoAuthorizationArtifacts[];
+  private readonly paymentReleaseApprovals: PaymentReleaseApproval[];
   private repository?: SupabaseDemoStateRepository;
   private revision?: number;
   private namespace?: string;
@@ -837,6 +856,7 @@ export class J2aRealTestnetDemoState {
     this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
+    this.paymentReleaseApprovals = parsePaymentReleases(snapshot?.payment_release_approvals,this.authorizationHistory.map(a=>a.sealed_pae));
     this.lastPreflight = snapshot?.j2a_preflight ?? null;
     this.repository = repository;
     this.revision = revision;
@@ -947,6 +967,7 @@ export class J2aRealTestnetDemoState {
       assessment_operations: [],
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
+      ...(this.paymentReleaseApprovals.length ? {payment_release_approvals:structuredClone(this.paymentReleaseApprovals)} : {}),
       trusted_keys: this.trustedKeys.export(),
       actor_authorities: this.actorAuthorities.export(),
       actor_authority_registry_initialized: this.actorAuthorityRegistryInitialized,

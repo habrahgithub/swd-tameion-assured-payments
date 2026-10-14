@@ -1,3 +1,4 @@
+import {matchesPaymentRelease} from '../domain/payment-release-approval';
 import { NextResponse } from "next/server";
 import { AuthorityError } from "../authority/aggregate";
 import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, type ExistingState } from "./load-existing-demo-state";
@@ -47,7 +48,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number}) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -137,12 +138,17 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
       execution_packet: executionPacket,
       settlement_evidence_binding: settlementEvidenceBinding,
       sealed_pae_instruction_hash: sealed?.instruction_hash ?? null,
+      payment_release_approval: state.getPaymentReleaseApproval?.(id) ?? null,
       execution_gate: execution
         ? execution.status === "UNKNOWN" || execution.status === "SUBMITTING" ? "RECONCILIATION_ONLY" : "EXECUTION_ALREADY_RECORDED"
-        : executionPacket && state.providerAdapter.name === "arc-circle-live" &&
-          process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256 === executionPacket.packet_sha256
-          ? "PRIME_AUTHORIZED_EXACT_PACKET"
-          : executionPacket ? "LOCKED_AWAITING_PRIME_EXACT_PACKET_AUTHORIZATION" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
+        : executionPacket && releaseContext && state.providerAdapter.name === "arc-circle-live" &&
+          matchesPaymentRelease(state.getPaymentReleaseApproval?.(id), {
+            ...releaseContext,packet_sha256:executionPacket.packet_sha256,pae_instruction_hash:sealed?.instruction_hash,
+            obligation_id:id,organization_id:DEMO_ORGANIZATION_ID,aggregate_version:aggregate.aggregate_version,
+            ...(() => { let actor; try {actor=state.resolveDesignatedApprover?.();} catch {} return actor ? {actor_id:actor.actor_id,actor_role:actor.actor_role,authority_version:actor.authority_version} : {actor_id:"UNVERIFIED"}; })(),
+          })
+          ? "PORTAL_APPROVED_EXACT_PACKET"
+          : executionPacket ? "PORTAL_RELEASE_APPROVAL_REQUIRED" : "LOCKED_UNTIL_CURRENT_AUTHORIZATION",
       execution_kill_switched: executionKillSwitched,
       assurance_evidence: assuranceEvidence,
     });
