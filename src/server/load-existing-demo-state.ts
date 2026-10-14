@@ -36,7 +36,9 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
       getSealedPae:id=>sealed.get(id),getSettlementProxy:id=>s.settlement_proxies?.find(p=>p.preflight.obligation_id===id),
       getAuthorizationArtifacts:id=>[...s.authorization_history].reverse().find(a=>a.sealed_pae.payload.organization_id===DEMO_ORGANIZATION_ID&&a.sealed_pae.payload.obligation_ids.length===1&&a.sealed_pae.payload.obligation_ids[0]===id),
       worker:{getExecutionRecord:key=>s.execution_ledger.find(r=>r.idempotency_key===key)},
-      providerAdapter:{name:'fake-testnet'},
+      // Match financial-runtime transport selection without constructing it.
+      // This metadata does not grant release authority or prove settlement.
+      providerAdapter:{name:process.env.CIRCLE_API_KEY&&process.env.CIRCLE_ENTITY_SECRET?'arc-circle-live':'fake-testnet'},
     };
   }catch{throw new AccessError('STATE_UNAVAILABLE',503);}
 }

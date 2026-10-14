@@ -31,6 +31,7 @@ import { loadOperatorSourceRecords, parseOperatorSource, MAX_OPERATOR_SOURCE_BYT
 import { loadExistingDemoState } from "../src/server/load-existing-demo-state";
 import { AccessError } from "../src/server/route-access-policy";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
+import { projectObligationDetail } from "../src/server/obligation-read-model";
 let directory:string|undefined;
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();if(directory)rmSync(directory,{recursive:true,force:true});directory=undefined;});
 function privateFixture(){
@@ -44,6 +45,22 @@ function privateFixture(){
  return {packet,bytes,hash,path,state,snapshot,rpc,load,readers};
 }
 describe("production private source/file/read-only restoration boundary",()=>{
+ it("projects configured Circle runtime without constructing a provider or granting historical payment eligibility",async()=>{
+  const f=privateFixture(),before=JSON.stringify(f.snapshot);
+  vi.stubEnv("CIRCLE_API_KEY","SYNTHETIC_TEST_KEY");vi.stubEnv("CIRCLE_ENTITY_SECRET","a".repeat(64));
+  const state=await loadExistingDemoState(f.rpc,"VIEW-NAMESPACE",f.packet.records,f.packet.state_binding);
+  expect(state.providerAdapter.name).toBe("arc-circle-live");
+  const response=await projectObligationDetail(state,f.packet.records[0].obligation_id,false).json();
+  expect(response.financial_action_eligible).toBe(false);
+  expect(response.execution_gate).toBe("LOCKED_UNTIL_CURRENT_AUTHORIZATION");
+  expect(JSON.stringify(f.snapshot)).toBe(before);
+  expect(f.rpc.call).toHaveBeenCalledExactlyOnceWith("tameion_state_load_existing",{namespace:"VIEW-NAMESPACE",expected_schema_version:2});
+ });
+ it.each([[undefined,undefined],["SYNTHETIC_TEST_KEY",undefined],[undefined,"a".repeat(64)]])("keeps incomplete Circle configuration non-live",async(apiKey,entitySecret)=>{
+  const f=privateFixture();vi.stubEnv("CIRCLE_API_KEY",apiKey);vi.stubEnv("CIRCLE_ENTITY_SECRET",entitySecret);
+  const state=await loadExistingDemoState(f.rpc,"VIEW-NAMESPACE",f.packet.records,f.packet.state_binding);
+  expect(state.providerAdapter.name).toBe("fake-testnet");
+ });
  it("validates exactly five approved canonical records and returns them only through authenticated existing-state projection",async()=>{
   const f=privateFixture();expect(parseOperatorSource(f.bytes,f.hash).records).toHaveLength(5);
   const response=await f.readers.list(new Request("https://operator.example.invalid"));expect(response.status).toBe(200);expect((await response.json()).total_count).toBe(5);
