@@ -54,6 +54,20 @@ describe("controlled obligation read isolation",()=>{
   expect(historicalState.exportSnapshot()).toEqual(new DemoState(undefined,undefined,undefined,undefined,{},historical).exportSnapshot());expect(controlledState.exportSnapshot()).toEqual(new DemoState(undefined,undefined,undefined,undefined,{},[f.record]).exportSnapshot());
  });
  it("denies unauthenticated requests before either source or state is read",async()=>{const operator=vi.fn(),controlled=vi.fn(),load=vi.fn();const readers=createObligationReaders(async()=>{throw new AccessError("SESSION_REQUIRED",401);},load,operator,controlled);expect((await readers.list(new Request("https://operator.example.invalid"))).status).toBe(401);expect(operator).not.toHaveBeenCalled();expect(controlled).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();});
+ it("keeps the five view-only obligations available after controlled financial authority expires",async()=>{
+  const f=fixture(),historical=syntheticSourceRecords(),historicalState=new DemoState(undefined,undefined,undefined,undefined,{},historical);
+  const operatorView={records:historical,state_binding:{namespace:"OPERATOR-VIEW",revision:1,authority_sha256:"b".repeat(64)}};
+  vi.setSystemTime(Date.parse(f.source.expires_at));
+  const load=vi.fn(async(_records:readonly {obligation_id:string}[],_binding?:unknown,_namespace?:string)=>historicalState);
+  const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),load as never,()=>operatorView,()=>loadOptionalFinancialSourceAdmission());
+  const list=await readers.list(new Request("https://operator.example.invalid")),body=await list.json();
+  expect(list.status).toBe(200);expect(body.total_count).toBe(5);expect(body.obligations.map((item:{obligation_id:string})=>item.obligation_id)).toEqual(historical.map(item=>item.obligation_id));
+  const historicalDetail=await readers.detail(new Request("https://operator.example.invalid"),historical[0].obligation_id);
+  expect(historicalDetail.status).toBe(200);expect(await historicalDetail.json()).toMatchObject({financial_action_eligible:false});
+  expect((await readers.detail(new Request("https://operator.example.invalid"),f.record.obligation_id)).status).toBe(404);
+  expect(()=>loadFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);
+  expect(load.mock.calls.every(call=>call[2]===undefined)).toBe(true);
+ });
 });
 
 describe("git-sha Preview financial authority binding",()=>{
@@ -67,6 +81,7 @@ describe("git-sha Preview financial authority binding",()=>{
  ])("rejects stale or swapped runtime binding before state/provider work: %o",override=>{fixture();for(const [key,value] of Object.entries(override))vi.stubEnv(key,value);expect(()=>loadFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);expect(()=>loadFinancialRequesterBinding()).toThrow(/UNAVAILABLE/);});
  it("rejects swapped source/requester packet binding",()=>{const f=fixture();const requester={...f.requester,git_commit_sha:"e".repeat(40)};const bytes=JSON.stringify(requester);writeFileSync(join(root!,".tameion/financial-requester.json"),bytes);vi.stubEnv("TAMEION_FINANCIAL_REQUESTER_SHA256",createHash("sha256").update(bytes).digest("hex"));expect(()=>loadFinancialRequesterBinding()).toThrow(/UNAVAILABLE/);});
  it("treats partial financial authority as invalid instead of silently hiding it",()=>{fixture();rmSync(join(root!,".tameion/financial-requester.json"));expect(()=>loadOptionalFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);});
+ it("does not hide a wrong-deployment binding merely because the packet is expired",()=>{const f=fixture();vi.setSystemTime(Date.parse(f.source.expires_at));vi.stubEnv("VERCEL_GIT_COMMIT_SHA","e".repeat(40));expect(()=>loadOptionalFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);});
 });
 
 describe("server-only financial authority build input",()=>{
