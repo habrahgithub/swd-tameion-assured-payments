@@ -23,7 +23,7 @@ export interface FinancialDependencies {
  load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>)=>Promise<DemoState>;
  preflight?:typeof runJ2aReadOnlyPreflight;
  /** Trusted capability boundary; never selected by HTTP or environment flags. */
- providerBoundary?:()=>Promise<void>;
+ providerBoundary?:(revalidate:()=>Promise<void>)=>Promise<void>;
 }
 function reply(code:string,status:number,extra:Record<string,unknown>={}){return Response.json({code,...extra},{status,headers:{'Cache-Control':'no-store',Pragma:'no-cache'}});}
 /** One capability adapter; no hosted switch and no body-supplied actor identity. */
@@ -50,7 +50,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     await checkContext();return actor;};
    const checkRequester=async()=>{await resolveCurrentRequester();};
    load=()=>deps.load(source,checkRequester);
-   if(kind==='preflight'||kind==='execute'||kind==='reconcile')await deps.providerBoundary?.();
+   if(kind==='preflight'||kind==='execute'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
    const state=await load();const actor=state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
    if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
    await checkContext();
@@ -101,7 +101,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
   }
  };
 }
-export const financialHandlers=createFinancialHandlers({providerBoundary:async()=>{throw new AccessError("PROVIDER_BALANCE_NOT_VERIFIED",503);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate)=>{
+export const financialHandlers=createFinancialHandlers({providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate)=>{
  const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);
  return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate});
 }});
