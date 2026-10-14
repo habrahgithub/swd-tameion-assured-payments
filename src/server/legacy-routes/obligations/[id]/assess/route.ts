@@ -1,4 +1,5 @@
-// Internal legacy operation retained for mocked regressions only. No HTTP route imports this module.
+import type {AssessmentState} from '../../../../assessment-state';
+// Shared durable assessment operation; authenticated adapters admit its source and capabilities.
 import { NextResponse } from "next/server";
 
 import { buildFinanceAgentContext } from "../../../../../agent/context-builder";
@@ -8,7 +9,6 @@ import {
   DEMO_ORGANIZATION_ID,
   getDemoState,
   type AssessmentOperation,
-  type DemoState,
 } from "../../../../demo-state";
 import { DemoStateConflictError } from "../../../../supabase-demo-state-repository";
 import { hasCurrentProductTrustEvidence } from "../../../../../authority/aggregate";
@@ -21,7 +21,7 @@ const RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export function createAssessmentHandler(load: () => Promise<DemoState> = getDemoState, revalidate: () => Promise<void> = async () => {}) {
+export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {}) {
 const getDemoState = load;
 function reservationExpired(operation: AssessmentOperation): boolean {
   return operation.status === "RESERVED" && Date.now() - (operation.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS;
@@ -51,7 +51,7 @@ function isIdempotencyKey(value: string | null): value is string {
   return value !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
 
-function responseFor(state: DemoState, operation: AssessmentOperation): AssessmentResponse | null {
+function responseFor(state: AssessmentState, operation: AssessmentOperation): AssessmentResponse | null {
   if (!operation.assessment_hash) return null;
   const sealed = state.store.getAssessmentHistory(DEMO_ORGANIZATION_ID, operation.obligation_id)
     .find((assessment) => assessment.hash === operation.assessment_hash);
@@ -78,7 +78,7 @@ function responseFor(state: DemoState, operation: AssessmentOperation): Assessme
   };
 }
 
-function existingOperationResponse(state: DemoState, operation: AssessmentOperation) {
+function existingOperationResponse(state: AssessmentState, operation: AssessmentOperation) {
   if (operation.status === "UNKNOWN") {
     return NextResponse.json(
       { status: "UNKNOWN", idempotency_key: operation.idempotency_key, error: "Provider completion is ambiguous. This operation will not be retried automatically.", code: "ASM-UNKNOWN" },
@@ -115,7 +115,7 @@ function persistenceUnknownResponse(idempotencyKey: string) {
   );
 }
 
-async function markUnknownAndReply(state: DemoState, idempotencyKey: string) {
+async function markUnknownAndReply(state: AssessmentState, idempotencyKey: string) {
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
     if (!operation || operation.status !== "RESERVED") break;
@@ -134,7 +134,7 @@ async function markUnknownAndReply(state: DemoState, idempotencyKey: string) {
   return existingOperationResponse(latest, operation);
 }
 
-async function sealDurableProviderResult(idempotencyKey: string, initialState: DemoState) {
+async function sealDurableProviderResult(idempotencyKey: string, initialState: AssessmentState) {
   let state = initialState;
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
@@ -162,7 +162,7 @@ async function sealDurableProviderResult(idempotencyKey: string, initialState: D
   return persistenceUnknownResponse(idempotencyKey);
 }
 
-async function persistProviderResult(idempotencyKey: string, assessment: DurableAssessmentRecord, initialState: DemoState) {
+async function persistProviderResult(idempotencyKey: string, assessment: DurableAssessmentRecord, initialState: AssessmentState) {
   let state = initialState;
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
@@ -200,7 +200,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     return NextResponse.json({ error: "A valid Idempotency-Key UUID is required for assessment." }, { status: 400 });
   }
 
-  let state: DemoState | undefined;
+  let state: AssessmentState | undefined;
   let aggregateVersion: number | undefined;
   let reserved = false;
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
@@ -291,6 +291,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
 
   const assessmentRecord: DurableAssessmentRecord = {
     assessment_id: `ASM-${idempotencyKey}`,
+    ...(state.sourceRecordHash(id)?{source_record_sha256:state.sourceRecordHash(id)}:{}),
     organization_id: DEMO_ORGANIZATION_ID,
     obligation_id: id,
     aggregate_version: String(aggregateVersion),

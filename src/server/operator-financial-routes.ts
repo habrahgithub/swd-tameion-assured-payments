@@ -1,3 +1,4 @@
+import {verifyLinkedActivation} from './linked-instruction-activation';
 import {sealPaymentRelease,matchesPaymentRelease,paymentReleaseBindings,type PaymentReleaseRecord,type PaymentReleaseBinding,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {buildFinanceAgentContext,hasCurrentControlledInstruction} from "../agent/context-builder";
 import {z} from 'zod';
@@ -24,6 +25,7 @@ export interface FinancialDependencies {
  load:(source:FinancialSourceAdmission,revalidate:()=>Promise<void>,assertAtSend?:(approval:PaymentReleaseApproval|undefined)=>void)=>Promise<DemoState>;
  preflight?:typeof runJ2aReadOnlyPreflight;
  /** Trusted capability boundary; never selected by HTTP or environment flags. */
+ verifyLink?:(source:FinancialSourceAdmission)=>Promise<void>;
  providerBoundary?:(revalidate:()=>Promise<void>)=>Promise<void>;
 }
 function reply(code:string,status:number,extra:Record<string,unknown>={}){return Response.json({code,...extra},{status,headers:{'Cache-Control':'no-store',Pragma:'no-cache'}});}
@@ -44,7 +46,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
    const source=deps.source(),requester=deps.requester();
    const sourceIdentity=JSON.stringify(source),requesterIdentity=JSON.stringify(requester);
    if(source.source.obligation_id!==selected||source.organization_id!==requester.organization_id||source.namespace!==requester.namespace||!sameFinancialBinding(source,requester)||source.intent_id!==requester.intent_id||requester.operator_key!==auth.session.operator_key||requester.credential_version!==auth.session.credential_version)throw new AccessError('REQUESTER_UNVERIFIED',403);
-   const checkContext=async()=>{await auth.revalidate();if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
+   const checkContext=async()=>{await auth.revalidate();if(source.linked_instruction){if(!deps.verifyLink)throw new AccessError('LINK_SOURCE_UNVERIFIED',403);await deps.verifyLink(source);}if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity)throw new AccessError('FINANCIAL_AUTHORITY_CHANGED',403);};
    let requiredRelease: {record_sha256:string; expected:Partial<PaymentReleaseRecord> & Partial<PaymentReleaseBinding>} | undefined;
    let load!:()=>Promise<DemoState>;
    const resolveCurrentRequester=async()=>{await checkContext();const current=await load();const actor=current.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
@@ -145,7 +147,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
   }
  };
 }
-export const financialHandlers=createFinancialHandlers({providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate,assertAtSend)=>{
+export const financialHandlers=createFinancialHandlers({verifyLink:verifyLinkedActivation,providerBoundary:async(revalidate)=>{const {readOperatorBalance}=await import('./operator-wallet-balance');await readOperatorBalance(revalidate);},guard:operatorHandlers.guard,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:async(source,revalidate,assertAtSend)=>{
  const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);
  return loadExistingFinancialState(new SupabaseDemoStateRepository(url,key),source.namespace,[source.source],{revalidateRequester:revalidate,assertRequesterAtProviderSend:assertAtSend});
 }});

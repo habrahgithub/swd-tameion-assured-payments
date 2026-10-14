@@ -1,3 +1,5 @@
+import {AssessmentState} from './assessment-state';
+import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {loadFinancialSourceAdmission} from "./financial-source-admission";
 import { createHash } from "node:crypto";
@@ -78,6 +80,7 @@ export interface DemoAuthorizationArtifacts {
 
 export interface DemoStateSnapshot {
   schema_version: 2;
+  linked_settlement_instructions?: LinkedInstruction[];
   authority: ReturnType<AuthorityStore["exportSnapshot"]>;
   assessment_operations: AssessmentOperation[];
   sealed_paes: Array<[string, SealedPae]>;
@@ -289,6 +292,7 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   }
   return {
     schema_version: 2,
+    ...(snapshot.linked_settlement_instructions !== undefined ? {linked_settlement_instructions:parseLinkedInstructions(snapshot.linked_settlement_instructions)} : {}),
     authority: snapshot.authority as DemoStateSnapshot["authority"],
     assessment_operations: assessmentOperations,
     sealed_paes: sealedPaes,
@@ -384,11 +388,10 @@ function toUsdcAmount(rawAmount: string, currency: string): string {
   return convertSourceToSettlement(rawAmount, currency).settlementAmount;
 }
 
-export class DemoState {
+export class DemoState extends AssessmentState {
   readonly trustedKeys = new TrustedKeyRegistry();
   readonly actorAuthorities: ActorAuthorityRegistry;
   private actorAuthorityRegistryInitialized: boolean;
-  readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   readonly adapter: FakeProviderAdapter;
   readonly providerAdapter: ProviderAdapter;
@@ -396,7 +399,6 @@ export class DemoState {
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
   private readonly authorizationHistory: DemoAuthorizationArtifacts[];
   private readonly paymentReleaseApprovals: PaymentReleaseApproval[];
-  private readonly assessmentOperations: Map<string, AssessmentOperation>;
   private readonly settlementProxies: Map<string, StoredSettlementProxy>;
   private repository?: SupabaseDemoStateRepository;
   private revision?: number;
@@ -409,10 +411,11 @@ export class DemoState {
     workerOptions: ExecutionWorkerOptions = {},
     sourceRecords: readonly LiveUsageObligationRecord[] = loadPublicSourceRecords(),
   ) {
+    super(snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore(), new Map((snapshot?.assessment_operations ?? []).map(operation=>[operation.idempotency_key,structuredClone(operation)])));
+    this.linkedInstructions = snapshot?.linked_settlement_instructions===undefined?undefined:parseLinkedInstructions(snapshot.linked_settlement_instructions);
     this.liveUsageRecords = structuredClone([...sourceRecords]);
     this.repository = repository;
     this.revision = revision;
-    this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
     this.actorAuthorityRegistryInitialized = snapshot?.actor_authority_registry_initialized ?? !snapshot;
     this.actorAuthorities = new ActorAuthorityRegistry(snapshot?.actor_authorities ?? (snapshot ? [] : [ActorAuthorityRegistry.seedP0Approver(DEMO_ORGANIZATION_ID)]));
     this.trustedKeys.restore(snapshot?.trusted_keys ?? []);
@@ -420,9 +423,6 @@ export class DemoState {
     this.sealedPaeByObligation = new Map(snapshot?.sealed_paes.map(([id, pae]) => [id, sealedPaeSchema.parse(pae)]) ?? []);
     this.authorizationHistory = (snapshot?.authorization_history ?? []).map(authorizationArtifactsParser);
     this.paymentReleaseApprovals = parsePaymentReleases(snapshot?.payment_release_approvals,this.authorizationHistory.map(a=>a.sealed_pae));
-    this.assessmentOperations = new Map(
-      (snapshot?.assessment_operations ?? []).map((operation) => [operation.idempotency_key, { ...operation }]),
-    );
     this.settlementProxies = new Map((snapshot?.settlement_proxies ?? []).map((item) => [item.preflight.obligation_id, structuredClone(item)]));
     this.providerAdapter = adapter ?? this.adapter;
     this.worker = new ExecutionWorker(this.store, this.providerAdapter, () => this.flush(), this.trustedKeys, {
@@ -631,23 +631,6 @@ export class DemoState {
     return structuredClone(stored);
   }
 
-  getAssessmentOperation(idempotencyKey: string): AssessmentOperation | undefined {
-    const operation = this.assessmentOperations.get(idempotencyKey);
-    return operation ? { ...operation } : undefined;
-  }
-
-  findUnresolvedAssessmentOperation(obligationId: string, aggregateVersion: number): AssessmentOperation | undefined {
-    const operation = this.findUnresolvedAssessmentOperations(obligationId)
-      .find((item) => item.aggregate_version === aggregateVersion);
-    return operation ? { ...operation } : undefined;
-  }
-
-  findUnresolvedAssessmentOperations(obligationId: string): AssessmentOperation[] {
-    return [...this.assessmentOperations.values()]
-      .filter((item) => item.obligation_id === obligationId && ["RESERVED", "PROVIDER_RESULT_DURABLE", "UNKNOWN"].includes(item.status))
-      .map((item) => ({ ...item }));
-  }
-
   hasLivePaeAuthority(obligationId: string): boolean {
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
     const hasSealedPae = Boolean(this.getSealedPae(obligationId));
@@ -671,76 +654,6 @@ export class DemoState {
     if (preauthorizationMaterialChange) return false;
 
     return aggregate.pae_state !== "UNUSED";
-  }
-
-  reserveAssessmentOperation(idempotencyKey: string, obligationId: string, aggregateVersion: number, reservedAt = Date.now()): AssessmentOperation {
-    const existing = this.assessmentOperations.get(idempotencyKey);
-    if (existing) {
-      if (existing.obligation_id !== obligationId) throw new Error("Idempotency key is already bound to a different assessment request.");
-      return { ...existing };
-    }
-    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
-    if (aggregate.aggregate_version !== aggregateVersion) {
-      throw new Error("Assessment aggregate changed before provider submission.");
-    }
-    if (this.hasLivePaeAuthority(obligationId)) throw new Error("Assessment is closed after authorization or PAE creation.");
-    const unresolved = this.findUnresolvedAssessmentOperation(obligationId, aggregateVersion);
-    if (unresolved) throw new Error("Another assessment operation is unresolved for this obligation and aggregate version.");
-    const operation: AssessmentOperation = {
-      idempotency_key: idempotencyKey,
-      obligation_id: obligationId,
-      aggregate_version: aggregateVersion,
-      status: "RESERVED",
-      reserved_at: reservedAt,
-    };
-    this.assessmentOperations.set(idempotencyKey, operation);
-    return { ...operation };
-  }
-
-  checkpointAssessmentResult(idempotencyKey: string, record: DurableAssessmentRecord): AssessmentOperation {
-    const operation = this.assessmentOperations.get(idempotencyKey);
-    if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for a provider result.");
-    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
-      operation.status = "STALE";
-      delete operation.reserved_at;
-      return { ...operation };
-    }
-    const validated = durableAssessmentRecordSchema.parse(record);
-    if (validated.obligation_id !== operation.obligation_id || validated.aggregate_version !== String(operation.aggregate_version) ||
-        validated.assessment_id !== `ASM-${operation.idempotency_key}`) {
-      throw new Error("Provider result does not match its reserved assessment operation.");
-    }
-    operation.status = "PROVIDER_RESULT_DURABLE";
-    operation.provider_result = validated;
-    return { ...operation };
-  }
-
-  markAssessmentUnknown(idempotencyKey: string): AssessmentOperation {
-    const operation = this.assessmentOperations.get(idempotencyKey);
-    if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for UNKNOWN transition.");
-    operation.status = "UNKNOWN";
-    return { ...operation };
-  }
-
-  completeAssessmentOperation(idempotencyKey: string): AssessmentOperation {
-    const operation = this.assessmentOperations.get(idempotencyKey);
-    if (!operation || operation.status !== "PROVIDER_RESULT_DURABLE" || !operation.provider_result) {
-      throw new Error("Assessment operation has no durable provider result to seal.");
-    }
-    const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
-      operation.status = "STALE";
-      delete operation.provider_result;
-      delete operation.reserved_at;
-      return { ...operation };
-    }
-    const sealed = this.store.sealAssessment(operation.provider_result);
-    operation.status = "COMPLETED";
-    operation.assessment_hash = sealed.assessment_hash;
-    delete operation.provider_result;
-    delete operation.reserved_at;
-    return { ...operation };
   }
 
   setSealedPae(obligationId: string, sealed: SealedPae): void {
@@ -795,9 +708,12 @@ export class DemoState {
     await this.flush();
   }
 
+  private readonly linkedInstructions: LinkedInstruction[]|undefined;
+
   exportSnapshot(): DemoStateSnapshot {
     return {
       schema_version: 2,
+      ...(this.linkedInstructions!==undefined ? {linked_settlement_instructions:structuredClone(this.linkedInstructions)} : {}),
       authority: this.store.exportSnapshot(),
       assessment_operations: [...this.assessmentOperations.values()].map((operation) => ({ ...operation })),
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
@@ -833,6 +749,7 @@ export class J2aRealTestnetDemoState {
   readonly trustedKeys = new TrustedKeyRegistry();
   readonly actorAuthorities: ActorAuthorityRegistry;
   private actorAuthorityRegistryInitialized: boolean;
+  private readonly linkedInstructions: LinkedInstruction[]|undefined;
   readonly store: AuthorityStore;
   readonly worker: ExecutionWorker;
   private readonly sealedPaeByObligation: Map<string, SealedPae>;
@@ -850,6 +767,7 @@ export class J2aRealTestnetDemoState {
     providerAdapter?: ProviderAdapter,
     workerOptions: ExecutionWorkerOptions = {},
   ) {
+    this.linkedInstructions = snapshot?.linked_settlement_instructions===undefined?undefined:parseLinkedInstructions(snapshot.linked_settlement_instructions);
     this.store = snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore();
     this.actorAuthorityRegistryInitialized = snapshot?.actor_authority_registry_initialized ?? !snapshot;
     this.actorAuthorities = new ActorAuthorityRegistry(snapshot?.actor_authorities ?? (snapshot ? [] : [ActorAuthorityRegistry.seedP0Approver("ORG-TAMEION-TESTNET-DEMO")]));
@@ -963,6 +881,7 @@ export class J2aRealTestnetDemoState {
   exportSnapshot(): DemoStateSnapshot & { j2a_preflight: J2aPreflightResult | null } {
     return {
       schema_version: 2,
+      ...(this.linkedInstructions!==undefined?{linked_settlement_instructions:structuredClone(this.linkedInstructions)}:{}),
       authority: this.store.exportSnapshot(),
       assessment_operations: [],
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),

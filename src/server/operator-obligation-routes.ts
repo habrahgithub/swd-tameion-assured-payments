@@ -1,3 +1,4 @@
+import {contentHash} from '../domain/linked-instruction';
 import {paymentReleaseBindings} from '../domain/payment-release-approval';
 import {operatorHandlers,privateJson,accessFailure,type AuthContext} from './operator-auth';
 import {methodNotAllowed} from './route-access-policy';
@@ -34,10 +35,13 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
       let response:Response;
       const selectedState=controlledMember?controlledState:operatorState;
       if(packet){const sealed=selectedState!.getSealedPae(id!);if(!sealed)return privateJson({error:'No sealed PAE for this obligation.'},409);const {buildJ2PrimeApprovalPacket,renderJ2PrimeApprovalPacketText}=await import('../pipeline/prime-approval-packet');const value=buildJ2PrimeApprovalPacket(sealed);response=privateJson({packet:value,text:renderJ2PrimeApprovalPacketText(value)});}
-      else if(id===undefined){const {projectObligationListData}=await import('./obligation-read-model');const parts=[...(operatorState?[projectObligationListData(operatorState,binding?"GENUINE_COMPANY":"UNVERIFIED")]:[]),...(controlledState?[projectObligationListData(controlledState,"DEMO_ARC_TESTNET")]:[])];const obligations=parts.flatMap(part=>part.obligations);response=privateJson({obligations,assessed_count:obligations.filter(item=>item.assessed).length,total_count:obligations.length});}
+      else if(id===undefined){const {projectObligationListData}=await import('./obligation-read-model');const parts=[...(operatorState?[projectObligationListData(operatorState,binding?"GENUINE_COMPANY":"UNVERIFIED",Boolean(binding?.workflow_base_sha256))]:[]),...(controlledState?[projectObligationListData(controlledState,"DEMO_ARC_TESTNET")]:[])];const obligations=parts.flatMap(part=>part.obligations);response=privateJson({obligations,assessed_count:obligations.filter(item=>item.assessed).length,total_count:obligations.length});}
       else {const {projectObligationDetail}=await import('./obligation-read-model');
         let bindings;try {if(controlledMember)bindings=paymentReleaseBindings(controlled,loadFinancialRequesterBinding());}catch { /* readable, but no release capability */ }
-        response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{...bindings,namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined,controlledMember?"DEMO_ARC_TESTNET":binding?"GENUINE_COMPANY":"UNVERIFIED");}
+        response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{...bindings,namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined,controlledMember?"DEMO_ARC_TESTNET":binding?"GENUINE_COMPANY":"UNVERIFIED",binding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===id)):undefined);}
+      if(id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256){
+        const data=await response.json();response=privateJson({...data,advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]});
+      }
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}
   }

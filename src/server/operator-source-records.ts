@@ -30,12 +30,13 @@ export const operatorSourceRecordSchema = z.object({
     if (new Set(record.source_evidence.map(item => item.evidence_id)).size !== record.source_evidence.length) throw new Error();
   } catch { context.addIssue({ code: "custom", message: "Canonical source record invalid" }); }
 });
-export interface OperatorStateBinding { namespace: string; revision: number; authority_sha256: string }
+export interface OperatorStateBinding { namespace: string; revision: number; authority_sha256: string; workflow_base_sha256?: string }
 export interface OperatorSourceView { records: readonly LiveUsageObligationRecord[]; state_binding: OperatorStateBinding }
 const packetFields = { state_binding: z.object({ namespace: text(), revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), authority_sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), purpose: z.literal("OPERATOR_VIEW_ONLY"), organization_id: z.literal("ORG-DEMO-001") };
 // V1 remains exactly five records. V2 is an explicitly approved genuine-view
 // catalog, not a controlled financial source or permission to seed missing state.
 const packetSchema = z.union([
+  z.object({ ...packetFields, purpose:z.literal("GENUINE_ADVISORY_SOURCE"), schema_version:z.literal(3), provenance:z.literal("GENUINE_COMPANY_OBLIGATIONS"),record_count:z.number().int().min(1).max(50),records:z.array(operatorSourceRecordSchema).min(1).max(50), state_binding:packetFields.state_binding.extend({workflow_base_sha256:z.string().regex(/^[a-f0-9]{64}$/)}) }).strict().refine(packet=>packet.record_count===packet.records.length),
   z.object({ ...packetFields, records: z.array(operatorSourceRecordSchema).length(5) }).strict(),
   z.object({ ...packetFields, schema_version: z.literal(2), provenance: z.literal("GENUINE_COMPANY_OBLIGATIONS"), record_count: z.number().int().min(1).max(50), records: z.array(operatorSourceRecordSchema).min(1).max(50) }).strict()
     .refine(packet => packet.record_count === packet.records.length),

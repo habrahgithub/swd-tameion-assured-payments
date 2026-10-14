@@ -9,7 +9,7 @@ const text=z.string().min(1).max(128),hash=z.string().regex(/^[a-f0-9]{64}$/),or
 const temporal={approval_id:text,organization_id:z.literal('ORG-DEMO-001'),namespace:text,valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3})};
 const legacyContext=z.object({...temporal,deployment_id:text}).strict();
 const gitShaPreviewContext=z.object({...temporal,binding:z.literal('git-sha-preview-v1'),git_commit_sha:z.string().regex(/^[a-f0-9]{40}$/),project_id:text,environment:z.literal('preview'),origin,ingress_approval_id:text,ingress_record_sha256:hash,source_record_sha256:hash}).strict();
-const sourceFields={purpose:z.literal('TESTNET_FINANCIAL_SOURCE'),intent_id:text,classification:z.literal('TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'),principal:z.literal('1.000000'),estimated_fee_ceiling:z.literal('0.002000'),estimated_total_ceiling:z.literal('1.002000'),source:operatorSourceRecordSchema};
+const sourceFields={linked_instruction:z.object({source_obligation_id:text,instruction_content_sha256:hash}).strict().optional(),purpose:z.literal('TESTNET_FINANCIAL_SOURCE'),intent_id:text,classification:z.literal('TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'),principal:z.literal('1.000000'),estimated_fee_ceiling:z.literal('0.002000'),estimated_total_ceiling:z.literal('1.002000'),source:operatorSourceRecordSchema};
 const requesterFields={purpose:z.literal('FINANCIAL_REQUESTER_ACTOR_BINDING'),operator_key:text,credential_version:z.number().int().positive(),actor_id:text,source_sha256:hash,intent_id:text};
 const sourceSchema=z.union([legacyContext.extend(sourceFields),gitShaPreviewContext.extend(sourceFields)]);
 const requesterSchema=z.union([legacyContext.extend(requesterFields),gitShaPreviewContext.extend(requesterFields)]);
@@ -36,6 +36,7 @@ function openApproved(name:string,expected:string|undefined):Uint8Array{return a
 function parseFinancialSourceWithStatus(bytes:Uint8Array,expected:string,env:Record<string,string|undefined>,now:number){
  const packet=sourceSchema.parse(parseCanonical(bytes)),status=contextStatus(packet,env,now);
  if(!/^TESTNET-CONTROLLED-[A-Za-z0-9_.:-]+$/.test(packet.source.obligation_id)||packet.source.amount!=='1.00'||packet.source.currency!=='USD'||packet.source.issue_date!=null||packet.source.due_date!==null||packet.source.effective_due_date!=null||packet.source.effective_due_date_basis!=null||packet.source.business_purpose_confirmed!==false||packet.source.source_evidence.some(e=>!e.content_sha256))throw new Error();
+ if(packet.source.obligation_id.startsWith('TESTNET-CONTROLLED-LINKED-')&&!packet.linked_instruction)throw new Error();
  if('binding' in packet&&createHash('sha256').update(JSON.stringify(packet.source)).digest('hex')!==packet.source_record_sha256)throw new Error();
  if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error();return {packet:structuredClone(packet),status};
 }

@@ -1,4 +1,5 @@
 "use client";
+import type {LinkedInstruction} from "../src/domain/linked-instruction";
 import {TameionBrand} from "./tameion-brand";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -69,6 +70,8 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  advisory_action_eligible?: boolean;
+  linked_testnet_instructions?: LinkedInstruction[];
   source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   financial_action_eligible: boolean;
   truth: PaymentTruthLayers;
@@ -2239,7 +2242,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
         if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/assess`, {}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${detail.advisory_action_eligible===true?"advisory":"assess"}`, {}, {
         "Idempotency-Key": assessmentRequestKey.current.key,
       });
       if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
@@ -2828,8 +2831,15 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
-  } else if (detail?.financial_action_eligible === true && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+  } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = { label: "Run AI Assessment", actor: "Finance Agent", run: () => { void runAssessment(); } };
+  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
+    workspaceAction={label:"Create linked testnet instruction",actor:"You · draft only, payment authority required",run:()=>{
+      const assessment=detail.current_assessment!;
+      const storageKey=`tameion.link-request.${selectedId}.${assessment.assessment_hash}`;
+      let key=localStorage.getItem(storageKey);if(!key){key=crypto.randomUUID();localStorage.setItem(storageKey,key);}
+      void run("linked instruction",()=>postCommand(`/api/obligations/${selectedId}/testnet-instruction`,{expected_version:detail.aggregate.aggregate_version,assessment_id:assessment.assessment_id,assessment_hash:assessment.assessment_hash},{"Idempotency-Key":key!}));
+    }};
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
   } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
@@ -3173,9 +3183,15 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && (
             <section role="status" aria-label="View-only obligation" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only obligation</p>
-              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.</p>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">{detail.advisory_action_eligible===true?"You can request an advisory assessment and create a separate linked Arc Testnet instruction draft. Payment preparation and execution require independently approved controlled authority. The genuine payable remains outstanding.":"This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation."}</p>
             </section>
           )}
+
+          {detail?.advisory_action_eligible===true && (detail.linked_testnet_instructions?.length??0)>0 && <section aria-label="Linked Arc Testnet instructions" className="rounded border border-[var(--color-border)] p-3">
+            <h2 className="font-semibold">Linked Arc Testnet instructions</h2>
+            <p className="text-sm">Drafts require separate controlled approval before preparation or payment. Testnet activity does not pay the genuine supplier.</p>
+            {detail.linked_testnet_instructions?.map(row=><div key={row.instruction_id} className="mt-2 min-w-0 border-t border-[var(--color-border)] pt-2 text-sm"><p className="break-all">{row.instruction_id}</p><p>Draft · payment authority required</p></div>)}
+          </section>}
 
           {!isInitialObligationScreen && <section aria-label="Guided lifecycle" className={viewedStage === "Obligation" ? "space-y-2 border-b border-[var(--color-border)] pb-2" : "border-b border-[var(--color-border)] pb-1 md:space-y-2 md:pb-2"}>
             {viewedStage === "Obligation" ? <div className="rounded border border-[var(--color-border)] px-3 py-2">

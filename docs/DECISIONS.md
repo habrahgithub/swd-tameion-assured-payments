@@ -161,3 +161,38 @@ fixtures through the shared production code. Withdrawn-source and requester
 denials, retired synthetic HTTP routes, signing trust and execution guards remain
 in force. Original003 remains `OUTCOME_UNVERIFIED / NO_RETRY`; the historical
 hosted HTTP 500 outcome has not been inspected or resolved by this correction.
+
+### 2026-10-14 — Genuine advisory and separately linked testnet drafts
+
+Job #65 admits advisory assessment of genuine company records separately from
+payment authority. V1/V2 private catalogs retain their exact revision/hash
+read-only contract. Explicit V3 `GENUINE_ADVISORY_SOURCE` catalogs additionally
+pin the canonical authority object with `assessments` removed; their approved
+minimum revision permits assessment history and instruction-draft CAS writes
+without permitting aggregate/source/version changes. The catalog bytes still
+pin the genuine records. Changing those facts requires a new approved binding.
+
+The advisory adapter reuses the durable assessment reservation/result engine
+without constructing a signer, Circle adapter or payment worker. Existing
+financial/recovery identities cannot be reopened through this capability.
+New genuine assessment receipts also seal the exact source-record SHA256;
+draft creation, activation and current-assessment projection require that hash.
+Reapproved source text at an unchanged aggregate version cannot reuse an older
+assessment. Missing commercial facts remain findings; no invoice, supplier or destination
+verification is invented to obtain PAY.
+
+The portal can append an immutable, separately identified Arc Testnet instruction
+draft bound to source content/version and the exact current assessment. Creation
+is idempotent and CAS-protected, performs no provider call, and grants no payment
+permission. The additive CAS migration protects the complete linked-history
+prefix against overlapping old writers. Application parse/restore/export retains
+it on unrelated writes. Migration application and V3 catalog activation require
+separate reviewed operational authority; shipping this code alone activates neither.
+
+Linked financial admission still requires the existing exact controlled
+source/requester packet and separate namespace. An additional gate verifies the
+linked draft, current genuine source/version and current assessment before any
+financial action or provider-send revalidation. Existing USD1 controlled-shape,
+expiry, actor, signing, preflight, assurance, release and no-retry controls remain.
+The draft is not another payable, and testnet activity never discharges the
+genuine supplier liability. No automatic reset of historical attempts is added.

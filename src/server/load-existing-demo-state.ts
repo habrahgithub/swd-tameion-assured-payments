@@ -1,3 +1,5 @@
+import {genuineHasFinancialHistory} from './genuine-authority-boundary';
+import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {ActorAuthorityRegistry} from '../authority/actor-authority';
 import {createHash} from "node:crypto";
@@ -15,7 +17,7 @@ import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState=Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState={canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
 export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding):Promise<ExistingState> {
@@ -25,15 +27,18 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     if(result.code||!Number.isSafeInteger(result.revision)||(result.revision as number)<1)throw new Error();
     const s=result.snapshot as DemoStateSnapshot;
     if(!s||s.schema_version!==2||s.actor_authority_registry_initialized!==true||!Array.isArray(s.actor_authorities)||!Array.isArray(s.trusted_keys)||!Array.isArray(s.execution_ledger)||!Array.isArray(s.sealed_paes)||!Array.isArray(s.authorization_history))throw new Error();
-    if(binding&&(binding.namespace!==namespace||binding.revision!==result.revision||createHash("sha256").update(canonicalize(s.authority)).digest("hex")!==binding.authority_sha256))throw new Error();
+    if(binding)validateOperatorBinding(s,result.revision as number,namespace,binding);
     const store=AuthorityStore.fromSnapshot(s.authority),trustedKeys=new TrustedKeyRegistry();trustedKeys.restore(s.trusted_keys);
     const sealed=new Map(s.sealed_paes.map(([id,pae])=>[id,sealedPaeSchema.parse(pae)]));
     const releases=parsePaymentReleases(s.payment_release_approvals,s.authorization_history.map(a=>a.sealed_pae));
     const actorAuthorities=new ActorAuthorityRegistry(s.actor_authorities);
+    const linkedInstructions=parseLinkedInstructions(s.linked_settlement_instructions);
     const records=structuredClone(sourceRecords);
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     return {store,trustedKeys,
+      canAssessGenuine:id=>!genuineHasFinancialHistory(s,id),
+      getLinkedInstructions:id=>linkedInstructions.filter(r=>r.source_obligation_id===id),
       resolveDesignatedApprover:(organizationId=DEMO_ORGANIZATION_ID,now=new Date())=>actorAuthorities.resolveDesignatedApprover(organizationId,now),
       getPaymentReleaseApproval:id=>releases.find(a=>a.record.namespace===namespace&&a.record.pae_instruction_hash===sealed.get(id)?.instruction_hash),
       listObligations:()=>records.map(r=>({obligation_id:r.obligation_id,service_category:r.service_category,amount:r.amount,currency:r.currency,recurrence:r.recurrence,due_date:r.due_date,commercial_terms:r.commercial_terms})),
@@ -47,4 +52,12 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
       providerAdapter:{name:process.env.CIRCLE_API_KEY&&process.env.CIRCLE_ENTITY_SECRET?'arc-circle-live':'fake-testnet'},
     };
   }catch{throw new AccessError('STATE_UNAVAILABLE',503);}
+}
+
+/** V3 permits advisory history additions while pinning every non-assessment authority fact. */
+export function validateOperatorBinding(snapshot:DemoStateSnapshot,revision:number,namespace:string,binding:OperatorStateBinding){
+ if(binding.namespace!==namespace||!Number.isSafeInteger(revision)||revision<binding.revision)throw new Error('SOURCE_BINDING_CHANGED');
+ const digest=(value:unknown)=>createHash('sha256').update(canonicalize(value)).digest('hex');
+ if(binding.workflow_base_sha256){const {assessments,...base}=snapshot.authority;if(digest(base)!==binding.workflow_base_sha256)throw new Error('SOURCE_BINDING_CHANGED');if(revision===binding.revision&&digest(snapshot.authority)!==binding.authority_sha256)throw new Error('SOURCE_BINDING_CHANGED');}
+ else if(revision!==binding.revision||digest(snapshot.authority)!==binding.authority_sha256)throw new Error('SOURCE_BINDING_CHANGED');
 }
