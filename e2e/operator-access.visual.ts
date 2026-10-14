@@ -15,7 +15,7 @@ test('mock session enables only manual balance and logout hides private view',as
  if(path==='/api/wallet/balance/refresh')return route.fulfill({json:{amount:'12.345678',asset:'USDC',captured_at:new Date().toISOString(),network:'ARC-TESTNET',verification:'READ_ONLY_BALANCE'}});
  if(path==='/api/operator/logout')return route.fulfill({status:503,json:{code:'LOGOUT_UNVERIFIED'}});
  return route.fulfill({status:403,json:{code:'MOCK_UNADMITTED'}});});
- await page.goto('/');await page.getByText('Operator',{exact:true}).click();await expect(page.getByText('Operator session verified')).toBeVisible();await expect(page.getByText('Tameion Testnet Demonstration Organization')).toBeVisible();await expect(page.getByText('ORG-DEMO-001')).toBeVisible();expect(calls.filter(p=>p.includes('refresh'))).toEqual([]);
+ await page.goto('/');await page.getByText('Operator',{exact:true}).click();const workspace=page.getByRole('region',{name:'Operator session and workspace'});await expect(workspace.getByText('Operator session verified')).toBeVisible();await expect(workspace.getByText('Tameion Testnet Demonstration Organization')).toBeVisible();await expect(workspace.getByText('ORG-DEMO-001')).toBeVisible();expect(calls.filter(p=>p.includes('refresh'))).toEqual([]);
  await page.getByRole('button',{name:'Color theme: system'}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','light');
  await page.getByRole('button',{name:'Color theme: light'}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 24, 39)');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);

@@ -682,6 +682,24 @@ describe("Command Center mounted Operational Report", () => {
     });
   });
 
+  it("shows purposeful AI assessment progress while the request is in flight", async () => {
+    const assessment = deferred<Response>();
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [obligation("OBL-A")] }));
+      if (url.endsWith("/assess") && init?.method === "POST") return assessment.promise;
+      return Promise.resolve(response(detail("OBL-A")));
+    });
+    renderWithExplicitFirstSelection();
+    fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
+    const progress = await screen.findByRole("status", { name: "AI assessment in progress" });
+    expect(progress.textContent).toContain("Reviewing obligation evidence");
+    const action=screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);expect(action.textContent).toBe("Assessing obligation…");
+    assessment.resolve(response({ error: "Assessment unavailable." }, 503));
+    await waitFor(() => expect(screen.queryByRole("status", { name: "AI assessment in progress" })).toBeNull());
+  });
+
   it("announces the selected surface programmatically and gives refusal feedback alert semantics", async () => {
     fetchMock.mockImplementation((input, init) => {
       const url = String(input);

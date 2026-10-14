@@ -1425,15 +1425,21 @@ function PrimaryButton({
   disabled,
   children,
   danger,
+  ariaLabel,
+  busy,
 }: {
   onClick: () => void;
   disabled?: boolean;
   children: React.ReactNode;
   danger?: boolean;
+  ariaLabel?: string;
+  busy?: boolean;
 }) {
   return (
     <button
       data-primary-action="true"
+      aria-label={ariaLabel}
+      aria-busy={busy}
       onClick={onClick}
       disabled={disabled}
       className={`min-h-[44px] w-fit rounded px-4 py-2 text-[13px] font-semibold tracking-wide text-white transition disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1565,6 +1571,7 @@ function AssessmentFeedbackBanner({ feedback, onRefreshQueue }: { feedback: Asse
     <section role="status" aria-live={announcement ? "assertive" : "polite"} aria-atomic="true" aria-label="Assessment request status"
       data-testid="assessment-request-feedback" data-feedback-kind={feedback.kind}
       className={`space-y-1 rounded border-s-4 ${tone} bg-[var(--color-surface)] px-3 py-2`}>
+      {feedback.kind === "in-flight" && <div role="status" aria-label="AI assessment in progress" className="mb-2 flex items-center gap-3 rounded-lg bg-[var(--color-bg)] px-3 py-2 text-[12px] font-semibold text-[var(--color-ink)]"><span aria-hidden="true" className="flex items-center gap-1"><span className="ai-pulse-dot"/><span className="ai-pulse-dot"/><span className="ai-pulse-dot"/></span><span>Reviewing obligation evidence</span></div>}
       <h3 className="text-[13px] font-semibold text-[var(--color-ink)]">{feedback.title}</h3>
       {onRefreshQueue && <button type="button" onClick={onRefreshQueue} className="min-h-11 rounded border border-[var(--color-border-strong)] px-3 py-2 text-start text-[12px] font-semibold underline">Refresh queue summary (read-only)</button>}
       <p className="text-[12px] leading-4 text-[var(--color-ink-muted)]">{feedback.message}</p>
@@ -1883,6 +1890,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+  const [activeActionLabel, setActiveActionLabel] = useState<string | null>(null);
   const activeRunCount = useRef(0);
   const obligationsRequestGeneration = useRef(0);
   const assessmentRequestKey = useRef<{ obligationId: string; key: string } | null>(null);
@@ -2033,6 +2041,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
     const stillCurrent = () => isCurrentGeneration(generation, selectionGeneration.current) && isSameIdentity(selectedRef.current, targetId);
     activeRunCount.current += 1;
     setBusy(true);
+    setActiveActionLabel(label);
     setStageCompletionReceipt(null);
     let actionSucceeded = false;
     let assessmentResponse: { ok: boolean; status: number; data: unknown } | null = null;
@@ -2140,6 +2149,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
       await refreshObligations(false, true, generation);
       activeRunCount.current = Math.max(0, activeRunCount.current - 1);
       setBusy(activeRunCount.current > 0);
+      if(activeRunCount.current===0)setActiveActionLabel(null);
     }
   };
 
@@ -2871,13 +2881,16 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
   };
 
   return (
-    <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-2 px-4 py-3 md:gap-3 md:px-6 md:py-3">
-      <header className="relative -mx-4 flex flex-col items-start justify-between gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2 sm:flex-row sm:items-baseline md:-mx-6 md:px-6">
-        <div>
+    <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-3 px-4 py-3 md:gap-4 md:px-6 md:py-4">
+      <header className="relative -mx-4 flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2.5 md:-mx-6 md:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <img src="/icon.svg" alt="" width="34" height="34" className="hidden size-[34px] rounded-lg shadow-sm sm:block"/>
+          <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-muted)]">
             Tameion
           </p>
-          <h1 className="text-lg font-semibold text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="sr-only sm:not-sr-only"> — Command Center</span>:" — Command Center"}</h1>
+          <h1 className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="sr-only sm:not-sr-only"> — Command Center</span>:" — Command Center"}</h1>
+          </div>
         </div>
         {operatorControls}
       </header>
@@ -2969,7 +2982,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           </div>
         </aside>
 
-        <section className="order-2 flex min-w-0 flex-col gap-2 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 md:order-2 md:p-4" aria-label="Selected obligation details">
+        <section className="order-2 flex min-w-0 flex-col gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-3 shadow-[var(--shadow-soft)] md:order-2 md:p-4" aria-label="Selected obligation details">
           {!selected && listPresentation === "loading" && <p role="status" className="px-1 text-[13px] text-[var(--color-ink-muted)] md:hidden">Loading payment obligations…</p>}
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
@@ -3579,7 +3592,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             )}
           </div>
 
-          {!isInitialObligationScreen && <details className={`rounded border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
+          {!isInitialObligationScreen && <details className={`rounded-lg border border-[var(--color-border)] px-3 py-2 ${viewedStage === "Obligation" ? "relative -top-2" : ""}`}>
             <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Related payment information</summary>
             <nav aria-label="Secondary tools" className="border-t border-[var(--color-border)] pt-2">
               <button
@@ -3591,9 +3604,9 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
           </details>}
 
           {!isInitialObligationScreen && panel !== "report" && detailState === "loaded" && detail && (
-            <details className="rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]" title={`Payment activity · ${activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no dated activity · current position available on open"}`}>
-                <span className="inline-block w-[calc(100%-1.5rem)] truncate align-top">Payment activity · {activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no dated activity · current position available on open"}</span>
+            <details className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+              <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]" title={`Transaction ledger · Payment activity · ${activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no dated activity · current position available on open"}`}>
+                <span className="inline-block w-[calc(100%-1.5rem)] truncate align-top">Transaction ledger · Payment activity · {activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no dated activity · current position available on open"}</span>
               </summary>
               <section aria-label="Payment activity and records" className="space-y-4 border-t border-[var(--color-border)] pt-3">
                 <div>
@@ -3820,7 +3833,7 @@ export function CommandCenter({operatorControls,walletSummary,walletBalance,csrf
             <p className={`${contextualAction ? "hidden sm:block" : "line-clamp-2"} text-sm leading-5 text-[var(--color-ink-muted)]`}>{contextualStatus}</p>
             {!contextualAction && <p className="hidden text-sm text-[var(--color-ink-muted)] sm:block">Owner: {recoveryOwner}</p>}
           </div>
-          {contextualAction && <PrimaryButton disabled={busy || (contextualAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{contextualAction.label}</PrimaryButton>}
+          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy} disabled={busy || (contextualAction.exactConfirmation && (!exactPacketSubmissionReady || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{busy&&activeActionLabel==='assess'?'Assessing obligation…':contextualAction.label}</PrimaryButton>}
         </div>
       </section>
     </main>
