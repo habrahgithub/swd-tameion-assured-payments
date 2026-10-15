@@ -3174,8 +3174,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             <h3 className="text-sm font-semibold">Payables overview</h3>
             <p className="mt-1 text-xs text-[var(--color-ink-muted)]">Current queue summary</p>
             <ul className="mt-2 divide-y divide-[var(--color-border)]">
-              {obligations.filter(o => o.source_group === "GENUINE_COMPANY").slice(0,6).map(o => <li key={o.obligation_id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-3 text-sm">
-                <p className="break-words font-semibold">{businessTitle(o.service_category)}</p><p className="tabular text-end font-semibold"><bdi>{businessAmount(o.amount)} {o.currency}</bdi></p>
+              {obligations.filter(o => o.source_group === "GENUINE_COMPANY").slice(0,6).map(o => <li key={o.obligation_id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-3 gap-y-1 py-3 text-sm">
+                <p className="break-words font-semibold">{businessTitle(o.service_category)}</p><p className="tabular min-w-0 break-all text-end font-semibold"><bdi>{businessAmount(o.amount)} {o.currency}</bdi></p>
                 <p className="col-span-2 break-words text-xs text-[var(--color-ink-muted)]">{o.beneficiary_name?.trim() && o.beneficiary_name !== "Not captured" ? o.beneficiary_name : "Supplier not recorded"} · {o.due_date ? `Due ${o.due_date}` : "Due date not recorded"}</p>
                 <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{retainedAssessmentRequestKey(o.obligation_id) ? "Assessment outcome unverified" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : "Assessment required"}</p>
               </li>)}
@@ -3269,7 +3269,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     </span>
                     <span className="col-span-2 text-start text-[11px] text-[var(--color-ink-muted)]">Supplier · {o.beneficiary_name?.trim() || "Not recorded"}</span>
                     <span className="col-span-2 tabular flex flex-wrap items-baseline gap-x-2 text-start text-[15px] font-semibold text-[var(--color-ink)]">
-                      <span className="whitespace-nowrap">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
+                      <span className="min-w-0 max-w-full break-all">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
                     </span>
                     <span className="col-span-2 text-start text-[11px] font-semibold" style={{ color: statusColor }}>
                       {assessmentStatus}
@@ -3313,7 +3313,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     ? sourceText(detail.record, "service_category") : selected.service_category)}
                 </h2>
               </div>
-              <div className="min-w-0 max-w-[10rem] text-end sm:max-w-none">
+              <div className="min-w-0 max-w-[min(10rem,40vw)] text-end sm:max-w-[16rem]">
                   <p className="tabular break-all text-[17px] font-semibold leading-6 text-[var(--color-ink)] md:text-[23px] md:leading-7"><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
                 </div>
               <div className="col-span-2">

@@ -2340,3 +2340,34 @@ for (const width of [320,390]) for (const zoom of [1,2]) test(`storage-failure f
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(cssWidth);
   await page.screenshot({path:testInfo.outputPath(`storage-failure-footer-${width}-${zoom}x.png`),fullPage:true});
 });
+
+for (const width of [320,195]) for (const sample of ["large","micro"]) test(`exact ${sample} payable amounts fit overview, list and selection at ${width}px`,async({page},testInfo)=>{
+  const {DemoState}=await import("../src/server/demo-state");
+  const {projectObligationListData,projectObligationDetail}=await import("../src/server/obligation-read-model");
+  const {syntheticSourceRecords}=await import("../tests/test-support/synthetic-source-records");
+  const records=syntheticSourceRecords();const record=records.find(r=>r.currency==="USD")!;
+  record.amount=sample === "large" ? `${"9".repeat(60)}.00` : "0.000001";
+  const state=new DemoState(undefined,undefined,undefined,undefined,{},records);
+  const list=projectObligationListData(state,"GENUINE_COMPANY");
+  const value=await (await projectObligationDetail(state,record.obligation_id,false,undefined,"GENUINE_COMPANY")).json();
+  const writes:string[]=[];
+  await page.route("**/api/obligations**",route=>{
+    if(route.request().method()!=="GET"){writes.push(route.request().method());return route.fulfill({status:503,json:{error:"Offline read-only fixture"}});}
+    return route.fulfill({json:new URL(route.request().url()).pathname==="/api/obligations"?list:value});
+  });
+  await page.setViewportSize({width,height:844});await page.goto("/");await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  const overview=page.getByRole("region",{name:"Payables overview"});
+  await expect(overview).toContainText(`${record.amount} USD`);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await page.getByRole("button",{name:"Review payables",exact:true}).click();await openMobileQueue(page);
+  await expect(queueItem(page,record.obligation_id)).toContainText(`${record.amount} USD`);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await queueItem(page,record.obligation_id).click();
+  const selected=page.getByRole("region",{name:"Selected source payable"});
+  await expect(selected).toContainText(`${record.amount} USD`);
+  await expect(selected).toContainText(record.obligation_id);
+  await expect(selected).toContainText("Supplier not recorded");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  expect(writes).toEqual([]);
+  await page.screenshot({path:testInfo.outputPath(`exact-payable-amount-${sample}-${width}.png`),fullPage:true});
+});
