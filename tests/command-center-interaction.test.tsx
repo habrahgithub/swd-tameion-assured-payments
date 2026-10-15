@@ -303,6 +303,30 @@ describe("Command Center mounted Operational Report", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows the source-backed queue on a compact dashboard and opens Stage 1 without a second queue owner", async () => {
+    fetchMock.mockResolvedValue(response({obligations:[{...obligation("OBL-DASH"),source_group:"GENUINE_COMPANY",beneficiary_name:"du",due_date:"2026-10-15"}]}));
+    rtlRender(<CommandCenter initialView="dashboard" walletSummary={<div>Wallet observation</div>} />);
+    expect(await screen.findByRole("heading", {name:"Dashboard"})).toBeTruthy();
+    expect(screen.getByText("Wallet observation")).toBeTruthy();
+    expect(within(screen.getByRole("region", {name:"Company payables"})).getByText("1")).toBeTruthy();
+    const reviewPayables = screen.getByRole("button", {name:"Review payables"});
+    expect(reviewPayables).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([url])=>String(url)==="/api/obligations")).toHaveLength(1);
+    reviewPayables.focus();
+    fireEvent.click(reviewPayables, {detail: 0});
+    const stageHeading = await screen.findByRole("heading", {name:"Choose an obligation"});
+    expect(stageHeading.tabIndex).toBe(-1);
+    expect(document.activeElement).toBe(stageHeading);
+    expect(obligationRow("OBL-DASH")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([url])=>String(url)==="/api/obligations")).toHaveLength(1);
+    const dashboardButton = screen.getByRole("button", {name:"Dashboard"});
+    dashboardButton.focus();
+    fireEvent.click(dashboardButton, {detail: 0});
+    const dashboardHeading = screen.getByRole("heading", {name:"Dashboard"});
+    expect(dashboardHeading.tabIndex).toBe(-1);
+    expect(document.activeElement).toBe(dashboardHeading);
+  });
+
   it("groups server-admitted company obligations separately from testnet demo and unknown records",async()=>{
     const company={...obligation("COMPANY"),source_group:"GENUINE_COMPANY"};
     const demo={...obligation("DEMO"),source_group:"DEMO_ARC_TESTNET"};

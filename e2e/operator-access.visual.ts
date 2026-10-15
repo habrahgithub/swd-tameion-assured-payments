@@ -14,13 +14,13 @@ test('mock session enables only manual balance and logout hides private view',as
  if(path==='/api/wallet/balance/refresh')return route.fulfill({json:{amount:'12.345678',asset:'USDC',captured_at:new Date().toISOString(),network:'ARC-TESTNET',verification:'READ_ONLY_BALANCE'}});
  if(path==='/api/operator/logout')return route.fulfill({status:503,json:{code:'LOGOUT_UNVERIFIED'}});
  return route.fulfill({status:403,json:{code:'MOCK_UNADMITTED'}});});
- await page.goto('/');await page.getByRole('button',{name:'Open workspace'}).click();await page.getByText('User',{exact:true}).click();const workspace=page.getByRole('region',{name:'User session and workspace'});await expect(workspace.getByText('User session verified')).toBeVisible();await expect(workspace.getByText('Star Wealth Dynamics LLC')).toBeVisible();await expect(workspace.getByText('ORG-DEMO-001')).toBeVisible();expect(calls.filter(p=>p.includes('refresh'))).toHaveLength(1);
+ await page.goto('/');await page.getByRole('button',{name:'Open workspace'}).click();await expect(page.getByRole('heading',{name:'Dashboard'})).toBeVisible();await page.getByText('User',{exact:true}).click();const workspace=page.getByRole('region',{name:'User session and workspace'});await expect(workspace.getByText('User session verified')).toBeVisible();await expect(workspace.getByText('Star Wealth Dynamics LLC')).toBeVisible();await expect(workspace.getByText('ORG-DEMO-001')).toBeVisible();expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(0);
  await page.getByRole('button',{name:'Color theme: system'}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','light');
  await page.getByRole('button',{name:'Color theme: light'}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 24, 39)');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
  await page.getByRole('button',{name:'Color theme: dark'}).click();await expect(page.locator('html')).not.toHaveAttribute('data-theme');await page.getByText('User',{exact:true}).click();
  await page.getByRole('button',{name:'Refresh wallet balance',exact:true}).click();await expect(page.getByText(/12.345678 USDC/)).toBeVisible();
- expect(calls.filter(p=>p.includes('refresh'))).toHaveLength(2);
+ expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
  await page.getByText('User',{exact:true}).click();await page.getByRole('button',{name:'Log out',exact:true}).click();await expect(page.getByRole('status')).toContainText('Logout unverified');await expect(page.getByText(/12.345678 USDC/)).toHaveCount(0);
  expect(await page.evaluate(()=>Object.keys(localStorage))).toEqual([]);
 });
@@ -33,7 +33,7 @@ test('private entry hides data on reload and simulated BFcache restore, with res
   if(path==='/api/wallet/balance/refresh')return route.fulfill({json:{amount:'1.23',asset:'USDC',network:'ARC-TESTNET',captured_at:new Date().toISOString(),verification:'READ_ONLY_BALANCE'}});
   return route.fulfill({status:403,json:{code:'MOCK_DENIED'}});
  });
- await page.goto('/');await expect(page.getByRole('heading',{name:'Your private workspace is hidden'})).toBeVisible();
+ await page.goto('/');await expect(page.getByRole('heading',{name:'Your workspace is hidden'})).toBeVisible();
  expect(calls).toEqual(['/api/operator/session']);await expect(page.locator('button[data-obligation-id]')).toHaveCount(0);
  for(const width of [1440,1365,390,320])for(const theme of ['light','dark']){
   await page.setViewportSize({width,height:900});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
@@ -43,13 +43,14 @@ test('private entry hides data on reload and simulated BFcache restore, with res
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
   await page.screenshot({path:testInfo.outputPath(`privacy-entry-${width}-${theme}.png`),fullPage:true});
  }
- await page.getByRole('button',{name:'Open workspace'}).focus();await page.keyboard.press('Enter');await expect(page.getByText(/1.23 USDC/)).toBeVisible();expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
- await page.reload();await expect(page.getByRole('heading',{name:'Your private workspace is hidden'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
- await page.getByRole('button',{name:'Open workspace'}).click();await expect(page.getByText(/1.23 USDC/)).toBeVisible();
+ await page.getByRole('button',{name:'Open workspace'}).focus();await page.keyboard.press('Enter');await expect(page.getByRole('heading',{name:'Dashboard'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(0);
+ await page.getByRole('button',{name:'Refresh wallet balance'}).click();await expect(page.getByText(/1.23 USDC/)).toBeVisible();expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
+ await page.reload();await expect(page.getByRole('heading',{name:'Your workspace is hidden'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
+ await page.getByRole('button',{name:'Open workspace'}).click();await expect(page.getByRole('heading',{name:'Dashboard'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
  // Simulated restore: this is not proof that Chromium used native BFcache.
  await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
- await expect(page.getByRole('heading',{name:'Your private workspace is hidden'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);
- expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(2);
+ await expect(page.getByRole('heading',{name:'Your workspace is hidden'})).toBeVisible();await expect(page.getByText(/1.23 USDC/)).toHaveCount(0);
+ expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
 });
 
 test('missing session at homepage reaches branded login directly',async({page})=>{

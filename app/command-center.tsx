@@ -1903,7 +1903,11 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
 
-export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance;csrfToken?:string}={}) {
+export function CommandCenter({operatorControls,walletSummary,csrfToken,initialView="workflow"}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance;csrfToken?:string;initialView?:"dashboard"|"workflow"}={}) {
+  const [dashboardVisible, setDashboardVisible] = useState(initialView === "dashboard");
+  const dashboardHeadingRef = useRef<HTMLHeadingElement>(null);
+  const workflowContainerRef = useRef<HTMLDivElement>(null);
+  const pendingViewFocus = useRef(false);
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
   const [obligationsError, setObligationsError] = useState<string | null>(null);
@@ -1951,6 +1955,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
     focusConfirmedStageRef.current = false;
     stageHeadingRef.current?.focus({preventScroll:true});
   }, [viewedStage, panel]);
+
+  useLayoutEffect(() => {
+    if (!pendingViewFocus.current) return;
+    pendingViewFocus.current = false;
+    if (dashboardVisible) dashboardHeadingRef.current?.focus({ preventScroll: true });
+    else (stageHeadingRef.current ?? workflowContainerRef.current)?.focus({ preventScroll: true });
+  }, [dashboardVisible]);
 
   const refreshObligations = async (showLoading = false, preserveLastKnown = false, expectedSelectionGeneration?: number): Promise<
     | { status: "ready"; obligations: ObligationSummary[] }
@@ -2940,11 +2951,43 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
           <h1 aria-label="Assured Payment — Command Center" className="truncate text-lg font-semibold tracking-[-0.02em] text-[var(--color-ink)] sm:text-xl">Assured Payment{operatorControls?<span className="hidden sm:inline"> — Command Center</span>:" — Command Center"}</h1>
           </div>
         </div>
-        {operatorControls}
+        <div className="flex items-center gap-2">
+          {!dashboardVisible && initialView === "dashboard" && <button type="button" onClick={()=>{pendingViewFocus.current=true;setDashboardVisible(true);}} className="min-h-11 rounded-lg border border-[var(--color-border-strong)] px-3 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Dashboard</button>}
+          {operatorControls}
+        </div>
       </header>
       {walletSummary}
 
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
+      {dashboardVisible ? (
+        <section aria-label="Dashboard" className="flex flex-1 flex-col gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-soft)] md:p-6">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Circle · Arc · USDC</p>
+            <h2 ref={dashboardHeadingRef} tabIndex={-1} className="mt-1 text-2xl font-semibold tracking-tight text-[var(--color-ink)]">Dashboard</h2>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <section aria-label="Company payables" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Company payables</p>
+              <p className="mt-2 tabular text-2xl font-semibold text-[var(--color-ink)]">
+                {listPresentation === "loading" ? "Loading" : listPresentation === "error" ? "Unavailable" : obligations.filter((o)=>o.source_group === "GENUINE_COMPANY").length}
+              </p>
+              <p className="mt-1 text-xs text-[var(--color-ink-muted)]">{listPresentation === "loading" ? "Loading queue" : listPresentation === "error" ? "Queue could not be loaded" : "From the current payment queue"}</p>
+            </section>
+            <section aria-label="Test payments" className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">Test payments</p>
+              <p className="mt-2 tabular text-2xl font-semibold text-[var(--color-ink)]">
+                {listPresentation === "loading" ? "Loading" : listPresentation === "error" ? "Unavailable" : obligations.filter((o)=>o.source_group === "DEMO_ARC_TESTNET").length}
+              </p>
+              <p className="mt-1 text-xs text-[var(--color-ink-muted)]">Separate from company payables</p>
+            </section>
+          </div>
+          {listPresentation === "empty" && <p role="status" className="text-sm text-[var(--color-ink-muted)]">No items in the payment queue.</p>}
+          {listPresentation === "error" && <p role="alert" className="text-sm text-[var(--color-danger)]">Payment queue unavailable. Review payables to retry.</p>}
+          <div className="mt-auto flex justify-end border-t border-[var(--color-border)] pt-4">
+            <button type="button" onClick={()=>{pendingViewFocus.current=true;setDashboardVisible(false);}} className="min-h-11 rounded-lg bg-[var(--color-primary-action)] px-5 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Review payables</button>
+          </div>
+        </section>
+      ) : (
+      <div ref={workflowContainerRef} tabIndex={-1} className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
         <aside className="order-1 min-w-0 md:order-1 md:border-e md:pe-4">
           <button
             type="button"
@@ -3701,15 +3744,16 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
           )}
         </section>
       </div>
+      )}
 
-      <section role="region" aria-label="Current obligation action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 shadow-lg">
+      {!dashboardVisible && <section role="region" aria-label="Current obligation action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 shadow-lg">
         <div className="mx-auto flex max-w-[1392px] flex-nowrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{selectedId || "No obligation selected"}{selected ? ` · ${detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured" ? sourceText(detail.record, "beneficiary_name") : "Supplier not recorded"} · ${businessAmount(detailState === "loaded" && detail ? detail.record.amount : selected.amount)} ${detailState === "loaded" && detail ? detail.record.currency : selected.currency}` : ""}</p>
           </div>
           {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy} disabled={busy || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
         </div>
-      </section>
+      </section>}
     </main>
   );
 }

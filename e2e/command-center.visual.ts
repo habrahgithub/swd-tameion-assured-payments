@@ -22,6 +22,14 @@ const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "
 const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: "125.00", due_date: "2026-10-15" };
 const queueItem = (page: Page, id: string) => page.locator(`button[data-obligation-id="${id}"]`);
 const mobileQueueToggle = (page: Page) => page.getByRole("complementary").getByRole("button", { name: /^(?:Choose an obligation|Close obligation list|Switch obligation(?: ·.*)?)$/ });
+async function openReviewPayables(page: Page) {
+  const privacyEntry = page.getByRole("button", { name: "Open workspace", exact: true });
+  const reviewPayables = page.getByRole("button", { name: "Review payables", exact: true });
+  await expect(page.getByRole("button", { name: /Open workspace|Review payables/ }).first()).toBeVisible();
+  if (await privacyEntry.isVisible()) await privacyEntry.click();
+  await expect(reviewPayables).toBeVisible();
+  await reviewPayables.click();
+}
 async function openMobileQueue(page: Page) {
   await expect.poll(() => mobileQueueToggle(page).count()).toBe(1);
   const toggle = mobileQueueToggle(page);
@@ -50,6 +58,31 @@ test.beforeEach(async ({ page }) => {
     }
     return route.fulfill({ status: 503, json: { error: "Unmocked API call forbidden in browser verification." } });
   });
+});
+
+test("dashboard navigation moves keyboard focus to each destination without reloading the queue", async ({ page }) => {
+  const queueReads: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/obligations") queueReads.push(request.url());
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+  const dashboardHeading = page.getByRole("heading", { name: "Dashboard", exact: true });
+  await expect(dashboardHeading).toBeVisible();
+
+  const reviewPayables = page.getByRole("button", { name: "Review payables", exact: true });
+  await reviewPayables.focus();
+  await page.keyboard.press("Enter");
+  const stageHeading = page.getByRole("heading", { name: "Choose an obligation", exact: true });
+  await expect(stageHeading).toBeFocused();
+  await expect(stageHeading).toHaveAttribute("tabindex", "-1");
+
+  const dashboardButton = page.getByRole("button", { name: "Dashboard", exact: true });
+  await dashboardButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(dashboardHeading).toBeFocused();
+  await expect(dashboardHeading).toHaveAttribute("tabindex", "-1");
+  expect(queueReads).toHaveLength(1);
 });
 
 test("genuine first view keeps the payable, current stage, reason and legal next action in the initial viewport", async ({ page }, testInfo) => {
@@ -81,7 +114,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByText(/Payment review report/)).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Wallet funding and payment readiness" })).toHaveCount(0);
     const wallet = page.getByRole("region", { name: "Read-only wallet balance" });
-    await expect(wallet).toContainText("Balance not verified");
+    await expect(wallet).toContainText("Balance not checked");
     const balanceRefresh = wallet.getByRole("button", { name: "Refresh wallet balance" });
     await expect(balanceRefresh).toBeVisible();
     await expect(balanceRefresh).toBeEnabled();
@@ -143,7 +176,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Selected source obligation" })).toHaveCount(0);
   await queueItem(page, first.obligation_id).click();
@@ -172,7 +205,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await openMobileQueue(page);
   await queueItem(page, first.obligation_id).click();
@@ -462,7 +495,7 @@ async function openFixture(
     return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
   });
   await page.goto("/");
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   const selectedId = String(selectedDetail.record?.obligation_id ?? "OBL-UAT-01");
   const selectedRow = page.locator(`button[data-obligation-id="${selectedId}"]`);
   if (await page.evaluate(() => window.innerWidth <= 768)) {
@@ -582,7 +615,7 @@ test("clerk Assessment result renders on desktop and mobile from a read-only pro
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await openMobileQueue(page);
   await queueItem(page, "OBL-UAT-01").click();
@@ -1248,7 +1281,7 @@ test("stale detail offers only a mocked read refresh after an assessment respons
     return route.fulfill({ status: 404, json: { error: "This fixture does not permit other actions." } });
   });
   await page.goto("/");
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   await queueItem(page, "OBL-UAT-01").click();
   await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
@@ -1267,7 +1300,7 @@ test("read-only wallet summary stays readable without overflow at 200% mobile zo
   const wallet = page.getByRole("region",{name:"Read-only wallet balance"});
   const refresh = wallet.getByRole("button", { name: "Refresh wallet balance", exact: true });
   await expect(refresh).toBeEnabled();
-  await expect(wallet).toContainText("Balance not verified");
+  await expect(wallet).toContainText("Balance not checked");
   await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
   const dimensions = await wallet.evaluate(element => ({document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, wallet: element.getBoundingClientRect().toJSON(),offenders:Array.from(document.querySelectorAll("body *")).map(e=>({tag:e.tagName,text:e.textContent?.slice(0,55),right:e.getBoundingClientRect().right,width:e.getBoundingClientRect().width})).filter(e=>e.right>document.documentElement.clientWidth+1).slice(0,12)}));
   expect(dimensions.document, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewport);
@@ -1469,7 +1502,7 @@ test("failed 503 detail is presented as Unavailable, never as still Loading", as
     return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
   });
   await page.goto("/");
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await openReviewPayables(page);
   await openMobileQueue(page);
   await expect(page.locator('button[data-obligation-id="OBL-UAT-01"]')).toBeVisible();
   await page.locator('button[data-obligation-id="OBL-UAT-01"]').click();
@@ -1569,7 +1602,7 @@ test("Stage 1 queue states stay truthful with no default selection at desktop an
         return route.fulfill({ status: 404, json: { error: "Read-only queue-state fixture; no other route is enabled." } });
       });
       await statePage.goto("/");
-      await statePage.getByRole("button",{name:"Open workspace",exact:true}).click();
+      await openReviewPayables(statePage);
       await statePage.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
       await statePage.evaluate(() => document.fonts.ready.then(() => true));
 
@@ -1974,7 +2007,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       });
 
       await page.goto("/");
-  await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+      await openReviewPayables(page);
       await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
       if (viewport.width <= 768) await openMobileQueue(page);
       await queueItem(page, "OBL-J0C-003").click();

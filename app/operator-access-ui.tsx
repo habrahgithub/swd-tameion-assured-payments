@@ -34,7 +34,7 @@ export function OperatorAccessShell({eyebrow,title,description,boundary,details,
    </div>}
    {children}
   </section>
-  <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-4 text-xs text-[var(--color-ink-muted)]"><span>Private finance workspace</span><span>Payments require separate approval</span></footer>
+  <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-4 text-xs text-[var(--color-ink-muted)]"><span>Private workspace</span><span>Separate payment approval</span></footer>
  </main>;
 }
 

@@ -66,8 +66,8 @@ it('preserves CSRF bootstrap, credentials, failure wording and form reset while 
  expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
  expect((screen.getByRole('button',{name:'Sign in securely'}) as HTMLButtonElement).disabled).toBe(false);
 });
-it('returns a successful sign-in to the root privacy entry',async()=>{
+it('marks a successful sign-in for the dashboard entry without triggering a balance refresh',async()=>{
  const navigate=vi.fn();const fetcher=vi.fn().mockResolvedValueOnce(Response.json({csrf_token:'MOCK-ONLY'})).mockResolvedValueOnce(Response.json({authenticated:true}));vi.stubGlobal('fetch',fetcher);
  render(<OperatorLogin navigate={navigate}/>);fireEvent.change(screen.getByLabelText('Username'),{target:{value:'mock-user'}});fireEvent.change(screen.getByLabelText('Password'),{target:{value:'mock-password'}});fireEvent.submit(screen.getByRole('button',{name:'Sign in securely'}).closest('form')!);
- await vi.waitFor(()=>expect(navigate).toHaveBeenCalledWith('/?refresh_balance=1'));expect(sessionStorage.getItem('tameion-fresh-login')).toBeNull();
+ await vi.waitFor(()=>expect(navigate).toHaveBeenCalledWith('/'));expect(sessionStorage.getItem('tameion-fresh-login')).toBe('1');
 });
