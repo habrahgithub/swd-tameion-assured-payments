@@ -12,6 +12,7 @@ import {createSelectedPreflightHandler} from './legacy-routes/internal/demo/real
 import {approveAndSealPae,AssuranceFailedError} from '../pipeline/authorize-and-seal';
 import {AuthorityError} from '../authority/aggregate';
 import {ExecutionBlockedError} from '../execution/worker';
+import {sameEvmAddressIdentity} from '../execution/evm-address';
 import {getCurrentSettlementProxyPacket} from './settlement-proxy-packet';
 import type {runJ2aReadOnlyPreflight} from '../demo/real-testnet-payment';
 
@@ -65,7 +66,7 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     if(JSON.stringify(deps.source())!==sourceIdentity||JSON.stringify(deps.requester())!==requesterIdentity||!matchesPaymentRelease(approval,requiredRelease.expected)||approval?.record_sha256!==requiredRelease.record_sha256)throw new AccessError('PAYMENT_RELEASE_CHANGED',403);
    };
    load=()=>deps.load(source,checkRequester,assertAtSend,source.linked_instruction&&kind!=='reconcile'?checkContext:undefined);
-   if(kind==='preflight'||kind==='reconcile')await deps.providerBoundary?.(checkContext);
+   if(kind==='preflight')await deps.providerBoundary?.(checkContext);
    const state=await load();const actor=state.resolveDesignatedApprover(DEMO_ORGANIZATION_ID);
    if(actor.actor_id!==requester.actor_id)throw new AccessError('REQUESTER_UNVERIFIED',403);
    await checkContext();
@@ -123,9 +124,18 @@ export function createFinancialHandlers(deps:FinancialDependencies){
     const input=body as z.infer<typeof bodies.reconcile>;
     if(input.idempotency_key!==sealed.payload.idempotency_key||input.pae_instruction_hash!==sealed.instruction_hash)throw new AccessError('IDENTITY_MISMATCH',409);
     const previous=state.worker.getExecutionRecord(input.idempotency_key);if(!previous)throw new AccessError('NO_RECORDED_EXECUTION',409);
+    if(sealed.payload.organization_id!==source.organization_id||
+       sealed.payload.obligation_ids.length!==1||sealed.payload.obligation_ids[0]!==selected||
+       previous.obligation_id!==selected||previous.idempotency_key!==sealed.payload.idempotency_key||
+       previous.atomic_amount!==sealed.payload.atomic_amount||
+       !sameEvmAddressIdentity(previous.destination_address,sealed.payload.destination_address))throw new AccessError('IDENTITY_MISMATCH',409);
+    // Only exact uncertain executions recover without a fresh operator funding
+    // observation. Existing provider token identity and authority checks remain.
+    const uncertain=previous.status==='UNKNOWN'||previous.status==='SUBMITTING';
+    if(!uncertain)await deps.providerBoundary?.(checkContext);
     await checkRequester();effectsStarted=true;
     if(previous.status==='SUBMITTING')await state.worker.recoverSubmittingByIdempotencyKey(input.idempotency_key,DEMO_ORGANIZATION_ID);
-    const execution=['UNKNOWN','SUBMITTING'].includes(previous.status)?await state.worker.reconcilePendingByIdempotencyKey(input.idempotency_key,DEMO_ORGANIZATION_ID):previous;
+    const execution=uncertain?await state.worker.reconcilePendingByIdempotencyKey(input.idempotency_key,DEMO_ORGANIZATION_ID):previous;
     return reply(execution.status==='SETTLED'?'RECONCILED':'RECONCILIATION_ONLY',execution.status==='UNKNOWN'?202:200,{execution});
    }
    const input=body as z.infer<typeof bodies.execute>,packet=getCurrentSettlementProxyPacket(state,selected);

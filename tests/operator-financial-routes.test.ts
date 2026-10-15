@@ -17,7 +17,7 @@ describe('independent controlled testnet source admission',()=>{
  it('admits exactly the independently approved fresh source without restoring public data',()=>{const p=sourceFixture();expect(isCurrentSourceEligible(p.organization_id,p.source.obligation_id)).toBe(true);expect(loadPublicSourceRecords()).toEqual([]);expect(isCurrentSourceEligible(p.organization_id,'OBL-J0C-003')).toBe(false);});
 });
 import {loadFinancialSourceAdmission,loadFinancialRequesterBinding} from '../src/server/financial-source-admission';
-import {createFinancialHandlers} from '../src/server/operator-financial-routes';
+import {createFinancialHandlers,type FinancialDependencies} from '../src/server/operator-financial-routes';
 import {DemoState,DEMO_ORGANIZATION_ID,DEMO_SIGNING_KEY_ID,loadExistingFinancialState} from '../src/server/demo-state';
 import {ArcCircleProviderAdapter,type J2aCircleClient} from '../src/execution/provider-adapter';
 import {J2A_DEMO_SOURCE,J2A_DEMO_DESTINATION,J2A_DEMO_WALLET_SET_ID,runJ2aReadOnlyPreflight} from '../src/demo/real-testnet-payment';
@@ -387,5 +387,124 @@ describe('linked UNKNOWN execution reconciliation after genuine reassessment',()
   expect(reconciled.status).toBe(200);expect(await reconciled.json()).toMatchObject({code:'RECONCILED',execution:{status:'SETTLED'}});
   expect(vi.mocked(h.client.listTransactions).mock.calls.length).toBeGreaterThan(reads);expect(verifyLink).toHaveBeenCalledTimes(checks);expect(h.client.createTransaction).toHaveBeenCalledOnce();
   expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);expect(snapshot.authority.aggregates).toEqual(genuineAggregates);
+ });
+});
+
+describe('exact uncertain execution recovery without fresh operator funding',()=>{
+ const rejectedBalance=()=>vi.fn(async(revalidate:()=>Promise<void>)=>{await revalidate();throw new AccessError('BALANCE_NOT_VERIFIED',503);});
+ const admittedBalance=()=>vi.fn(async(revalidate:()=>Promise<void>)=>{await revalidate();});
+ function guarded(h:ReturnType<typeof controlledHarness>,providerBoundary:NonNullable<FinancialDependencies['providerBoundary']>,overrides:Partial<FinancialDependencies>={}){
+  return createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary,preflight:(_client,now,intent)=>runJ2aReadOnlyPreflight(h.client,now,intent),...overrides});
+ }
+ async function recordedUnknown(){
+  const h=controlledHarness({lostResponse:true}),p=await preparedApproval(h);
+  const sent=await h.handler('execute',h.request(p.body),p.id);expect(sent.status).toBe(202);
+  const body=await sent.json();expect(body.execution.status).toBe('UNKNOWN');expect(h.client.createTransaction).toHaveBeenCalledOnce();
+  return {h,p,identity:{idempotency_key:body.execution.idempotency_key as string,pae_instruction_hash:p.a.pae_instruction_hash as string}};
+ }
+ const statusReads=(h:ReturnType<typeof controlledHarness>)=>vi.mocked(h.client.listTransactions).mock.calls.length+vi.mocked(h.client.getTransaction).mock.calls.length;
+
+ it.each(['100.000000','0'])('cold-restores exact UNKNOWN with current token amount %s without a new operator balance check',async amount=>{
+  const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance();
+  // Keep the existing fixture's native token identity; change only current funds.
+  const balances:any=structuredClone(await h.client.getWalletTokenBalance({id:J2A_DEMO_SOURCE.id}));
+  balances.data.tokenBalances[0].amount=amount;vi.mocked(h.client.getWalletTokenBalance).mockResolvedValue(balances);
+  const loads=h.load.mock.calls.length,result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({code:'RECONCILED',execution:{status:'SETTLED',idempotency_key:identity.idempotency_key}});
+  expect(h.load.mock.calls.length).toBeGreaterThan(loads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();
+  expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');
+ });
+ it.each(['unavailable','wrong token'])('retains UNKNOWN when native token identity is %s without resending',async fault=>{
+  const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance();
+  if(fault==='unavailable')vi.mocked(h.client.getWalletTokenBalance).mockRejectedValue(new Error('Synthetic token identity unavailable'));
+  else{const balances:any=structuredClone(await h.client.getWalletTokenBalance({id:J2A_DEMO_SOURCE.id}));balances.data.tokenBalances[0].token.id='SYNTHETIC-WRONG-TOKEN';vi.mocked(h.client.getWalletTokenBalance).mockResolvedValue(balances);}
+  const reads=statusReads(h),result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(202);expect(await result.json()).toMatchObject({code:'RECONCILIATION_ONLY',execution:{status:'UNKNOWN'}});
+  expect(statusReads(h)).toBeGreaterThan(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');
+ });
+ it.each(['obligation','amount','destination','malformed destination'])('rejects a cold-restored %s mismatch before status or persistence',async fault=>{
+  const {h,p,identity}=await recordedUnknown(),boundary=admittedBalance(),record=h.snapshot().execution_ledger[0]!;
+  if(fault==='obligation')record.obligation_id=p.id+'-OTHER';
+  if(fault==='amount')record.atomic_amount=(BigInt(record.atomic_amount)+1n).toString();
+  if(fault==='destination')record.destination_address='0x'+'9'.repeat(40);
+  if(fault==='malformed destination')record.destination_address='not-an-address';
+  const before=structuredClone(h.snapshot()),reads=statusReads(h),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length,loads=h.load.mock.calls.length;
+  const result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
+  expect(h.load.mock.calls.length).toBeGreaterThan(loads);expect(result.status).toBe(409);expect(await result.json()).toMatchObject({code:'IDENTITY_MISMATCH'});
+  expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it('accepts an equivalent canonical lowercase destination in the restored row',async()=>{
+  const {h,p,identity}=await recordedUnknown();h.snapshot().execution_ledger[0]!.destination_address=h.snapshot().execution_ledger[0]!.destination_address.toLowerCase();
+  const result=await guarded(h,rejectedBalance())('reconcile',h.request(identity),p.id);expect(result.status).toBe(200);expect(await result.json()).toMatchObject({execution:{status:'SETTLED'}});expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it.each(['foreign key','empty key','malformed key','oversize key','wrong hash','wrong selected source','no recorded execution'])('denies %s without provider status or durable changes',async fault=>{
+  const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance(),input={...identity};let id=p.id;
+  if(fault==='foreign key')input.idempotency_key+='-OTHER';if(fault==='empty key')input.idempotency_key='';if(fault==='malformed key')input.idempotency_key+='\n';if(fault==='oversize key')input.idempotency_key='x'.repeat(257);if(fault==='wrong hash')input.pae_instruction_hash='0'.repeat(64);if(fault==='wrong selected source')id+='-OTHER';if(fault==='no recorded execution')h.snapshot().execution_ledger=[];
+  const before=structuredClone(h.snapshot()),reads=statusReads(h),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const result=await guarded(h,boundary)('reconcile',h.request(input),id);
+  expect(result.status).toBe(['empty key','malformed key','oversize key'].includes(fault)?400:fault==='wrong selected source'?403:409);
+  expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it('denies recovery without a sealed PAE before operator balance or provider reads',async()=>{
+  const h=controlledHarness();await h.sealCurrent();const before=structuredClone(h.snapshot()),boundary=rejectedBalance();
+  const result=await guarded(h,boundary)('reconcile',h.request({idempotency_key:'SYNTHETIC-NO-INSTRUCTION',pae_instruction_hash:'0'.repeat(64)}),h.source.source.obligation_id);
+  expect(result.status).toBe(409);expect(await result.json()).toMatchObject({code:'CURRENT_PAE_REQUIRED'});expect(statusReads(h)).toBe(0);expect(boundary).not.toHaveBeenCalled();expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each([401,403])('preserves initial guard denial %s before state or provider access',async status=>{
+  const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance(),loads=h.load.mock.calls.length,reads=statusReads(h);
+  const result=await guarded(h,boundary,{guard:async()=>{throw new AccessError(status===401?'SESSION_REQUIRED':'CSRF_REJECTED',status);}})('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(status);expect(h.load.mock.calls.length).toBe(loads);expect(statusReads(h)).toBe(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it.each(['revoked session','changed requester'])('%s during provider status work prevents a durable status commit or resend',async fault=>{
+  const {h,p,identity}=await recordedUnknown(),before=structuredClone(h.snapshot()),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const original=vi.mocked(h.client.listTransactions).getMockImplementation()!;
+  vi.mocked(h.client.listTransactions).mockImplementation(async input=>{const value=await original(input);if(fault==='revoked session')h.revoke();else{const bytes=JSON.stringify({...h.requester,credential_version:2});writeFileSync(join(directory!,'.tameion/financial-requester.json'),bytes);vi.stubEnv('TAMEION_FINANCIAL_REQUESTER_SHA256',createHash('sha256').update(bytes).digest('hex'));}return value;});
+  const result=await guarded(h,rejectedBalance())('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false,execution_gate:'RECONCILIATION_ONLY'});
+  expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it('keeps the durable UNKNOWN on reconciliation CAS conflict',async()=>{
+  const {h,p,identity}=await recordedUnknown(),before=structuredClone(h.snapshot());vi.mocked(h.repo.compareAndSet).mockRejectedValueOnce(new DemoStateConflictError());
+  const result=await guarded(h,rejectedBalance())('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false});expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it('concurrent exact recovery commits once through CAS and never submits again',async()=>{
+  const {h,p,identity}=await recordedUnknown(),revision=h.revision(),boundary=rejectedBalance(),action=guarded(h,boundary);
+  const original=vi.mocked(h.client.listTransactions).getMockImplementation()!;let entered=0;let release!:()=>void;const ready=new Promise<void>(resolve=>{release=resolve;});
+  vi.mocked(h.client.listTransactions).mockImplementation(async input=>{if(++entered===2)release();await ready;return original(input);});
+  const results=await Promise.all([action('reconcile',h.request(identity),p.id),action('reconcile',h.request(identity),p.id)]);
+  expect(results.map(r=>r.status).sort()).toEqual([200,503]);expect(h.revision()).toBe(revision+1);expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it('recovers an actual durable SUBMITTING claim with lost acknowledgment without creating a transfer',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h),persist=vi.mocked(h.repo.compareAndSet).getMockImplementation()!;
+  vi.mocked(h.repo.compareAndSet).mockImplementation(async(...args)=>{const revision=await persist(...args);if(h.snapshot().execution_ledger.some(row=>row.status==='SUBMITTING'))throw new Error('Synthetic lost durable claim acknowledgment');return revision;});
+  const sent=await h.handler('execute',h.request(p.body),p.id);expect(sent.status).toBe(503);expect(h.snapshot().execution_ledger[0]?.status).toBe('SUBMITTING');expect(h.client.createTransaction).not.toHaveBeenCalled();
+  vi.mocked(h.repo.compareAndSet).mockImplementation(persist);const key=h.snapshot().execution_ledger[0]!.idempotency_key,boundary=rejectedBalance();
+  const result=await guarded(h,boundary)('reconcile',h.request({idempotency_key:key,pae_instruction_hash:p.a.pae_instruction_hash}),p.id);
+  expect(result.status).toBe(202);expect(await result.json()).toMatchObject({execution:{status:'UNKNOWN',idempotency_key:key}});expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['SETTLED','FAILED','BLOCKED'] as const)('retains the fresh operator gate for an already-terminal %s record',async status=>{
+  const {h,p,identity}=await recordedUnknown();h.snapshot().execution_ledger[0]!.status=status;
+  const before=structuredClone(h.snapshot()),boundary=rejectedBalance(),reads=statusReads(h),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'BALANCE_NOT_VERIFIED'});expect(boundary).toHaveBeenCalledOnce();expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it.each(['preflight','execute'] as const)('still requires current operator balance before new %s effects',async kind=>{
+  const h=controlledHarness(),p=await preparedApproval(h),before=structuredClone(h.snapshot()),boundary=rejectedBalance(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const body=kind==='preflight'?{obligation_id:p.id,expected_version:p.body.expected_version}:p.body;
+  const result=await guarded(h,boundary)(kind,h.request(body),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'BALANCE_NOT_VERIFIED'});expect(boundary).toHaveBeenCalledOnce();expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('keeps a positive execute funding gate and authenticated revalidation before the single send',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h),boundary=admittedBalance(),checks=vi.mocked(h.auth.revalidate).mock.calls.length;
+  const result=await guarded(h,boundary)('execute',h.request(p.body),p.id);
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({execution:{status:'SETTLED'}});expect(boundary).toHaveBeenCalledOnce();expect(vi.mocked(h.auth.revalidate).mock.calls.length).toBeGreaterThan(checks);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ });
+ it.each(['source','requester'])('keeps expired %s admission denied and preserves the historical UNKNOWN',async fault=>{
+  const {h,p,identity}=await recordedUnknown(),before=structuredClone(h.snapshot()),reads=statusReads(h);
+  if(fault==='source')vi.spyOn(Date,'now').mockReturnValue(Date.parse(h.source.expires_at));
+  else{const bytes=JSON.stringify({...h.requester,expires_at:new Date(Date.now()-1).toISOString()});writeFileSync(join(directory!,'.tameion/financial-requester.json'),bytes);vi.stubEnv('TAMEION_FINANCIAL_REQUESTER_SHA256',createHash('sha256').update(bytes).digest('hex'));}
+  const result=await guarded(h,rejectedBalance())('reconcile',h.request(identity),p.id);
+  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'FINANCIAL_AUTHORITY_UNAVAILABLE'});expect(statusReads(h)).toBe(reads);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
 });
