@@ -172,10 +172,10 @@ test("real-record Authorization lineage remains bound to the manually selected o
 
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
   await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
+  await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("synthetic service 003");
   await gotoStage(page, "Assessment");
-  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("8.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Assessment result — PAY");
   await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");
@@ -186,10 +186,10 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await page.getByRole("button", { name: /Switch obligation/ }).click();
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
   await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
+  await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("synthetic service 003");
   await gotoStage(page, "Assessment");
-  await expect(page.getByRole("region", { name: "Selected source obligation" })).toContainText("8.00 USD");
-  await expect(page.getByRole("region", { name: "Selected source obligation" }).locator("h2")).toContainText("synthetic service 003");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("8.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("synthetic service 003");
   await expect(page.getByTestId("assessment-result-card")).toContainText("Assessment result — PAY");
   await expect(page.getByTestId("payment-eligibility")).toContainText("PAY is advisory");
   await expect(page.getByTestId("assessment-result-card")).not.toContainText("OBL-J0C-001");

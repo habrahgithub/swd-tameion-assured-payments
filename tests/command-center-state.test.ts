@@ -4,6 +4,7 @@ import type { RaceAssessment } from "../src/agent/schema";
 import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay, type AssessmentTraceStep } from "../src/client/command-center-state";
 
 import {
+  payableBlockers,
   authorizationPanelCopy,
   aggregateVersionLabel,
   assessmentCoverageLabel,
@@ -527,5 +528,57 @@ describe("selected-but-loading or failed detail is named as such, never as no se
 describe("first unmet prerequisite is named for Execution and Reconciliation before assessment", () => {
   it("names assessment as the first unmet prerequisite before all are assessed", () => {
     expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
+  });
+});
+
+describe("payable blocker classification uses recorded facts", () => {
+  const current = () => ({record:{obligation_id:"OBL-CLARITY",amount:"1.00",currency:"USD"},aggregate:{aggregate_version:1,amount:"1.000000000000000001",asset:"USDC",network:"ARC_TESTNET",destination_verification_status:"VERIFIED"}, financial_action_eligible:false,current_assessment:null,execution:null}) as any;
+  const classify = (detail: any, extra: Record<string, any> = {}) => payableBlockers({detail,state:"loaded",selectedId:"OBL-CLARITY",stage:"Assessment",...extra});
+  it("does not fabricate a HOLD from an absent supplier or an unassessed source", () => {
+    expect(classify(current())).toEqual([]);
+    expect(classify(current(), {selectedId:"OTHER"})[0].kind).toBe("unavailable");
+    expect(classify(current(), {state:"stale"})[0].kind).toBe("unavailable");
+  });
+  it("separates pending, unavailable completion, and old confirmed HOLD", () => {
+    const detail = current();
+    const base = {obligationId:"OBL-CLARITY",expectedVersion:"1",selectionGeneration:1,message:"",durability:"",nextStep:"",owner:""};
+    expect(classify(detail,{feedback:{...base,kind:"pending"},requestKey:"retained"})[0].kind).toBe("assessment-pending");
+    expect(classify(detail,{feedback:{...base,kind:"unconfirmed"},requestKey:"retained"})[0].kind).toBe("assessment-unverified");
+    expect(classify(detail,{requestKey:"retained"})[0].responsible).toContain("Unassigned");
+    expect(classify(detail,{feedback:{...base,kind:"unconfirmed",statusCode:"AUTH_UNAVAILABLE"},requestKey:"retained"})[0].kind).toBe("system-unavailable");
+  });
+  it("distinguishes missing authority from a confirmed assessment recommendation", () => {
+    const detail = current(); detail.current_assessment={obligation_id:"OBL-CLARITY",assessment_id:"ASM-CLARITY",assessment_hash:"a".repeat(64),aggregate_version:"1",decision:"PAY",reasons:["Checks complete."]};
+    expect(classify(detail)[0].kind).toBe("authority-absent");
+    expect(classify(detail)[0].impact).toContain("execution are unavailable");
+  });
+  it("requires a bound provider shortfall and never infers it from the displayed wallet", () => {
+    const detail = current();
+    const balance={amount:"0.000001",asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-15T12:00:00.000Z"};
+    const response={obligationId:"OBL-CLARITY",aggregateVersion:1,label:"proxy preflight",status:409,ok:false,data:{readiness:"BLOCKED",blocker:"INSUFFICIENT_BALANCE"}};
+    expect(classify(detail,{stage:"Payment",response})[0].kind).toBe("funding-shortfall");
+    expect(classify(detail,{stage:"Payment",response})[0].lastVerified).toBeUndefined();
+    expect(classify(detail,{stage:"Payment"}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+    expect(classify(detail,{stage:"Payment",response:{...response,status:503,data:{code:"PROVIDER_BALANCE_NOT_VERIFIED"}}})[0].kind).toBe("funding-unverified");
+    expect(classify(detail,{stage:"Payment",walletBalance:balance}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+    expect(classify(detail,{stage:"Payment",response:{...response,obligationId:"OTHER"}}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+    expect(classify(detail,{stage:"Payment",response:{...response,aggregateVersion:2}}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+    expect(classify(detail,{stage:"Payment",response:{...response,status:200}}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+    expect(classify(detail,{stage:"Payment",response:{...response,data:{blocker:"INSUFFICIENT_BALANCE"}}}).some(b=>b.kind.startsWith("funding"))).toBe(false);
+  });
+  it("reports an unresolved recipient only from the recorded verification status", () => {
+    const detail=current();detail.aggregate.destination_verification_status="PENDING_VERIFICATION";
+    expect(classify(detail,{stage:"Authorization"}).find(b=>b.kind==="beneficiary-unverified")?.evidence).toContain("Destination status: PENDING_VERIFICATION");
+  });
+  it("prioritizes UNKNOWN execution over assessment and funding without a retry action", () => {
+    const detail=current();detail.execution={status:"UNKNOWN",idempotency_key:"same-submission",provider_ref:"original-ref"};
+    const blockers=classify(detail,{stage:"Payment",requestKey:"assessment-retained"});
+    expect(blockers[0].kind).toBe("execution-unknown");
+    expect(blockers[0].reason).toContain("Do not retry");
+    expect(blockers[0].action).toBe("reconcile");
+    expect(blockers[0].evidence).toContain("Submission reference: same-submission");
+    expect(blockers[0].lastVerified).toBeUndefined();
+    detail.execution=null;
+    expect(classify(detail,{executionResponse:{label:"execute",obligationId:"OBL-CLARITY",status:0,ok:false,data:{code:"OUTCOME_UNVERIFIED"}}})[0].kind).toBe("execution-unknown");
   });
 });

@@ -1927,10 +1927,9 @@ test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in
         const lifecycleParagraphs = document.querySelectorAll('[aria-label="Guided lifecycle"] p');
         const boxes = [
           ["selected obligation identity", find('[aria-label="Selected source payable"] h2')],
-          ["viewed stage and step", lifecycleParagraphs[0] ?? null],
-          ["current/viewed context", lifecycleParagraphs[1] ?? null],
-          ["UNKNOWN stage status", find('[aria-label="Payment status"] h3') ?? find('[aria-label="Reconciliation receipt"] p')],
-          ["no-resubmission guidance", find('[aria-label="Payment status"] [role="status"]') ?? find('[aria-label="Reconciliation receipt"] p')],
+          ["UNKNOWN outcome headline", find('[aria-label="Hold reason and next action"] h3')],
+          ["no-resubmission guidance", find('[aria-label="Hold reason and next action"] p')],
+          ["impact, next action and responsibility", find('[aria-label="Hold reason and next action"] dl')],
           ["reconciliation action", find('main button[data-primary-action="true"]')],
         ] as const;
         return {
@@ -2022,8 +2021,9 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       await page.getByRole("button", { name: "Run AI Assessment" }).click();
       const feedback = page.getByRole("status", { name: "Assessment request status" });
       await expect(feedback).toBeVisible();
-      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "not a current assessment result" : "Assessment result is unavailable");
-      await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "Assessment pending" : "Assessment unavailable");
+      await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Refresh assessment status" })).toBeVisible();
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
       const viewStages = ["Obligation", "Assessment"] as const;
       for (const stage of viewStages) {
@@ -2081,7 +2081,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
         if (stage === "Assessment") {
           const queueReadsBefore = requests.filter((entry) => entry === "GET /api/obligations").length;
           const detailReadsBefore = requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003").length;
-          await feedback.getByRole("button", { name: "Refresh queue summary (read-only)" }).click();
+          await page.getByRole("button", { name: "Refresh assessment status" }).click();
           await expect(feedback).toContainText("read-only queue summary was refreshed");
           expect(requests.filter((entry) => entry === "GET /api/obligations")).toHaveLength(queueReadsBefore + 1);
           expect(requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003")).toHaveLength(detailReadsBefore);
@@ -2208,4 +2208,44 @@ test("stale consent and unavailable release never offer approval or payment", as
     await expect(page.getByRole('button',{name:'Pay testnet USDC'})).toHaveCount(0);
     expect(writes).toEqual([]);await page.close();
   }
+});
+
+for (const width of [1365, 390]) for (const unresolved of [false, true]) test(`HOLD clarity and no-retry at ${width}, unresolved ${unresolved}`, async ({page}, info) => {
+  await page.setViewportSize({width,height:900});
+  const source=await actualSourcePayFixtures(page);
+  const held=structuredClone(source.payDetailById["OBL-J0C-003"]);
+  held.financial_action_eligible=false;held.advisory_action_eligible=true;
+  held.current_assessment.decision="HOLD";
+  held.current_assessment.reasons=["Source evidence is incomplete."];
+  held.current_assessment.race.result={decision:"HOLD",decision_summary:"Source evidence is incomplete.",validated_findings:[{code:"SOURCE_EVIDENCE_MISSING",severity:"HOLD",reason:"Source evidence is incomplete."}]};
+  held.current_assessment.race.remediation=[{finding_code:"SOURCE_EVIDENCE_MISSING",reason:"Source evidence is incomplete.",required_action:"Attach and validate the source evidence.",required_evidence:["Approved source invoice"],owner_role:"Accounts Payable",reassess_after_resolution:true}];
+  const mutations:string[]=[];
+  await page.route("**/api/**",route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(route.request().method()!=="GET")mutations.push(path);
+    if(path==="/api/operator/session")return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(path==="/api/wallet/balance/refresh")return route.fulfill({status:503,json:{code:"BALANCE_NOT_VERIFIED"}});
+    if(path==="/api/obligations")return route.fulfill({json:{obligations:source.queue.map(row=>({...row,decision:row.obligation_id==="OBL-J0C-003"?"HOLD":row.decision}))}});
+    if(path==="/api/obligations/OBL-J0C-003")return route.fulfill({json:held});
+    return route.fulfill({status:503,json:{code:"UNMOCKED_ACTION_FORBIDDEN"}});
+  });
+  if(unresolved)await page.addInitScript(()=>localStorage.setItem("tameion.assessment-request.OBL-J0C-003","MOCK-RETAINED-REQUEST"));
+  await page.goto("/");await openReviewPayables(page);
+  if(width<768)await openMobileQueue(page);
+  await queueItem(page,"OBL-J0C-003").click();
+  const reason=page.getByRole("region",{name:"Hold reason and next action"});
+  await expect(reason).toBeVisible();
+  await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
+  await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
+  await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
+  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh assessment status":"Review missing evidence"});
+  await primary.focus();await page.keyboard.press("Enter");
+  await expect(page.getByRole("button",{name:"Reassess after correction"})).toHaveCount(0);
+  expect(mutations.filter(path=>path!=="/api/wallet/balance/refresh")).toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
+  if(unresolved)expect(await page.evaluate(()=>localStorage.getItem("tameion.assessment-request.OBL-J0C-003"))).toBe("MOCK-RETAINED-REQUEST");
+  await page.locator("#hold-technical-details").evaluate((el:HTMLDetailsElement)=>{el.open=false;});
+  const path=info.outputPath(`hold-clarity-${width}-${unresolved?"unverified":"confirmed"}.png`);
+  await page.screenshot({path,fullPage:true});await info.attach("hold-clarity",{path,contentType:"image/png"});
+  const axe=await new AxeBuilder({page}).analyze();expect(axe.violations).toEqual([]);
 });

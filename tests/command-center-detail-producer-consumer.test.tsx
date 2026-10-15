@@ -320,6 +320,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(selectedObligationInitialStage(null)).toBe("Obligation");
   });
   beforeEach(() => {
+    localStorage.clear();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     delete process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
@@ -1738,13 +1739,14 @@ describe("real detail GET producer-consumer packet controls", () => {
     navigateStage("Assessment");
 
     const card = screen.getByRole("region", { name: "Assessment result" });
-    const explanation = within(card).getByRole("region", { name: "Why this payment is on hold" });
-    expect(explanation.textContent).toContain("Recorded due date: 14 Oct 2026");
-    expect(explanation.textContent).toContain("Assessment date: 14 Oct 2026");
-    expect(explanation.textContent).toContain("Required correction");
+    const explanation = screen.getByRole("region", { name: "Hold reason and next action" });
+    expect(explanation.textContent).toContain("A normalized obligation field requires review against its source.");
+    expect(explanation.textContent).not.toContain("date consistency check");
+    expect(explanation.textContent).not.toContain("Last verified");
+    expect(explanation.textContent).toContain("Review the normalized field and correct it from authoritative source evidence.");
     expect(explanation.textContent).toContain("Source evidence supporting the corrected normalized field");
-    expect(within(card).getByRole("button", { name: "Reassess after correction" })).toBeTruthy();
-    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Reassess after correction");
+    expect(within(card).queryByRole("button", { name: "Reassess after correction" })).toBeNull();
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Review assessment evidence");
   });
 
   it("promotes only the existing eligible reassessment option and keeps the simple entry untouched", async () => {
@@ -1778,7 +1780,8 @@ describe("real detail GET producer-consumer packet controls", () => {
     const initialBody = await detailJson(unassessed, initialQueue.obligations[0].obligation_id);
     const entry = await renderProducerJson(initialBody, [], initialQueue);
     expect(initialBody.current_assessment).toBeNull();
-    expect(entry.main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
+    expect(entry.main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Refresh assessment status");
+    expect(screen.queryByRole("button", {name:"Run AI Assessment"})).toBeNull();
     expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
   });
 

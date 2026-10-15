@@ -1272,12 +1272,6 @@ function financeFacingAssessmentText(value: string): string {
     .replaceAll("provider outcome", "settlement outcome");
 }
 
-function financeFacingDate(value: string | null | undefined): string | null {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime())) return null;
-  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
-}
 
 function AssessmentResultCard({
   assessment,
@@ -1319,10 +1313,6 @@ function AssessmentResultCard({
     : assessment.decision === "ESCALATE"
       ? "text-[var(--status-hold-text)]"
       : "text-[var(--color-ink)]";
-  const recordedDueDate = financeFacingDate(race?.evidence.authoritative_facts.due_date);
-  const assessmentDate = financeFacingDate(race?.evidence.authoritative_facts.as_of_date);
-  const isNormalizationHold = assessment.decision === "HOLD" && findings.some((finding) => finding.code === "NORMALIZATION_REVIEW_REQUIRED");
-  const reassessmentLabel = assessment.decision === "HOLD" ? "Reassess after correction" : "Run AI Assessment again";
 
   return (
     <section aria-label="Assessment result" className="space-y-1 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5 sm:space-y-3 sm:p-4" data-testid="assessment-result-card">
@@ -1337,35 +1327,6 @@ function AssessmentResultCard({
       </header>
 
       <p className="text-[14px] leading-5 text-[var(--color-ink)]">{financeFacingAssessmentText(summary)}</p>
-
-      {assessment.decision === "HOLD" && (
-        <section aria-label="Why this payment is on hold" className="space-y-2 rounded border border-[var(--status-hold-text)]/50 bg-[var(--color-canvas)] p-3">
-          <h4 className="text-[14px] font-semibold text-[var(--color-ink)]">Why this payment is on HOLD</h4>
-          {isNormalizationHold && (
-            <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
-              The recorded due-date fields did not pass Tameion&apos;s date consistency check.
-              {recordedDueDate && <> Recorded due date: <strong className="text-[var(--color-ink)]">{recordedDueDate}</strong>.</>}
-              {assessmentDate && <> Assessment date: <strong className="text-[var(--color-ink)]">{assessmentDate}</strong>.</>}
-            </p>
-          )}
-          <ul className="list-disc space-y-1 ps-5 text-[13px] leading-5 text-[var(--color-ink-muted)]">
-            {findings.map((finding) => <li key={finding.code}>{financeFacingAssessmentText(finding.reason)}</li>)}
-          </ul>
-          {race?.remediation.map((item) => (
-            <div key={item.finding_code} className="space-y-1 border-t border-[var(--color-border)] pt-2 text-[13px] leading-5 text-[var(--color-ink-muted)]">
-              <p><strong className="text-[var(--color-ink)]">Required correction:</strong> {financeFacingAssessmentText(item.required_action)}</p>
-              <p><strong className="text-[var(--color-ink)]">Evidence needed:</strong> {item.required_evidence.join("; ")}</p>
-              <p><strong className="text-[var(--color-ink)]">Owner:</strong> {item.owner_role}</p>
-            </div>
-          ))}
-          {canReassess && (
-            <div className="pt-1" data-testid="assessment-hold-rerun">
-              <PrimaryButton onClick={onReassess} disabled={busy}>{reassessmentLabel}</PrimaryButton>
-              <p className="mt-1 text-[12px] text-[var(--color-ink-muted)]">Correct the source or validation issue first. The new assessment is advisory; the previous assessment remains in history.</p>
-            </div>
-          )}
-        </section>
-      )}
 
       <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]"><strong className="text-[var(--color-ink)]">What this means:</strong> {meaning}</p>
 
@@ -1383,7 +1344,7 @@ function AssessmentResultCard({
         <div className="min-w-0">
           <p className="text-[12px] font-semibold text-[var(--color-ink)]">What to do next</p>
           {!primaryAction && <p className="text-[13px] leading-5 text-[var(--color-ink-muted)]">{assessment.decision === "HOLD" && race?.remediation.length
-            ? "Complete the required correction above, then run a new advisory assessment."
+            ? "Review the recorded correction above. Reassessment requires confirmed eligibility."
             : nextAction}</p>}
           {!primaryAction && nextOwner && <p className="text-[12px] text-[var(--color-ink-muted)]">Next owner/role: <strong className="text-[var(--color-ink)]">{nextOwner}</strong></p>}
         </div>
@@ -1411,6 +1372,7 @@ function AssessmentResultCard({
           ) : (
             <p className="text-[13px] text-[var(--color-ink-muted)]">No validated findings are recorded in this assessment.</p>
           )}
+          {race?.remediation.map(item => <section key={item.finding_code} aria-label="Recorded remediation" className="space-y-1 text-[13px] text-[var(--color-ink-muted)]"><p>{financeFacingAssessmentText(item.required_action)}</p><p>{item.required_evidence.join("; ")}</p><p>Responsible: {item.owner_role}</p></section>)}
           <section aria-label="Assessment checks recorded" className="space-y-1">
             <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Checks recorded by the assessment</h4>
             {checks.length > 0 ? (
@@ -1483,7 +1445,7 @@ function PrimaryButton({
 }
 
 type FinancialReceiptBinding = { instructionHash: string; packetHash: string; aggregateVersion: number };
-type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null; financialBinding?: FinancialReceiptBinding; readConfirmed?: boolean };
+type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null; financialBinding?: FinancialReceiptBinding; readConfirmed?: boolean; aggregateVersion?: number };
 
 function requiresSubmissionReconciliation(result: ActionResult | null): boolean {
   if (!result || result.label !== "execute" || result.readConfirmed) return false;
@@ -1523,7 +1485,138 @@ type AssessmentFeedback = {
   owner: string;
   assessmentId?: string;
   assessmentHash?: string;
+  statusCode?: string;
 };
+
+type PayableBlocker = {
+  kind: string;
+  title: string;
+  reason: string;
+  impact: string;
+  nextAction: string;
+  responsible: string;
+  evidence: string[];
+  action: "assessment-status" | "evidence" | "funding" | "authority" | "reconcile" | "refresh" | null;
+  lastVerified?: string;
+};
+
+function retainedAssessmentRequestKey(id: string): string | null {
+  if (!id || typeof window === "undefined") return null;
+  try { return localStorage.getItem(`tameion.assessment-request.${id}`); }
+  catch { return "Request identity unavailable"; }
+}
+
+/** Presentation only. This never supplies action eligibility or releases an intent. */
+export function payableBlockers({ detail, state, selectedId, feedback, requestKey, stage, response, executionResponse }: {
+  detail: ObligationDetail | null; state: DetailState; selectedId: string;
+  feedback?: AssessmentFeedback | null; requestKey?: string | null;
+  stage: string; response?: ActionResult | null; executionResponse?: ActionResult | null;
+}): PayableBlocker[] {
+  if (!selectedId || state === "none") return [];
+  const blockers: PayableBlocker[] = [];
+  const exactDetail = detail && hasExpectedObligationIdentity(detail, selectedId);
+  const unresolvedExecution = executionResponse?.obligationId === selectedId && requiresSubmissionReconciliation(executionResponse);
+  if (unresolvedExecution || exactDetail && ["UNKNOWN", "SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) blockers.push({
+    kind: "execution-unknown", title: "Payment outcome unverified", reason: "The existing submission has no confirmed final outcome. Do not retry or submit another payment.",
+    impact: "Payment completion and reconciliation are unconfirmed.", nextAction: "Reconcile the existing submission using read-only status review.",
+    responsible: "Unassigned · reconciliation owner not recorded", action: "reconcile",
+    evidence: unresolvedExecution ? ["Payment request completion unverified.", ...(executionResponse?.financialBinding ? [`Release reference: ${executionResponse.financialBinding.packetHash}`] : [])]
+      : [`Execution status: ${detail!.execution!.status}`, ...(detail!.execution!.idempotency_key ? [`Submission reference: ${detail!.execution!.idempotency_key}`] : []), ...(detail!.execution!.provider_ref ? [`Provider reference: ${detail!.execution!.provider_ref}`] : [])],
+  });
+  if (state === "loading") return blockers;
+  if (state !== "loaded" || !detail || !exactDetail) return [...blockers, {
+    kind: "unavailable", title: "Current status unavailable", reason: "Reason not yet verified. Current payable details could not be confirmed.",
+    impact: "Assessment and payment actions are unavailable.", nextAction: "Refresh the selected payable's current status.",
+    responsible: "User · status review", evidence: [], action: "refresh" as const,
+  }];
+  const unresolved = Boolean(requestKey || feedback && feedback.kind !== "durable");
+  if (unresolved) {
+    const unavailable = ["ASSESSMENT_UNAVAILABLE", "AUTH_UNAVAILABLE", "GENUINE_WORKFLOW_UNAVAILABLE"].includes(feedback?.statusCode ?? "");
+    const pending = feedback?.kind === "in-flight" || feedback?.kind === "pending" || feedback?.kind === "awaiting-refresh";
+    blockers.push({
+      kind: unavailable ? "system-unavailable" : pending ? "assessment-pending" : "assessment-unverified",
+      title: unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
+      reason: unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
+      impact: "Assessment completion is unconfirmed. Payment remains unavailable.",
+      nextAction: "Refresh the existing assessment status. A queue refresh cannot confirm this request's completion. Do not reassess or retry while unresolved.",
+      responsible: "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
+      evidence: [requestKey ? `Request reference: ${requestKey}` : "Existing request identity retained.", "Confirmed assessment receipt unavailable.", ...(feedback?.statusCode ? [`Status code: ${feedback.statusCode}`] : [])],
+    });
+  } else {
+    const assessment = assessmentReviewSnapshot(detail.current_assessment);
+    if (assessment?.obligation_id === selectedId && assessment.aggregate_version === String(detail.aggregate.aggregate_version) && ["HOLD", "ESCALATE"].includes(assessment.decision)) {
+      const findings = assessment.race?.result.validated_findings ?? [];
+      const remediation = assessment.race?.remediation ?? [];
+      const reasons = findings.length ? findings.map(f => f.reason) : assessment.reasons;
+      const owners = [...new Set(remediation.map(r => assessment.decision === "ESCALATE" ? r.escalation_target ?? r.owner_role : r.owner_role))];
+      const missing = findings.some(f => f.code === "SOURCE_EVIDENCE_MISSING" || f.code === "DUE_DATE_NOT_STATED");
+      blockers.push({
+        kind: missing ? "source-evidence" : "assessment-hold", title: missing ? "Source evidence required" : "Assessment needs review",
+        reason: financeFacingAssessmentText(reasons[0] || "Reason not yet verified"), impact: "Authorization and payment remain unavailable.",
+        nextAction: remediation[0] ? financeFacingAssessmentText(remediation[0].required_action) : "Review the recorded assessment evidence before any further action.",
+        responsible: owners.length ? owners.join("; ") : "Unassigned · responsible party not recorded", action: "evidence",
+        evidence: [`Assessment reference: ${assessment.assessment_id}`, `Assessment hash: ${assessment.assessment_hash}`, ...findings.map(f => `Finding: ${f.code}`), ...remediation.flatMap(r => r.required_evidence)],
+      });
+      for (const reason of reasons.slice(1)) blockers.push({kind: "assessment-finding", title: "Additional assessment finding", reason: financeFacingAssessmentText(reason), impact: "Authorization remains unavailable.", nextAction: "Review the recorded evidence.", responsible: owners.join("; ") || "Unassigned", evidence: [], action: "evidence"});
+    }
+  }
+  // Funding/destination controls are relevant after assessment. A missing
+  // balance never becomes an invented shortfall or prevents advisory review.
+  if (["Authorization", "Assurance", "Payment"].includes(stage) && !detail.execution) {
+    const matchingResponse = response?.obligationId === selectedId && response.aggregateVersion === detail.aggregate.aggregate_version && response.label === "proxy preflight";
+    const payload = matchingResponse && response.data && typeof response.data === "object" ? response.data as {blocker?:unknown;code?:unknown;readiness?:unknown;captured_at?:unknown} : null;
+    // The displayed wallet observation has no source-wallet identity. It cannot
+    // prove this instruction's funding. Use an actual bound provider refusal.
+    const shortfall = response?.status === 409 && payload?.blocker === "INSUFFICIENT_BALANCE" && payload?.readiness === "BLOCKED";
+    const fundingUnverified = response?.status === 409 && payload?.readiness === "BLOCKED" && payload.blocker === "PROVIDER_QUERY_FAILED" ||
+      response?.status === 503 && ["PROVIDER_BALANCE_NOT_VERIFIED", "BALANCE_NOT_VERIFIED"].includes(String(payload?.code));
+    if (shortfall || fundingUnverified) blockers.push({
+      kind: shortfall ? "funding-shortfall" : "funding-unverified", title: shortfall ? "Funding shortfall" : "Funding not verified",
+      reason: shortfall ? "The provider check reported insufficient funds for this instruction and its fee." : "Funding for this instruction has not been verified.",
+      impact: "Funding readiness is not established.", nextAction: "Review the wallet balance before payment.", responsible: "Unassigned · funding owner not recorded",
+      action: "funding", evidence: [`Provider status: ${shortfall ? "INSUFFICIENT_BALANCE" : String(payload?.blocker ?? payload?.code)}`],
+      ...(shortfall && typeof payload?.captured_at === "string" && Number.isFinite(Date.parse(payload.captured_at)) ? {lastVerified:payload.captured_at} : {}),
+    });
+    if (detail.aggregate.destination_verification_status !== "VERIFIED") blockers.push({
+      kind: "beneficiary-unverified", title: "Recipient not verified", reason: "The payment destination is not verified.", impact: "Payment remains unavailable.",
+      nextAction: "Review the recorded recipient and destination evidence.", responsible: "Unassigned · recipient verification owner not recorded", action: "authority",
+      evidence: [`Destination status: ${detail.aggregate.destination_verification_status}`],
+    });
+  }
+  const assessment = assessmentReviewSnapshot(detail.current_assessment);
+  const boundPay = assessment?.obligation_id === selectedId && assessment.aggregate_version === String(detail.aggregate.aggregate_version) && assessment.decision === "PAY";
+  const linkedDraftAvailable = !unresolved && !unresolvedExecution && boundPay && detail.advisory_action_eligible === true && !detail.linked_testnet_instructions?.some(row => row.assessment_hash === assessment?.assessment_hash);
+  if (detail.financial_action_eligible !== true && (boundPay || ["Authorization", "Assurance", "Payment"].includes(stage))) blockers.push({
+    kind: "authority-absent", title: "Payment authority required", reason: "This payable has no admitted payment authority.", impact: "Payment preparation and execution are unavailable.",
+    nextAction: linkedDraftAvailable ? "Create a separate linked testnet instruction for approval." : "Review payment authority for the separate linked instruction.", responsible: "Unassigned · authorized approver not recorded", action: "authority", evidence: ["Financial action eligibility: false"],
+  });
+  return blockers;
+}
+
+function HoldReasonCard({blockers, feedback, requestKey}: {blockers: PayableBlocker[]; feedback: AssessmentFeedback | null; requestKey: string | null}) {
+  const primary = blockers[0];
+  if (!primary) return null;
+  const requestStatus = (primary.kind.startsWith("assessment-") || primary.kind === "system-unavailable") && primary.kind !== "assessment-hold" && Boolean(feedback || requestKey);
+  return <section aria-label="Hold reason and next action" className="mt-3 space-y-2 rounded border-s-4 border-[var(--color-warning)] bg-[var(--color-bg)] p-3" data-testid="hold-reason">
+    <div role={requestStatus ? "status" : undefined} aria-label={requestStatus ? "Assessment request status" : undefined} aria-live={feedback && ["unconfirmed", "stale", "identity-mismatch"].includes(feedback.kind) ? "assertive" : "polite"} aria-atomic="true" data-testid={requestStatus ? "assessment-request-feedback" : undefined} data-feedback-kind={requestStatus ? feedback?.kind ?? "unconfirmed" : undefined}>
+      {feedback?.kind === "in-flight" && <p role="status" aria-label="AI assessment in progress" className="text-sm">Reviewing payable details</p>}
+      <h3 className="text-sm font-semibold">{primary.title}</h3>
+      <p className="mt-1 text-sm leading-5">{primary.reason}</p>
+      <dl className="mt-2 grid gap-1 text-[13px] leading-5 text-[var(--color-ink-muted)]">
+        <div><dt className="inline font-semibold text-[var(--color-ink)]">Impact: </dt><dd className="inline">{primary.impact}</dd></div>
+        <div><dt className="inline font-semibold text-[var(--color-ink)]">Next action: </dt><dd className="inline">{primary.nextAction}</dd></div>
+        <div><dt className="inline font-semibold text-[var(--color-ink)]">Responsible: </dt><dd className="inline">{primary.responsible}</dd></div>
+      </dl>
+      <details id="hold-technical-details" className="mt-1 text-xs text-[var(--color-ink-muted)]">
+        <summary className="min-h-11 cursor-pointer py-3 font-semibold">Technical details</summary>
+        <ul className="space-y-1 break-all">{primary.evidence.map((e,i) => <li key={i}>{e}</li>)}</ul>
+        {primary.lastVerified && <p>Last verified: <time dateTime={primary.lastVerified}>{primary.lastVerified}</time></p>}
+        {feedback && <div className="mt-2 space-y-1"><p>{feedback.message}</p><p>{feedback.durability}</p><p>{feedback.nextStep}</p></div>}
+      </details>
+    </div>
+    {blockers.length > 1 && <details className="text-[13px] text-[var(--color-ink-muted)]"><summary className="min-h-11 cursor-pointer py-3 font-semibold">{blockers.length - 1} additional {blockers.length === 2 ? "blocker" : "blockers"}</summary>{blockers.slice(1).map((b,i) => <div key={i} className="border-t border-[var(--color-border)] py-2"><p className="font-semibold">{b.title}</p><p>{b.reason}</p><p>{b.nextAction}</p><p>Responsible: {b.responsible}</p></div>)}</details>}
+  </section>;
+}
 
 function assessmentFeedbackForResponse(
   result: { status: number; data: unknown },
@@ -1537,12 +1630,13 @@ function assessmentFeedbackForResponse(
   const serverStatus = result.data && typeof result.data === "object" && "status" in result.data
     ? String((result.data as { status: unknown }).status)
     : "";
+  const statusCode = code || serverStatus || (result.status ? `HTTP ${result.status}` : "NO_RESPONSE");
   if (result.status === 200) {
     const identity = assessmentReceiptIdentity(result.data);
     const receipt = assessmentReceiptSnapshot(result.data);
     if (identity.obligation_id && identity.obligation_id !== obligationId) {
       return {
-        obligationId, expectedVersion, selectionGeneration, kind: "identity-mismatch", title: "Assessment response identity did not match.",
+        obligationId, expectedVersion, selectionGeneration, statusCode, kind: "identity-mismatch", title: "Assessment response identity did not match.",
         message: "The returned assessment belongs to a different payable, so it was not applied to this selection.",
         durability: "No current assessment is confirmed for the selected payable.",
         nextStep: "Refresh the selected payable's current status before taking another assessment action.",
@@ -1551,7 +1645,7 @@ function assessmentFeedbackForResponse(
     }
     if (identity.aggregate_version && identity.aggregate_version !== expectedVersion) {
       return {
-        obligationId, expectedVersion, selectionGeneration, kind: "stale", title: "Assessment response is for a different version.",
+        obligationId, expectedVersion, selectionGeneration, statusCode, kind: "stale", title: "Assessment response is for a different version.",
         message: "The selected payable changed while this assessment was being processed; this response is not presented as current.",
         durability: "The response does not confirm an assessment for the current selected version.",
         nextStep: "Refresh the selected payable's current status before taking another assessment action.",
@@ -1560,7 +1654,7 @@ function assessmentFeedbackForResponse(
     }
     if (!receipt) {
       return {
-        obligationId, expectedVersion, selectionGeneration, kind: "unconfirmed", title: "Assessment receipt could not be verified.",
+        obligationId, expectedVersion, selectionGeneration, statusCode, kind: "unconfirmed", title: "Assessment receipt could not be verified.",
         message: "The server response did not contain a complete assessment receipt for the selected payable.",
         durability: "A current assessment is not confirmed.",
         nextStep: "Refresh the selected payable's current status; do not send another request while the outcome is unclear.",
@@ -1568,7 +1662,7 @@ function assessmentFeedbackForResponse(
       };
     }
     return {
-      obligationId, expectedVersion, selectionGeneration, kind: "awaiting-refresh", title: "Assessment response received.",
+      obligationId, expectedVersion, selectionGeneration, statusCode, kind: "awaiting-refresh", title: "Assessment response received.",
       message: "Checking refreshed payable details before presenting this assessment as current.",
       durability: "A complete receipt was returned; current selected-detail confirmation is pending.",
       nextStep: "Wait for the read-only detail refresh. The assessment remains advisory.",
@@ -1580,7 +1674,7 @@ function assessmentFeedbackForResponse(
   if (result.status === 202) {
     const recoveryPending = serverStatus === "RECOVERY_PENDING";
     return {
-      obligationId, expectedVersion, selectionGeneration, kind: "pending",
+      obligationId, expectedVersion, selectionGeneration, statusCode, kind: "pending",
       title: recoveryPending ? "Assessment recovery is pending." : "Assessment is still in progress.",
       message: recoveryPending
         ? "The payment review is still being finalized; the recorded result is available but is not yet current."
@@ -1592,7 +1686,7 @@ function assessmentFeedbackForResponse(
   }
   if (result.status === 0 || code === "ASM-UNKNOWN" || code === "ASM-OPERATION-UNRESOLVED") {
     return {
-      obligationId, expectedVersion, selectionGeneration, kind: "unconfirmed", title: "Assessment outcome is not confirmed.",
+      obligationId, expectedVersion, selectionGeneration, statusCode, kind: "unconfirmed", title: "Assessment outcome is not confirmed.",
       message: result.status === 0
         ? "No response was received, so the assessment outcome is unknown."
         : actionErrorMessage(result.data),
@@ -1603,7 +1697,7 @@ function assessmentFeedbackForResponse(
   }
   if (result.status === 409 && code === "ASM-001") {
     return {
-      obligationId, expectedVersion, selectionGeneration, kind: "stale", title: "Assessment was not made current.",
+      obligationId, expectedVersion, selectionGeneration, statusCode, kind: "stale", title: "Assessment was not made current.",
       message: actionErrorMessage(result.data),
       durability: "No assessment was recorded as current for this request.",
       nextStep: "Refresh the read-only queue summary for any newer record; it does not confirm this operation's exact receipt or completion.",
@@ -1611,7 +1705,7 @@ function assessmentFeedbackForResponse(
     };
   }
   return {
-    obligationId, expectedVersion, selectionGeneration, kind: result.status === 409 ? "stale" : "unconfirmed",
+    obligationId, expectedVersion, selectionGeneration, statusCode, kind: result.status === 409 ? "stale" : "unconfirmed",
     title: result.status === 409 ? "Assessment was refused." : "Assessment result is unavailable.",
     message: actionErrorMessage(result.data),
     durability: "No current receipt; existing request key retained.",
@@ -2086,13 +2180,14 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setStageCompletionReceipt({obligationId: selectedId, message});
   }, [lastResult, selectedFinancialResult, detail, detailIsStale, detailError, selectedId]);
 
-  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string) => {
+  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string) => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
     const financialBinding = ["release", "execute"].includes(label) && detail.sealed_pae_instruction_hash && detail.execution_packet?.packet_sha256
       ? {instructionHash: detail.sealed_pae_instruction_hash, packetHash: detail.execution_packet.packet_sha256, aggregateVersion: detail.aggregate.aggregate_version}
       : undefined;
     const saveResult = (result: ActionResult) => {
+      result = {...result, aggregateVersion: detail.aggregate.aggregate_version};
       if (financialBinding) financialResults.current.set(targetId, result);
       if (stillCurrent() || (financialBinding && selectedRef.current === targetId)) setLastResult(result);
     };
@@ -2148,6 +2243,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             refreshedReceipt.aggregate_version === assessmentExpectedVersion &&
             String(refreshed.aggregate.aggregate_version) === assessmentExpectedVersion);
           if (assessmentReceiptConfirmed && responseReceipt) {
+            const storageKey = `tameion.assessment-request.${targetId}`;
+            if (assessmentRequestIdentity && localStorage.getItem(storageKey) === assessmentRequestIdentity) localStorage.removeItem(storageKey);
+            if (assessmentRequestKey.current?.key === assessmentRequestIdentity) assessmentRequestKey.current = null;
             setAssessmentFeedback({
               obligationId: targetId, expectedVersion: assessmentExpectedVersion, selectionGeneration: generation, kind: "durable",
               title: "Assessment is recorded for the current selected obligation.",
@@ -2212,9 +2310,16 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     }
   };
 
+  const assessmentCallbackGeneration = selectionGeneration.current;
+  const assessmentCallbackDetailGeneration = detailGeneration.current;
   const runAssessment = () => {
     const obligationId = selectedId;
-    if (!obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
+    if (assessmentCallbackGeneration !== selectionGeneration.current || assessmentCallbackDetailGeneration !== detailGeneration.current || selectedRef.current !== obligationId ||
+        !obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
+    // Contain the callback as well as its affordance, including stale handlers
+    // and requests retained across reload or A -> B -> A navigation.
+    if (detail.execution || requiresSubmissionReconciliation(financialResults.current.get(obligationId) ?? null) || retainedAssessmentRequestKey(obligationId) || assessmentRequestUnresolved ||
+        (assessmentAction !== "assess" && !optionalReassessmentAvailable)) return;
     const generation = selectionGeneration.current;
     const expectedVersion = String(detail.aggregate.aggregate_version);
     setDisplayedAssessment(null);
@@ -2225,19 +2330,19 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       nextStep: "Wait for this request to resolve; the result remains advisory.",
       owner: "Finance Agent · waiting for assessment response",
     });
+    const storageKey = `tameion.assessment-request.${obligationId}`;
+    const requestIdentity = crypto.randomUUID();
+    localStorage.setItem(storageKey, requestIdentity);
+    assessmentRequestKey.current = {obligationId, key: requestIdentity};
     return run("assess", async () => {
-      const storageKey = `tameion.assessment-request.${obligationId}`;
-      if (assessmentRequestKey.current?.obligationId !== obligationId) {
-        const persistedKey = localStorage.getItem(storageKey);
-        assessmentRequestKey.current = { obligationId, key: persistedKey ?? crypto.randomUUID() };
-        if (!persistedKey) localStorage.setItem(storageKey, assessmentRequestKey.current.key);
-      }
       const result = await postCommand(`/api/obligations/${obligationId}/${detail.advisory_action_eligible===true?"advisory":"assess"}`, {}, {
-        "Idempotency-Key": assessmentRequestKey.current.key,
+        "Idempotency-Key": requestIdentity,
       });
-      if (assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
-        localStorage.removeItem(storageKey);
-        assessmentRequestKey.current = null;
+      // A complete 200 is released only after its exact durable readback in run.
+      // ASM-001 is the existing definitive pre-effect refusal.
+      if (result.status !== 200 && assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
+        if (localStorage.getItem(storageKey) === requestIdentity) localStorage.removeItem(storageKey);
+        if (assessmentRequestKey.current?.key === requestIdentity) assessmentRequestKey.current = null;
       }
       if (!isCurrentGeneration(generation, selectionGeneration.current) || !isSameIdentity(selectedRef.current, obligationId)) return result;
       const snapshot = result.status === 200 && result.ok ? assessmentReceiptSnapshot(result.data) : null;
@@ -2273,7 +2378,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         });
       }
       return result;
-    }, expectedVersion);
+    }, expectedVersion, requestIdentity);
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
@@ -2346,9 +2451,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(aggregateVersion),
   );
   const retryableProviderFailure = hasCurrentAssessment && isRetryableProviderValidationFailure(currentAssessment);
-  const remediableHold = Boolean(hasCurrentAssessment && currentAssessment?.decision === "HOLD" &&
-    detail?.advisory_action_eligible === true && currentAssessment.race?.remediation.length &&
-    currentAssessment.race.remediation.every((item) => item.reassess_after_resolution));
+  // Remediation says when reassessment may become possible, not that the
+  // correction has occurred. The current read model has no such eligibility.
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
@@ -2373,8 +2477,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     reviewed: Boolean(authorizationAssessment),
     allAssessed,
     routeAssuranceReady,
-    retryableProviderFailure,
-    remediableHold,
+    retryableProviderFailure: false,
+    remediableHold: false,
   });
   const lifecycleStatus = (stage: (typeof PAYMENT_LIFECYCLE_STAGES)[number]): string => {
     if (detailState === "none") return stage === "Obligation" ? "No payable selected" : "Waiting for selection";
@@ -2618,12 +2722,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               : currentAssessment?.decision === "PAY" && authorizationAssessment && !routeAssuranceReady
                 ? "The PAY assessment has been reviewed, but payment-route assurance is not ready. Authorization remains locked."
               : retryableProviderFailure
-                ? "The prior non-live assessment failed validation. Run AI Assessment again after the provider correction."
+                ? "The prior assessment output failed validation. Review the recorded provider finding."
                 : currentAssessment?.decision === "HOLD" || currentAssessment?.decision === "ESCALATE"
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";
-  const optionalReassessmentAvailable = detailState === "loaded" && !detail?.pae_sealed &&
-    (remediableHold || (hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady));
+  const optionalReassessmentAvailable = !unresolvedSubmission && !retainedAssessmentRequestKey(selectedId) && detailState === "loaded" && !detail?.pae_sealed &&
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
   const reviewCurrentAssessment = () => {
     if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
     setDisplayedAssessment(currentAssessment);
@@ -2666,7 +2770,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const refreshAssessmentQueueSummary = async () => {
     const feedback = assessmentFeedback;
     const generation = selectionGeneration.current;
-    if (!feedback || feedback.obligationId !== selectedRef.current || feedback.selectionGeneration !== generation) return;
+    if (!feedback) { await refreshObligations(false, true, generation); return; }
+    if (feedback.obligationId !== selectedRef.current || feedback.selectionGeneration !== generation) return;
     const refreshedQueue = await refreshObligations(false, true, generation);
     if (!isCurrentGeneration(generation, selectionGeneration.current) || !isSameIdentity(selectedRef.current, feedback.obligationId)) return;
     setAssessmentFeedback((current) => {
@@ -2681,9 +2786,14 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       };
     });
   };
+  const selectedRequestKey = retainedAssessmentRequestKey(selectedId);
+  const currentFeedback = assessmentFeedbackIsCurrent ? assessmentFeedback : null;
+  const assessmentRequestUnresolved = Boolean(selectedRequestKey || currentFeedback && currentFeedback.kind !== "durable");
+  const selectedBlockers = payableBlockers({detail, state: detailState, selectedId, feedback: currentFeedback,
+    requestKey: selectedRequestKey, stage: viewedStage, response: currentResult, executionResponse: selectedFinancialResult});
   const canRefreshAssessmentQueue = Boolean(assessmentFeedbackIsCurrent && assessmentFeedback &&
     ["pending", "unconfirmed", "stale"].includes(assessmentFeedback.kind));
-  const selectedAssessmentFeedbackView = assessmentFeedbackIsCurrent &&
+  const selectedAssessmentFeedbackView = assessmentFeedbackIsCurrent && (!selectedBlockers.length || currentFeedback?.kind === "durable") &&
     (viewedStage === "Obligation" || viewedStage === "Assessment")
     ? <AssessmentFeedbackBanner feedback={assessmentFeedback!} onRefreshQueue={canRefreshAssessmentQueue ? () => { void refreshAssessmentQueueSummary(); } : undefined} />
     : null;
@@ -2733,7 +2843,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     (viewedStage === "Obligation" || viewedStage === "Assessment"));
   const showExceptionRecovery = currentException && exceptionStageVisible && !assessmentFeedbackOwnsRecoveryCopy;
   const activityItems = detail && detailState === "loaded" ? availableEvidenceItems(detail) : [];
-  const assessmentCurrentState = !detail || detailState !== "loaded"
+  const assessmentCurrentState = assessmentRequestUnresolved
+    ? "Assessment completion is unverified. An earlier recorded assessment does not resolve the existing request."
+    : !detail || detailState !== "loaded"
     ? "Assessment state is not currently verified."
     : currentAssessment && currentAssessment.obligation_id === selectedId && currentAssessment.aggregate_version === String(detail.aggregate.aggregate_version)
       ? `${currentAssessment.decision} advisory assessment is current for the selected obligation.`
@@ -2752,8 +2864,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     workspaceAction = { label: "Refresh payables", actor: "You · refresh", run: () => { void refreshObligations(true); } };
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
+  } else if (detailState === "loaded" && ["UNKNOWN", "SUBMITTING", "SUBMITTED"].includes(detail?.execution?.status ?? "")) {
+    workspaceAction = {label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); }};
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
+  } else if (assessmentRequestUnresolved && !detail?.execution) {
+    workspaceAction = { label: "Refresh assessment status", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
     workspaceAction = { label: "View Assessment", actor: "You · read-only navigation", run: () => showStage("Assessment") };
   } else if (viewedStage === "Obligation" && currentLifecycleStage !== "Obligation" && !(currentLifecycleStage === "Assessment" && !hasCurrentAssessment)) {
@@ -2793,13 +2909,18 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
+  } else if (hasCurrentAssessment && currentAssessment?.decision === "HOLD" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+    workspaceAction = {label: selectedBlockers[0]?.kind === "source-evidence" ? "Review missing evidence" : "Review assessment evidence", actor: "User · evidence review", run: () => {
+      const evidence = document.getElementById("hold-technical-details") as HTMLDetailsElement | null;
+      if (evidence) { evidence.open = true; evidence.querySelector("summary")?.focus(); }
+    }};
   } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = {
-      label: remediableHold ? "Reassess after correction" : "Run AI Assessment",
+      label: "Run AI Assessment",
       actor: "Finance Agent · advisory review",
       run: () => { void runAssessment(); },
     };
-  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && detail.current_assessment?.decision === "PAY" && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
+  } else if (detailState === "loaded" && detail?.advisory_action_eligible === true && hasCurrentPayAssessment && !(detail.linked_testnet_instructions?.some(r=>r.assessment_hash===detail.current_assessment?.assessment_hash))) {
     workspaceAction={label:"Create linked testnet instruction",actor:"You · draft only, payment authority required",run:()=>{
       const assessment=detail.current_assessment!;
       const storageKey=`tameion.link-request.${selectedId}.${assessment.assessment_hash}`;
@@ -2848,7 +2969,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       {stageCompletionReceipt.message}
     </p>
   ) : null;
-  const assessmentResult = detailState === "loaded" && hasCurrentAssessment && detail?.aggregate.state !== "CANCELLED" ? currentAssessment : null;
+  const assessmentResult = !assessmentRequestUnresolved && detailState === "loaded" && hasCurrentAssessment && detail?.aggregate.state !== "CANCELLED" ? currentAssessment : null;
   const assessmentRemediation = assessmentResult?.race?.remediation ?? [];
   const assessmentNextStep = showContinueToAuthorization
     ? "Continue to Authorization to review this exact instruction; navigation does not approve or submit it."
@@ -2883,13 +3004,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const canGoBack = Boolean(previousViewedStage && stageState(previousViewedStage) !== "UPCOMING");
   const continueTarget = viewedStage === currentLifecycleStage && !showContinueToAuthorization && !showContinueToPayment ? nextAvailableStage : null;
   const visibleWorkspaceAction = showContinueToAuthorization ? null : workspaceAction;
-  const assessmentOwnsCurrentStage = panel === "assessment" && currentLifecycleStage === "Assessment" && Boolean(assessmentResult) && detail?.aggregate.state !== "CANCELLED";
+  const assessmentOwnsCurrentStage = !assessmentRequestUnresolved && panel === "assessment" && currentLifecycleStage === "Assessment" && Boolean(assessmentResult) && detail?.aggregate.state !== "CANCELLED";
   const stageOwnsCurrentBusinessCard = detailState === "loaded" && Boolean(detail) && (
     (panel === "authorization" && viewedStage === "Authorization") ||
     (panel === "assurance" && (viewedStage === "Assurance" || viewedStage === "Payment")) ||
     (panel === "reconciliation" && viewedStage === "Reconciliation")
   );
-  const contextualAction: WorkspaceAction | null = showContinueToAuthorization
+  const contextualAction: WorkspaceAction | null = unresolvedSubmission || assessmentRequestUnresolved || detail?.execution?.status === "UNKNOWN" ? workspaceAction : showContinueToAuthorization
       ? {label: "Continue to Authorization", actor: "You · read-only navigation", run: () => showStage("Authorization")}
       : showContinueToPayment
         ? {label: "Continue to Payment", actor: "You · read-only navigation", run: () => showStage("Payment")}
@@ -3048,8 +3169,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   >
                     <span className="col-span-2 min-w-0 break-words text-[13px] font-semibold text-[var(--color-ink)]">
                       <span
-                        aria-label={o.assessed ? "assessment recorded" : workflowRecorded ? "workflow recorded" : "assessment required"}
-                        title={o.assessed ? `Assessment result: ${o.decision}` : workflowRecorded ? "Workflow recorded; a current assessment is not available." : "Assessment required"}
+                        aria-label={retainedAssessmentRequestKey(o.obligation_id) ? "assessment outcome unverified" : o.assessed ? "assessment recorded" : workflowRecorded ? "workflow recorded" : "assessment required"}
+                        title={retainedAssessmentRequestKey(o.obligation_id) ? "Assessment completion unverified; do not retry." : o.assessed ? `Assessment result: ${o.decision}` : workflowRecorded ? "Workflow recorded; a current assessment is not available." : "Assessment required"}
                         className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                         style={{ background: o.assessed || workflowRecorded ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
@@ -3059,7 +3180,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                       <span className="whitespace-nowrap">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
                     </span>
                     <span className="col-span-2 text-start text-[11px] font-semibold" style={{ color: statusColor }}>
-                      {o.assessed
+                      {retainedAssessmentRequestKey(o.obligation_id) || o.obligation_id === selectedId && assessmentRequestUnresolved
+                        ? o.obligation_id === selectedId && currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
+                        : o.assessed
                         ? `Assessment result · ${o.decision ?? "Unavailable"}`
                         : workflowRecorded ? "Workflow recorded" : "Assessment required"}
                     </span>
@@ -3127,6 +3250,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     </p>}
                   </>
                 )}
+                {detailState === "loaded" && <HoldReasonCard blockers={selectedBlockers} feedback={currentFeedback} requestKey={selectedRequestKey} />}
                 {detailState !== "loaded" && <StateLine tone={state.tone} label={state.label} explanation={state.explanation} />}
                 {(detailState === "loading" || detailState === "failed" || detailState === "stale") && (
                   <p className="mt-2 text-[12px] text-[var(--color-warning)]">Source and control details are {detailState === "loading" ? "loading" : detailState === "stale" ? "stale" : "unavailable"}; no current action is inferred.</p>
@@ -3135,6 +3259,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             </section>
           </section>
           )}
+
+          {selectedBlockers.length > 0 && detailState !== "loaded" && <HoldReasonCard blockers={selectedBlockers} feedback={null} requestKey={selectedRequestKey} />}
 
           {selected && !detail && detailError && (
             <div role="alert" className="rounded border border-[var(--color-danger)] bg-[var(--color-surface)] px-3 py-3">
@@ -3207,7 +3333,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
 
           <span id={stageDescriptionId} className="sr-only">{stageAccessibilityLabel}</span>
 
-          {!assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && (selectedId || listPresentation !== "loading") && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
+          {(!assessmentRequestUnresolved || detailState !== "loaded") && !selectedBlockers.some(b => ["source-evidence", "assessment-hold"].includes(b.kind)) && !assessmentOwnsCurrentStage && !stageOwnsCurrentBusinessCard && (selectedId || listPresentation !== "loading") && <section aria-label={isInitialObligationScreen ? "Obligation next step" : "Current next step"} data-testid="current-next-step" className="rounded border-s-4 border-s-[var(--color-accent)] bg-[var(--color-bg)] p-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 {!isInitialObligationScreen && <p className="text-sm font-semibold text-[var(--color-ink-muted)]">{stagePositionLabel}</p>}

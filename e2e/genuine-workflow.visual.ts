@@ -38,7 +38,7 @@ for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine
   return route.fulfill({status:response.status,json:await response.json()});
  });
  await page.setViewportSize({width,height:900});await page.goto('/');await page.getByRole('button',{name:'Open workspace'}).click();await page.getByRole('button',{name:'Review payables',exact:true}).click();
- if(width<768)await page.getByRole('button',{name:'Choose an obligation',exact:true}).first().click();
+ if(width<768)await page.getByRole('button',{name:'Choose a payable',exact:true}).first().click();
  await page.locator(`button[data-obligation-id="${records[0].obligation_id}"]`).click();
  await page.getByRole('button',{name:'Run AI Assessment',exact:true}).click();
  if(expected==='HOLD'){
