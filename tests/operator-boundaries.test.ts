@@ -10,7 +10,7 @@ const root=resolve(import.meta.dirname,'..');
 function routes(dir:string):string[]{return readdirSync(dir,{withFileTypes:true}).flatMap(x=>x.isDirectory()?routes(join(dir,x.name)):x.name==='route.ts'?[join(dir,x.name)]:[]);}
 describe('#65 default runtime guard census',()=>{
  const files=routes(join(root,'app/api'));
- it('enumerates every current handler and explicit unsupported method',()=>{expect(files).toHaveLength(27);for(const path of files){const s=readFileSync(path,'utf8');for(const method of ['GET','POST','HEAD','OPTIONS','PUT','PATCH','DELETE'])expect(s).toMatch(new RegExp('export (?:const|async function) '+method+'\\b'));expect(s).not.toMatch(/getDemoState|legacy-routes|NvidiaProvider|createTransaction|runConnectivity/);}});
+ it('enumerates every current handler and explicit unsupported method',()=>{expect(files).toHaveLength(28);for(const path of files){const s=readFileSync(path,'utf8');for(const method of ['GET','POST','HEAD','OPTIONS','PUT','PATCH','DELETE'])expect(s).toMatch(new RegExp('export (?:const|async function) '+method+'\\b'));expect(s).not.toMatch(/getDemoState|legacy-routes|NvidiaProvider|createTransaction|runConnectivity/);}});
  it.each(files)('fails closed without configured ingress or initializes no privileged capability: %s',async path=>{
   const mod=await import(path);const method=path.endsWith('/operator/session/route.ts')||path.endsWith('/obligations/route.ts')||path.endsWith('/[id]/route.ts')||path.endsWith('/prime-approval-packet/route.ts')||path.endsWith('/status/route.ts')?'GET':'POST';
   const response=await mod[method](new Request('https://unconfigured.invalid/api',{method,headers:{'Content-Type':'application/json'},...(method==='POST'?{body:'{}'}:{})}),{params:Promise.resolve({id:'WITHDRAWN'})});

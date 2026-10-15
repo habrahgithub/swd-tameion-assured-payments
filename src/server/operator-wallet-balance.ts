@@ -11,6 +11,11 @@ const pinSchema=z.object({
 }).strict();
 export type BalancePin=z.infer<typeof pinSchema>;
 
+/** Schema validity only; this never initializes a provider or verifies a wallet. */
+export function isBalancePinValid(raw:string|undefined):boolean {
+ try{return pinSchema.safeParse(JSON.parse(raw??'null')).success;}catch{return false;}
+}
+
 export interface ReadOnlyBalanceCapability {getWallet:(walletId:string)=>Promise<unknown>;getWalletTokenBalance:(walletId:string,pageAfter?:string)=>Promise<unknown>}
 interface CircleSdkReads {getWallet:(input:{id:string})=>Promise<unknown>;getWalletTokenBalance:(input:{id:string;includeAll:true;pageSize:50;pageAfter?:string})=>Promise<unknown>}
 type CircleSdkInitializer=(apiKey:string)=>CircleSdkReads;

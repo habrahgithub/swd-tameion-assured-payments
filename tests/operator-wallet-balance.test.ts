@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import {circleBalanceCapability,readOperatorBalance,readPinnedBalance,type BalancePin} from '../src/server/operator-wallet-balance';
+import * as walletBalance from '../src/server/operator-wallet-balance';
 
 const tokenId='MOCK-NATIVE-TOKEN';
 const pin:BalancePin={
@@ -8,6 +9,16 @@ const pin:BalancePin={
  token_id_sha256:createHash('sha256').update(tokenId).digest('hex'),token_address_sha256:null,decimals:18,native:true,
 };
 const terminalHeaders:Record<string,string>={link:'<private-first>; rel="first", <private-self>; rel="self"'};
+
+describe('configuration-only pin validation',()=>{
+ it('exposes a pure predicate over the existing strict pin schema',()=>{
+  expect(walletBalance.isBalancePinValid).toBeTypeOf('function');
+  expect(walletBalance.isBalancePinValid(JSON.stringify(pin))).toBe(true);
+ });
+ it.each([undefined,'','{','null','[]','{}',JSON.stringify({...pin,decimals:6}),JSON.stringify({...pin,unexpected:'not-admitted'})])('rejects absent or invalid pins without exposing validation detail (%#)',raw=>{
+  expect(walletBalance.isBalancePinValid(raw)).toBe(false);
+ });
+});
 function fixture(){return {
  getWallet:vi.fn(async()=>({data:{wallet:{id:pin.wallet_id,walletSetId:pin.wallet_set_id,address:pin.source_address,blockchain:pin.network,state:'LIVE'}}})),
  getWalletTokenBalance:vi.fn(async(_id?:string,_pageAfter?:string)=>({headers:terminalHeaders,data:{tokenBalances:[
