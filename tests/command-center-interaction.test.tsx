@@ -2649,6 +2649,34 @@ describe("HOLD reason and lawful resolution", () => {
 });
 
 describe("unresolved assessment callback containment", () => {
+  it("does not send an assessment when request identity storage fails", async () => {
+    localStorage.clear();
+    const fetchMock=vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation("OBL-STORAGE-UX")]}:detail("OBL-STORAGE-UX"))));
+    vi.stubGlobal("fetch",fetchMock);
+    renderWithExplicitFirstSelection();
+    const action=await screen.findByRole("button",{name:"Run AI Assessment"});
+    const storage=vi.spyOn(Storage.prototype,"setItem").mockImplementation(()=>{throw new Error("Storage denied");});
+    try {
+      fireEvent.click(action);
+      const reason=await screen.findByRole("region",{name:"Hold reason and next action"});
+      await waitFor(()=>expect(reason.textContent).toContain("Assessment was not sent"));
+      expect(reason.textContent).not.toContain("Existing request identity retained");
+      expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+    } finally {storage.mockRestore();}
+  });
+
+  it("releases only the documented definitive version refusal", async () => {
+    localStorage.clear();
+    const fetchMock=vi.fn<typeof fetch>((input,init)=>Promise.resolve(response(init?.method==="POST"?{code:"ASM-001",error:"Selected version changed."}:String(input)==="/api/obligations"?{obligations:[obligation("OBL-REFUSED-UX")]}:detail("OBL-REFUSED-UX"),init?.method==="POST"?409:200)));
+    vi.stubGlobal("fetch",fetchMock);
+    renderWithExplicitFirstSelection();
+    fireEvent.click(await screen.findByRole("button",{name:"Run AI Assessment"}));
+    await screen.findByRole("heading",{name:"Assessment needs refresh"});
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh assessment status"}) as HTMLButtonElement).disabled).toBe(false));
+    expect(localStorage.getItem("tameion.assessment-request.OBL-REFUSED-UX")).toBeNull();
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
   it("does not create an orphan request from an old A callback after A to B to A", async () => {
     localStorage.clear();
     const fetchMock=vi.fn<typeof fetch>((input,init)=>Promise.resolve(response(init?.method==="POST"?{status:"IN_PROGRESS"}:String(input)==="/api/obligations"?{obligations:[obligation("OBL-RACE-A"),obligation("OBL-RACE-B")]}:detail(String(input).split("/").at(-1)!),init?.method==="POST"?202:200)));
@@ -2672,14 +2700,20 @@ describe("unresolved assessment callback containment", () => {
   });
 
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
-  it("keeps ASM-UNKNOWN unresolved when an older HOLD remains current and rejects a captured POST callback", async () => {
+  it.each([
+    {status:503,data:{code:"ASM-UNKNOWN"}},
+    {status:503,data:{code:"ASM-001",outcome:"UNKNOWN"}},
+    {status:409,data:{code:"ASM-001",outcome:"UNKNOWN"}},
+    {status:409,data:{code:"ASM-001",status:"IN_PROGRESS"}},
+    {status:409,data:{code:"ASM-001",retry_submission:false}},
+  ])("keeps contradictory or unknown completion unresolved across old HOLD and captured callback: %j", async reply => {
     localStorage.clear();
     const held=assessedDetail("OBL-UNKNOWN-OLD-HOLD", "HOLD");
     held.current_assessment.race.result.validated_findings[0].code="MODEL_OUTPUT_INVALID";
     held.current_assessment.race.remediation[0].finding_code="MODEL_OUTPUT_INVALID";
     let posted=false;
     const fetchMock=vi.fn<typeof fetch>((input,init)=>{
-      if(init?.method==="POST") {posted=true;return Promise.resolve(response({code:"ASM-UNKNOWN"},503));}
+      if(init?.method==="POST") {posted=true;return Promise.resolve(response(reply.data,reply.status));}
       return Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation("OBL-UNKNOWN-OLD-HOLD",true)]}:posted?held:detail("OBL-UNKNOWN-OLD-HOLD")));
     });
     vi.stubGlobal("fetch",fetchMock);

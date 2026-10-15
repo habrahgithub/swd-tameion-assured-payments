@@ -1531,16 +1531,18 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
   }];
   const unresolved = Boolean(requestKey || feedback && feedback.kind !== "durable");
   if (unresolved) {
-    const unavailable = ["ASSESSMENT_UNAVAILABLE", "AUTH_UNAVAILABLE", "GENUINE_WORKFLOW_UNAVAILABLE"].includes(feedback?.statusCode ?? "");
+    const storageUnavailable = feedback?.statusCode === "REQUEST_IDENTITY_UNAVAILABLE";
+    const refusedVersion = !requestKey && feedback?.kind === "stale" && feedback.statusCode === "ASM-001";
+    const unavailable = ["ASSESSMENT_UNAVAILABLE", "AUTH_UNAVAILABLE", "GENUINE_WORKFLOW_UNAVAILABLE", "REQUEST_IDENTITY_UNAVAILABLE"].includes(feedback?.statusCode ?? "");
     const pending = feedback?.kind === "in-flight" || feedback?.kind === "pending" || feedback?.kind === "awaiting-refresh";
     blockers.push({
-      kind: unavailable ? "system-unavailable" : pending ? "assessment-pending" : "assessment-unverified",
-      title: unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
-      reason: unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
-      impact: "Assessment completion is unconfirmed. Payment remains unavailable.",
-      nextAction: "Refresh the existing assessment status. A queue refresh cannot confirm this request's completion. Do not reassess or retry while unresolved.",
-      responsible: "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
-      evidence: [requestKey ? `Request reference: ${requestKey}` : "Existing request identity retained.", "Confirmed assessment receipt unavailable.", ...(feedback?.statusCode ? [`Status code: ${feedback.statusCode}`] : [])],
+      kind: refusedVersion ? "assessment-stale" : unavailable ? "system-unavailable" : pending ? "assessment-pending" : "assessment-unverified",
+      title: refusedVersion ? "Assessment needs refresh" : unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
+      reason: storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : refusedVersion ? "The payable changed before this assessment could become current." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
+      impact: storageUnavailable ? "Assessment has not started. Payment remains unavailable." : "Assessment completion is unconfirmed. Payment remains unavailable.",
+      nextAction: storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : refusedVersion ? "Refresh the payable status before taking another assessment action." : "Refresh the existing assessment status. A queue refresh cannot confirm this request's completion. Do not reassess or retry while unresolved.",
+      responsible: refusedVersion || storageUnavailable ? "User · status review" : "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
+      evidence: [requestKey ? `Request reference: ${requestKey}` : refusedVersion ? "Request refused before recording an assessment." : "Request reference unavailable.", "Confirmed assessment receipt unavailable.", ...(feedback?.statusCode ? [`Status code: ${feedback.statusCode}`] : [])],
     });
   } else {
     const assessment = assessmentReviewSnapshot(detail.current_assessment);
@@ -2332,15 +2334,24 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     });
     const storageKey = `tameion.assessment-request.${obligationId}`;
     const requestIdentity = crypto.randomUUID();
-    localStorage.setItem(storageKey, requestIdentity);
-    assessmentRequestKey.current = {obligationId, key: requestIdentity};
     return run("assess", async () => {
+      try {
+        localStorage.setItem(storageKey, requestIdentity);
+        assessmentRequestKey.current = {obligationId, key: requestIdentity};
+      } catch {
+        return {ok:false, status:503, data:{code:"REQUEST_IDENTITY_UNAVAILABLE", error:"Assessment was not sent because its request identity could not be stored."}};
+      }
       const result = await postCommand(`/api/obligations/${obligationId}/${detail.advisory_action_eligible===true?"advisory":"assess"}`, {}, {
         "Idempotency-Key": requestIdentity,
       });
       // A complete 200 is released only after its exact durable readback in run.
       // ASM-001 is the existing definitive pre-effect refusal.
-      if (result.status !== 200 && assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
+      const refusal = result.data && typeof result.data === "object" && !Array.isArray(result.data)
+        ? result.data as Record<string, unknown> : null;
+      const definitiveVersionRefusal = result.status === 409 && refusal?.code === "ASM-001" &&
+        Object.keys(refusal).every(key => key === "code" || key === "error") &&
+        (refusal.error === undefined || typeof refusal.error === "string");
+      if (definitiveVersionRefusal && assessmentKeyDisposition({ status: result.status, data: result.data, obligationId, expectedAggregateVersion: expectedVersion }) === "RELEASE") {
         if (localStorage.getItem(storageKey) === requestIdentity) localStorage.removeItem(storageKey);
         if (assessmentRequestKey.current?.key === requestIdentity) assessmentRequestKey.current = null;
       }
