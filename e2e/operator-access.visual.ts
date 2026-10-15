@@ -37,6 +37,7 @@ test('private entry hides data on reload and simulated BFcache restore, with res
  expect(calls).toEqual(['/api/operator/session']);await expect(page.locator('button[data-obligation-id]')).toHaveCount(0);
  for(const width of [1440,1365,390,320])for(const theme of ['light','dark']){
   await page.setViewportSize({width,height:900});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+  await page.waitForFunction(theme=>getComputedStyle(document.body).backgroundColor===(theme==='dark'?'rgb(17, 24, 39)':'rgb(248, 250, 252)'),theme);
   await expect(page.getByRole('button',{name:'Open workspace'})).toBeVisible();await expect(page.getByRole('img',{name:'Tameion shield and document illustration'})).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   expect(await page.getByRole('button',{name:'Open workspace'}).evaluate(e=>e.getBoundingClientRect().bottom)).toBeLessThanOrEqual(900);

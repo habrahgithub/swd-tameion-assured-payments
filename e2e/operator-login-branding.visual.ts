@@ -56,7 +56,7 @@ for(const color of ['light','dark'] as const){
 }
 
 for(const state of ['running','paused','reduced'] as const){
- test(`MOCK ONLY successful login preserves request and redirect while ${state}`,async({page})=>{
+ test(`MOCK ONLY successful login opens privacy entry while ${state}`,async({page})=>{
   if(state==='reduced')await page.emulateMedia({reducedMotion:'reduce'});
   const calls:{path:string;body:unknown;headers:Record<string,string>}[]=[];
   await page.route('**/api/**',async route=>{
@@ -64,16 +64,20 @@ for(const state of ['running','paused','reduced'] as const){
    calls.push({path,body:request.postDataJSON(),headers:request.headers()});
    if(path==='/api/operator/csrf')return route.fulfill({json:{csrf_token:'MOCK-ONLY-CSRF'}});
    if(path==='/api/operator/login')return route.fulfill({json:{authenticated:true}});
+   if(path==='/api/operator/session')return route.fulfill({json:{authenticated:true,csrf_token:'MOCK-ONLY-CSRF',expires_at:new Date(Date.now()+3600000).toISOString()}});
    throw new Error('Unexpected API call');
   });
-  await page.route('http://127.0.0.1:3190/?refresh_balance=1',route=>route.fulfill({contentType:'text/html',body:'<html><body>Mock sign-in destination</body></html>'}));
   await page.goto('/operator/login');
   if(state==='paused')await page.getByRole('button',{name:'Pause illustration'}).click();
   await expect(page.getByTestId('login-journey')).toHaveAttribute('data-motion',state==='reduced'?'static':state);
   await page.getByLabel('Username').fill('mock-finance');await page.getByLabel('Password').fill('mock-password');
   await page.getByRole('button',{name:'Sign in securely'}).click();
-  await expect(page).toHaveURL('http://127.0.0.1:3190/?refresh_balance=1');
-  expect(calls.map(call=>call.path)).toEqual(['/api/operator/csrf','/api/operator/login']);
+  await expect(page).toHaveURL('http://127.0.0.1:3190/');
+  await expect(page.getByRole('heading',{name:'Your workspace is hidden'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Open workspace'})).toBeVisible();
+  await expect(page.locator('button[data-obligation-id]')).toHaveCount(0);
+  expect(calls.map(call=>call.path)).toEqual(['/api/operator/csrf','/api/operator/login','/api/operator/session']);
+  expect(calls.some(call=>call.path==='/api/wallet/balance/refresh')).toBe(false);
   expect(calls[0].body).toEqual({});expect(calls[0].headers['x-tameion-csrf-bootstrap']).toBe('1');
   expect(calls[1].body).toEqual({username:'mock-finance',password:'mock-password'});expect(calls[1].headers['x-tameion-csrf']).toBe('MOCK-ONLY-CSRF');
  });

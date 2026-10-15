@@ -40,7 +40,7 @@ function renderWithExplicitFirstSelection(csrfToken?: string) {
     const main = screen.getByRole("main");
     const row = main.querySelector<HTMLButtonElement>("button[data-obligation-id]");
     if (row) return row;
-    if (/No payment obligations|Payment obligations are unavailable/.test(main.textContent ?? "")) return null;
+    if (/No payables|Payables are unavailable/.test(main.textContent ?? "")) return null;
     throw new Error("Waiting for a genuine obligation row before explicit selection.");
   }).then((row) => {
     if (row && row.getAttribute("aria-current") !== "true") fireEvent.click(row);
@@ -308,13 +308,13 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter initialView="dashboard" walletSummary={<div>Wallet observation</div>} />);
     expect(await screen.findByRole("heading", {name:"Dashboard"})).toBeTruthy();
     expect(screen.getByText("Wallet observation")).toBeTruthy();
-    expect(within(screen.getByRole("region", {name:"Company payables"})).getByText("1")).toBeTruthy();
+    expect(within(screen.getByRole("region", {name:"Total payables"})).getByText("1")).toBeTruthy();
     const reviewPayables = screen.getByRole("button", {name:"Review payables"});
     expect(reviewPayables).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([url])=>String(url)==="/api/obligations")).toHaveLength(1);
     reviewPayables.focus();
     fireEvent.click(reviewPayables, {detail: 0});
-    const stageHeading = await screen.findByRole("heading", {name:"Choose an obligation"});
+    const stageHeading = await screen.findByRole("heading", {name:"Choose a payable"});
     expect(stageHeading.tabIndex).toBe(-1);
     expect(document.activeElement).toBe(stageHeading);
     expect(obligationRow("OBL-DASH")).toBeTruthy();
@@ -333,7 +333,7 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockResolvedValue(response({obligations:[company,demo,obligation("UNKNOWN")]}));
     rtlRender(<CommandCenter/>);
     await waitFor(()=>expect(obligationRow("COMPANY")).toBeTruthy());
-    expect(within(screen.getByRole("region",{name:"Company obligations"})).getByRole("button").dataset.obligationId).toBe("COMPANY");
+    expect(within(screen.getByRole("region",{name:"Company payables"})).getByRole("button").dataset.obligationId).toBe("COMPANY");
     expect(within(screen.getByRole("region",{name:"Demo · Arc Testnet"})).getByRole("button").dataset.obligationId).toBe("DEMO");
     expect(within(screen.getByRole("region",{name:"Other review records"})).getByRole("button").dataset.obligationId).toBe("UNKNOWN");
   });
@@ -350,7 +350,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-A"));
     const action = await screen.findByRole("button", { name: "Run AI Assessment" });
-    const strip = screen.getByRole("region", { name: "Current obligation action" });
+    const strip = screen.getByRole("region", { name: "Current payable action" });
     expect(strip.contains(action)).toBe(true);
     expect(strip.textContent).toContain("OBL-A · Supplier not recorded · 125.00 USD");
     expect(strip.textContent).not.toMatch(/Workflow now:|Owner:|Payment authority remains separate/);
@@ -373,7 +373,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(summary.textContent).toContain("does not discharge");expect(summary.textContent).toContain("Next owner");
     const disclosure=screen.getByText("View payment instruction details").closest("details");
     expect(disclosure?.open).toBe(false);
-    const strip=screen.getByRole("region",{name:"Current obligation action"});
+    const strip=screen.getByRole("region",{name:"Current payable action"});
     expect(strip.textContent).toContain("OBL-AUTH-SUMMARY · Supplier not recorded · 125.00 USD");
     expect(strip.textContent).not.toMatch(/Workflow now:|Owner:|Authorization recorded/);
   });
@@ -395,23 +395,23 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(screen.getByRole("main").querySelectorAll("button[data-obligation-id]")).toHaveLength(5));
     expect(document.getElementById("genuine-obligation-queue")?.className).toBe("block");
-    expect(screen.getByRole("button", { name: "Close obligation list" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close payables list" })).toBeTruthy();
     expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
-    expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose an obligation");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Choose one obligation from the payment queue");
+    expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose a payable");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Choose a payable to review its current status.");
     expect(screen.getByTestId("current-next-step").textContent).not.toMatch(/no genuine obligations|demo mode|loading/i);
     expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
     expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
-    expect(screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
+    expect(screen.getByRole("main").querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose a payable");
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("/api/obligations/") && String(input) !== "/api/obligations")).toHaveLength(0);
 
     for (const [index, id] of ids.entries()) {
       fireEvent.click(obligationRow(id));
       await waitFor(() => expect(obligationRow(id).getAttribute("aria-current")).toBe("true"));
-      const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+      const selectedIdentity = screen.getByRole("region", { name: "Selected source payable" });
       await waitFor(() => expect(selectedIdentity.textContent).toContain(`Source ${id}`));
       expect(selectedIdentity.textContent).toContain(`${index + 1}.00 USD`);
-      expect(screen.getByRole("region", { name: "Current obligation action" }).textContent).toContain(`${id} · Source ${id} · ${index + 1}.00 USD`);
+      expect(screen.getByRole("region", { name: "Current payable action" }).textContent).toContain(`${id} · Source ${id} · ${index + 1}.00 USD`);
       expect(obligationRow(id).getAttribute("aria-current")).toBe("true");
     }
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -422,15 +422,15 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockReturnValue(list.promise);
 
     rtlRender(<CommandCenter />);
-    expect(screen.getAllByRole("status").every((status) => status.textContent?.includes("Loading payment obligations"))).toBe(true);
-    expect(screen.queryByText("Choose an obligation", { selector: "h3" })).toBeNull();
-    expect(screen.queryByText("No payment obligations", { selector: "h3" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Choose an obligation" })).toBeNull();
+    expect(screen.getAllByRole("status").every((status) => status.textContent?.includes("Loading payables"))).toBe(true);
+    expect(screen.queryByText("Choose a payable", { selector: "h3" })).toBeNull();
+    expect(screen.queryByText("No payables", { selector: "h3" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose a payable" })).toBeNull();
     expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode/i);
     expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
 
     list.resolve(response({ obligations: [obligation("OBL-A")] }));
-    await waitFor(() => expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose an obligation"));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").querySelector("h3")?.textContent).toBe("Choose a payable"));
     expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -439,8 +439,8 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockResolvedValue(response({ obligations: [] }));
 
     rtlRender(<CommandCenter />);
-    expect(await screen.findByText("No payment obligations", { selector: "h3" })).toBeTruthy();
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the payment queue to check again");
+    expect(await screen.findByText("No payables", { selector: "h3" })).toBeTruthy();
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the list to check again");
     expect(screen.getByRole("main").textContent).not.toMatch(/demo mode|loading genuine obligations/i);
     expect(screen.getByRole("main").querySelectorAll('button[data-obligation-id]')).toHaveLength(0);
     expect(screen.getByRole("main").querySelectorAll('[aria-label*="loading" i]')).toHaveLength(0);
@@ -451,11 +451,11 @@ describe("Command Center mounted Operational Report", () => {
     fetchMock.mockResolvedValue(response({ error: "Queue read unavailable" }, 503));
 
     rtlRender(<CommandCenter />);
-    expect(await screen.findByText("Payment obligations unavailable", { selector: "h3" })).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("Payment obligations are unavailable");
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Retry the queue");
+    expect(await screen.findByText("Payables unavailable", { selector: "h3" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Payables are unavailable");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Retry before selecting a payable");
     expect(screen.getByRole("main").textContent).not.toMatch(/no genuine obligations to show|open demo mode|loading/i);
-    expect(screen.queryByText("Choose an obligation", { selector: "h3" })).toBeNull();
+    expect(screen.queryByText("Choose a payable", { selector: "h3" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -479,7 +479,7 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A").getAttribute("aria-current")).toBe("true"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     const assess = await screen.findByRole("button", { name: "Run AI Assessment" });
     fireEvent.click(assess);
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST")).toBe(true));
@@ -487,13 +487,13 @@ describe("Command Center mounted Operational Report", () => {
     const writesBeforeNavigation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
     fireEvent.click(obligationRow("OBL-B"));
     await waitFor(() => expect(obligationRow("OBL-B").getAttribute("aria-current")).toBe("true"));
-    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Source OBL-B"));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Selected source payable" }).textContent).toContain("Source OBL-B"));
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(writesBeforeNavigation);
 
     assessment.resolve(response({ error: "Assessment unavailable" }, 503));
     await waitFor(() => expect((screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement).disabled).toBe(false));
     expect(obligationRow("OBL-B").getAttribute("aria-current")).toBe("true");
-    expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Source OBL-B");
+    expect(screen.getByRole("region", { name: "Selected source payable" }).textContent).toContain("Source OBL-B");
     expect(listReads).toBe(1);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(writesBeforeNavigation);
   });
@@ -506,7 +506,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-FUNDING-AUTH")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-FUNDING-AUTH"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
 
     expect(screen.queryByRole("region", { name: "Wallet funding and payment readiness" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -520,7 +520,7 @@ describe("Command Center mounted Operational Report", () => {
       walletBalance={{amount:"19.989211477825042",asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-13T16:46:10.708Z"}}
     />);
 
-    await screen.findAllByText("No payment obligations");
+    await screen.findAllByText("No payables");
     expect(screen.queryByRole("region", { name: "Wallet funding and payment readiness" })).toBeNull();
     expect(screen.getByRole("main").textContent).not.toContain("USDC balance not verified");
   });
@@ -536,7 +536,7 @@ describe("Command Center mounted Operational Report", () => {
     />);
     await waitFor(() => expect(obligationRow("OBL-FUNDING-VERIFIED")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-FUNDING-VERIFIED"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
 
     expect(screen.getByText("Verified wallet summary")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Wallet funding and payment readiness" })).toBeNull();
@@ -553,13 +553,13 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-001")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-001"));
-    const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+    const selectedIdentity = screen.getByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(selectedIdentity.textContent).toContain("Stable selected source"));
     const detailReads = fetchMock.mock.calls.filter(([input]) => String(input) === "/api/obligations/OBL-J0C-001").length;
 
     fireEvent.click(obligationRow("OBL-J0C-001"));
 
-    expect(screen.getByRole("region", { name: "Selected source obligation" }).textContent).toContain("Stable selected source");
+    expect(screen.getByRole("region", { name: "Selected source payable" }).textContent).toContain("Stable selected source");
     expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/obligations/OBL-J0C-001")).toHaveLength(detailReads);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -594,7 +594,7 @@ describe("Command Center mounted Operational Report", () => {
     firstA.resolve(response(staleA));
     currentA.resolve(response(latestA));
 
-    const selectedIdentity = screen.getByRole("region", { name: "Selected source obligation" });
+    const selectedIdentity = screen.getByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(selectedIdentity.textContent).toContain("Current final A"));
     expect(selectedIdentity.textContent).not.toContain("Stale");
     expect(obligationRow("OBL-A").getAttribute("aria-current")).toBe("true");
@@ -632,7 +632,7 @@ describe("Command Center mounted Operational Report", () => {
       : selectedDetail.promise);
 
     renderWithExplicitFirstSelection();
-    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current payable status."));
     expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByText(/Payment review report/)).toBeNull();
     selectedDetail.resolve(response(detail("OBL-A")));
@@ -647,12 +647,12 @@ describe("Command Center mounted Operational Report", () => {
       .mockResolvedValueOnce(response({ obligations: [] }));
 
     renderWithExplicitFirstSelection();
-    expect(await screen.findByText(/Payment obligations are unavailable/)).toBeTruthy();
+    expect(await screen.findByText(/Payables are unavailable/)).toBeTruthy();
     expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByText(/Payment review report/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry payment obligations" }));
-    expect(await screen.findByText("No payment obligations are currently available.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry payables" }));
+    expect(await screen.findByText("No payables are currently available.")).toBeTruthy();
     expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByText(/Payment review report/)).toBeNull();
   });
@@ -664,10 +664,10 @@ describe("Command Center mounted Operational Report", () => {
       : selectedDetail.promise);
 
     renderWithExplicitFirstSelection();
-    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current payable status."));
     expect(screen.queryByText("Related payment information")).toBeNull();
     selectedDetail.resolve(response(null, 502));
-    expect(await screen.findByText(/Selected obligation status is unavailable/)).toBeTruthy();
+    expect(await screen.findByText(/Selected payable status is unavailable/)).toBeTruthy();
     expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
@@ -695,7 +695,7 @@ describe("Command Center mounted Operational Report", () => {
     const assess = screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(assess.disabled).toBe(false);
 
-    expect(workspace.textContent).toContain("Selected obligation");
+    expect(workspace.textContent).toContain("Selected payable");
     expect(workspace.textContent).not.toContain("indicative only");
     expect(workspace.textContent).not.toContain("1 USD = AED 3.6725");
     expect(workspace.textContent).not.toContain("Execution authority");
@@ -726,7 +726,7 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const progress = await screen.findByRole("status", { name: "AI assessment in progress" });
-    expect(progress.textContent).toContain("Reviewing obligation evidence");
+    expect(progress.textContent).toContain("Reviewing payable details");
     const action=screen.getByRole("button", { name: "Run AI Assessment" }) as HTMLButtonElement;
     expect(action.disabled).toBe(true);expect(action.textContent).toBe("Assessing obligation…");
     assessment.resolve(response({ error: "Assessment unavailable." }, 503));
@@ -772,7 +772,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     const stageHeading = screen.getByRole("heading", { name: "Approved For Payment" });
     expect(document.getElementById(stageHeading.getAttribute("aria-describedby")!)?.textContent).toBe("Reviewing: Obligation. Workflow now: Assessment. Reviewing step 1 of 6; workflow is at step 2 of 6.");
 
@@ -807,7 +807,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
 
     // RED: transport ambiguity currently produces no accessible explanation.
@@ -832,7 +832,7 @@ describe("Command Center mounted Operational Report", () => {
     });
 
     renderWithExplicitFirstSelection();
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
@@ -860,7 +860,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     navigateStage("Assessment");
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST")).toHaveLength(1));
@@ -901,14 +901,14 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await screen.findByRole("status", { name: "Assessment request status" });
     expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST")).toHaveLength(1);
 
     fireEvent.click(obligationRow("OBL-J0C-001"));
     await waitFor(() => expect(obligationRow("OBL-J0C-001").getAttribute("aria-current")).toBe("true"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     expect(screen.queryByRole("status", { name: "Assessment request status" })).toBeNull();
 
     assessment.resolve(response({ error: "Assessment service unavailable." }, 503));
@@ -952,7 +952,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
 
     const durable = await screen.findByRole("status", { name: "Assessment request status" });
@@ -980,7 +980,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("unconfirmed"));
@@ -1011,7 +1011,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
@@ -1055,13 +1055,13 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(reads003).toBe(2));
     fireEvent.click(obligationRow("OBL-J0C-001"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     await act(async () => { delayedOldRefresh.resolve(response(structuredClone(before))); });
     await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
     expect(screen.queryByRole("status", { name: "Assessment request status" })).toBeNull();
@@ -1103,7 +1103,7 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(reads003).toBe(2));
 
     currentFinal003.resolve(response(structuredClone(currentDetail)));
-    const selectedIdentity = await screen.findByRole("region", { name: "Selected source obligation" });
+    const selectedIdentity = await screen.findByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(selectedIdentity.textContent).toContain("Current final 003"));
     navigateStage("Assessment");
     const assessmentResult = await screen.findByRole("region", { name: "Assessment result" });
@@ -1148,7 +1148,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     navigateStage("Assessment");
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
@@ -1177,7 +1177,7 @@ describe("Command Center mounted Operational Report", () => {
     rtlRender(<CommandCenter />);
     await waitFor(() => expect(obligationRow("OBL-J0C-003")).toBeTruthy());
     fireEvent.click(obligationRow("OBL-J0C-003"));
-    await screen.findByRole("region", { name: "Selected source obligation" });
+    await screen.findByRole("region", { name: "Selected source payable" });
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe(expectedKind));
@@ -1408,14 +1408,14 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status.");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current payable status.");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/No payment intent exists/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Authorization status unavailable" })).toBeNull();
 
     selectedDetail.resolve(response(null, 503));
     const recovery = await screen.findByRole("region", { name: "Exception recovery" });
-    expect(recovery.textContent).toContain("Selected obligation status is unavailable; retry before taking action.");
+    expect(recovery.textContent).toContain("Selected payable status is unavailable; retry before taking action.");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.queryByText(/No payment intent exists/)).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
@@ -1428,8 +1428,8 @@ describe("Command Center mounted Operational Report", () => {
       : Promise.resolve(response(null, 404)));
 
     renderWithExplicitFirstSelection();
-    await screen.findByText("No payment obligations", { selector: "h3" });
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the payment queue to check again");
+    await screen.findByText("No payables", { selector: "h3" });
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Refresh the list to check again");
     expect(screen.getByRole("main").textContent).not.toMatch(/open demo mode/i);
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
@@ -1667,7 +1667,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("checkbox",{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole("button",{name:"Pay testnet USDC"}));
     fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
     expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
-    failA=true;fireEvent.click(obligationRow(id));await screen.findByText(/Obligation detail is unavailable/);
+    failA=true;fireEvent.click(obligationRow(id));await screen.findByText(/Payable details are unavailable/);
     await act(async()=>{if(outcome==="lost")pending.reject(new TypeError("Lost response"));else pending.resolve(outcome==="gateway"?new Response("Bad gateway",{status:502}):response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503));});
     expect(await screen.findByText(/Payment may have been submitted/)).toBeTruthy();
     fireEvent.click(obligationRow(other));await screen.findByRole("button",{name:"Run AI Assessment"});
@@ -1686,7 +1686,7 @@ describe("Command Center mounted Operational Report", () => {
     navigateStage("Payment");
     expect(screen.getByRole("region",{name:"Exception recovery"}).textContent).toMatch(copy);
     expect(screen.getByRole("region",{name:"Payment status"}).textContent).toMatch(copy);
-    expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).toContain(`${id} · Supplier not recorded · 125.00 USD`);
+    expect(screen.getByRole("region",{name:"Current payable action"}).textContent).toContain(`${id} · Supplier not recorded · 125.00 USD`);
     expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();
     expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
@@ -1703,7 +1703,7 @@ describe("Command Center mounted Operational Report", () => {
     expect(lifecycle.textContent).toMatch(copy);
     navigateStage("Assurance");
     expect(screen.getByRole("region",{name:"Exception recovery"}).textContent).toMatch(copy);
-    expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).toContain(`${id} · Supplier not recorded · 125.00 USD`);
+    expect(screen.getByRole("region",{name:"Current payable action"}).textContent).toContain(`${id} · Supplier not recorded · 125.00 USD`);
     expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
   });
@@ -1724,7 +1724,7 @@ describe("Command Center mounted Operational Report", () => {
       renderWithExplicitFirstSelection();await screen.findByRole("region",{name:"Genuine obligation workspace"});navigateStage("Payment");
       const card=screen.getByRole("region",{name:"Payment status"});expect(within(card).getByRole("heading",{name:copy})).toBeTruthy();
       expect(screen.queryByRole("button",{name:"Pay testnet USDC"})).toBeNull();expect(screen.queryByRole("button",{name:"Approve payment release"})).toBeNull();
-      expect(screen.getByRole("region",{name:"Current obligation action"}).textContent).not.toMatch(/Release consent is no longer current|Payment release is unavailable/);
+      expect(screen.getByRole("region",{name:"Current payable action"}).textContent).not.toMatch(/Release consent is no longer current|Payment release is unavailable/);
       cleanup();fetchMock.mockReset();
     }
   });
@@ -2054,7 +2054,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button",{name:"View Assessment"}));
     fireEvent.click(screen.getByRole("button",{name:"Review current PAY assessment"}));
     fireEvent.click(screen.getByRole("button",{name:"Continue to Authorization"}));
-    const strip=screen.getByRole("region",{name:"Current obligation action"});
+    const strip=screen.getByRole("region",{name:"Current payable action"});
     expect(within(strip).queryByRole("button",{name:"Authorize payment"})).toBeNull();
     expect(strip.textContent).toMatch(/stop|kill switch/i);
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
@@ -2073,7 +2073,7 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection();
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     openStageNavigator();
-    const sourceSummary = await screen.findByRole("region", { name: "Selected source obligation" });
+    const sourceSummary = await screen.findByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(sourceSummary.textContent).not.toContain("Source and control details are loading"));
     expect(sourceSummary.textContent).toContain("125.00 USD");
     expect(sourceSummary.textContent).not.toContain("125.000000 USDC");
@@ -2219,7 +2219,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
     const action = await screen.findByRole("button", { name: "Run AI Assessment" });
-    expect(screen.getByRole("region", { name: "Current obligation action" }).contains(action)).toBe(true);
+    expect(screen.getByRole("region", { name: "Current payable action" }).contains(action)).toBe(true);
     fireEvent.click(action);
     await waitFor(() => {
       const assessment = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith("/OBL-A/assess") && init?.method === "POST");
@@ -2282,7 +2282,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
     navigateStage("Authorization");
 
-    expect(screen.getByRole("status", { name: "View-only obligation" }).textContent).toMatch(/separately approved controlled test obligation/i);
+    expect(screen.getByRole("status", { name: "Review-only payable" }).textContent).toMatch(/separately approved controlled test obligation/i);
     expect(screen.queryByRole("button", { name: "Authorize payment" })).toBeNull();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/approve") && init?.method === "POST")).toBe(false);
   });
@@ -2310,8 +2310,8 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(() => expect(assess.disabled).toBe(false));
     fireEvent.click(assess);
 
-    expect(await screen.findByText(/Payment obligations are unavailable\. Training data has not been substituted/)).toBeTruthy();
-    expect(await screen.findByText(/Last-known obligation details are stale/)).toBeTruthy();
+    expect(await screen.findByText(/Payables are unavailable\. No substitute data has been added/)).toBeTruthy();
+    expect(await screen.findByText(/Selected payable status is stale/)).toBeTruthy();
     expect(screen.getAllByText("Last-known state — stale").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
@@ -2322,15 +2322,15 @@ describe("Command Center mounted Operational Report", () => {
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Authorization" })).toBeNull();
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected obligation status is stale");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected payable status is stale");
     expect(screen.queryByRole("list", { name: "Unmet authorization prerequisites" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Assurance" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Submit for execution (simulated)" })).toBeNull();
-    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected obligation status is stale");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("Selected payable status is stale");
     fireEvent.click(screen.getByRole("button", { name: "Refresh current status" }));
-    await waitFor(() => expect(screen.queryByText(/Last-known obligation details are stale/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Selected payable status is stale/)).toBeNull());
     expect(screen.queryByText("Related payment information")).toBeNull();
     expect(screen.queryByRole("region", { name: "Operational report for OBL-A" })).toBeNull();
   });
@@ -2414,7 +2414,7 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-A")).toBeTruthy());
-    expect(await screen.findByText(/Obligation detail is unavailable/)).toBeTruthy();
+    expect(await screen.findByText(/Payable details are unavailable/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
     expect(screen.getByRole("main").querySelectorAll('button[data-primary-action="true"]:not(:disabled)')).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Refresh current status" })).toBeTruthy();
@@ -2433,7 +2433,7 @@ describe("Command Center mounted Operational Report", () => {
 
     renderWithExplicitFirstSelection();
     await waitFor(() => expect(obligationRow("OBL-B")).toBeTruthy());
-    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current obligation status."));
+    await waitFor(() => expect(screen.getByTestId("current-next-step").textContent).toContain("Loading current payable status."));
     expect(screen.queryByText("Related payment information")).toBeNull();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/obligations/OBL-A"));
     fireEvent.click(obligationRow("OBL-B"));
