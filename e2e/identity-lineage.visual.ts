@@ -126,6 +126,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await page.setViewportSize({ width: 1173, height: 751 });
   await page.goto("/");
   await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await page.getByRole("button",{name:"Review payables",exact:true}).click();
   await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
   await page.locator('button[data-obligation-id="OBL-J0C-001"]').click();
   await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
