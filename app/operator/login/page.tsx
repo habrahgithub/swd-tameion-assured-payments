@@ -4,13 +4,13 @@ import {OperatorAccessCard,OperatorAccessShell} from '../../operator-access-ui';
 import {ThemeControl} from '../../theme-control';
 import {LoginBrand,LoginIntroduction} from './login-branding';
 import styles from './login-branding.module.css';
-export default function OperatorLogin(){
+export default function OperatorLogin({navigate=(path:string)=>window.location.assign(path)}:{navigate?:(path:string)=>void}={}){
  const [busy,setBusy]=useState(false),[message,setMessage]=useState('Ready for secure sign-in.');
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();if(busy)return;const form=event.currentTarget,data=new FormData(form);setBusy(true);setMessage('Verifying account access…');
   try{
    const bootstrap=await fetch('/api/operator/csrf',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF-Bootstrap':'1'},body:'{}',signal:AbortSignal.timeout(10000)});const challenge=await bootstrap.json();if(!bootstrap.ok||typeof challenge.csrf_token!=='string')throw new Error();
-   const response=await fetch('/api/operator/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF':challenge.csrf_token},body:JSON.stringify({username:data.get('username'),password:data.get('password')}),signal:AbortSignal.timeout(15000)});const result=await response.json();if(!response.ok||result.authenticated!==true)throw new Error();try{sessionStorage.setItem('tameion-fresh-login','1');}catch{/* Storage unavailable: dashboard falls back to its privacy entry. */}window.location.assign('/?refresh_balance=1');
+   const response=await fetch('/api/operator/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF':challenge.csrf_token},body:JSON.stringify({username:data.get('username'),password:data.get('password')}),signal:AbortSignal.timeout(15000)});const result=await response.json();if(!response.ok||result.authenticated!==true)throw new Error();navigate('/?refresh_balance=1');
   }catch{setMessage('Sign-in could not be verified. Access may be unavailable or rate limited. Try again after the stated access limit.');}
   finally{form.reset();setBusy(false);}
  }

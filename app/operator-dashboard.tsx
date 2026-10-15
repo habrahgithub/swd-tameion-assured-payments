@@ -24,13 +24,9 @@ export function formatWalletAmount(amount:string,maxFractionDigits=6):string{
 function formatObservedAt(value:string):string{
  return new Intl.DateTimeFormat('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZone:'UTC',timeZoneName:'short'}).format(new Date(value));
 }
-const LOGIN_NAVIGATION_MARKER='tameion-fresh-login';
 const defaultNavigate=(path:string)=>window.location.replace(path);
-function consumeFreshLogin(){
- try {
-  const marker=sessionStorage.getItem(LOGIN_NAVIGATION_MARKER);sessionStorage.removeItem(LOGIN_NAVIGATION_MARKER);
-  return marker==='1'&&(performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming|undefined)?.type==='navigate';
- }catch{return false;}
+function clearLegacyLoginMarker(){
+ try{sessionStorage.removeItem('tameion-fresh-login');}catch{/* The marker is optional and never grants access. */}
 }
 /** The privacy curtain grants no authority. Every entry still verifies the
  * HttpOnly server session before mounting the private queue or reading balance. */
@@ -45,12 +41,11 @@ export function OperatorDashboard({fetcher=fetch,navigate=defaultNavigate}:{fetc
   return {csrf_token:value.csrf_token,expires_at:value.expires_at};
  }
  useEffect(()=>{
-  const current=++generation.current,abort=new AbortController(),freshLogin=consumeFreshLogin();
+  const current=++generation.current,abort=new AbortController();clearLegacyLoginMarker();
   const url=new URL(window.location.href);if(url.searchParams.has('refresh_balance')){url.searchParams.delete('refresh_balance');window.history.replaceState(null,'',`${url.pathname}${url.search}${url.hash}`);}
   void verifiedSession(abort.signal,current).then(active=>{
    if(current!==generation.current||!active)return;
-   setSession(active);setMessage('Your session is active. Open the workspace when you are ready.');
-   if(freshLogin){setViewOpen(true);void refresh(active);}
+   setSession(active);setViewOpen(false);setMessage('Your session is active. Open the workspace when you are ready.');
   }).catch(()=>{if(current===generation.current)setMessage('Access service unavailable. Ask the platform owner to verify access.');});
   const hidePrivate=()=>{++generation.current;abort.abort();controller.current?.abort();openingRef.current=false;flushSync(()=>{setOpening(false);setViewOpen(false);setBalance(null);setBusy(false);setMessage('Your session may still be active. Open the workspace to verify it.');});};
   const hideOnRestore=(event:PageTransitionEvent)=>{if(event.persisted)hidePrivate();};

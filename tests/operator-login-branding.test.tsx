@@ -13,7 +13,7 @@ beforeEach(()=>{
  vi.stubGlobal('matchMedia',()=>({get matches(){return reduced;},addEventListener:preference.addEventListener.bind(preference),removeEventListener:preference.removeEventListener.bind(preference)}));
  Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
 });
-afterEach(cleanup);
+afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 function visibility(value:string){act(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));});}
 describe('login conceptual motion',()=>{
  it('renders a finished static composition before browser preferences are known',()=>{
@@ -59,4 +59,9 @@ it('preserves CSRF bootstrap, credentials, failure wording and form reset while 
  expect(fetcher.mock.calls[1]).toEqual(['/api/operator/login',expect.objectContaining({method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-Tameion-CSRF':'MOCK-ONLY'},body:JSON.stringify({username:'mock-finance',password:'mock-password'})})]);
  expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
  expect((screen.getByRole('button',{name:'Sign in securely'}) as HTMLButtonElement).disabled).toBe(false);
+});
+it('returns a successful sign-in to the root privacy entry',async()=>{
+ const navigate=vi.fn();const fetcher=vi.fn().mockResolvedValueOnce(Response.json({csrf_token:'MOCK-ONLY'})).mockResolvedValueOnce(Response.json({authenticated:true}));vi.stubGlobal('fetch',fetcher);
+ render(<OperatorLogin navigate={navigate}/>);fireEvent.change(screen.getByLabelText('Username'),{target:{value:'mock-user'}});fireEvent.change(screen.getByLabelText('Password'),{target:{value:'mock-password'}});fireEvent.submit(screen.getByRole('button',{name:'Sign in securely'}).closest('form')!);
+ await vi.waitFor(()=>expect(navigate).toHaveBeenCalledWith('/?refresh_balance=1'));expect(sessionStorage.getItem('tameion-fresh-login')).toBeNull();
 });
