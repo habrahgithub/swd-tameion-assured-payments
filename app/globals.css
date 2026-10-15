@@ -193,11 +193,11 @@ button, a, summary, input {
 }
 
 /* Reserve space for the compact contextual action at narrow/zoomed viewports. */
-.command-center { padding-bottom: 9rem; }
-.command-center :focus-visible { scroll-margin-bottom: 9rem; }
+.command-center { padding-bottom: max(9rem, var(--payable-action-clearance, 9rem)); }
+.command-center :focus-visible { scroll-margin-bottom: max(9rem, var(--payable-action-clearance, 9rem)); }
 .obligation-action-strip { overflow-wrap: anywhere; }
 .obligation-action-strip button { flex-shrink: 0; max-width: 50%; white-space: normal; }
 @media (min-width: 640px) {
-  .command-center { padding-bottom: 9rem; }
+  .command-center { padding-bottom: max(9rem, var(--payable-action-clearance, 9rem)); }
   .obligation-action-strip button { max-width: 100%; }
 }

@@ -123,7 +123,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     await expect(page.getByTestId("current-next-step")).not.toContainText(/Safety Kernel|PAE|provider|reconciliation/i);
     await expect(page.getByRole("region",{name:"Current payable action"})).toContainText("Run AI Assessment");
     await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
-    await expect(page.getByTestId("current-next-step")).toContainText("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
+    await expect(page.getByTestId("current-next-step")).toContainText("This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.");
     await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
     await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(1);
     const queueRows = page.locator('button[data-obligation-id]');
@@ -137,11 +137,11 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     const stageCard = page.getByTestId("current-next-step");
     const primary = page.getByRole("button", { name: "Run AI Assessment" });
     const sourceContext = selectedCard.getByTestId("source-service-context");
-    const expectedBusinessName = expected.record.beneficiary_name && expected.record.beneficiary_name !== "Not captured"
-      ? expected.record.beneficiary_name
-      : String(first.service_category).replaceAll("_", " ").toLowerCase();
-    await expect(selectedCard.locator("h2")).toHaveText(expectedBusinessName);
-    await expect(selectedCard).not.toContainText(expected.record.obligation_id);
+    await expect(selectedCard.locator("h2")).toHaveText(new RegExp(`^${String(first.service_category).replaceAll("_", " ")}$`, "i"));
+    if (expected.record.beneficiary_name && expected.record.beneficiary_name !== "Not captured")
+      await expect(selectedCard).toContainText(`Supplier: ${expected.record.beneficiary_name}`);
+    // Overnight selected-payable admission makes the immutable reference essential.
+    await expect(selectedCard).toContainText(expected.record.obligation_id);
     await expect(sourceContext).toContainText(expected.record.commercial_terms);
     await expect(stageCard.locator("p").first()).toContainText("This obligation needs an assessment before it can proceed.");
     const firstViewport = await Promise.all([
@@ -162,7 +162,7 @@ test("genuine first view keeps the payable, current stage, reason and legal next
     console.log("GENUINE_OBLIGATION_FIRST_VIEWPORT", JSON.stringify({
       viewport: await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: window.innerHeight })),
       obligationId: expected.record.obligation_id,
-      businessName: expectedBusinessName,
+      businessName: String(first.service_category).replaceAll("_", " "),
       state: "unassessed · source OUTSTANDING",
       actionLabel: "Run AI Assessment",
       actionCount: await page.locator('main button[data-primary-action="true"]:not(:disabled)').count(),
@@ -867,7 +867,7 @@ test("Assessment PAY dispositions and legal actions fit the audited first viewpo
       }
       await queueItem(page, scenario.selectedId).click();
       await expect(queueItem(page, scenario.selectedId)).toHaveAttribute("aria-current", "true");
-      await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText(scenario.businessName);
+      await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText(scenario.businessName, {ignoreCase:true});
       await expandLifecycleStages(page);
       await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
         .getByRole("button", { name: "Assessment", exact: true }).click();
@@ -958,7 +958,7 @@ test("manual obligation selection stays bound when multiple queue rows show PAY 
     if (viewport.label === "mobile") await openMobileQueue(page);
     await queueItem(page, "OBL-UAT-02").click();
     await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
-    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("software services");
+    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("Software services");
     await expandLifecycleStages(page);
     const assessmentStage = page.getByRole("button", { name: "Assessment", exact: true });
     await expect(assessmentStage).toHaveAttribute("data-stage-state", "CURRENT");
@@ -968,7 +968,7 @@ test("manual obligation selection stays bound when multiple queue rows show PAY 
     const card = page.getByRole("region", { name: "Assessment result" });
     await expect(card).toContainText("Assessment result — PAY");
     await expect(card.getByTestId("payment-eligibility")).toBeVisible();
-    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("software services");
+    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("Software services");
     await expect(card).not.toContainText("OBL-UAT-01");
     await expect(card.getByRole("button", { name: "View selected payment candidate" })).toHaveCount(0);
     await expect(card.getByRole("button", { name: "Continue to Authorization" })).toHaveCount(0);
@@ -1086,13 +1086,13 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
   const sourceProxy = page.getByRole("region", { name: "Selected source payable" });
-  await expect(sourceProxy).not.toContainText("OBL-UAT-01");
+  await expect(sourceProxy).toContainText("OBL-UAT-01");
   await expect(sourceProxy).toContainText("125.00 USD");
   await expect(sourceProxy).toContainText("OUTSTANDING");
   await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
   await queueItem(page, "OBL-UAT-02").click();
-  await expect(page.getByRole("heading", { name: "software services" })).toBeVisible();
-  await expect(sourceProxy).not.toContainText("OBL-UAT-02");
+  await expect(page.getByRole("heading", { name: "Software services" })).toBeVisible();
+  await expect(sourceProxy).toContainText("OBL-UAT-02");
   await expect(sourceProxy).toContainText("40.00 USD");
   await expect(sourceProxy).toContainText("OUTSTANDING");
   await expect(sourceProxy).not.toContainText("OBL-UAT-01");
@@ -1105,7 +1105,7 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
   await queueItem(page, "OBL-UAT-02").click();
   await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
-  await expect(page.getByRole("heading", { name: "software services" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Software services" })).toBeVisible();
   await expect(lifecycle.getByRole("listitem")).toHaveCount(6);
   const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
   expect(stageBoxes[0]).toBeLessThan(stageBoxes[1]);
@@ -1140,8 +1140,8 @@ test("Command Center desktop accessibility and review image", async ({ page }) =
   expect(desktopZoom.width, JSON.stringify(desktopZoom)).toBeLessThanOrEqual(desktopZoom.viewport);
   await page.evaluate(() => { document.documentElement.style.zoom = ""; });
   await page.mouse.move(1, 1);
-  await expect(page).toHaveScreenshot("command-center-desktop.png", { fullPage: true, animations: "disabled" });
   expect(unexpectedWrites).toEqual([]);
+  await expect(page).toHaveScreenshot("command-center-desktop.png", { fullPage: true, animations: "disabled" });
 });
 
 test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }, testInfo: TestInfo) => {
@@ -1402,8 +1402,8 @@ test("Command Center mobile layout and review image", async ({ page }) => {
   expect(zoomedDimensions.documentWidth, JSON.stringify(zoomedDimensions)).toBeLessThanOrEqual(zoomedDimensions.viewportWidth);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.mouse.move(1, 1);
-  await expect(page).toHaveScreenshot("command-center-mobile.png", { fullPage: true, animations: "disabled" });
   expect(unexpectedWrites).toEqual([]);
+  await expect(page).toHaveScreenshot("command-center-mobile.png", { fullPage: true, animations: "disabled" });
 });
 
 test("Assurance Continue is a 44px read-only navigation control in the first viewport", async ({ browser }, testInfo) => {
@@ -2023,7 +2023,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
       await expect(feedback).toBeVisible();
       await expect(feedback).toContainText(outcome.name.startsWith("202") ? "Assessment pending" : "Assessment unavailable");
       await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Refresh assessment status" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Refresh payable list" })).toBeVisible();
       await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
       const viewStages = ["Obligation", "Assessment"] as const;
       for (const stage of viewStages) {
@@ -2081,7 +2081,7 @@ test("selected OBL-J0C-003 assessment response feedback is visible on Obligation
         if (stage === "Assessment") {
           const queueReadsBefore = requests.filter((entry) => entry === "GET /api/obligations").length;
           const detailReadsBefore = requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003").length;
-          await page.getByRole("button", { name: "Refresh assessment status" }).click();
+          await page.getByRole("button", { name: "Refresh payable list" }).click();
           await expect(feedback).toContainText("read-only queue summary was refreshed");
           expect(requests.filter((entry) => entry === "GET /api/obligations")).toHaveLength(queueReadsBefore + 1);
           expect(requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003")).toHaveLength(detailReadsBefore);
@@ -2241,7 +2241,7 @@ for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) te
   await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
   await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
   await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
-  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh assessment status":"Review missing evidence"});
+  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh payable list":"Review missing evidence"});
   await primary.focus();await page.keyboard.press("Enter");
   await expect(page.getByRole("button",{name:"Reassess after correction"})).toHaveCount(0);
   expect(mutations.filter(path=>path!=="/api/wallet/balance/refresh")).toEqual([]);
@@ -2251,4 +2251,92 @@ for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) te
   const path=info.outputPath(`hold-clarity-${width}-${unresolved?"unverified":"confirmed"}.png`);
   await page.screenshot({path,fullPage:true});await info.attach("hold-clarity",{path,contentType:"image/png"});
   const axe=await new AxeBuilder({page}).analyze();expect(axe.violations).toEqual([]);
+});
+
+for (const theme of ["light","dark"] as const) for (const width of [320,390]) {
+  test(`retained assessment list-check feedback is visible and keyboard usable at ${width}px in ${theme}`, async ({page},testInfo)=>{
+    await page.setViewportSize({width,height:844});
+    const listResponse=await syntheticSourceResponse("/api/obligations");
+    const list=await listResponse.json(); const id=list.obligations[0].obligation_id;
+    await page.addInitScript(({id,theme})=>{
+      localStorage.setItem(`tameion.assessment-request.${id}`,"SYNTHETIC-RETAINED-REQUEST");
+      localStorage.setItem("tameion-theme",theme);
+    },{id,theme});
+    let reads=0; let release!:()=>void;
+    const pending=new Promise<void>(resolve=>{release=resolve;});
+    const writes:string[]=[];
+    page.on("request",request=>{if(request.method()==="POST")writes.push(new URL(request.url()).pathname);});
+    await page.route("**/api/obligations",async route=>{
+      reads++; if(reads>1)await pending;
+      return route.fulfill({json:list});
+    });
+    await page.goto("/"); await openReviewPayables(page);
+    await openMobileQueue(page); await queueItem(page,id).click();
+    const action=page.getByRole("button",{name:"Refresh payable list",exact:true});
+    await expect(action).toBeEnabled(); await action.focus(); await page.keyboard.press("Enter");
+    const status=page.getByRole("status",{name:"Payable list check"});
+    await expect(status).toContainText("Checking payable list"); await expect(action).toBeDisabled();
+    await expect(status).toBeVisible();
+    const strip=page.getByRole("region",{name:"Current payable action"});
+    expect(await strip.locator('[aria-label="Payable list check"]').count()).toBe(1);
+    release(); await expect(status).toContainText("Payable list checked");
+    await expect(status).toContainText("Assessment outcome remains unverified"); await expect(action).toBeEnabled();
+    expect(reads).toBe(2); expect(writes).toEqual([]);
+    expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBe("SYNTHETIC-RETAINED-REQUEST");
+    await expect(page.getByRole("button",{name:"Run AI Assessment",exact:true})).toHaveCount(0);
+    const widths=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth}));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    const bounds=await status.boundingBox(); expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(844);
+    await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+    const content=await page.getByRole("region",{name:"Payable details",exact:true}).boundingBox();
+    const footer=await strip.boundingBox(); expect(content!.y+content!.height).toBeLessThanOrEqual(footer!.y);
+    const audit=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa"]).analyze();
+    expect(audit.violations).toEqual([]);
+    await page.screenshot({path:testInfo.outputPath(`list-check-${width}-${theme}.png`),fullPage:true});
+    await action.focus(); await page.keyboard.press("Shift+Tab");
+    expect(await page.evaluate(()=>document.activeElement?.tagName)).not.toBe("BODY");
+  });
+}
+
+test("wallet exact display preserves a large canonical micro-unit balance at 320px without another request",async({page},testInfo)=>{
+  await page.setViewportSize({width:320,height:844});
+  let balanceReads=0;
+  const amount="999999999999999999.999999999999999999";
+  await page.route("**/api/wallet/balance/refresh",route=>{balanceReads++;return route.fulfill({json:{amount,asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-16T00:00:00.000Z",verification:"READ_ONLY_BALANCE"}});});
+  await page.goto("/"); await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await page.getByRole("button",{name:"Refresh wallet balance",exact:true}).click();
+  const wallet=page.getByRole("region",{name:"Read-only wallet balance"});
+  await expect(wallet).toContainText("1,000,000,000,000,000,000.00 USDC");
+  const exact=page.getByRole("button",{name:"Show exact",exact:true});
+  await exact.focus(); await page.keyboard.press("Enter");
+  await expect(wallet).toContainText(`${amount} USDC`);
+  await expect(page.getByRole("button",{name:"Show rounded",exact:true})).toBeFocused();
+  await page.keyboard.press("Enter"); await expect(wallet).toContainText("1,000,000,000,000,000,000.00 USDC");
+  expect(balanceReads).toBe(1);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({path:testInfo.outputPath("wallet-exact-320.png"),fullPage:true});
+});
+
+for (const width of [320,390]) for (const zoom of [1,2]) test(`storage-failure feedback keeps expanded payable details clear at ${width}px and ${zoom}x zoom`,async({page},testInfo)=>{
+  const cssWidth=Math.floor(width/zoom);
+  await page.setViewportSize({width:cssWidth,height:Math.floor(844/zoom)});
+  const source=await syntheticSourceResponse("/api/obligations");const list=await source.json();const id=list.obligations[0].obligation_id;
+  await page.addInitScript(id=>localStorage.setItem(`tameion.assessment-request.${id}`,"SYNTHETIC-RETAINED-REQUEST"),id);
+  let reads=0;let release!:()=>void;const pending=new Promise<void>(resolve=>{release=resolve;});
+  await page.route("**/api/obligations",async route=>{if(++reads>1)await pending;return route.fulfill({json:list});});
+  await page.goto("/");await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();
+  await page.getByRole("button",{name:"Refresh payable list",exact:true}).click();
+  await expect(page.getByRole("status",{name:"Payable list check"})).toContainText("Checking payable list");
+  await page.evaluate(()=>{
+    const original=Storage.prototype.getItem;
+    Storage.prototype.getItem=function(key){if(key.startsWith("tameion.assessment-request."))throw new Error("SYNTHETIC_STORAGE_UNAVAILABLE");return original.call(this,key);};
+  });
+  release();await expect(page.getByRole("status",{name:"Payable list check"})).toContainText("Request identity could not be read");
+  await page.getByText("Technical details",{exact:true}).click();
+  await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+  const body=await page.getByRole("region",{name:"Payable details",exact:true}).boundingBox();
+  const footer=await page.getByRole("region",{name:"Current payable action"}).boundingBox();
+  expect(body!.y+body!.height).toBeLessThanOrEqual(footer!.y);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(cssWidth);
+  await page.screenshot({path:testInfo.outputPath(`storage-failure-footer-${width}-${zoom}x.png`),fullPage:true});
 });

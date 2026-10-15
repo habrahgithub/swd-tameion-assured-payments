@@ -172,6 +172,11 @@ function sourceText(record: Record<string, unknown>, field: string): string {
   return typeof value === "string" && value.trim() ? value : "Not captured";
 }
 
+function businessTitle(value: string): string {
+  const words = value.replaceAll("_", " ").toLowerCase().replace(/\b(ai|api|usdc)\b/g, word => word.toUpperCase());
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function sourceServiceContext(record: Record<string, unknown>): string | null {
   const commercialTerms = typeof record.commercial_terms === "string" ? record.commercial_terms.trim() : "";
   const evidence = Array.isArray(record.source_evidence) ? record.source_evidence : [];
@@ -1540,7 +1545,7 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
       title: refusedVersion ? "Assessment needs refresh" : unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
       reason: storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : refusedVersion ? "The payable changed before this assessment could become current." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
       impact: storageUnavailable ? "Assessment has not started. Payment remains unavailable." : "Assessment completion is unconfirmed. Payment remains unavailable.",
-      nextAction: storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : refusedVersion ? "Refresh the payable status before taking another assessment action." : "Refresh the existing assessment status. A queue refresh cannot confirm this request's completion. Do not reassess or retry while unresolved.",
+      nextAction: storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : refusedVersion ? "Refresh the payable status before taking another assessment action." : "Refresh the payable list to check for newer records. The exact assessment outcome remains unverified. Do not reassess or retry while unresolved.",
       responsible: refusedVersion || storageUnavailable ? "User · status review" : "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
       evidence: [requestKey ? `Request reference: ${requestKey}` : refusedVersion ? "Request refused before recording an assessment." : "Request reference unavailable.", "Confirmed assessment receipt unavailable.", ...(feedback?.statusCode ? [`Status code: ${feedback.statusCode}`] : [])],
     });
@@ -2003,6 +2008,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const [dashboardVisible, setDashboardVisible] = useState(initialView === "dashboard");
   const dashboardHeadingRef = useRef<HTMLHeadingElement>(null);
   const workflowContainerRef = useRef<HTMLDivElement>(null);
+  const commandCenterRef = useRef<HTMLElement>(null);
+  const actionStripRef = useRef<HTMLElement>(null);
   const pendingViewFocus = useRef(false);
   const [obligations, setObligations] = useState<ObligationSummary[]>([]);
   const [obligationsStatus, setObligationsStatus] = useState<ObligationListStatus>("loading");
@@ -2018,6 +2025,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const financialResults = useRef(new Map<string, ActionResult>());
   const [assessmentFeedback, setAssessmentFeedback] = useState<AssessmentFeedback | null>(null);
+  const [payableListCheck, setPayableListCheck] = useState<{
+    obligationId: string; generation: number; requestKey: string | null;
+    token: number; status: "checking" | "checked" | "failed" | "identity-unavailable";
+  } | null>(null);
+  const activePayableListCheck = useRef<number | null>(null);
+  const payableListCheckSequence = useRef(0);
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2160,6 +2173,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setStageCompletionReceipt(null);
     setLastResult(financialResults.current.get(selectedId) ?? null);
     setAssessmentFeedback(null);
+    setPayableListCheck(null);
+    activePayableListCheck.current = null;
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -2778,26 +2793,69 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     currentAssessment.assessment_hash === assessmentFeedback.assessmentHash,
   );
   const assessmentFeedbackIsCurrent = feedbackMatchesKnownSelection && durableFeedbackMatchesCurrentAssessment;
+  const selectedRequestKey = retainedAssessmentRequestKey(selectedId);
+  // Bind the callback to this render's selection, including A → B → A.
+  // A queue observation is never an exact-request receipt or retry authority.
+  const listCheckGeneration = selectionGeneration.current;
   const refreshAssessmentQueueSummary = async () => {
+    if (!selectedId || selectedRef.current !== selectedId ||
+        selectionGeneration.current !== listCheckGeneration || activePayableListCheck.current !== null) return;
+    const liveRequestKey = retainedAssessmentRequestKey(selectedId);
+    if (liveRequestKey === "Request identity unavailable") {
+      setPayableListCheck({obligationId: selectedId, generation: listCheckGeneration,
+        requestKey: liveRequestKey, token: ++payableListCheckSequence.current, status: "identity-unavailable"});
+      return;
+    }
+    if (liveRequestKey !== selectedRequestKey) return;
+    const token = ++payableListCheckSequence.current;
+    activePayableListCheck.current = token;
+    const check = {obligationId: selectedId, generation: listCheckGeneration, requestKey: selectedRequestKey, token};
+    setPayableListCheck({...check, status: "checking"});
     const feedback = assessmentFeedback;
-    const generation = selectionGeneration.current;
-    if (!feedback) { await refreshObligations(false, true, generation); return; }
-    if (feedback.obligationId !== selectedRef.current || feedback.selectionGeneration !== generation) return;
-    const refreshedQueue = await refreshObligations(false, true, generation);
-    if (!isCurrentGeneration(generation, selectionGeneration.current) || !isSameIdentity(selectedRef.current, feedback.obligationId)) return;
-    setAssessmentFeedback((current) => {
-      if (!current || current !== feedback) return current;
-      return {
-        ...current,
-        message: refreshedQueue.status === "ready"
-          ? "The read-only queue summary was refreshed. It shows current assessment coverage, but does not confirm this request's exact receipt or completion."
-          : refreshedQueue.status === "error"
-            ? "The read-only queue summary could not be refreshed. This request remains unresolved."
-            : current.message,
-      };
+    const refreshedQueue = await refreshObligations(false, true, listCheckGeneration);
+    if (activePayableListCheck.current !== token) return;
+    activePayableListCheck.current = null;
+    if (selectedRef.current !== selectedId || selectionGeneration.current !== listCheckGeneration) return;
+    const completedRequestKey = retainedAssessmentRequestKey(selectedId);
+    if (completedRequestKey === "Request identity unavailable") {
+      setPayableListCheck({...check, requestKey: completedRequestKey, status: "identity-unavailable"});
+      return;
+    }
+    if (completedRequestKey !== selectedRequestKey) {
+      setPayableListCheck(current => current?.token === token ? null : current);
+      return;
+    }
+    setPayableListCheck({...check, status: refreshedQueue.status === "ready" ? "checked" : "failed"});
+    if (feedback) setAssessmentFeedback(current => current !== feedback ? current : {
+      ...current,
+      message: refreshedQueue.status === "ready"
+        ? "The read-only queue summary was refreshed. It shows current assessment coverage, but does not confirm this request's exact receipt or completion."
+        : "The read-only queue summary could not be refreshed. This request remains unresolved.",
     });
   };
-  const selectedRequestKey = retainedAssessmentRequestKey(selectedId);
+  const currentPayableListCheck = payableListCheck?.obligationId === selectedId &&
+    payableListCheck.generation === selectionGeneration.current && payableListCheck.requestKey === selectedRequestKey
+    ? payableListCheck : null;
+  const checkingPayableList = currentPayableListCheck?.status === "checking";
+  // Fixed actions have variable height when status text wraps or the user zooms.
+  // Reserve their measured height; this changes layout only, never workflow state.
+  useLayoutEffect(() => {
+    const root = commandCenterRef.current, strip = actionStripRef.current;
+    if (!root || !strip) return;
+    const updateClearance = () => {
+      const height = strip.getBoundingClientRect().height;
+      if (height > 0) root.style.setProperty("--payable-action-clearance", `${Math.ceil(height) + 16}px`);
+    };
+    updateClearance();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateClearance);
+    if (observer) observer.observe(strip);
+    else window.addEventListener("resize", updateClearance);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateClearance);
+      root.style.removeProperty("--payable-action-clearance");
+    };
+  }, [dashboardVisible, currentPayableListCheck?.status]);
   const currentFeedback = assessmentFeedbackIsCurrent ? assessmentFeedback : null;
   const assessmentRequestUnresolved = Boolean(selectedRequestKey || currentFeedback && currentFeedback.kind !== "durable");
   const selectedBlockers = payableBlockers({detail, state: detailState, selectedId, feedback: currentFeedback,
@@ -2880,7 +2938,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (assessmentRequestUnresolved && !detail?.execution) {
-    workspaceAction = { label: "Refresh assessment status", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
+    workspaceAction = { label: "Refresh payable list", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
     workspaceAction = { label: "View Assessment", actor: "You · read-only navigation", run: () => showStage("Assessment") };
   } else if (viewedStage === "Obligation" && currentLifecycleStage !== "Obligation" && !(currentLifecycleStage === "Assessment" && !hasCurrentAssessment)) {
@@ -3072,7 +3130,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   };
 
   return (
-    <main dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-3 px-4 py-3 md:gap-4 md:px-6 md:py-4">
+    <main ref={commandCenterRef} dir="ltr" className="command-center mx-auto flex min-h-screen max-w-[1440px] flex-col gap-3 px-4 py-3 md:gap-4 md:px-6 md:py-4">
       <header className="relative -mx-4 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-2.5 md:-mx-6 md:px-6">
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <TameionBrand compact/>
@@ -3112,6 +3170,18 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               <p className="mt-1 text-xs text-[var(--color-ink-muted)]">Separate from company payables</p>
             </section>
           </div>
+          {listPresentation === "ready" && obligations.some(o => o.source_group === "GENUINE_COMPANY") && <section aria-label="Payables overview">
+            <h3 className="text-sm font-semibold">Payables overview</h3>
+            <p className="mt-1 text-xs text-[var(--color-ink-muted)]">Current queue summary</p>
+            <ul className="mt-2 divide-y divide-[var(--color-border)]">
+              {obligations.filter(o => o.source_group === "GENUINE_COMPANY").slice(0,6).map(o => <li key={o.obligation_id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 py-3 text-sm">
+                <p className="break-words font-semibold">{businessTitle(o.service_category)}</p><p className="tabular text-end font-semibold"><bdi>{businessAmount(o.amount)} {o.currency}</bdi></p>
+                <p className="col-span-2 break-words text-xs text-[var(--color-ink-muted)]">{o.beneficiary_name?.trim() && o.beneficiary_name !== "Not captured" ? o.beneficiary_name : "Supplier not recorded"} · {o.due_date ? `Due ${o.due_date}` : "Due date not recorded"}</p>
+                <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{retainedAssessmentRequestKey(o.obligation_id) ? "Assessment outcome unverified" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : "Assessment required"}</p>
+              </li>)}
+            </ul>
+            {obligations.filter(o => o.source_group === "GENUINE_COMPANY").length > 6 && <p className="text-xs text-[var(--color-ink-muted)]">Showing 6 payables. Open the list to review all.</p>}
+          </section>}
           {listPresentation === "empty" && <p role="status" className="text-sm text-[var(--color-ink-muted)]">No items in the payment queue.</p>}
           {listPresentation === "error" && <p role="alert" className="text-sm text-[var(--color-danger)]">Payment queue unavailable. Review payables to retry.</p>}
           <div className="mt-auto flex justify-end border-t border-[var(--color-border)] pt-4">
@@ -3150,7 +3220,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             {key:"UNVERIFIED",label:"Other review records",empty:""},
           ] as const).map(group => {
             const members=obligations.filter(o => (o.source_group??"UNVERIFIED")===group.key);
-            if(group.key==="UNVERIFIED"&&!members.length)return null;
+            if((group.key==="UNVERIFIED"||group.key==="DEMO_ARC_TESTNET")&&!members.length)return null;
             return <section key={group.key} aria-label={group.label} className="mb-3">
             <h2 className="mb-2 text-xs font-semibold">{group.label}</h2>
             {listPresentation==="ready"&&!members.length&&<p className="mb-2 text-xs leading-5 text-[var(--color-ink-muted)]">{group.empty}</p>}
@@ -3232,39 +3302,47 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {selected && (
           <section aria-label={detailState === "loaded" ? "Genuine obligation workspace" : undefined}>
             {selectedFinancialResult && <ActionResultBanner result={selectedFinancialResult} title={selectedFinancialResult.label === "release" ? "Release approval status" : "Payment submission status"} focusOnMount />}
-            <section aria-label="Selected source payable" className={viewedStage === "Assessment"
-              ? "grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-[var(--color-border)] pb-2 sm:gap-3 sm:pb-3"
-              : "grid gap-3 border-b border-[var(--color-border)] pb-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"}>
+            <section aria-label="Selected source payable" className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 border-b border-[var(--color-border)] pb-2 sm:gap-3 sm:pb-3">
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Selected payable</p>
-                {selected.source_group&&selected.source_group!=="UNVERIFIED"&&<p className="mt-1 text-xs text-[var(--color-ink-muted)]">{selected.source_group==="GENUINE_COMPANY"?"Company payable · Review only":"Test payment · Arc Testnet · Does not settle a company payable"}</p>}
+                <p className="sr-only">Selected payable</p>
+                {selected.source_group&&selected.source_group!=="UNVERIFIED"&&<p className="mt-1 text-xs text-[var(--color-ink-muted)]">{selected.source_group==="GENUINE_COMPANY"?"Company payable":"Test payment · Arc Testnet"}</p>}
                 <h2 className={viewedStage === "Assessment"
                   ? "mt-1 break-words text-[18px] font-semibold leading-6 text-[var(--color-ink)] md:text-[25px]"
                   : "mt-1 break-words text-[21px] font-semibold leading-7 text-[var(--color-ink)] md:text-[25px]"}>
-                  {detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured"
-                    ? sourceText(detail.record, "beneficiary_name")
-                    : selected.service_category.replaceAll("_", " ").toLowerCase()}
+                  {businessTitle(detailState === "loaded" && detail && sourceText(detail.record, "service_category") !== "Not captured"
+                    ? sourceText(detail.record, "service_category") : selected.service_category)}
                 </h2>
               </div>
-              <div className={viewedStage === "Assessment" ? "text-end" : "sm:text-end"}>
-                  <p className={viewedStage === "Assessment"
-                    ? "tabular text-[17px] font-semibold leading-6 text-[var(--color-ink)] md:text-[23px] md:leading-7"
-                    : "tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"}><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
+              <div className="min-w-0 max-w-[10rem] text-end sm:max-w-none">
+                  <p className="tabular break-all text-[17px] font-semibold leading-6 text-[var(--color-ink)] md:text-[23px] md:leading-7"><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
                 </div>
-              <div className={viewedStage === "Assessment" ? "col-span-2" : "sm:col-span-2"}>
+              <div className="col-span-2">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--color-ink-muted)]">
+                  <p className="min-w-0 break-words">{detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured"
+                    ? `Supplier: ${sourceText(detail.record, "beneficiary_name")}` : "Supplier not recorded"}</p>
+                  <p className="mono break-all text-[11px]">{selectedId}</p>
+                </div>
                 {detailState === "loaded" && detail && (
                   <>
                     <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
                       <p><strong>{sourcePayableState(detail)}</strong></p>
                       <p><span className="text-[var(--color-ink-muted)]">Due </span><strong>{sourceText(detail.record, "effective_due_date") !== "Not captured" ? sourceText(detail.record, "effective_due_date") : sourceText(detail.record, "due_date")}</strong></p>
                     </div>
+                    <dl aria-label="Source billing details" className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-ink-muted)]">
+                      {([ ["invoice_reference", "Invoice"], ["issue_date", "Issued"], ["recurrence", "Frequency"] ] as const).map(([field,label]) => sourceText(detail.record, field) !== "Not captured" &&
+                        <div key={field} className="min-w-0 break-words"><dt className="inline">{label}: </dt><dd className="inline">{field === "recurrence" ? businessTitle(sourceText(detail.record, field)) : sourceText(detail.record, field)}</dd></div>)}
+                    </dl>
+                    <p aria-label="Current assessment outcome" className="mt-2 text-xs font-semibold">{assessmentRequestUnresolved
+                      ? currentFeedback?.kind === "in-flight" || currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
+                      : hasCurrentAssessment && currentAssessment ? `Assessment result · ${currentAssessment.decision} · advisory`
+                      : currentAssessment ? "Assessment needs refresh" : "Assessment not recorded"}</p>
                     {viewedStage !== "Assessment" && sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-sm leading-5 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
                     {viewedStage === "Authorization" && <p className="mt-1 text-sm leading-5 text-[var(--color-warning)]">
                       ARC TESTNET · {detail.settlement_proxy ? "testnet payment destination prepared" : "testnet payment destination not prepared"} · real-world payable remains {sourcePayableState(detail)}.
                     </p>}
                     {viewedStage === "Authorization" && detail.settlement_proxy && <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
                       Testnet amount: <bdi dir="ltr" className="tabular font-semibold">{businessAmount(detail.settlement_proxy.preflight.amount)} {detail.settlement_proxy.preflight.asset}</bdi>
-                      {" · "}{detail.settlement_proxy.preflight.network}. Testnet execution does not discharge the real-world payable.
+                      {" · "}{detail.settlement_proxy.preflight.network}.
                     </p>}
                   </>
                 )}
@@ -3296,10 +3374,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             </div>
           )}
 
-          {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && (
+          {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && detail.advisory_action_eligible !== true && (
             <section role="status" aria-label="Review-only payable" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only payable</p>
-              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">{detail.advisory_action_eligible===true?"You can request an advisory assessment and create a separate linked Arc Testnet instruction draft. Payment preparation and execution require independently approved controlled authority. The genuine payable remains outstanding.":"This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation."}</p>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.</p>
             </section>
           )}
 
@@ -3359,7 +3437,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   ? listPresentation === "ready" ? "Choose a payable" : listPresentation === "empty" ? "No payables" : "Payables unavailable"
                   : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
                 {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
-                {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.</p>}
+                {isInitialObligationScreen && selectedId && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.</p>}
                 {visibleWorkspaceAction && !showExceptionRecovery && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
               {!visibleWorkspaceAction && !showContinueToAuthorization && !showContinueToPayment && selectedId && detailState === "loaded" && !showExceptionRecovery && !isInitialObligationScreen && (
                   <p className="mt-2 text-sm text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
@@ -3688,6 +3766,16 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
 
           </div>
 
+          {!isInitialObligationScreen && detailState === "loaded" && detail && <section aria-label="Current control status" className="rounded-lg border border-[var(--color-border)] px-3 py-2">
+            <h3 className="text-xs font-semibold">Current controls</h3>
+            <dl className="mt-2 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
+              <div><dt className="text-[var(--color-ink-muted)]">Assessment</dt><dd className="mt-1 font-semibold">{assessmentRequestUnresolved ? "Outcome unverified" : hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} · advisory` : currentAssessment ? "Needs refresh" : "Not recorded"}</dd></div>
+              <div><dt className="text-[var(--color-ink-muted)]">Authorization</dt><dd className="mt-1 font-semibold">{detail.aggregate.state === "AUTHORIZED" ? "Recorded · release checks separate" : "Not recorded"}</dd></div>
+              <div><dt className="text-[var(--color-ink-muted)]">Assurance evidence</dt><dd className="mt-1 font-semibold">{detail.assurance_evidence?.state === "AVAILABLE_CURRENT_BINDING" ? "Recorded · current binding" : detail.assurance_evidence?.state === "AVAILABLE_HISTORICAL" ? "Historical record" : detail.assurance_evidence?.state === "NOT_CREATED" ? "Not recorded" : detail.assurance_evidence?.state === "INVALID" ? "Invalid" : "Not verified"}</dd></div>
+              <div><dt className="text-[var(--color-ink-muted)]">Payment record</dt><dd className="mt-1 font-semibold">{unresolvedSubmission ? "Outcome unverified" : !detail.execution ? "Not submitted in Tameion" : detail.execution.status === "SETTLED" ? settledEvidenceSummary(detail) : businessTitle(detail.execution.status)}</dd></div>
+            </dl>
+          </section>}
+
           {!isInitialObligationScreen && detailState === "loaded" && detail && (
             <details className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
               <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]" title={`Transaction ledger · Payment activity · ${activityItems.length ? `${activityItems.length} records · latest: ${activityItems.at(-1)?.label}` : "no dated activity · current position available on open"}`}>
@@ -3729,10 +3817,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             <details className="rounded border border-[var(--color-border)] px-3 py-2">
               <summary className="min-h-11 cursor-pointer py-2 text-[13px] font-semibold text-[var(--color-ink)]">Control and audit records</summary>
               <div className="space-y-2 border-t border-[var(--color-border)] pt-3 text-[12px]">
+                {(detail.current_assessment || currentResult?.label === "assess") && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Payment review record</summary>
                   <div className="space-y-2 pt-2">
                     {detail.current_assessment ? <>
+                      <p className="font-semibold">{assessmentRequestUnresolved ? "Recorded assessment · latest request unresolved" : hasCurrentAssessment ? "Current recorded assessment" : "Historical assessment"}</p>
                       <dl>
                         <Field label="Review reference" value={detail.current_assessment.assessment_id} />
                         <Field label="Review fingerprint" value={detail.current_assessment.assessment_hash} />
@@ -3747,6 +3837,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     {currentResult?.label === "assess" && <EvidencePanel value={currentResult.data} />}
                   </div>
                 </details>
+                )}
+                {detail.aggregate.state === "AUTHORIZED" && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Approval record</summary>
                   <dl className="pt-2">
@@ -3756,6 +3848,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     <Field label="Approval timestamp / actor" value="Not available in the current detail; no event is inferred." />
                   </dl>
                 </details>
+                )}
+                {detail.assurance_evidence && detail.assurance_evidence.state !== "NOT_CREATED" && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Payment control record</summary>
                   <div className="space-y-2 pt-2">
@@ -3771,6 +3865,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     </>}
                   </div>
                 </details>
+                )}
+                {(detail.pae_sealed || detail.sealed_pae_instruction_hash || detail.execution_packet) && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Authorized payment instruction</summary>
                   <dl className="pt-2">
@@ -3780,6 +3876,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     {detail.execution_packet?.packet_sha256 && <Field label="Payment instruction fingerprint" value={detail.execution_packet.packet_sha256} />}
                   </dl>
                 </details>
+                )}
+                {(detail.execution || detail.settlement_proxy) && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Payment processing</summary>
                   <dl className="pt-2">
@@ -3791,6 +3889,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     <Field label="Settlement-network status" value={detail.execution?.provider_evidence?.status ?? "Not available"} />
                   </dl>
                 </details>
+                )}
+                {(detail.execution?.provider_evidence || detail.truth.settlement_truth.status !== "NOT_SUBMITTED") && (
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 font-semibold">Settlement and reconciliation record</summary>
                   <div className="space-y-2 pt-2">
@@ -3804,6 +3904,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     <EvidencePanel value={detail.execution?.provider_evidence ?? detail.truth.settlement_truth} />
                   </div>
                 </details>
+                )}
                 <details className="rounded border border-[var(--color-border)] px-3 py-2">
                   <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Source and current payment records</summary>
                 <dl className="mt-2">
@@ -3890,13 +3991,17 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       </div>
       )}
 
-      {!dashboardVisible && <section role="region" aria-label="Current payable action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 shadow-lg">
+      {!dashboardVisible && <section ref={actionStripRef} role="region" aria-label="Current payable action" className="obligation-action-strip fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-[var(--color-surface)] px-4 py-2 shadow-lg">
         <div className="mx-auto flex max-w-[1392px] flex-nowrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{selectedId || "No payable selected"}{selected ? ` · ${detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured" ? sourceText(detail.record, "beneficiary_name") : "Supplier not recorded"} · ${businessAmount(detailState === "loaded" && detail ? detail.record.amount : selected.amount)} ${detailState === "loaded" && detail ? detail.record.currency : selected.currency}` : ""}</p>
           </div>
-          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy} disabled={busy || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
+          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy || checkingPayableList} disabled={busy || checkingPayableList || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{checkingPayableList?'Refreshing payable list…':busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
         </div>
+        {currentPayableListCheck && <p role="status" aria-label="Payable list check" className="payable-list-check mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">
+          {currentPayableListCheck.status === "checking" ? "Checking payable list…" : currentPayableListCheck.status === "checked" ? "Payable list checked." : currentPayableListCheck.status === "identity-unavailable" ? "Request identity could not be read. Reload when storage is available." : "Payable list could not be checked."}
+          {" "}Assessment outcome remains unverified.
+        </p>}
       </section>}
     </main>
   );

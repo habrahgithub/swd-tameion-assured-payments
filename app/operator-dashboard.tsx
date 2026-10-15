@@ -10,7 +10,7 @@ type Session={csrf_token:string;expires_at:string};
 type Balance={amount:string;asset:'USDC';captured_at:string;network:string};
 const ORGANIZATION={name:'Star Wealth Dynamics LLC',id:'ORG-DEMO-001',environment:'Arc Testnet'} as const;
 
-export function formatWalletAmount(amount:string,maxFractionDigits=6):string{
+export function formatWalletAmount(amount:string,maxFractionDigits=2):string{
  const [whole,fraction='']=amount.split('.');
  const scale=10n**BigInt(maxFractionDigits);
  const retained=fraction.slice(0,maxFractionDigits).padEnd(maxFractionDigits,'0');
@@ -33,6 +33,7 @@ function clearFreshLoginMarker(){
  * HttpOnly server session before mounting the private queue or reading balance. */
 export function OperatorDashboard({fetcher=fetch,navigate=defaultNavigate}:{fetcher?:typeof fetch;navigate?:(path:string)=>void}){
  const [session,setSession]=useState<Session|null>(null),[message,setMessage]=useState('Checking session…'),[balance,setBalance]=useState<Balance|null>(null),[busy,setBusy]=useState(false),[viewOpen,setViewOpen]=useState(false),[opening,setOpening]=useState(false);
+ const [showExact,setShowExact]=useState(false);
  const generation=useRef(0),controller=useRef<AbortController|null>(null),openingRef=useRef(false);
  async function verifiedSession(signal:AbortSignal,current:number):Promise<Session|null>{
   const response=await fetcher('/api/operator/session',{cache:'no-store',credentials:'same-origin',signal});const value=await response.json();if(current!==generation.current)return null;
@@ -64,7 +65,7 @@ export function OperatorDashboard({fetcher=fetch,navigate=defaultNavigate}:{fetc
  }
  async function refresh(){
   const activeSession=session;
-  if(!activeSession||busy)return;const current=generation.current;controller.current?.abort();const abort=new AbortController();controller.current=abort;setBusy(true);setBalance(null);setMessage('Checking wallet balance…');
+  if(!activeSession||busy)return;const current=generation.current;controller.current?.abort();const abort=new AbortController();controller.current=abort;setBusy(true);setBalance(null);setShowExact(false);setMessage('Checking wallet balance…');
   try{const response=await fetcher('/api/wallet/balance/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',signal:abort.signal,headers:{'Content-Type':'application/json','X-Tameion-CSRF':activeSession.csrf_token},body:'{}'});const value=await response.json();if(current!==generation.current)return;
    if(response.status===401){++generation.current;setSession(null);setViewOpen(false);setBusy(false);setMessage('Session expired or revoked. Sign in again.');throw new Error();}
    if(!response.ok||value.asset!=='USDC'||typeof value.amount!=='string'||!/^(0|[1-9]\d*)(\.\d{1,18})?$/.test(value.amount)||typeof value.captured_at!=='string'||!Number.isFinite(Date.parse(value.captured_at))||value.verification!=='READ_ONLY_BALANCE')throw new Error();
@@ -86,7 +87,10 @@ export function OperatorDashboard({fetcher=fetch,navigate=defaultNavigate}:{fetc
  const walletSummary=<section aria-label="Read-only wallet balance" className={`relative overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 shadow-[var(--shadow-soft)] ${busy?'wallet-card-busy':''}`}>
   <div className="flex flex-wrap items-center justify-between gap-3">
   <div className="min-w-0 flex-1 basis-full sm:basis-0"><h2 className="flex items-center gap-2 text-sm font-semibold"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-4 shrink-0 text-[var(--color-ink-muted)]"><rect x="3.5" y="6" width="17" height="13" rx="2" stroke="currentColor" strokeWidth="1.7"/><path d="M3.5 9h17M16 14h1.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M6 6V4.5h11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>Wallet balance status</h2>
-   {balance&&<p className="tabular mt-1 text-lg font-semibold tracking-[-0.02em]"><bdi title={`Exact balance: ${balance.amount} ${balance.asset}`}>{formatWalletAmount(balance.amount)} {balance.asset}</bdi><span className="ms-2 text-xs font-medium tracking-normal text-[var(--color-ink-muted)]">{balance.network}</span><span className="block text-xs font-normal tracking-normal text-[var(--color-ink-muted)]">Observed <time dateTime={balance.captured_at} title={balance.captured_at}>{formatObservedAt(balance.captured_at)}</time></span></p>}
+   {balance&&<>
+    <p className="tabular mt-1 break-words text-lg font-semibold tracking-[-0.02em]"><bdi id="wallet-balance-amount" className="break-all" title={`Exact balance: ${balance.amount} ${balance.asset}`}>{showExact?balance.amount:formatWalletAmount(balance.amount)} {balance.asset}</bdi><span className="ms-2 text-xs font-medium tracking-normal text-[var(--color-ink-muted)]">{balance.network}</span><span className="block text-xs font-normal tracking-normal text-[var(--color-ink-muted)]">Observed <time dateTime={balance.captured_at} title={balance.captured_at}>{formatObservedAt(balance.captured_at)}</time></span></p>
+    <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-ink-muted)]"><span>{showExact?'Exact balance':'Rounded balance'}</span><button type="button" aria-pressed={showExact} aria-controls="wallet-balance-amount" className="min-h-11 rounded px-2 font-semibold underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2" onClick={()=>setShowExact(value=>!value)}>{showExact?'Show rounded':'Show exact'}</button></div>
+   </>}
    <p role="status" className="text-xs text-[var(--color-ink-muted)]">{message}</p>
   </div>
   <button className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[var(--color-border-strong)] px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2" onClick={()=>void refresh()} disabled={busy} aria-busy={busy}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className={`size-4 shrink-0 ${busy?'animate-spin':''}`}><path d="M20 11a8 8 0 0 0-14.6-4L4 9m0-4v4h4M4 13a8 8 0 0 0 14.6 4L20 15m0 4v-4h-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>{busy?'Checking balance…':'Refresh wallet balance'}</button>

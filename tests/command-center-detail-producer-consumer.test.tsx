@@ -1345,7 +1345,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const source = screen.getByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(source.textContent).toContain("OUTSTANDING"));
     expect(source.textContent).toContain(`${body.record.amount} ${body.record.currency}`);
-    expect(source.textContent).not.toContain(body.record.obligation_id);
+    expect(source.textContent).toContain(body.record.obligation_id);
     expect(source.querySelector('[data-testid="source-service-context"]')?.textContent).toContain(body.record.commercial_terms);
 
     expect(main.querySelector('nav[aria-label="Payment lifecycle navigation"]')).toBeNull();
@@ -1356,7 +1356,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(screen.queryByText(/Payment review report/)).toBeNull();
     expect(source.textContent).not.toMatch(/ARC TESTNET|USDC|PAE|Safety Kernel|provider|reconciliation/i);
     expect(main.textContent).toContain("This obligation needs an assessment before it can proceed.");
-    expect(main.textContent).toContain("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
+    expect(main.textContent).toContain("This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.");
     expect(main.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(1);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
 
@@ -1626,7 +1626,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const firstContext = source.querySelector('[data-testid="source-service-context"]');
 
     expect(firstContext?.textContent).toMatch(expectedById.get("OBL-J0C-001")!);
-    expect(source.textContent).not.toContain("OBL-J0C-001");
+    expect(source.textContent).toContain("OBL-J0C-001");
     expect(source.textContent).not.toMatch(/EVID-|sha256|content_hash|PDF_PROFORMA_INVOICE/);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
 
@@ -1636,7 +1636,7 @@ describe("real detail GET producer-consumer packet controls", () => {
         .toMatch(expectedById.get("OBL-J0C-005")!);
     });
     const selectedSource = screen.getByRole("region", { name: "Selected source payable" });
-    expect(selectedSource.textContent).not.toContain("OBL-J0C-005");
+    expect(selectedSource.textContent).toContain("OBL-J0C-005");
     expect(selectedSource.textContent).not.toMatch(/EVID-|sha256|content_hash|USER_SUPPLIED_EMAIL_INVOICE_EXCERPT/);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -1649,7 +1649,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const unassessedBody = await detailJson(unassessed, firstSource.obligation_id);
     const unassessedQueue = await listJson(unassessed);
     const { main: unassessedMain } = await renderProducerJson(unassessedBody, [], unassessedQueue);
-    expect(unassessedMain.textContent).toContain("AI can recommend PAY, HOLD or ESCALATE. It cannot approve payment or move money.");
+    expect(unassessedMain.textContent).toContain("This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.");
     expect(screen.queryByRole("navigation", { name: "Payment lifecycle navigation" })).toBeNull();
     expect(unassessedMain.textContent).not.toMatch(/no provider submission/i);
     cleanup();
@@ -1780,7 +1780,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const initialBody = await detailJson(unassessed, initialQueue.obligations[0].obligation_id);
     const entry = await renderProducerJson(initialBody, [], initialQueue);
     expect(initialBody.current_assessment).toBeNull();
-    expect(entry.main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Refresh assessment status");
+    expect(entry.main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Refresh payable list");
     expect(screen.queryByRole("button", {name:"Run AI Assessment"})).toBeNull();
     expect(screen.queryByRole("button", { name: "Run AI Assessment again" })).toBeNull();
   });
@@ -1876,12 +1876,13 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(main.querySelectorAll('button[data-primary-action="true"]').length).toBeLessThanOrEqual(1);
     const postsBefore = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
     fireEvent.click(screen.getByText("Control and audit records"));
-    expect(screen.getByText("Payment review record").closest("details")?.open).toBe(false);
+    if (body.current_assessment) expect(screen.getByText("Payment review record").closest("details")?.open).toBe(false);
+    else expect(screen.queryByText("Payment review record", {exact:true})).toBeNull();
     expect(screen.getByText("Approval record").closest("details")?.open).toBe(false);
     expect(screen.getByText("Payment control record").closest("details")?.open).toBe(false);
     expect(screen.getByText("Authorized payment instruction").closest("details")?.open).toBe(false);
     expect(screen.getByText("Payment processing").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Settlement and reconciliation record").closest("details")?.open).toBe(false);
+    expect(screen.queryByText("Settlement and reconciliation record", {exact:true})).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBefore);
 
     cleanup();

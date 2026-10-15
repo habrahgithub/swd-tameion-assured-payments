@@ -448,3 +448,38 @@ secure sign-in
 
 The broader provider-backed obligation-to-reconciliation journey remains a
 separate controlled acceptance gate.
+
+## UAT review walkthrough
+
+Use the approved UAT deployment and your own account. The dashboard summarizes
+company payables from the authenticated queue; test entries remain separate.
+
+1. Open **Review payables** and deliberately select an item. Confirm its
+   reference, purpose, supplier (when recorded), original amount/currency and due
+   date before continuing.
+2. **Run AI Assessment** records advisory advice: PAY, HOLD or ESCALATE. It does
+   not approve or send payment. Review the recorded result and its next action.
+3. For HOLD or ESCALATE, review the reason, impact and responsible role beside
+   the payable. Correct source evidence through the approved process before
+   reassessment; the screen does not manufacture a release from HOLD.
+4. If an assessment outcome is unverified, **Refresh payable list** checks only
+   the queue. Its visible result does not reconcile the exact request. Preserve
+   the request identity and do not submit another assessment while unresolved.
+5. A linked Arc Testnet instruction requires separate controlled authority and
+   human approval. Testnet activity does not discharge the company payable.
+6. When wallet configuration and a read are separately approved, refresh the
+   wallet manually. The observed balance defaults to two decimals; **Show exact**
+   reveals the unchanged canonical value without another network request.
+7. Current controls and expandable records distinguish current status,
+   historical evidence and actual recorded payment activity. Log out when done.
+
+Supplier and invoice fields are displayed only when supplied by the trusted
+read model. The current strict source projection may omit them; the UI uses
+**Supplier not recorded** and omits absent invoice data. Rendering support is not
+proof that these fields have been provisioned.
+
+Local fixtures and browser checks verify presentation and failure handling.
+They do not establish hosted wallet access, provider reconciliation or a
+completed financial E2E. The temporary Preview wallet diagnostic requires a
+separately reviewed cleanup before submission. Merge and deployment remain
+separate release decisions.

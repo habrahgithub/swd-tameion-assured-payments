@@ -338,10 +338,11 @@ describe("Command Center mounted Operational Report", () => {
     expect(within(screen.getByRole("region",{name:"Demo · Arc Testnet"})).getByRole("button").dataset.obligationId).toBe("DEMO");
     expect(within(screen.getByRole("region",{name:"Other review records"})).getByRole("button").dataset.obligationId).toBe("UNKNOWN");
   });
-  it("shows an honest empty demo section instead of inventing a dollar entry",async()=>{
+  it("omits an empty demo section without inventing a dollar entry",async()=>{
     fetchMock.mockResolvedValue(response({obligations:[{...obligation("COMPANY"),source_group:"GENUINE_COMPANY"}]}));
-    rtlRender(<CommandCenter/>);await screen.findByText(/No approved demo entries are available/);
-    expect(within(screen.getByRole("region",{name:"Demo · Arc Testnet"})).queryByRole("button")).toBeNull();
+    rtlRender(<CommandCenter/>);await waitFor(()=>expect(obligationRow("COMPANY")).toBeTruthy());
+    expect(screen.queryByRole("region",{name:"Demo · Arc Testnet"})).toBeNull();
+    expect(screen.getByRole("complementary").querySelectorAll("button[data-obligation-id]")).toHaveLength(1);
   });
   it("keeps the single selected-identity action in a permanent contextual strip", async () => {
     fetchMock.mockImplementation(input => String(input) === "/api/obligations"
@@ -728,7 +729,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const progress = await screen.findByRole("status", { name: "AI assessment in progress" });
     expect(progress.textContent).toContain("Reviewing payable details");
-    const action=screen.getByRole("button", { name: "Refresh assessment status" }) as HTMLButtonElement;
+    const action=screen.getByRole("button", { name: "Refresh payable list" }) as HTMLButtonElement;
     expect(action.disabled).toBe(true);expect(action.textContent).toBe("Assessing obligation…");
     assessment.resolve(response({ error: "Assessment unavailable." }, 503));
     await waitFor(() => expect(screen.queryByRole("status", { name: "AI assessment in progress" })).toBeNull());
@@ -869,8 +870,8 @@ describe("Command Center mounted Operational Report", () => {
     const inFlight = screen.getByRole("status", { name: "Assessment request status" });
     expect(inFlight.getAttribute("aria-live")).toBe("polite");
     expect(inFlight.getAttribute("data-feedback-kind")).toBe("in-flight");
-    expect((screen.getByRole("button", { name: "Refresh assessment status" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByRole("button", { name: "Refresh assessment status" }));
+    expect((screen.getByRole("button", { name: "Refresh payable list" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh payable list" }));
     expect(fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/obligations/OBL-J0C-003/assess" && init?.method === "POST")).toHaveLength(1);
     expect(localStorage.getItem("tameion.assessment-request.OBL-J0C-003")).toBeTruthy();
     const postsBeforeNavigation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
@@ -1021,7 +1022,7 @@ describe("Command Center mounted Operational Report", () => {
     const detailReadsBeforeObservation = detailReads;
     const queueReadsBeforeObservation = queueReads;
     const postsBeforeObservation = fetchMock.mock.calls.filter(([, init]) => init?.method === "POST").length;
-    fireEvent.click(screen.getByRole("button", { name: "Refresh assessment status" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh payable list" }));
     await waitFor(() => expect(queueReads).toBe(queueReadsBeforeObservation + 1));
     expect(detailReads).toBe(detailReadsBeforeObservation);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(postsBeforeObservation);
@@ -1155,7 +1156,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     await waitFor(() => expect(detailReads).toBe(2));
     expect(screen.queryByRole("button", { name: "Run AI Assessment" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh assessment status" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh payable list" })).toBeTruthy();
     expect(screen.queryByText(/Assessment is recorded for the current selected obligation/)).toBeNull();
     expect(screen.getByRole("region", { name: "Hold reason and next action" }).textContent).toContain("Do not reassess or retry");
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
@@ -2376,12 +2377,12 @@ describe("Command Center mounted Operational Report", () => {
     actionA.resolve(response({ error: "Assessment unavailable" }, 503));
     await act(async () => { await actionACompletion; });
     expect(listReads).toBe(1);
-    expect((screen.getByRole("button", { name: "Refresh assessment status" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Refresh payable list" }) as HTMLButtonElement).disabled).toBe(true);
 
     actionB.resolve(response({ error: "Assessment unavailable" }, 503));
     await act(async () => { await actionBCompletion; });
     expect(listReads).toBe(2);
-    expect((screen.getByRole("button", { name: "Refresh assessment status" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Refresh payable list" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByText("Related payment information")).toBeNull();
   });
 
@@ -2658,7 +2659,7 @@ describe("HOLD reason and lawful resolution", () => {
     expect(reason.textContent).toMatch(/do not.*retry/i);
     expect(obligationRow("OBL-UNRESOLVED-UX").textContent).not.toContain("Assessment result · HOLD");
     expect(screen.queryByRole("button", {name: /Reassess after correction|Run AI Assessment/})).toBeNull();
-    fireEvent.click(screen.getByRole("button", {name: "Refresh assessment status"}));
+    fireEvent.click(screen.getByRole("button", {name: "Refresh payable list"}));
     expect(localStorage.getItem("tameion.assessment-request.OBL-UNRESOLVED-UX")).toBe("original-request-identity");
     expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
   });
@@ -2688,7 +2689,7 @@ describe("unresolved assessment callback containment", () => {
     renderWithExplicitFirstSelection();
     fireEvent.click(await screen.findByRole("button",{name:"Run AI Assessment"}));
     await screen.findByRole("heading",{name:"Assessment needs refresh"});
-    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh assessment status"}) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh payable list"}) as HTMLButtonElement).disabled).toBe(false));
     expect(localStorage.getItem("tameion.assessment-request.OBL-REFUSED-UX")).toBeNull();
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
   });
@@ -2739,14 +2740,238 @@ describe("unresolved assessment callback containment", () => {
     const staleCallback=(action as any)[propsKey].onClick;
     fireEvent.click(action);
     await screen.findByRole("heading",{name:"Assessment outcome unverified"});
-    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh assessment status"}) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh payable list"}) as HTMLButtonElement).disabled).toBe(false));
     const identity=localStorage.getItem("tameion.assessment-request.OBL-UNKNOWN-OLD-HOLD");
     expect(identity).toBeTruthy();
     expect(screen.queryByRole("heading",{name:"Assessment result — HOLD"})).toBeNull();
     expect(obligationRow("OBL-UNKNOWN-OLD-HOLD").textContent).not.toContain("Assessment result · HOLD");
     act(()=>{staleCallback();});
-    fireEvent.click(screen.getByRole("button",{name:"Refresh assessment status"}));
+    fireEvent.click(screen.getByRole("button",{name:"Refresh payable list"}));
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
     expect(localStorage.getItem("tameion.assessment-request.OBL-UNKNOWN-OLD-HOLD")).toBe(identity);
+  });
+});
+
+
+describe("payable list checks for retained assessment requests", () => {
+  const id = "OBL-LIST-CHECK-A";
+  const storageKey = `tameion.assessment-request.${id}`;
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
+
+  function setup(reply: () => Promise<Response>) {
+    localStorage.setItem(storageKey, "retained-exact-request");
+    let reads = 0;
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      if (String(input) === "/api/obligations") {
+        reads++;
+        return reads === 1 ? Promise.resolve(response({obligations:[obligation(id),obligation("OBL-LIST-CHECK-B")]})) : reply();
+      }
+      return Promise.resolve(response(assessedDetail(String(input).split("/").at(-1)!, "HOLD")));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderWithExplicitFirstSelection();
+    return fetchMock;
+  }
+
+  it("shows progress and a list-only result beside the action after reload, without resolving the retained request", async () => {
+    const pending = deferred<Response>();
+    const fetchMock = setup(() => pending.promise);
+    const button = await screen.findByRole("button", {name:"Refresh payable list"});
+    const propsKey=Object.keys(button).find(k=>k.startsWith("__reactProps$"))!;
+    const callback=(button as any)[propsKey].onClick;
+    button.focus(); act(()=>{callback();callback();});
+    const status = screen.getByRole("status", {name:"Payable list check"});
+    expect(screen.getByRole("region", {name:"Current payable action"}).contains(status)).toBe(true);
+    expect(status.textContent).toContain("Checking payable list");
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/obligations")).toHaveLength(2);
+    await act(async () => { pending.resolve(response({obligations:[{...obligation(id,true),decision:"PAY"}]})); });
+    expect(status.textContent).toContain("Payable list checked");
+    expect(status.textContent).toContain("Assessment outcome remains unverified");
+    expect(localStorage.getItem(storageKey)).toBe("retained-exact-request");
+    expect(screen.queryByRole("button", {name:/Run AI Assessment|Approve payment/})).toBeNull();
+    expect(document.activeElement).toBe(button);
+    expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each([401,403,429,503,"malformed","transport"])("shows a failed check for %s while retaining the exact request", async failure => {
+    const fetchMock = setup(() => failure === "transport" ? Promise.reject(new Error("offline")) : Promise.resolve(failure === "malformed" ? new Response("not json",{status:200}) : response({code:"UNAVAILABLE"},failure as number)));
+    fireEvent.click(await screen.findByRole("button",{name:"Refresh payable list"}));
+    const status = await screen.findByRole("status",{name:"Payable list check"});
+    await waitFor(() => expect(status.textContent).toContain("Payable list could not be checked"));
+    expect(status.textContent).toContain("Assessment outcome remains unverified");
+    expect(localStorage.getItem(storageKey)).toBe("retained-exact-request");
+    expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("ignores a captured old callback and response across A to B to A", async () => {
+    const old = deferred<Response>(); const latest = deferred<Response>(); let checks=0;
+    const fetchMock=setup(() => ++checks===1 ? old.promise : latest.promise);
+    const action=await screen.findByRole("button",{name:"Refresh payable list"}) as HTMLButtonElement;
+    const propsKey=Object.keys(action).find(k=>k.startsWith("__reactProps$"))!;
+    const staleCallback=(action as any)[propsKey].onClick;
+    fireEvent.click(action);
+    fireEvent.click(obligationRow("OBL-LIST-CHECK-B"));
+    await screen.findByRole("button",{name:"View Assessment"});
+    fireEvent.click(obligationRow(id));
+    const current=await screen.findByRole("button",{name:"Refresh payable list"});
+    act(()=>{staleCallback();});
+    expect(checks).toBe(1);
+    fireEvent.click(current);
+    expect(checks).toBe(2);
+    await act(async()=>{old.resolve(response({obligations:[obligation(id)]}));});
+    expect(screen.getByRole("status",{name:"Payable list check"}).textContent).toContain("Checking payable list");
+    await act(async()=>{latest.resolve(response({obligations:[obligation(id)]}));});
+    expect(screen.getByRole("status",{name:"Payable list check"}).textContent).toContain("Payable list checked");
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+  });
+
+  it("reports storage becoming unavailable between render and click without sending a check or retry",async()=>{
+    const fetchMock=setup(()=>Promise.reject(new Error("Unexpected check")));
+    const action=await screen.findByRole("button",{name:"Refresh payable list"});
+    const readsBefore=fetchMock.mock.calls.length;
+    const storage=vi.spyOn(Storage.prototype,"getItem").mockImplementation(()=>{throw new Error("Storage denied");});
+    try {
+      fireEvent.click(action);
+      const status=screen.getByRole("status",{name:"Payable list check"});
+      expect(status.textContent).toContain("Request identity could not be read");
+      expect(fetchMock).toHaveBeenCalledTimes(readsBefore);
+    } finally {storage.mockRestore();}
+    expect(localStorage.getItem(storageKey)).toBe("retained-exact-request");
+  });
+
+  it("reports identity storage failure during an in-flight check without losing its completion feedback",async()=>{
+    const pending=deferred<Response>(); const fetchMock=setup(()=>pending.promise);
+    fireEvent.click(await screen.findByRole("button",{name:"Refresh payable list"}));
+    const storage=vi.spyOn(Storage.prototype,"getItem").mockImplementation(()=>{throw new Error("Storage denied");});
+    try {
+      await act(async()=>{pending.resolve(response({obligations:[obligation(id)]}));});
+      expect(screen.getByRole("status",{name:"Payable list check"}).textContent).toContain("Request identity could not be read");
+      expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
+    } finally {storage.mockRestore();}
+    expect(localStorage.getItem(storageKey)).toBe("retained-exact-request");
+  });
+
+  it.each(["replaced","removed"])("does not display completion for a %s request identity", async mode => {
+    const pending=deferred<Response>(); setup(()=>pending.promise);
+    fireEvent.click(await screen.findByRole("button",{name:"Refresh payable list"}));
+    if (mode === "replaced") localStorage.setItem(storageKey,"new-exact-request");
+    else localStorage.removeItem(storageKey);
+    await act(async()=>{pending.resolve(response({obligations:[obligation(id)]}));});
+    expect(screen.queryByRole("status",{name:"Payable list check"})).toBeNull();
+    expect(localStorage.getItem(storageKey)).toBe(mode === "replaced" ? "new-exact-request" : null);
+  });
+});
+
+
+describe("selected payable business facts", () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
+  function setup(value: Record<string,any>, row=obligation(value.record.obligation_id)) {
+    vi.stubGlobal("fetch",vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[row]}:value))));
+    renderWithExplicitFirstSelection();
+  }
+  it("keeps purpose, supplier, immutable reference, exact original amount and genuine source dates together", async()=>{
+    const value=detail("OBL-BUSINESS-FACTS");
+    Object.assign(value.record,{beneficiary_name:"Example Supplier",service_category:"AI_SOFTWARE_SUBSCRIPTION",amount:"0.000001",currency:"USD",invoice_reference:"EXAMPLE-INVOICE-7",issue_date:"2026-10-01",due_date:"2026-10-20",recurrence:"MONTHLY"});
+    setup(value);
+    const card=await screen.findByRole("region",{name:"Genuine obligation workspace"});
+    expect(within(card).getByRole("heading",{name:"AI software subscription"})).toBeTruthy();
+    expect(card.textContent).toContain("Supplier: Example Supplier");
+    expect(card.textContent).toContain("OBL-BUSINESS-FACTS");
+    expect(card.textContent).toContain("0.000001 USD");
+    expect(card.textContent).toContain("EXAMPLE-INVOICE-7");
+    expect(card.textContent).toContain("2026-10-01");
+    expect(card.textContent).toContain("2026-10-20");
+    expect(card.textContent).toContain("Monthly");
+    expect(card.textContent).toContain("Assessment not recorded");
+  });
+  it("does not fabricate supplier or invoice data when private source metadata is absent",async()=>{
+    setup(detail("OBL-NO-BUSINESS-METADATA"));
+    const card=await screen.findByRole("region",{name:"Genuine obligation workspace"});
+    expect(card.textContent).toContain("Supplier not recorded");
+    expect(within(card).queryByText(/Invoice:/)).toBeNull();
+    expect(within(card).queryByText(/Issued:/)).toBeNull();
+    expect(card.textContent).not.toContain("Example Supplier");
+  });
+  it("labels current advisory results and gives priority to an unresolved latest request",async()=>{
+    const value=assessedDetail("OBL-CURRENT-FACTS","HOLD");
+    localStorage.setItem("tameion.assessment-request.OBL-CURRENT-FACTS","unresolved-request");
+    setup(value,obligation("OBL-CURRENT-FACTS",true));
+    const card=await screen.findByRole("region",{name:"Genuine obligation workspace"});
+    expect(within(card).getByLabelText("Current assessment outcome").textContent).toBe("Assessment outcome unverified");
+    expect(within(card).getByLabelText("Current assessment outcome").textContent).not.toContain("HOLD");
+  });
+  it("explains that the assessment action records advice without sending payment",async()=>{
+    setup(detail("OBL-ADVISORY-SEND"));
+    await screen.findByRole("button",{name:"Run AI Assessment"});
+    expect(screen.getByTestId("current-next-step").textContent).toContain("records an advisory PAY, HOLD or ESCALATE result");
+    expect(screen.getByTestId("current-next-step").textContent).toContain("does not approve or send payment");
+  });
+});
+
+
+describe("compact dashboard and current controls",()=>{
+  afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
+  it("shows at most six genuine payables from the existing authenticated queue without extra reads",async()=>{
+    const rows=Array.from({length:7},(_,i)=>({...obligation(`OBL-OVERVIEW-${i}`),source_group:"GENUINE_COMPANY",beneficiary_name:i===0?"Example Supplier":null}));
+    const fetchMock=vi.fn<typeof fetch>(()=>Promise.resolve(response({obligations:[...rows,{...obligation("OBL-DEMO-OVERVIEW"),source_group:"DEMO_ARC_TESTNET"}]})));
+    vi.stubGlobal("fetch",fetchMock);rtlRender(<CommandCenter initialView="dashboard"/>);
+    const overview=await screen.findByRole("region",{name:"Payables overview"});
+    expect(within(overview).getAllByRole("listitem")).toHaveLength(6);
+    expect(overview.textContent).toContain("Example Supplier");
+    expect(overview.textContent).toContain("Supplier not recorded");
+    expect(overview.textContent).toContain("125.00 USD");
+    expect(overview.textContent).toContain("Assessment required");
+    expect(overview.textContent).not.toContain("OBL-DEMO-OVERVIEW");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("region",{name:"Selected source payable"})).toBeNull();
+  });
+  it("shows current control facts without presenting an old HOLD as the latest result",async()=>{
+    const id="OBL-CONTROL-FACTS";localStorage.setItem(`tameion.assessment-request.${id}`,"exact-request-pending");
+    const value=assessedDetail(id,"HOLD");
+    vi.stubGlobal("fetch",vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:value))));
+    renderWithExplicitFirstSelection();
+    const controls=await screen.findByRole("region",{name:"Current control status"});
+    expect(within(controls).getAllByRole("definition")).toHaveLength(4);
+    expect(controls.textContent).toContain("Outcome unverified");
+    expect(controls.textContent).toContain("Not recorded");
+    expect(controls.textContent).toContain("Not submitted");
+    expect(controls.textContent).not.toMatch(/HOLD|PASS|paid|balance verified/i);
+  });
+});
+
+
+describe("audit records without empty placeholders",()=>{
+  afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
+  it("keeps recorded assessment and source details but omits nonexistent payment artifacts",async()=>{
+    const id="OBL-AUDIT-CONDENSED";const value=assessedDetail(id,"HOLD");
+    value.assurance_evidence={state:"NOT_CREATED",message:"Not created",control_results:[]};
+    vi.stubGlobal("fetch",vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[obligation(id,true)]}:value))));
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region",{name:"Genuine obligation workspace"});
+    expect(screen.getByText("Payment review record",{exact:true})).toBeTruthy();
+    expect(screen.getByText("Source and current payment records",{exact:true})).toBeTruthy();
+    for(const label of ["Approval record","Payment control record","Authorized payment instruction","Payment processing","Settlement and reconciliation record"])
+      expect(screen.queryByText(label,{exact:true})).toBeNull();
+    expect(value.current_assessment.assessment_id).toBeTruthy();
+  });
+});
+
+
+describe("current controls preserve history and unresolved payment states",()=>{
+  afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
+  it("labels historical assurance and unknown execution without implying a settled payment",async()=>{
+    const id="OBL-HISTORICAL-CONTROLS";const value=assessedDetail(id,"PAY");
+    value.assurance_evidence={state:"AVAILABLE_HISTORICAL",message:"Historical binding",control_results:[],overall:"PASS",assurance_id:"SYNTHETIC-OLD-ASSURANCE",recorded_at:"2026-10-01T00:00:00Z",aggregate_version:"0",policy_version:"TEST"};
+    value.execution={status:"UNKNOWN",idempotency_key:"SYNTHETIC-EXISTING-SUBMISSION"};
+    vi.stubGlobal("fetch",vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==="/api/obligations"?{obligations:[{...obligation(id,true),decision:"PAY"}]}:value))));
+    renderWithExplicitFirstSelection();
+    const facts=await screen.findByRole("region",{name:"Current control status"});
+    expect(facts.textContent).toContain("Historical record");
+    expect(facts.textContent).toContain("Unknown");
+    expect(facts.textContent).not.toMatch(/settled|paid|Recorded · current binding/);
+    expect(screen.getByText("Payment control record",{exact:true})).toBeTruthy();
+    expect(screen.getByText("Payment processing",{exact:true})).toBeTruthy();
   });
 });

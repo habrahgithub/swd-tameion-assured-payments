@@ -7,10 +7,22 @@ beforeEach(()=>{window.history.replaceState(null,'','/?refresh_balance=1');Objec
 afterEach(()=>{vi.useRealTimers();cleanup();sessionStorage.clear();window.localStorage.removeItem('tameion-theme');delete document.documentElement.dataset.theme;window.history.replaceState(null,'','/');});
 describe('operator dashboard boundary',()=>{
  async function openWorkspace(){fireEvent.click(await screen.findByRole('button',{name:'Open workspace'}));await screen.findByText('Protected queue');}
- it('rounds wallet balances half-up to six decimals and preserves finance-friendly grouping',()=>{
-  expect(formatWalletAmount('19.989211477825042')).toBe('19.989211');
+ it('rounds wallet balances half-up to two decimals and preserves finance-friendly grouping',()=>{
+  expect(formatWalletAmount('19.989211477825042')).toBe('19.99');
   expect(formatWalletAmount('12.9999999')).toBe('13.00');
   expect(formatWalletAmount('1234')).toBe('1,234.00');
+ });
+ it.each([
+  ['0.000001','0.00'],['999999999999999999.999999999999999999','1,000,000,000,000,000,000.00'],['0','0.00'],['1.005','1.01'],
+ ])('keeps the canonical %s balance accessible without numeric precision loss',async(amount,rounded)=>{
+  const fetcher=vi.fn(async(input:RequestInfo|URL)=>String(input).includes('session')?Response.json({authenticated:true,csrf_token:'mock',expires_at:new Date(Date.now()+3500000).toISOString()}):Response.json({amount,asset:'USDC',network:'ARC-TESTNET',captured_at:'2026-10-16T00:00:00.000Z',verification:'READ_ONLY_BALANCE'}));
+  render(<OperatorDashboard fetcher={fetcher}/>);await openWorkspace();
+  fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));
+  expect(await screen.findByText(`${rounded} USDC`)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Show exact'}));
+  expect(screen.getByText(`${amount} USDC`)).toBeTruthy();
+  expect(screen.getByRole('region',{name:'Read-only wallet balance'}).textContent).toContain('Observed');
+  expect(fetcher).toHaveBeenCalledTimes(3);
  });
  it('keeps a returning session private until revalidation, then opens the dashboard without refreshing balance',async()=>{const fetcher=vi.fn(async(_input:RequestInfo|URL)=>Response.json({authenticated:true,csrf_token:'mock-csrf',expires_at:new Date(Date.now()+3600000).toISOString()}));render(<OperatorDashboard fetcher={fetcher}/>);await screen.findByRole('button',{name:'Open workspace'});expect(screen.queryByText('Protected queue')).toBeNull();expect(fetcher).toHaveBeenCalledTimes(1);await openWorkspace();expect(screen.getByTestId('command-csrf').textContent).toBe('mock-csrf');expect(screen.getByTestId('command-csrf').parentElement?.getAttribute('data-initial-view')).toBe('dashboard');expect(window.location.search).toBe('');expect(fetcher).toHaveBeenCalledTimes(2);expect(fetcher.mock.calls.map(call=>call[0])).toEqual(['/api/operator/session','/api/operator/session']);});
  it('shows one visible read-only balance summary and keeps manual refresh available',async()=>{
@@ -18,7 +30,12 @@ describe('operator dashboard boundary',()=>{
   render(<OperatorDashboard fetcher={fetcher}/>);await openWorkspace();
   const summary=screen.getByRole('region',{name:'Read-only wallet balance'});
   expect(summary.closest('details')).toBeNull();expect(fetcher).toHaveBeenCalledTimes(2);expect(fetcher.mock.calls.every(call=>call[0]!=='/api/wallet/balance/refresh')).toBe(true);
-  fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3));const displayed=await screen.findByText(/12.345678 USDC/);expect(displayed.textContent).not.toContain('12.345678000000000000');expect(displayed.getAttribute('title')).toContain('12.345678000000000000');
+  fireEvent.click(screen.getByRole('button',{name:'Refresh wallet balance'}));await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(3));const displayed=await screen.findByText(/12.35 USDC/);expect(displayed.textContent).not.toContain('12.345678000000000000');expect(displayed.getAttribute('title')).toContain('12.345678000000000000');
+  const exact=screen.getByRole('button',{name:'Show exact'});fireEvent.click(exact);
+  expect(exact.getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByText('12.345678000000000000 USDC')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Show rounded'}));
+  expect(screen.getByText('12.35 USDC')).toBeTruthy();expect(fetcher).toHaveBeenCalledTimes(3);
   expect(summary.textContent).toContain('ARC-TESTNET');expect(summary.textContent).toContain('Observed');
   expect(summary.textContent).toContain('does not establish affordability');expect(screen.getAllByRole('button',{name:'Refresh wallet balance'})).toHaveLength(1);
  });
