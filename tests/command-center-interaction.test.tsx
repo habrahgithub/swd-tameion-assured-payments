@@ -2610,6 +2610,22 @@ describe("HOLD reason and lawful resolution", () => {
   beforeEach(() => { localStorage.clear(); vi.stubGlobal("fetch", fetchMock); fetchMock.mockReset(); });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
 
+  it.each(["missing", "wrong identity", "wrong version", "new PAY"])("does not present a queue HOLD as current when selected detail has %s assessment", async variant => {
+    const id = "OBL-QUEUE-HOLD-UX";
+    const selected = variant === "missing" ? detail(id) : assessedDetail(id, variant === "new PAY" ? "PAY" : "HOLD");
+    if (variant === "wrong identity") selected.current_assessment.obligation_id = "OBL-OTHER";
+    if (variant === "wrong version") selected.current_assessment.aggregate_version = "99";
+    fetchMock.mockImplementation(input => Promise.resolve(response(String(input) === "/api/obligations"
+      ? {obligations: [obligation(id, true), obligation("OBL-UNSELECTED-HOLD", true)]} : selected)));
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region", {name: "Selected source payable"});
+    await waitFor(() => expect(obligationRow(id).textContent).toContain(variant === "new PAY" ? "Assessment result · PAY" : "Assessment required"));
+    expect(obligationRow(id).textContent).not.toContain("Assessment result · HOLD");
+    expect(obligationRow(id).querySelector('[title="Assessment result: HOLD"]')).toBeNull();
+    expect(obligationRow("OBL-UNSELECTED-HOLD").textContent).toContain("Assessment result · HOLD");
+    expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
   it("explains a confirmed source HOLD beside the payable without claiming correction eligibility", async () => {
     const held = assessedDetail("OBL-HOLD-UX", "HOLD");
     held.advisory_action_eligible = true;

@@ -3157,12 +3157,23 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           <ul className="border-y border-[var(--color-border)]">
             {members.map((o) => {
               const workflowRecorded = Boolean(o.pae_sealed || o.aggregate_state === "AUTHORIZED" || o.execution_status);
-              const statusColor = o.assessed
-                ? o.decision === "ESCALATE"
+              const selectedRow = o.obligation_id === selectedId;
+              const unresolvedRequest = Boolean(retainedAssessmentRequestKey(o.obligation_id) || selectedRow && assessmentRequestUnresolved);
+              // Once selected, the current detail owns the assessment status;
+              // a queue summary may refer to an older receipt or version.
+              const assessed = selectedRow ? detailState === "loaded" && hasCurrentAssessment : o.assessed;
+              const decision = selectedRow ? currentAssessment?.decision : o.decision;
+              const assessmentStatus = unresolvedRequest
+                ? selectedRow && currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
+                : selectedRow && detailState !== "loaded" ? "Assessment status unavailable"
+                : assessed ? `Assessment result · ${decision ?? "Unavailable"}`
+                : workflowRecorded ? "Workflow recorded" : "Assessment required";
+              const statusColor = assessed
+                ? decision === "ESCALATE"
                   ? "var(--status-hold-text)"
-                  : o.decision === "HOLD"
+                  : decision === "HOLD"
                     ? "var(--status-hold-text)"
-                    : o.decision === "PAY"
+                    : decision === "PAY"
                       ? "var(--color-ink)"
                       : "var(--color-ink)"
                 : "var(--color-ink-muted)";
@@ -3180,10 +3191,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   >
                     <span className="col-span-2 min-w-0 break-words text-[13px] font-semibold text-[var(--color-ink)]">
                       <span
-                        aria-label={retainedAssessmentRequestKey(o.obligation_id) ? "assessment outcome unverified" : o.assessed ? "assessment recorded" : workflowRecorded ? "workflow recorded" : "assessment required"}
-                        title={retainedAssessmentRequestKey(o.obligation_id) ? "Assessment completion unverified; do not retry." : o.assessed ? `Assessment result: ${o.decision}` : workflowRecorded ? "Workflow recorded; a current assessment is not available." : "Assessment required"}
+                        aria-label={unresolvedRequest ? "assessment outcome unverified" : assessed ? "assessment recorded" : assessmentStatus.toLowerCase()}
+                        title={unresolvedRequest ? "Assessment completion unverified; do not retry." : assessed ? `Assessment result: ${decision}` : assessmentStatus}
                         className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ background: o.assessed || workflowRecorded ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
+                        style={{ background: assessed || workflowRecorded ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
                     </span>
                     <span className="col-span-2 text-start text-[11px] text-[var(--color-ink-muted)]">Supplier · {o.beneficiary_name?.trim() || "Not recorded"}</span>
@@ -3191,11 +3202,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                       <span className="whitespace-nowrap">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
                     </span>
                     <span className="col-span-2 text-start text-[11px] font-semibold" style={{ color: statusColor }}>
-                      {retainedAssessmentRequestKey(o.obligation_id) || o.obligation_id === selectedId && assessmentRequestUnresolved
-                        ? o.obligation_id === selectedId && currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
-                        : o.assessed
-                        ? `Assessment result · ${o.decision ?? "Unavailable"}`
-                        : workflowRecorded ? "Workflow recorded" : "Assessment required"}
+                      {assessmentStatus}
                     </span>
                 </button>
               </li>
