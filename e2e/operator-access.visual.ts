@@ -19,9 +19,16 @@ test('mock session enables only manual balance and logout hides private view',as
  await page.getByRole('button',{name:'Color theme: light'}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.body).backgroundColor)).toBe('rgb(17, 24, 39)');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
  await page.getByRole('button',{name:'Color theme: dark'}).click();await expect(page.locator('html')).not.toHaveAttribute('data-theme');await page.getByText('User',{exact:true}).click();
- await page.getByRole('button',{name:'Refresh wallet balance',exact:true}).click();await expect(page.getByText(/12.345678 USDC/)).toBeVisible();
+ await page.getByRole('button',{name:'Refresh wallet balance',exact:true}).click();await expect(page.getByText('12.35 USDC',{exact:true})).toBeVisible();await expect(page.getByText('12.345678 USDC',{exact:true})).toHaveCount(0);
  expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
- await page.getByText('User',{exact:true}).click();await page.getByRole('button',{name:'Log out',exact:true}).click();await expect(page.getByRole('status')).toContainText('Logout unverified');await expect(page.getByText(/12.345678 USDC/)).toHaveCount(0);
+ await page.getByRole('button',{name:'Show exact',exact:true}).click();await expect(page.getByText('12.345678 USDC',{exact:true})).toBeVisible();await expect(page.getByText('12.35 USDC',{exact:true})).toHaveCount(0);
+ expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
+ await page.getByRole('button',{name:'Show rounded',exact:true}).click();await expect(page.getByText('12.35 USDC',{exact:true})).toBeVisible();await expect(page.getByText('12.345678 USDC',{exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'Show exact',exact:true}).click();await expect(page.getByText('12.345678 USDC',{exact:true})).toBeVisible();
+ expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
+ await page.getByText('User',{exact:true}).click();await page.getByRole('button',{name:'Log out',exact:true}).click();await expect(page.getByRole('status')).toContainText('Logout unverified');await expect(page.getByText('12.345678 USDC',{exact:true})).toHaveCount(0);await expect(page.getByText('12.35 USDC',{exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:/^Show (exact|rounded)$/})).toHaveCount(0);await expect(page.getByRole('heading',{name:'Dashboard',exact:true})).toHaveCount(0);
+ expect(calls.filter(p=>p==='/api/wallet/balance/refresh')).toHaveLength(1);
  expect(await page.evaluate(()=>Object.keys(localStorage))).toEqual([]);
 });
 
