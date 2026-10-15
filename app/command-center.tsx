@@ -3244,7 +3244,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     ? "tabular text-[17px] font-semibold leading-6 text-[var(--color-ink)] md:text-[23px] md:leading-7"
                     : "tabular text-[23px] font-semibold leading-7 text-[var(--color-ink)]"}><bdi dir="ltr">{detailState === "loaded" && detail ? `${detail.record.amount} ${detail.record.currency}` : `${selected.amount} ${selected.currency}`}</bdi></p>
                 </div>
-              <div className="sm:col-span-2">
+              <div className={viewedStage === "Assessment" ? "col-span-2" : "sm:col-span-2"}>
                 {detailState === "loaded" && detail && (
                   <>
                     <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">

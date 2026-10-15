@@ -183,7 +183,7 @@ test("real-record Authorization lineage remains bound to the manually selected o
   await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
   await capture(page, testInfo, "assessment-003-desktop-selected.png", 1173, 751, "actual DemoState detail GET; source 003 manually selected; test-seeded LIVE_AI PAY state; no 001 promotion; test-only mocked read-only Circle preflight; no AI request", "DejaVu Sans test-only font override; font installed in runner");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: /Switch obligation/ }).click();
+  await page.getByRole("button", { name: /Switch payable/ }).click();
   await page.locator('button[data-obligation-id="OBL-J0C-003"]').click();
   await expect(page.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
   await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("synthetic service 003");

@@ -2210,7 +2210,7 @@ test("stale consent and unavailable release never offer approval or payment", as
   }
 });
 
-for (const width of [1365, 390]) for (const unresolved of [false, true]) test(`HOLD clarity and no-retry at ${width}, unresolved ${unresolved}`, async ({page}, info) => {
+for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) test(`HOLD clarity and no-retry at ${width}, unresolved ${unresolved}`, async ({page}, info) => {
   await page.setViewportSize({width,height:900});
   const source=await actualSourcePayFixtures(page);
   const held=structuredClone(source.payDetailById["OBL-J0C-003"]);
@@ -2235,6 +2235,9 @@ for (const width of [1365, 390]) for (const unresolved of [false, true]) test(`H
   await queueItem(page,"OBL-J0C-003").click();
   const reason=page.getByRole("region",{name:"Hold reason and next action"});
   await expect(reason).toBeVisible();
+  const reasonBounds=await reason.boundingBox();
+  const sourceBounds=await page.getByRole("region",{name:"Selected source payable"}).boundingBox();
+  expect(reasonBounds!.width).toBeGreaterThanOrEqual(sourceBounds!.width * 0.95);
   await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
   await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
   await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
