@@ -64,11 +64,11 @@ describe("Command Center assessment coverage copy", () => {
   });
 
   it("reports a verified-empty list distinctly from an unavailable one", () => {
-    expect(assessmentCoverageLabel("empty", 0, 0)).toContain("No payment obligations");
+    expect(assessmentCoverageLabel("empty", 0, 0)).toContain("No payables");
   });
 
   it("reports real counts once the list is populated", () => {
-    expect(assessmentCoverageLabel("ready", 2, 5)).toBe("2/5 obligations assessed");
+    expect(assessmentCoverageLabel("ready", 2, 5)).toBe("2/5 payables assessed");
   });
 });
 
@@ -86,9 +86,9 @@ describe("Command Center assessment gate copy", () => {
 });
 
 describe("Command Center kill-switch presentation", () => {
-  it("shows 'no obligation selected' instead of implying execution is allowed", () => {
+  it("shows 'no payable selected' instead of implying execution is allowed", () => {
     expect(killSwitchPresentation("none", undefined)).toBe("no-selection");
-    expect(killSwitchLabel("no-selection")).toBe("No obligation selected");
+    expect(killSwitchLabel("no-selection")).toBe("No payable selected");
   });
 
   it("never encodes an inactive kill switch as 'Execution allowed' (release is separate, still NOT_GRANTED)", () => {
@@ -232,7 +232,7 @@ describe("queue completion: incomplete assessment is never a completed no-candid
 
 describe("authorization blockers name the first unmet prerequisite in order", () => {
   it("starts with selection, then assessment, then review of the current assessment", () => {
-    expect(authorizationBlockers({ hasSelection: false, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Select an obligation");
+    expect(authorizationBlockers({ hasSelection: false, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Select a payable");
     expect(authorizationBlockers({ hasSelection: true, allAssessed: false, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("Assess all");
     expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: false, reviewed: false, killSwitchEngaged: false })[0]).toContain("PAY assessment");
     expect(authorizationBlockers({ hasSelection: true, allAssessed: true, hasCurrentPayAssessment: true, reviewed: false, killSwitchEngaged: false })[0]).toContain("Review");
@@ -513,14 +513,14 @@ describe("trace exposes due-date and readiness provenance and qualifies complete
 describe("selected-but-loading or failed detail is named as such, never as no selection", () => {
   it("names a loading selected detail", () => {
     expect(killSwitchLabel(ksp("loading", undefined))).toContain("loading");
-    expect(killSwitchLabel(ksp("loading", undefined))).not.toContain("No obligation selected");
+    expect(killSwitchLabel(ksp("loading", undefined))).not.toContain("No payable selected");
   });
   it("names a failed selected detail", () => {
     expect(killSwitchLabel(ksp("failed", undefined))).toContain("unavailable");
-    expect(killSwitchLabel(ksp("failed", undefined))).not.toContain("No obligation selected");
+    expect(killSwitchLabel(ksp("failed", undefined))).not.toContain("No payable selected");
   });
   it("keeps no-selection only when nothing is selected", () => {
-    expect(killSwitchLabel(ksp("none", undefined))).toBe("No obligation selected");
+    expect(killSwitchLabel(ksp("none", undefined))).toBe("No payable selected");
   });
 });
 

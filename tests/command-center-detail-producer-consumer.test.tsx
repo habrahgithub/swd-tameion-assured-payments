@@ -351,8 +351,8 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     const { main } = await renderProducerJson(firstBody, otherBodies, queue, { selectInitial: false });
     expect(main.querySelectorAll('button[data-obligation-id][aria-current="true"]')).toHaveLength(0);
-    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose an obligation");
-    expect(main.textContent).toContain("Choose one obligation from the payment queue");
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Choose a payable");
+    expect(main.textContent).toContain("No payable selected");
     expect(main.textContent).not.toMatch(/no genuine obligations|demo mode|loading/i);
     expect(state.liveUsageRecords).toHaveLength(5);
 
@@ -817,14 +817,14 @@ describe("real detail GET producer-consumer packet controls", () => {
     fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finishRefresh = resolve; }));
     fireEvent.click(reconcile);
 
-    await screen.findByText("Last-known obligation details are stale.");
+    await screen.findByText("Last-known payable details are out of date.");
     expect((screen.getByRole("button", { name: /^Payment$/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("region", { name: "Payment status" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 
     finishRefresh(new Response(JSON.stringify(body), { status: 200 }));
-    await waitFor(() => expect(screen.queryByText("Last-known obligation details are stale.")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Last-known payable details are out of date.")).toBeNull());
   });
 
   it("clears confirmation across reversible kill-switch and A→B→A selection transitions", async () => {
@@ -1341,7 +1341,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(body.current_assessment).toBeNull();
     const { main } = await renderProducerJson(body, [], queue);
 
-    const source = screen.getByRole("region", { name: "Selected source obligation" });
+    const source = screen.getByRole("region", { name: "Selected source payable" });
     await waitFor(() => expect(source.textContent).toContain("OUTSTANDING"));
     expect(source.textContent).toContain(`${body.record.amount} ${body.record.currency}`);
     expect(source.textContent).not.toContain(body.record.obligation_id);
@@ -1375,7 +1375,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const queue = await listJson(fixture.state);
     const { main } = await renderProducerJson(body, [], queue);
 
-    const header = screen.getByRole("region", { name: "Selected source obligation" });
+    const header = screen.getByRole("region", { name: "Selected source payable" });
     expect(header.textContent).not.toMatch(/ARC TESTNET|controlled settlement proxy|USDC|PAE|provider/i);
     expect(screen.getByText(/Reviewing step 1 of 6 · Obligation/)).toBeTruthy();
     expect(screen.getByText("View all stages")).toBeTruthy();
@@ -1414,7 +1414,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect((assurance.querySelector("details[aria-label='Assurance control details']") as HTMLDetailsElement | null)?.open).toBe(false);
     expect(screen.getAllByRole("button", { name: "Continue to Payment" })).toHaveLength(1);
     expect(assurance.querySelectorAll('button[data-primary-action="true"]')).toHaveLength(0);
-    expect(within(screen.getByRole("region", {name:"Current obligation action"})).getByRole("button",{name:"Continue to Payment"})).toBeTruthy();
+    expect(within(screen.getByRole("region", {name:"Current payable action"})).getByRole("button",{name:"Continue to Payment"})).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -1621,7 +1621,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     const [first, fifth] = bodies;
     if (!first || !fifth) throw new Error("Expected producer details for source obligations 001 and 005.");
     const { main } = await renderProducerJson(first, [fifth], queue);
-    const source = screen.getByRole("region", { name: "Selected source obligation" });
+    const source = screen.getByRole("region", { name: "Selected source payable" });
     const firstContext = source.querySelector('[data-testid="source-service-context"]');
 
     expect(firstContext?.textContent).toMatch(expectedById.get("OBL-J0C-001")!);
@@ -1631,10 +1631,10 @@ describe("real detail GET producer-consumer packet controls", () => {
 
     fireEvent.click(obligationRow("OBL-J0C-005"));
     await waitFor(() => {
-      expect(screen.getByRole("region", { name: "Selected source obligation" }).querySelector('[data-testid="source-service-context"]')?.textContent)
+      expect(screen.getByRole("region", { name: "Selected source payable" }).querySelector('[data-testid="source-service-context"]')?.textContent)
         .toMatch(expectedById.get("OBL-J0C-005")!);
     });
-    const selectedSource = screen.getByRole("region", { name: "Selected source obligation" });
+    const selectedSource = screen.getByRole("region", { name: "Selected source payable" });
     expect(selectedSource.textContent).not.toContain("OBL-J0C-005");
     expect(selectedSource.textContent).not.toMatch(/EVID-|sha256|content_hash|USER_SUPPLIED_EMAIL_INVOICE_EXCERPT/);
     expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Run AI Assessment");
