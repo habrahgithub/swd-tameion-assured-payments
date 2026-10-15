@@ -3,8 +3,7 @@ import AxeBuilder from '@axe-core/playwright';
 test('unconfigured operator routes deny before admission and expose no private queue',async({page,request})=>{
  for(const route of ['operator/csrf','operator/login','operator/logout','wallet/balance/refresh']){const r=await request.post('/api/'+route,{data:{}});expect([403,503]).toContain(r.status());expect(r.headers()['cache-control']).toContain('no-store');}
  const session=await request.get('/api/operator/session');expect(session.status()).toBe(503);expect(await session.json()).toEqual({code:'AUTH_UNAVAILABLE'});
- await page.goto('/');await expect(page.getByRole('heading',{name:'Checking workspace access'})).toBeVisible();await expect(page.locator('button[data-obligation-id]')).toHaveCount(0);
- await page.getByRole('link',{name:'Sign in securely'}).click();await expect(page.getByLabel('Password')).toHaveAttribute('type','password');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+ await page.goto('/');await expect(page.getByLabel('Username')).toBeVisible();await expect(page.getByLabel('Password')).toHaveAttribute('type','password');await expect(page.getByRole('status')).toContainText('Access service unavailable');await expect(page.locator('button[data-obligation-id]')).toHaveCount(0);expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
  for(const width of [1365,390,320]){await page.setViewportSize({width,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
 });
 test('mock session enables only manual balance and logout hides private view',async({page})=>{

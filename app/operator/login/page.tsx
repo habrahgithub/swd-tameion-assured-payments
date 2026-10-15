@@ -4,8 +4,9 @@ import {OperatorAccessCard,OperatorAccessShell} from '../../operator-access-ui';
 import {ThemeControl} from '../../theme-control';
 import {LoginBrand,LoginIntroduction} from './login-branding';
 import styles from './login-branding.module.css';
-export default function OperatorLogin({navigate=(path:string)=>window.location.assign(path)}:{navigate?:(path:string)=>void}={}){
+export default function OperatorLogin({navigate=(path:string)=>window.location.assign(path),accessNotice}:{navigate?:(path:string)=>void;accessNotice?:string}={}){
  const [busy,setBusy]=useState(false),[message,setMessage]=useState('Ready for secure sign-in.');
+ const visibleMessage=message==='Ready for secure sign-in.'?(accessNotice??message):message;
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();if(busy)return;const form=event.currentTarget,data=new FormData(form);setBusy(true);setMessage('Verifying account access…');
   try{
@@ -21,7 +22,7 @@ export default function OperatorLogin({navigate=(path:string)=>window.location.a
      <label className="block text-sm font-semibold text-[var(--color-ink)]">Password<input className="mt-2 block min-h-11 w-full rounded border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-3 py-2 font-normal text-[var(--color-ink)] outline-none transition focus:border-[var(--color-ink)] focus:ring-2 focus:ring-[var(--color-border-strong)] disabled:cursor-not-allowed disabled:bg-[var(--color-bg)]" type="password" name="password" autoComplete="current-password" required maxLength={1024} disabled={busy}/></label>
      <button className="min-h-11 w-full rounded bg-[var(--color-primary-action)] px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-wait disabled:opacity-50" disabled={busy}>{busy?'Verifying access…':'Sign in securely'}</button>
     </form>
-    <p role="status" aria-live="polite" className="mt-5 border-t border-[var(--color-border)] pt-4 text-sm leading-6 text-[var(--color-ink-muted)]">{message}</p>
+    <p role="status" aria-live="polite" className="mt-5 border-t border-[var(--color-border)] pt-4 text-sm leading-6 text-[var(--color-ink-muted)]">{visibleMessage}</p>
    </OperatorAccessCard>
   </OperatorAccessShell>;
 }
