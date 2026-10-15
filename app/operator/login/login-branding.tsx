@@ -13,6 +13,7 @@ export function LoginIntroduction(){
   <p className={styles.eyebrow}>Secure finance access</p>
   <h1 className={styles.headline}>From invoice to <span>assured payment.</span></h1>
   <p className={styles.support}>AI understands the obligation.<br className={styles.desktopBreak}/> You control the transaction.</p>
+  <p className={styles.ecosystem}>Circle · Arc · USDC</p>
   <LoginJourney/>
   <p className={styles.boundary}>Private obligation review. Payments require separate approval.</p>
  </div>;
@@ -40,7 +41,7 @@ export function LoginJourney(){
   <JourneyScene/>
   <JourneyScene compact/>
   <figcaption className={styles.caption}>
-   <span>Concept illustration · no live transactions</span>
+   <span>Illustrative workflow</span>
    <button type="button" onClick={()=>setPaused(value=>!value)} disabled={reduced} aria-label={paused||reduced?'Play illustration':'Pause illustration'} aria-pressed={paused||reduced} className={styles.motionControl}>
     <span aria-hidden="true">{paused||reduced?'▷':'Ⅱ'}</span> {reduced?'Motion reduced':paused?'Play':'Pause'}
    </button>

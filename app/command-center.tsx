@@ -2752,7 +2752,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
   } else if (viewedStage !== "Reconciliation" && detailState === "loaded" && detail?.execution?.status === "SETTLED") {
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
   } else if (viewedStage === "Payment" && currentPacketNeedsRelease && detail?.financial_action_eligible === true) {
-    workspaceAction = { label: "Approve payment release", actor: "Authorized finance approver", exactConfirmation: true, run: () => {
+    workspaceAction = { label: "Approve payment release", actor: "Authorized user", exactConfirmation: true, run: () => {
       if (!currentPacketNeedsRelease || !executionConfirmation.isBound || !executionConfirmation.matchesExact || !detail?.execution_packet || !detail.sealed_pae_instruction_hash) return;
       void run("release", () => postCommand(`/api/obligations/${selectedId}/release`, {
         expected_version: detail.aggregate.aggregate_version,
@@ -2764,7 +2764,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.pae_sealed && detail.settlement_proxy && detail.execution === null && !exactPacketSubmissionReady) {
     workspaceAction = null;
   } else if (viewedStage === "Payment" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.pae_sealed && detail.settlement_proxy && exactPacketSubmissionReady) {
-    workspaceAction = { label: "Pay testnet USDC", actor: "Authorized finance user · final payment approval recorded", exactConfirmation: true, run: () => {
+    workspaceAction = { label: "Pay testnet USDC", actor: "Authorized user · final payment approval recorded", exactConfirmation: true, run: () => {
       if (!exactPacketSubmissionReady || !exactPacketConfirmationIdentity || !executionConfirmation.isBound || !executionConfirmation.matchesExact ||
           !selectedId || detail.record.obligation_id !== selectedId || detail.settlement_proxy?.preflight.obligation_id !== selectedId ||
           !detail.sealed_pae_instruction_hash || !detail.execution_packet?.packet_sha256) return;
@@ -2798,7 +2798,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken}:{operat
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
   } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
-    workspaceAction = { label: "Authorize payment", actor: "Authorized approver · identity not shown", run: () => {
+    workspaceAction = { label: "Authorize payment", actor: "Authorized user · identity not shown", run: () => {
       if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady || killSwitchView !== "inactive") return;
       void run("approve", () => postCommand(`/api/obligations/${selectedId}/approve`, {
         expected_version: Number(authorizationAssessment.aggregate_version),

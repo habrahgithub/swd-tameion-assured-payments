@@ -9,6 +9,6 @@ export function PrivacyEntryIllustration(){
    <g fill="#d8b66d"><circle cx="109" cy="52" r="3"/><circle cx="286" cy="107" r="3"/><circle cx="122" cy="115" r="2"/><circle cx="286" cy="40" r="2"/></g>
    <image href="/brand/tameion-app-icon.svg" x="140" y="17" width="120" height="120"/>
   </svg>
-  <figcaption className="mt-1 text-center text-xs leading-5 text-[#d8b66d]">Concept illustration · Private workspace</figcaption>
+  <figcaption className="mt-1 flex flex-wrap justify-center gap-x-2 text-center text-xs leading-5 text-[#d8b66d]"><span>Illustrative workflow</span><span aria-label="Circle, Arc and USDC">Circle · Arc · USDC</span></figcaption>
  </figure>;
 }

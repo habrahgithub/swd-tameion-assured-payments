@@ -3,7 +3,7 @@ import React from 'react';
 import {renderToString} from 'react-dom/server';
 import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {LoginJourney} from '../app/operator/login/login-branding';
+import {LoginIntroduction,LoginJourney} from '../app/operator/login/login-branding';
 import OperatorLogin from '../app/operator/login/page';
 
 let preference: EventTarget;
@@ -16,6 +16,12 @@ beforeEach(()=>{
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 function visibility(value:string){act(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value});document.dispatchEvent(new Event('visibilitychange'));});}
 describe('login conceptual motion',()=>{
+ it('shows concise Circle, Arc and USDC context without presenting the concept as live activity',()=>{
+  render(<LoginIntroduction/>);
+  expect(screen.getByText('Circle · Arc · USDC')).toBeTruthy();
+  expect(screen.getByText('Illustrative workflow')).toBeTruthy();
+  expect(screen.queryByText(/no live transactions/i)).toBeNull();
+ });
  it('renders a finished static composition before browser preferences are known',()=>{
   expect(renderToString(<LoginJourney/>)).toContain('data-motion="static"');
  });
@@ -45,7 +51,7 @@ describe('login conceptual motion',()=>{
  it('defaults to the finished static composition for reduced motion',()=>{
   reduced=true;render(<LoginJourney/>);
   expect(screen.getByTestId('login-journey').getAttribute('data-motion')).toBe('static');
-  expect(screen.getByText('Concept illustration · no live transactions')).toBeTruthy();
+  expect(screen.getByText('Illustrative workflow')).toBeTruthy();
  });
 });
 it('preserves CSRF bootstrap, credentials, failure wording and form reset while paused',async()=>{

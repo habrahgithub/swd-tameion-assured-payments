@@ -1225,6 +1225,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
     const prepare = await screen.findByRole("button", { name: "Prepare testnet payment details" });
+    expect(screen.getByText("Authorized user",{exact:true})).toBeTruthy();
     fireEvent.click(prepare);
 
     const refusal = await screen.findByRole("alert");
