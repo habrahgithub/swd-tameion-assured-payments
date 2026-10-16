@@ -17,7 +17,7 @@
     "verify": "npm run check:hygiene && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
-    "next": "16.3.6",
+    "next": "16.3.8",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "4.6.5"
