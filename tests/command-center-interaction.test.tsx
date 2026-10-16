@@ -2686,16 +2686,16 @@ describe("unresolved assessment callback containment", () => {
     } finally {storage.mockRestore();}
   });
 
-  it("releases only the documented definitive version refusal", async () => {
+  it("retains an ASM-001 response because provider work may already have occurred", async () => {
     localStorage.clear();
     const fetchMock=vi.fn<typeof fetch>((input,init)=>Promise.resolve(response(init?.method==="POST"?{code:"ASM-001",error:"Selected version changed."}:String(input)==="/api/obligations"?{obligations:[obligation("OBL-REFUSED-UX")]}:detail("OBL-REFUSED-UX"),init?.method==="POST"?409:200)));
     vi.stubGlobal("fetch",fetchMock);
     renderWithExplicitFirstSelection();
     fireEvent.click(await screen.findByRole("button",{name:"Run AI Assessment"}));
-    await screen.findByRole("heading",{name:"Assessment needs refresh"});
-    await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh payable list"}) as HTMLButtonElement).disabled).toBe(false));
-    expect(localStorage.getItem("tameion.assessment-request.OBL-REFUSED-UX")).toBeNull();
-    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    await waitFor(()=>expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1));
+    await waitFor(()=>expect(localStorage.getItem("tameion.assessment-request.OBL-REFUSED-UX")).not.toBeNull());
+    await waitFor(()=>expect(screen.getByRole("region",{name:"Hold reason and next action"}).textContent).toContain("Assessment outcome unverified"));
+    expect(screen.queryByRole("button",{name:/Run AI Assessment|Reassess after correction|Authorize payment/})).toBeNull();
   });
 
   it("does not create an orphan request from an old A callback after A to B to A", async () => {
@@ -3102,12 +3102,12 @@ describe('exact assessment recovery gates and races',()=>{
 
 describe('exact assessment HTTP completion contract',()=>{
  afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
- it.each([[201,1],[202,1],[201,2],[202,2]])('does not release a completed-looking HTTP %s at observation %s',async(code,phase)=>{
+ it.each([[201,1],[202,1],[201,2],[202,2],[200,1],[200,2]])('does not release a completed-looking HTTP %s (ASM-001 for 200) at observation %s',async(code,phase)=>{
   const id='OBL-EXACT-HTTP',key='00000000-0000-4000-8000-000000000096',storageKey=`tameion.assessment-request.${id}`;
   const value=assessedDetail(id,'PAY');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});value.current_assessment.assessment_id=`ASM-${key}`;
   const status={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
   let calls=0;localStorage.setItem(storageKey,key);vi.stubGlobal('crypto',webcrypto);
-  const mock=vi.fn<typeof fetch>((url,init)=>Promise.resolve(response(init?.method==='POST'?status:String(url)==='/api/obligations'?{obligations:[obligation(id,true)]}:value,init?.method==='POST'&&++calls===phase?code:200)));
+  const mock=vi.fn<typeof fetch>((url,init)=>Promise.resolve(response(init?.method==='POST'?{...status,...(code===200&&calls+1===phase?{code:'ASM-001'}:{})}:String(url)==='/api/obligations'?{obligations:[obligation(id,true)]}:value,init?.method==='POST'&&++calls===phase?code:200)));
   vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection();fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));
   expect(localStorage.getItem(storageKey)).toBe(key);expect(calls).toBe(phase);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
@@ -3213,4 +3213,148 @@ describe('mobile current HOLD findings review',()=>{
   act(()=>window.dispatchEvent(new Event('pagehide')));expect(screen.queryByRole('status',{name:'HOLD findings review'})).toBeNull();
  });
 
+});
+
+
+describe('R1 conflict-aware assessment recovery',()=>{
+ const id='FICTIONAL-R1-A',otherId='FICTIONAL-R1-B';
+ const attempted='00000000-0000-4000-8000-000000000301',earlier='00000000-0000-4000-8000-000000000302';
+ const storageKey=`tameion.assessment-request.${id}`;
+ const conflict={code:'ASM-OPERATION-UNRESOLVED',error:'Another assessment is unresolved.',idempotency_key:earlier,operation_status:'UNKNOWN'};
+ function genuine(selectedId=id):Record<string,any>{return {...detail(selectedId),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true};}
+ function mount(payload:unknown=conflict,options:{status?:number;changed?:'source'|'version';submission?:Promise<Response>;statusResponse?:Promise<Response>}={}){
+  localStorage.clear();vi.stubGlobal('crypto',{randomUUID:()=>attempted,subtle:webcrypto.subtle});
+  let posted=false;const mock=vi.fn<typeof fetch>((input,init)=>{
+   const url=String(input);
+   if(url===`/api/obligations/${id}/advisory`&&init?.method==='POST'){posted=true;return options.submission??Promise.resolve(response(payload,options.status??409));}
+   if(url===`/api/obligations/${id}/advisory/status`&&init?.method==='POST')return options.statusResponse??Promise.resolve(response({status:'NOT_FOUND',obligation_id:id,idempotency_key:attempted,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));
+   if(init?.method==='POST')throw new Error('Forbidden extra POST');
+   if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(id),source_group:'GENUINE_COMPANY'},{...obligation(otherId),source_group:'GENUINE_COMPANY'}]}));
+   const value=genuine(url.endsWith(otherId)?otherId:id);
+   if(posted&&options.changed==='source')value.record.commercial_terms='Changed source';
+   if(posted&&options.changed==='version')value.aggregate.aggregate_version=2;
+   return Promise.resolve(response(value));
+  });vi.stubGlobal('fetch',mock);return {mock,view:renderWithExplicitFirstSelection('FICTIONAL-CSRF')};
+ }
+ const posts=(mock:ReturnType<typeof vi.fn<typeof fetch>>)=>mock.mock.calls.filter(([,init])=>init?.method==='POST');
+ async function submit(){fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await screen.findByRole('button',{name:'Check assessment request'});}
+ afterEach(()=>{cleanup();vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ it.each([conflict,{code:'ASM-UNKNOWN',status:'UNKNOWN',error:'Earlier outcome unknown.',idempotency_key:earlier}])('explains a separate server-reported reference without adopting or checking it: %j',async payload=>{
+  const {mock}=mount(payload);await submit();
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('earlier unresolved assessment'));
+  const card=screen.getByRole('region',{name:'Hold reason and next action'});expect(card.textContent).toContain(earlier);expect(card.textContent).toContain('source/version unverified');
+  expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be verified'));
+  expect(card.textContent).toContain('earlier unresolved assessment');expect(localStorage.getItem(storageKey)).toBe(attempted);
+  expect(posts(mock)).toHaveLength(2);expect(JSON.parse(posts(mock)[1][1]!.body as string)).toEqual({idempotency_key:attempted});
+  expect(screen.queryByRole('button',{name:/Run AI Assessment|Reassess after correction|Authorize payment|Create linked/})).toBeNull();
+ });
+ it.each([
+  {...conflict,idempotency_key:attempted}, {...conflict,idempotency_key:'bad'}, {...conflict,obligation_id:otherId},
+  {...conflict,idempotency_key:[earlier,attempted]}, {...conflict,operation_status:'COMPLETED'}, {...conflict,outcome:'PAY'}, {...conflict,operation_status:['UNKNOWN']},
+  {code:'ASM-UNKNOWN',status:'UNKNOWN',error:'Original outcome unknown.',idempotency_key:attempted},
+ ])('keeps malformed, foreign, multiple or same-key responses generic: %j',async payload=>{
+  const {mock}=mount(payload);await submit();expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain('earlier unresolved assessment');
+  expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
+ });
+ it.each(['source','version'] as const)('does not retain earlier-reference presentation after %s drift',async changed=>{
+  const {mock}=mount(conflict,{changed});await submit();expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain('earlier unresolved assessment');expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
+ });
+ it('keeps a lost-response key and does not invent an earlier request',async()=>{
+  const lost=deferred<Response>();const {mock}=mount(null,{submission:lost.promise});fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await act(async()=>lost.reject(new Error('Lost response')));await screen.findByRole('button',{name:'Check assessment request'});expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain('earlier unresolved assessment');
+ });
+ it.each(['pagehide','bfcache'] as const)('does not adopt a deferred earlier reference across %s',async event=>{
+  const pending=deferred<Response>(),{mock}=mount(conflict,{submission:pending.promise});
+  fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await waitFor(()=>expect(posts(mock)).toHaveLength(1));
+  act(()=>{if(event==='pagehide')window.dispatchEvent(new Event('pagehide'));else{const e=new Event('pageshow');Object.defineProperty(e,'persisted',{value:true});window.dispatchEvent(e);}});
+  await act(async()=>pending.resolve(response(conflict,409)));await screen.findByRole('button',{name:'Check assessment request'});
+  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
+ });
+ it.each([401,403])('withdraws earlier-reference presentation after status HTTP %s without removing identity',async code=>{
+  const {mock}=mount(conflict,{statusResponse:Promise.resolve(response({code:'SESSION_REQUIRED'},code))});await submit();
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain(earlier));fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));
+  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(2);
+ });
+ it('invalidates the ephemeral explanation after A-B-A and reload while preserving attempted storage',async()=>{
+  const {mock,view}=mount();await submit();await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('earlier unresolved assessment'));
+  fireEvent.click(obligationRow(otherId));await screen.findByRole('button',{name:'Run AI Assessment'});fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Check assessment request'});
+  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);expect(localStorage.getItem(storageKey)).toBe(attempted);
+  view.unmount();rtlRender(<CommandCenter csrfToken='FICTIONAL-CSRF'/>);await waitFor(()=>expect(obligationRow(id)).toBeTruthy());fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Check assessment request'});expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);
+  expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
+ });
+});
+
+
+describe('R1 status-only waiting deadline',()=>{
+ const id='FICTIONAL-R1-TIMEOUT',key='00000000-0000-4000-8000-000000000401',storageKey=`tameion.assessment-request.${id}`;
+ const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+ afterEach(()=>{cleanup();vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ it.each(['replace','remove','unavailable'] as const)('does not attribute a hanging old check timeout after storage %s',async change=>{
+  const value=assessedDetail(id,'HOLD');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const pending=deferred<Response>();localStorage.setItem(storageKey,key);const replacement='00000000-0000-4000-8000-000000000402';
+  const mock=vi.fn<typeof fetch>((input,init)=>init?.method==='POST'?pending.promise:Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'}]}:value)));
+  vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');const button=await screen.findByRole('button',{name:'Check assessment request'});
+  vi.useFakeTimers();fireEvent.click(button);await act(flush);
+  if(change==='replace')localStorage.setItem(storageKey,replacement);else if(change==='remove')localStorage.removeItem(storageKey);else vi.spyOn(Storage.prototype,'getItem').mockImplementation(()=>{throw new Error('Denied');});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(15_001);await flush();});
+  const text=screen.getByRole('region',{name:'Hold reason and next action'}).textContent;expect(text).not.toContain('timed out');expect(text).toMatch(/reference changed|reference.*unavailable/);
+  expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1);
+  vi.restoreAllMocks();expect(localStorage.getItem(storageKey)).toBe(change==='replace'?replacement:change==='remove'?null:key);
+ });
+ it('retains the key when observed time expires before the timeout task runs',async()=>{
+  const value=assessedDetail(id,'HOLD');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});value.current_assessment.assessment_id=`ASM-${key}`;
+  const receipt={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
+  const final=deferred<Response>();let posts=0;localStorage.setItem(storageKey,key);vi.stubGlobal('crypto',webcrypto);
+  const mock=vi.fn<typeof fetch>((input,init)=>init?.method==='POST'?(++posts===2?final.promise:Promise.resolve(response(receipt))):Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'}]}:value)));
+  vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');const button=await screen.findByRole('button',{name:'Check assessment request'});
+  vi.useFakeTimers();const clock=vi.spyOn(performance,'now').mockReturnValue(100);fireEvent.click(button);await act(flush);expect(posts).toBe(2);
+  clock.mockReturnValue(15_101);await act(async()=>{final.resolve(response(receipt));await flush();});
+  expect(localStorage.getItem(storageKey)).toBe(key);expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('timed out');expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();expect(posts).toBe(2);
+ });
+ it.each(['fetch','body','detail','digest','final'] as const)('finishes UI waiting during %s and ignores late confirmation without retry',async phase=>{
+  const value=assessedDetail(id,'HOLD');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});value.current_assessment.assessment_id=`ASM-${key}`;
+  const receipt={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
+  const pending=deferred<Response>(),text=deferred<string>(),digest=deferred<ArrayBuffer>();let statuses=0,details=0;
+  localStorage.setItem(storageKey,key);vi.stubGlobal('crypto',phase==='digest'?{subtle:{digest:()=>digest.promise}}:webcrypto);
+  const lateValue=structuredClone(value);lateValue.record.commercial_terms='LATE DETAIL MUST NOT COMMIT';
+  const mock=vi.fn<typeof fetch>((input,init)=>{
+   const url=String(input);
+   if(init?.method==='POST'){
+    if(url!==`/api/obligations/${id}/advisory/status`)throw new Error('Forbidden mutation');statuses++;
+    if(phase==='fetch'&&statuses===1||phase==='final'&&statuses===2)return pending.promise;
+    if(phase==='body'){const r=response(receipt);r.text=()=>text.promise;return Promise.resolve(r);}
+    return Promise.resolve(response(receipt));
+   }
+   if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'}]}));
+   details++;return phase==='detail'&&details===2?pending.promise:Promise.resolve(response(value));
+  });vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');const button=await screen.findByRole('button',{name:'Check assessment request'});
+  vi.useFakeTimers();fireEvent.click(button);await act(flush);
+  expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toMatch(/Checking|Confirming/);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(15_001);await flush();});
+  expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('timed out');
+  expect(localStorage.getItem(storageKey)).toBe(key);const requests=mock.mock.calls.length;
+  await act(async()=>{if(phase==='body')text.resolve(JSON.stringify(receipt));else if(phase==='digest')digest.resolve(new Uint8Array(Buffer.from(receipt.source_record_sha256,'hex')).buffer);else pending.resolve(response(phase==='detail'?lateValue:receipt));await flush();});
+  expect(localStorage.getItem(storageKey)).toBe(key);expect(mock.mock.calls).toHaveLength(requests);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();expect(screen.queryByText('LATE DETAIL MUST NOT COMMIT')).toBeNull();
+  expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(phase==='final'?2:1);
+  if(phase==='fetch'){fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));await act(flush);expect(localStorage.getItem(storageKey)).toBeNull();expect(statuses).toBe(3);expect(screen.getByRole('button',{name:'Review assessment'})).toBeTruthy();}
+ });
+});
+
+
+describe('R1 contradictory receipt containment',()=>{
+ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ it('does not release or display a completed receipt carrying ASM-001 despite matching detail',async()=>{
+  const id='FICTIONAL-R1-CONTRADICTORY',held=assessedDetail(id,'HOLD');Object.assign(held,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const record=held.current_assessment;const receipt={code:'ASM-001',assessment_id:record.assessment_id,assessment_hash:record.assessment_hash,aggregate_version:'1',decision:{obligation_id:id,decision:'HOLD',reasons:record.reasons},race:record.race,provider_used:'NVIDIA',provider_mode:'LIVE_AI'};
+  let submitted=false;localStorage.clear();vi.stubGlobal('crypto',webcrypto);
+  const mock=vi.fn<typeof fetch>((input,init)=>{
+   if(init?.method==='POST'){submitted=true;return Promise.resolve(response(receipt));}
+   return Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id),source_group:'GENUINE_COMPANY'}]}:submitted?held:{...detail(id),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true}));
+  });vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
+  await waitFor(()=>expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1));
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Assessment outcome unverified'));
+  expect(localStorage.getItem(`tameion.assessment-request.${id}`)).not.toBeNull();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
+ });
 });

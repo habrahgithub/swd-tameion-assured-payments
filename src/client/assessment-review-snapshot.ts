@@ -94,7 +94,3 @@ export function currentReviewedAssessment(
   ) return null;
   return displayed;
 }
-
-export function shouldKeepAssessmentRecoveryKey(status: number, code?: string): boolean {
-  return status !== 200 && code !== "ASM-001";
-}

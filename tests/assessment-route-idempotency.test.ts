@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assessmentKeyDisposition } from "../src/client/command-center-requests";
 
 import { POST } from "../src/server/legacy-routes/obligations/[id]/assess/route";
 import { DEMO_ORGANIZATION_ID, DEMO_SIGNING_KEY_ID, DemoState, getDemoState } from "../src/server/demo-state";
@@ -236,7 +237,9 @@ describe("assessment request idempotency across durable CAS races", () => {
     const response = await call;
 
     expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("ASM-001");
+    const staleBody=await response.json();
+    expect(staleBody.code).toBe("ASM-001");
+    expect(assessmentKeyDisposition({status:response.status,data:staleBody,obligationId:"OBL-J0C-001",expectedAggregateVersion:"1"})).toBe("RETAIN");
     expect(durable.providerCalls).toBe(1);
     expect(durable.snapshot?.authority.assessments).toHaveLength(0);
     expect(durable.snapshot?.assessment_operations[0].status).toBe("STALE");
@@ -259,7 +262,9 @@ describe("assessment request idempotency across durable CAS races", () => {
     const response = await first;
 
     expect(response.status).toBe(409);
-    expect((await response.json()).code).toBe("ASM-001");
+    const staleBody=await response.json();
+    expect(staleBody.code).toBe("ASM-001");
+    expect(assessmentKeyDisposition({status:response.status,data:staleBody,obligationId:"OBL-J0C-001",expectedAggregateVersion:"1"})).toBe("RETAIN");
     expect(durable.providerCalls).toBe(1);
     expect(durable.snapshot?.assessment_operations[0]).toMatchObject({
       idempotency_key: operationId,

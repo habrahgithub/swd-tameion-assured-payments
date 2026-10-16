@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   assessmentReviewSnapshot,
   currentReviewedAssessment,
-  shouldKeepAssessmentRecoveryKey,
 } from "../src/client/assessment-review-snapshot";
 
 const response = {
@@ -38,14 +37,6 @@ describe("human-reviewed assessment snapshot", () => {
     expect(currentReviewedAssessment(displayed, current, "OBL-J0C-002", 3)).toBeNull();
   });
 
-  it("retains the same recovery key across pending, server-error, and gateway-timeout responses", () => {
-    expect(shouldKeepAssessmentRecoveryKey(202)).toBe(true);
-    expect(shouldKeepAssessmentRecoveryKey(500)).toBe(true);
-    expect(shouldKeepAssessmentRecoveryKey(504)).toBe(true);
-    expect(shouldKeepAssessmentRecoveryKey(409, "ASM-UNKNOWN")).toBe(true);
-    expect(shouldKeepAssessmentRecoveryKey(200)).toBe(false);
-    expect(shouldKeepAssessmentRecoveryKey(409, "ASM-001")).toBe(false);
-  });
 
   it("refuses legacy assessment snapshots without validated RACE data", () => {
     const legacy = assessmentReviewSnapshot({ ...response, race: undefined });

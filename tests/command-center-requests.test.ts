@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   executionResponseNeedsReconciliation,
+  assessmentEarlierReference,
   interpretPostResponse,
   isCurrentRequest,
   parseJsonBody,
@@ -69,7 +70,7 @@ describe("action results apply only to the still-selected obligation identity", 
   });
 });
 
-describe("assessment recovery key is retained until identity-matched success or explicit terminal rejection", () => {
+describe("assessment recovery key is retained until identity-matched complete success", () => {
   const validSuccess = fullReceipt("OBL-A", "1");
 
   it("releases only on a valid, identity-matched 200 receipt", () => {
@@ -100,8 +101,8 @@ describe("assessment recovery key is retained until identity-matched success or 
     expect(assessmentKeyDisposition({ status: 500, data: { error: "boom" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 
-  it("releases on the existing explicit terminal rejection ASM-001", () => {
-    expect(assessmentKeyDisposition({ status: 409, data: { code: "ASM-001", error: "terminal" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RELEASE");
+  it.each([0, 200, 400, 409, 503])("retains ASM-001 without independently proven completion at HTTP %s", (status) => {
+    expect(assessmentKeyDisposition({ status, data: { code: "ASM-001", error: "stale result" }, obligationId: "OBL-A", expectedAggregateVersion: "1" })).toBe("RETAIN");
   });
 });
 
@@ -169,4 +170,26 @@ describe("execute production response contract", () => {
   ])("keeps ambiguous response %s %j reconciliation-only", (status,data) => {
     expect(executionResponseNeedsReconciliation({status:status as number,data})).toBe(true);
   });
+});
+
+
+describe('R1 strict earlier-reference hints',()=>{
+ const attempted='00000000-0000-4000-8000-000000000301',earlier='00000000-0000-4000-8000-000000000302';
+ const reply={code:'ASM-OPERATION-UNRESOLVED',error:'Earlier request unresolved.',idempotency_key:earlier};
+ it.each([undefined,'RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN'])('accepts existing shape with state %s only as a reference hint',operation_status=>{
+  expect(assessmentEarlierReference({status:409,data:{...reply,...(operation_status===undefined?{}:{operation_status})}},attempted)).toBe(earlier);
+ });
+ it.each([['UNKNOWN'],{toString:'poison'},null,1,'COMPLETED'])('rejects malformed state %j without coercion or throwing',operation_status=>{
+  expect(assessmentEarlierReference({status:409,data:{...reply,operation_status}},attempted)).toBeNull();
+ });
+ it.each([0,200,202,403,503])('does not treat HTTP%s as an authenticated conflict',status=>expect(assessmentEarlierReference({status,data:reply},attempted)).toBeNull());
+});
+
+
+describe('R1 contradictory complete receipts',()=>{
+ it('retains an otherwise complete receipt carrying ASM-001',()=>{
+  const data={...fullReceipt('OBL-A','1'),code:'ASM-001'};
+  expect(assessmentKeyDisposition({status:200,data,obligationId:'OBL-A',expectedAggregateVersion:'1'})).toBe('RETAIN');
+  expect(assessmentReceiptSnapshot(data)).toBeNull();
+ });
 });
