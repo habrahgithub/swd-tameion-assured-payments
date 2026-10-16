@@ -2242,8 +2242,11 @@ for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) te
   await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
   await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
   await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
-  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh payable list":"Review missing evidence"});
+  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh payable list":"View HOLD findings"});
   await primary.focus();await page.keyboard.press("Enter");
+  if(!unresolved){
+    const business=page.getByTestId("assessment-supporting-detail");await expect(business).toHaveAttribute("open","");await expect(business.locator("summary")).toBeFocused();await expect(business).toContainText("Approved source invoice");
+  }
   await expect(page.getByRole("button",{name:"Reassess after correction"})).toHaveCount(0);
   expect(mutations.filter(path=>path!=="/api/wallet/balance/refresh")).toEqual([]);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
@@ -2405,4 +2408,68 @@ for(const width of [1365,390])for(const outcome of ['COMPLETED_CURRENT','UNKNOWN
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   const strip=page.getByRole('region',{name:'Current payable action'}),bounds=await strip.boundingBox();expect(bounds!.y).toBeGreaterThanOrEqual(0);expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(845);
   await page.screenshot({path:testInfo.outputPath(`exact-status-${outcome}-${width}.png`),fullPage:true});
+});
+
+for(const width of [1365,390,320])for(const finding of ['NORMALIZATION_REVIEW_REQUIRED','SOURCE_EVIDENCE_MISSING'])test(`current genuine HOLD business review ${finding} is visible and focused at ${width}px`,async({page},testInfo)=>{
+  await page.setViewportSize({width,height:844});await page.emulateMedia({reducedMotion:'reduce'});
+  const source=await actualSourcePayFixtures(page),id='OBL-J0C-003',held=structuredClone(source.payDetailById[id]);Object.assign(held,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const reason=finding==='NORMALIZATION_REVIEW_REQUIRED'?'A normalized payable field requires source review.':'Source evidence is incomplete.';
+  const evidence=finding==='NORMALIZATION_REVIEW_REQUIRED'?'Source evidence supporting the corrected normalized field':'Approved source invoice';
+  held.current_assessment.decision='HOLD';held.current_assessment.reasons=[reason];held.current_assessment.race.result={decision:'HOLD',decision_summary:reason,validated_findings:[{code:finding,severity:'HOLD',reason}]};
+  held.current_assessment.race.remediation=[{finding_code:finding,reason,required_action:'Compare the payable with the source and provide verified evidence.',required_evidence:[evidence],owner_role:'Finance Operations',reassess_after_resolution:true}];
+  const requests:string[]=[];await page.route('**/api/**',route=>{
+    const req=route.request(),path=new URL(req.url()).pathname;requests.push(req.method()+' '+path);
+    if(path==='/api/operator/session')return route.fulfill({json:{authenticated:true,csrf_token:'MOCK-ONLY-CSRF',expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(path==='/api/obligations')return route.fulfill({json:{obligations:source.queue.map(row=>({...row,source_group:'GENUINE_COMPANY',decision:row.obligation_id===id?'HOLD':row.decision}))}});
+    if(path===`/api/obligations/${id}`)return route.fulfill({json:held});return route.fulfill({status:503,json:{code:'UNEXPECTED_REQUEST'}});
+  });
+  await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+  const action=page.getByRole('button',{name:'View HOLD findings',exact:true});await expect(action).toBeVisible();const before=requests.length;
+  await action.click();const business=page.getByTestId('assessment-supporting-detail'),summary=business.locator('summary');
+  await expect(business).toHaveAttribute('open','');await expect(summary).toBeFocused();await expect(business).toContainText(reason);await expect(business).toContainText(evidence);await expect(business).toContainText('Finance Operations');await expect(business).toContainText('outside this screen');
+  await expect(page.getByText('Step 2 of 6 · Assessment',{exact:true})).toBeVisible();await expect(page.getByRole('status',{name:'HOLD findings review'})).toContainText('HOLD remains');
+  const strip=page.getByRole('region',{name:'Current payable action'});let bounds=await strip.boundingBox();
+  for(const target of [summary,business.getByRole('region',{name:'Recorded remediation'}).getByText(evidence,{exact:true}),business.getByRole('region',{name:'Recorded remediation'}).getByText('Responsible: Finance Operations',{exact:true})]){
+    const box=await target.boundingBox();expect(box!.y).toBeGreaterThanOrEqual(0);expect(box!.y+box!.height).toBeLessThanOrEqual(bounds!.y);
+  }
+  // The already-open review remains operable; closing it cannot strand the next tap.
+  await action.focus();await page.keyboard.press('Enter');await expect(summary).toBeFocused();
+  await summary.click();await expect(business).not.toHaveAttribute('open','');await action.click();await expect(business).toHaveAttribute('open','');await expect(summary).toBeFocused();
+  expect(requests).toHaveLength(before);expect(requests.filter(r=>r.startsWith('POST '))).toEqual([]);
+  await expect(page.getByRole('button',{name:/Run AI Assessment|Create linked testnet instruction|Authorize payment|Continue to Authorization|Pay testnet USDC/})).toHaveCount(0);
+  await expect(page.getByTestId('assessment-supporting-detail')).toHaveCount(1);await expect(page.getByRole('region',{name:'Selected source payable'}).getByTestId('hold-reason')).toHaveCount(1);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await page.screenshot({path:testInfo.outputPath(`hold-business-${finding}-${width}.png`),fullPage:true});
+  await page.screenshot({path:testInfo.outputPath(`hold-business-${finding}-${width}-viewport.png`)});
+  const axe=await new AxeBuilder({page}).analyze();expect(axe.violations).toEqual([]);
+  await page.reload();await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();await expect(page.getByRole('button',{name:'View HOLD findings'})).toBeVisible();await expect(page.getByRole('status',{name:'HOLD findings review'})).toHaveCount(0);
+  await page.route('**/api/operator/session',route=>route.fulfill({status:401,json:{code:'SESSION_REQUIRED'}}));await page.reload();
+  await expect(page.getByRole('heading',{name:'Sign in to Tameion'})).toBeVisible();await expect(page.getByRole('button',{name:'View HOLD findings'})).toHaveCount(0);
+});
+
+for(const width of [390,320])test(`missing HOLD review target reports the real limitation at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:844});
+  const id='OBL-HOLD-MISSING',held={...detail,source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true,record:{...detail.record,obligation_id:id},current_assessment:{...detail.current_assessment,obligation_id:id,decision:'HOLD',reasons:['Source review required.']}};
+  const requests:string[]=[];await page.route('**/api/obligations**',route=>{requests.push(route.request().method());return route.fulfill({json:new URL(route.request().url()).pathname==='/api/obligations'?{obligations:[{...obligation,obligation_id:id,decision:'HOLD'}]}:held});});
+  await page.goto('/');await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();await page.getByRole('button',{name:'View HOLD findings'}).click();
+  await page.getByTestId('assessment-supporting-detail').evaluate(el=>el.remove());const before=requests.length;await page.getByRole('button',{name:'View HOLD findings'}).click();await expect(page.getByRole('status',{name:'HOLD findings review'})).toContainText('HOLD — details unavailable');expect(requests).toHaveLength(before);
+});
+
+for(const width of [390,320])test(`long recorded HOLD evidence wraps without loss at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:844});const source=await actualSourcePayFixtures(page),id='OBL-J0C-003',held=structuredClone(source.payDetailById[id]);
+  Object.assign(held,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});const evidence='SOURCE-REFERENCE-'+ 'A'.repeat(500);held.current_assessment.decision='HOLD';held.current_assessment.reasons=['Source normalization requires review.'];
+  held.current_assessment.race.result={decision:'HOLD',decision_summary:held.current_assessment.reasons[0],validated_findings:[{code:'NORMALIZATION_REVIEW_REQUIRED',severity:'HOLD',reason:held.current_assessment.reasons[0]}]};
+  held.current_assessment.race.remediation=[{finding_code:'NORMALIZATION_REVIEW_REQUIRED',reason:held.current_assessment.reasons[0],required_action:'Verify the source reference.',required_evidence:[evidence],owner_role:'Finance Operations',reassess_after_resolution:true}];
+  await page.route('**/api/obligations**',route=>route.fulfill({json:new URL(route.request().url()).pathname==='/api/obligations'?{obligations:[{...obligation,obligation_id:id,decision:'HOLD'}]}:held}));
+  await page.goto('/');await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();await page.getByRole('button',{name:'View HOLD findings'}).click();
+  const business=page.getByTestId('assessment-supporting-detail');await expect(business.getByRole('region',{name:'Recorded remediation'})).toContainText(evidence);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  const owner=business.getByText('Responsible: Finance Operations',{exact:true});await page.mouse.move(width/2,300);
+  for(let step=0;step<8;step++){
+    const box=await owner.boundingBox(),strip=await page.getByRole('region',{name:'Current payable action'}).boundingBox();
+    if(box!.y>=0&&box!.y+box!.height<=strip!.y)break;
+    await page.mouse.wheel(0,box!.y<0?-180:180);
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  }
+  const box=await owner.boundingBox(),strip=await page.getByRole('region',{name:'Current payable action'}).boundingBox();expect(box!.y).toBeGreaterThanOrEqual(0);expect(box!.y+box!.height).toBeLessThanOrEqual(strip!.y);
 });

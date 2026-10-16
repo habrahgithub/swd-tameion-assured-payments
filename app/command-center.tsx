@@ -1288,6 +1288,8 @@ function AssessmentResultCard({
   primaryAction,
   stageDescriptionId,
   stageHeadingRef,
+  holdFindingsRef,
+  holdReviewActive,
   canReassess,
   reassessmentIsPrimary,
   onReassess,
@@ -1300,6 +1302,8 @@ function AssessmentResultCard({
   primaryAction: { label: string; onClick: () => void } | null;
   stageDescriptionId: string;
   stageHeadingRef: React.RefObject<HTMLHeadingElement | null>;
+  holdFindingsRef: React.RefObject<HTMLDetailsElement | null>;
+  holdReviewActive: boolean;
   canReassess: boolean;
   reassessmentIsPrimary: boolean;
   onReassess: () => void;
@@ -1358,9 +1362,15 @@ function AssessmentResultCard({
         {primaryAction && <PrimaryButton onClick={primaryAction.onClick} disabled={busy}>{primaryAction.label}</PrimaryButton>}
       </div>
 
-      <details className="rounded border border-[var(--color-border)] px-3 py-2" data-testid="assessment-supporting-detail">
+      <details ref={holdFindingsRef} className="scroll-mt-4 rounded border border-[var(--color-border)] px-3 py-2" data-testid="assessment-supporting-detail">
         <summary className="min-h-11 cursor-pointer py-2 text-[12px] font-semibold text-[var(--color-ink-muted)]">Findings and supporting detail</summary>
-        <div className="space-y-3 border-t border-[var(--color-border)] pt-3">
+        <div className="space-y-3 break-words border-t border-[var(--color-border)] pt-3 [overflow-wrap:anywhere]">
+          {holdReviewActive && assessment.decision === "HOLD" && <>
+            {findings.some(f => f.code === "NORMALIZATION_REVIEW_REQUIRED") && <p className="text-[13px] leading-5">Source correction required. The recorded owner must verify and correct the source record outside this screen. HOLD remains until the finding is resolved.</p>}
+            {findings.some(f => f.code === "SOURCE_EVIDENCE_MISSING") && <p className="text-[13px] leading-5">The recorded owner must supply and validate the required source evidence outside this screen. HOLD remains.</p>}
+            {!findings.length && <p className="text-[13px] leading-5">{financeFacingAssessmentText(summary)}</p>}
+            {!race?.remediation.length && <p className="text-[13px] leading-5">Required evidence and correction owner are not recorded. Ask the workspace owner to review the source. HOLD remains.</p>}
+          </>}
           {additionalReasons.length > 0 && (
             <section aria-label="Assessment reasons" className="space-y-1">
               <h4 className="text-[12px] font-semibold text-[var(--color-ink)]">Assessment reasons</h4>
@@ -2058,6 +2068,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   }|null>(null);
   const exactAssessmentLifetime=useRef({mounted:false,epoch:0});
   const activeExactAssessmentCheck=useRef<number|null>(null),exactAssessmentSequence=useRef(0);
+  const holdFindingsRef=useRef<HTMLDetailsElement|null>(null);
+  const holdReviewSequence=useRef(0);
+  const [holdReview,setHoldReview]=useState<{
+    obligationId:string;assessmentId:string;assessmentHash:string;version:string;sourceFingerprint:string;
+    selection:number;detailRequest:number;epoch:number;token:number;status:"pending"|"opened"|"unavailable";
+  }|null>(null);
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2070,7 +2086,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const selectionGeneration = useRef(0);
   useEffect(()=>{
     exactAssessmentLifetime.current.mounted=true;
-    const invalidate=()=>{exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;setExactAssessmentCheck(null);};
+    const invalidate=()=>{exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;setExactAssessmentCheck(null);setHoldReview(null);};
     const restore=(event:PageTransitionEvent)=>{if(event.persisted)invalidate();};
     window.addEventListener("pagehide",invalidate);window.addEventListener("pageshow",restore);
     return()=>{exactAssessmentLifetime.current.mounted=false;exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;window.removeEventListener("pagehide",invalidate);window.removeEventListener("pageshow",restore);};
@@ -2211,6 +2227,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     activePayableListCheck.current = null;
     setExactAssessmentCheck(null);
     activeExactAssessmentCheck.current=null;
+    setHoldReview(null);
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -2464,6 +2481,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setDisplayedAssessment(null);
     setExactAssessmentCheck(null);
     activeExactAssessmentCheck.current=null;
+    setHoldReview(null);
     setStageCompletionReceipt(null);
     setMobileQueueOpen(false);
   };
@@ -2969,11 +2987,35 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       window.removeEventListener("resize", updateClearance);
       root.style.removeProperty("--payable-action-clearance");
     };
-  }, [dashboardVisible, currentPayableListCheck?.status, currentExactAssessmentCheck?.status]);
+  }, [dashboardVisible, currentPayableListCheck?.status, currentExactAssessmentCheck?.status, holdReview?.status]);
   const currentFeedback = assessmentFeedbackIsCurrent ? assessmentFeedback : null;
   const assessmentRequestUnresolved = Boolean(selectedRequestKey || currentFeedback && currentFeedback.kind !== "durable");
   const selectedBlockers = payableBlockers({detail, state: detailState, selectedId, feedback: currentFeedback,
     requestKey: selectedRequestKey, stage: viewedStage, response: currentResult, executionResponse: selectedFinancialResult});
+  const holdRenderSelection=selectionGeneration.current,holdRenderDetail=detailGeneration.current,holdRenderEpoch=exactAssessmentLifetime.current.epoch;
+  const holdReviewBlocked=unresolvedSubmission||Boolean(detail?.execution)||Boolean(detail?.pae_sealed)||detail?.aggregate.state==="CANCELLED";
+  const currentHoldReview=!holdReviewBlocked&&holdReview&&detailState==="loaded"&&!detailIsStale&&detail&&hasCurrentAssessment&&currentAssessment?.decision==="HOLD"&&!assessmentRequestUnresolved&&
+    holdReview.obligationId===selectedId&&holdReview.selection===holdRenderSelection&&holdReview.detailRequest===holdRenderDetail&&holdReview.epoch===holdRenderEpoch&&exactAssessmentLifetime.current.mounted&&
+    holdReview.assessmentId===currentAssessment.assessment_id&&holdReview.assessmentHash===currentAssessment.assessment_hash&&holdReview.version===currentAssessment.aggregate_version&&holdReview.sourceFingerprint===canonicalize(detail.record)
+    ?holdReview:null;
+  const reviewHoldFindings=()=>{
+    if(busy||holdReviewBlocked||requiresSubmissionReconciliation(financialResults.current.get(selectedId)??null)||!detail||detailState!=="loaded"||detailIsStale||!hasCurrentAssessment||currentAssessment?.decision!=="HOLD"||assessmentRequestUnresolved||retainedAssessmentRequestKey(selectedId)||
+      !exactAssessmentLifetime.current.mounted||selectedRef.current!==selectedId||selectionGeneration.current!==holdRenderSelection||detailGeneration.current!==holdRenderDetail||exactAssessmentLifetime.current.epoch!==holdRenderEpoch)return;
+    setHoldReview({obligationId:selectedId,assessmentId:currentAssessment.assessment_id,assessmentHash:currentAssessment.assessment_hash,version:currentAssessment.aggregate_version,
+      sourceFingerprint:canonicalize(detail.record),selection:holdRenderSelection,detailRequest:holdRenderDetail,epoch:holdRenderEpoch,token:++holdReviewSequence.current,status:"pending"});
+    showStage("Assessment");
+  };
+  // Run after the existing stage scroll reset and after the selected card mounts.
+  // Each tap has a new token, including when this disclosure is already open.
+  useLayoutEffect(()=>{
+    if(!currentHoldReview||currentHoldReview.status!=="pending"||viewedStage!=="Assessment"||panel!=="assessment")return;
+    const target=holdFindingsRef.current,summary=target?.querySelector("summary");
+    let status:"opened"|"unavailable"="unavailable";
+    if(target?.isConnected&&summary?.isConnected){
+      try{target.open=true;target.scrollIntoView?.({block:"start",behavior:"instant"});summary.focus({preventScroll:true});if(document.activeElement===summary)status="opened";}catch{/* Keep HOLD and report unavailable presentation. */}
+    }
+    setHoldReview(current=>current?.token===currentHoldReview.token?{...current,status}:current);
+  },[currentHoldReview?.token,currentHoldReview?.status,viewedStage,panel]);
   const canRefreshAssessmentQueue = Boolean(assessmentFeedbackIsCurrent && assessmentFeedback &&
     ["pending", "unconfirmed", "stale"].includes(assessmentFeedback.kind));
   const selectedAssessmentFeedbackView = assessmentFeedbackIsCurrent && (!selectedBlockers.length || currentFeedback?.kind === "durable") &&
@@ -3057,6 +3099,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       :{ label: "Refresh payable list", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
   } else if (currentExactAssessmentCheck?.status==="confirmed"&&hasCurrentAssessment&&currentAssessment) {
     workspaceAction={label:"Review assessment",actor:"User · advisory review",run:()=>{setDisplayedAssessment(currentAssessment);showStage("Assessment");setExactAssessmentCheck(null);}};
+  } else if (!holdReviewBlocked && hasCurrentAssessment && currentAssessment?.decision === "HOLD" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+    workspaceAction={label:"View HOLD findings",actor:"User · findings review",run:reviewHoldFindings};
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
     workspaceAction = { label: "View Assessment", actor: "You · read-only navigation", run: () => showStage("Assessment") };
   } else if (viewedStage === "Obligation" && currentLifecycleStage !== "Obligation" && !(currentLifecycleStage === "Assessment" && !hasCurrentAssessment)) {
@@ -3096,11 +3140,6 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
-  } else if (hasCurrentAssessment && currentAssessment?.decision === "HOLD" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
-    workspaceAction = {label: selectedBlockers[0]?.kind === "source-evidence" ? "Review missing evidence" : "Review assessment evidence", actor: "User · evidence review", run: () => {
-      const evidence = document.getElementById("hold-technical-details") as HTMLDetailsElement | null;
-      if (evidence) { evidence.open = true; evidence.querySelector("summary")?.focus(); }
-    }};
   } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = {
       label: "Run AI Assessment",
@@ -3622,6 +3661,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                     primaryAction={null}
                     stageDescriptionId={stageDescriptionId}
                     stageHeadingRef={stageHeadingRef}
+                    holdFindingsRef={holdFindingsRef}
+                    holdReviewActive={Boolean(currentHoldReview && viewedStage === "Assessment")}
                     canReassess={optionalReassessmentAvailable}
                     reassessmentIsPrimary={false}
                     onReassess={() => void runAssessment()}
@@ -4120,6 +4161,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {currentPayableListCheck.status === "checking" ? "Checking payable list…" : currentPayableListCheck.status === "checked" ? "Payable list checked." : currentPayableListCheck.status === "identity-unavailable" ? "Request identity could not be read. Reload when storage is available." : "Payable list could not be checked."}
           {" "}Assessment outcome remains unverified.
         </p>}
+        {currentHoldReview&&viewedStage==="Assessment"&&<p role="status" aria-label="HOLD findings review" aria-live="polite" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentHoldReview.status==="opened"?"HOLD findings opened. Review the required evidence and responsible owner. HOLD remains.":currentHoldReview.status==="unavailable"?"HOLD — details unavailable. Ask the workspace owner to review the recorded findings. Authorization and payment remain blocked.":"Opening HOLD findings…"}</p>}
         {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
       </section>}
     </main>

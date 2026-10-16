@@ -2223,8 +2223,10 @@ describe("Command Center mounted Operational Report", () => {
     renderWithExplicitFirstSelection("verified-session-csrf");
     await screen.findByRole("region", { name: "Genuine obligation workspace" });
     navigateStage("Assessment");
-    const action = await screen.findByRole("button", {name:"Review assessment evidence"});
+    const action = await screen.findByRole("button", {name:"View HOLD findings"});
     fireEvent.click(action);
+    expect((screen.getByTestId("assessment-supporting-detail") as HTMLDetailsElement).open).toBe(true);
+    expect(document.activeElement).toBe(screen.getByTestId("assessment-supporting-detail").querySelector("summary"));
     expect(screen.queryByRole("button",{name:"Run AI Assessment"})).toBeNull();
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
   });
@@ -2642,7 +2644,7 @@ describe("HOLD reason and lawful resolution", () => {
     expect(reason.textContent).toContain("Authorization");
     expect(screen.getByRole("region", {name: "Selected source payable"}).contains(reason)).toBe(true);
     expect(screen.queryByRole("button", {name: "Reassess after correction"})).toBeNull();
-    fireEvent.click(screen.getByRole("button", {name: "Review missing evidence"}));
+    fireEvent.click(screen.getByRole("button", {name: "View HOLD findings"}));
     expect(fetchMock.mock.calls.filter(([,init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -2815,7 +2817,7 @@ describe("payable list checks for retained assessment requests", () => {
     const staleCallback=(action as any)[propsKey].onClick;
     fireEvent.click(action);
     fireEvent.click(obligationRow("OBL-LIST-CHECK-B"));
-    await screen.findByRole("button",{name:"View Assessment"});
+    await waitFor(()=>expect(screen.getByLabelText("Current assessment outcome").textContent).toContain("HOLD"));
     fireEvent.click(obligationRow(id));
     const current=await screen.findByRole("button",{name:"Refresh payable list"});
     act(()=>{staleCallback();});
@@ -3110,4 +3112,105 @@ describe('exact assessment HTTP completion contract',()=>{
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));
   expect(localStorage.getItem(storageKey)).toBe(key);expect(calls).toBe(phase);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
  });
+});
+
+describe('mobile current HOLD findings review',()=>{
+ const id='OBL-HOLD-REVIEW-A';
+ function held(){
+  const value=assessedDetail(id,'HOLD');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  value.current_assessment.reasons=['A normalized payable field requires source review.'];
+  value.current_assessment.race.result={decision:'HOLD',decision_summary:value.current_assessment.reasons[0],validated_findings:[{code:'NORMALIZATION_REVIEW_REQUIRED',severity:'HOLD',reason:value.current_assessment.reasons[0]}]};
+  value.current_assessment.race.remediation=[{finding_code:'NORMALIZATION_REVIEW_REQUIRED',reason:value.current_assessment.reasons[0],required_action:'Compare the normalized field with the authoritative source and correct it.',required_evidence:['Source evidence supporting the corrected normalized field'],owner_role:'Finance Operations',reassess_after_resolution:true}];return value;
+ }
+ function mount(value=held()){
+  const mock=vi.fn<typeof fetch>(url=>Promise.resolve(response(String(url)==='/api/obligations'?{obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'}]}:value)));vi.stubGlobal('fetch',mock);const view=renderWithExplicitFirstSelection();return {mock,view};
+ }
+ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ it('opens actual HOLD findings in Assessment and focuses business evidence rather than technical IDs',async()=>{
+  const {mock}=mount();await screen.findByRole('region',{name:'Genuine obligation workspace'});navigateStage('Assessment');
+  fireEvent.click(await screen.findByRole('button',{name:/View HOLD findings|Review assessment evidence/}));
+  const findings=screen.getByTestId('assessment-supporting-detail') as HTMLDetailsElement;
+  expect(findings.open).toBe(true);expect(document.activeElement).toBe(findings.querySelector('summary'));
+  expect(findings.textContent).toContain('Source evidence supporting the corrected normalized field');expect(findings.textContent).toContain('Finance Operations');
+  expect((screen.getByRole('status',{name:'HOLD findings review'})).textContent).toContain('HOLD remains');expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
+ });
+ it('announces unavailable HOLD details when the current business disclosure is missing',async()=>{
+  mount();await screen.findByRole('region',{name:'Genuine obligation workspace'});navigateStage('Assessment');
+  const target=screen.getByTestId('assessment-supporting-detail'),parent=target.parentElement!;target.remove();
+  fireEvent.click(await screen.findByRole('button',{name:/View HOLD findings|Review assessment evidence/}));
+  expect((await screen.findByRole('status',{name:'HOLD findings review'})).textContent).toContain('HOLD — details unavailable');parent.appendChild(target);
+ });
+ it('navigates from Obligation to Assessment in one tap without any network or storage write',async()=>{
+  const {mock}=mount();const action=await screen.findByRole('button',{name:'View HOLD findings'}),reads=mock.mock.calls.length;
+  const set=vi.spyOn(Storage.prototype,'setItem'),remove=vi.spyOn(Storage.prototype,'removeItem');
+  fireEvent.click(action);const findings=screen.getByTestId('assessment-supporting-detail') as HTMLDetailsElement;
+  expect(findings.open).toBe(true);expect(screen.getByText('Step 2 of 6 · Assessment')).toBeTruthy();expect(findings.textContent).toContain('outside this screen');
+  expect(screen.queryByRole('button',{name:/Authorize payment|Continue to Authorization|Run AI Assessment|Create linked testnet instruction|Pay testnet USDC/})).toBeNull();
+  expect(mock.mock.calls).toHaveLength(reads);expect(set).not.toHaveBeenCalled();expect(remove).not.toHaveBeenCalled();
+ });
+ it('refocuses the business disclosure on repeated taps when it is already open or has been closed',async()=>{
+  mount();const action=await screen.findByRole('button',{name:'View HOLD findings'});fireEvent.click(action);
+  const target=screen.getByTestId('assessment-supporting-detail') as HTMLDetailsElement,scroll=vi.fn();target.scrollIntoView=scroll;
+  for(const open of [true,false]){target.open=open;action.focus();fireEvent.click(action);expect(target.open).toBe(true);expect(document.activeElement).toBe(target.querySelector('summary'));}
+  expect(scroll).toHaveBeenCalledTimes(2);expect(screen.getAllByTestId('assessment-supporting-detail')).toHaveLength(1);expect((document.getElementById('hold-technical-details') as HTMLDetailsElement).open).toBe(false);
+ });
+ it('reports disconnected target without changing HOLD or inventing an unresolved request',async()=>{
+  mount();fireEvent.click(await screen.findByRole('button',{name:'View HOLD findings'}));
+  const target=screen.getByTestId('assessment-supporting-detail'),parent=target.parentElement!;target.remove();fireEvent.click(screen.getByRole('button',{name:'View HOLD findings'}));
+  expect(screen.getByRole('status',{name:'HOLD findings review'}).textContent).toContain('HOLD — details unavailable');expect(screen.getByLabelText('Current assessment outcome').textContent).toContain('HOLD');expect(screen.queryByRole('button',{name:'Check assessment request'})).toBeNull();parent.appendChild(target);
+ });
+ it('shows recorded source-absent evidence and owner without claiming a normalization defect',async()=>{
+  const value=assessedDetail(id,'HOLD');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  value.current_assessment.race.remediation=[{finding_code:'SOURCE_EVIDENCE_MISSING',reason:'Source evidence is incomplete.',required_action:'Supply the approved source invoice.',required_evidence:['Approved source invoice'],owner_role:'Accounts Payable',reassess_after_resolution:true}];
+  mount(value);fireEvent.click(await screen.findByRole('button',{name:'View HOLD findings'}));const target=screen.getByTestId('assessment-supporting-detail');expect(target.textContent).toContain('Approved source invoice');expect(target.textContent).toContain('Accounts Payable');expect(target.textContent).toContain('outside this screen');expect(target.textContent).not.toContain('Source correction required.');
+ });
+ it('keeps legacy HOLD reasons visible and missing remediation truthful',async()=>{
+  const value=held();delete value.current_assessment.race;mount(value);fireEvent.click(await screen.findByRole('button',{name:'View HOLD findings'}));
+  const target=screen.getByTestId('assessment-supporting-detail');expect(target.textContent).toContain(value.current_assessment.reasons[0]);expect(target.textContent).toContain('Required evidence and correction owner are not recorded');expect(target.textContent).not.toContain('Source correction required.');
+ });
+ it('keeps an unresolved original request dominant over an older HOLD',async()=>{
+  const key='00000000-0000-4000-8000-000000000098';localStorage.setItem(`tameion.assessment-request.${id}`,key);const {mock}=mount();
+  expect(await screen.findByRole('button',{name:'Check assessment request'})).toBeTruthy();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(localStorage.getItem(`tameion.assessment-request.${id}`)).toBe(key);expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
+ });
+ it.each(['pagehide','BFCache','unmount','new-request'])('rejects a captured HOLD action after %s',async transition=>{
+  const {mock,view}=mount(),button=await screen.findByRole('button',{name:'View HOLD findings'}) as HTMLButtonElement;
+  const prop=Object.keys(button).find(k=>k.startsWith('__reactProps$'))!,click=(button as any)[prop].onClick as ()=>void;
+  if(transition==='pagehide')act(()=>window.dispatchEvent(new Event('pagehide')));
+  if(transition==='BFCache'){const event=new Event('pageshow');Object.defineProperty(event,'persisted',{value:true});act(()=>window.dispatchEvent(event));}
+  if(transition==='unmount')view.unmount();if(transition==='new-request')localStorage.setItem(`tameion.assessment-request.${id}`,'00000000-0000-4000-8000-000000000098');
+  const before=mock.mock.calls.length;act(()=>click());expect(screen.queryByRole('status',{name:'HOLD findings review'})).toBeNull();expect(mock.mock.calls).toHaveLength(before);
+ });
+ it.each(['same-proof','changed-version','changed-source'])('rejects an old A-B-A callback with %s',async change=>{
+  let aReads=0;const value=held(),newValue=held();if(change==='changed-version'){newValue.aggregate.aggregate_version=2;newValue.current_assessment.aggregate_version='2';newValue.current_assessment.race.evidence.authoritative_facts.aggregate_version='2';}if(change==='changed-source')newValue.record.amount='126.00';
+  const b=assessedDetail('OBL-HOLD-REVIEW-B','PAY');Object.assign(b,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const mock=vi.fn<typeof fetch>(url=>Promise.resolve(response(String(url)==='/api/obligations'?{obligations:[obligation(id,true),obligation('OBL-HOLD-REVIEW-B',true)]}:String(url).endsWith('/'+id)?++aReads===1?value:newValue:b)));vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection();
+  const action=await screen.findByRole('button',{name:'View HOLD findings'}) as HTMLButtonElement,prop=Object.keys(action).find(k=>k.startsWith('__reactProps$'))!,click=(action as any)[prop].onClick as ()=>void;
+  fireEvent.click(obligationRow('OBL-HOLD-REVIEW-B'));await waitFor(()=>expect(screen.getByLabelText('Current assessment outcome').textContent).toContain('PAY'));fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'View HOLD findings'});const before=mock.mock.calls.length;act(()=>click());expect(screen.queryByRole('status',{name:'HOLD findings review'})).toBeNull();expect(mock.mock.calls).toHaveLength(before);
+ });
+ it('does not offer HOLD review for a stale assessment version',async()=>{
+  const value=held();value.aggregate.aggregate_version=2;mount(value);await screen.findByRole('region',{name:'Genuine obligation workspace'});expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();
+ });
+ it.each([401,403])('does not offer review when selected details return HTTP%s',async code=>{
+  vi.stubGlobal('fetch',vi.fn<typeof fetch>(url=>Promise.resolve(response(String(url)==='/api/obligations'?{obligations:[obligation(id,true)]}:{code:'SESSION_REQUIRED'},String(url)==='/api/obligations'?200:code))));renderWithExplicitFirstSelection();await screen.findByText('Payable details are unavailable.');expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();
+ });
+
+ it('does not let a captured HOLD review override a newly ambiguous financial response',async()=>{
+  const pending=deferred<Response>(),authorized=proxyPrepared(sealedDetail(id));Object.assign(authorized.aggregate,{destination_verification_status:'VERIFIED',destination_operational_status:'ACTIVE',source_wallet_status:'ACTIVE',product_trust_provenance:'CURRENT_PRODUCT_EVIDENCE'});
+  authorized.execution_packet={packet_sha256:'c'.repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash='d'.repeat(64);authorized.execution_gate='PORTAL_APPROVED_EXACT_PACKET';let reads=0;
+  const mock=vi.fn<typeof fetch>((url,init)=>init?.method==='POST'?pending.promise:Promise.resolve(response(String(url)==='/api/obligations'?{obligations:[obligation(id,true),obligation('OBL-HOLD-REVIEW-B')]}:String(url).endsWith('/'+id)?++reads===1?authorized:held():detail('OBL-HOLD-REVIEW-B'))));vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection();
+  await screen.findByRole('region',{name:'Genuine obligation workspace'});navigateStage('Payment');fireEvent.click(screen.getByRole('checkbox',{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole('button',{name:'Pay testnet USDC'}));
+  fireEvent.click(obligationRow('OBL-HOLD-REVIEW-B'));await screen.findByRole('button',{name:'Run AI Assessment'});fireEvent.click(obligationRow(id));
+  const action=await screen.findByRole('button',{name:'View HOLD findings'}) as HTMLButtonElement,prop=Object.keys(action).find(k=>k.startsWith('__reactProps$'))!,click=(action as any)[prop].onClick as ()=>void;
+  await act(async()=>pending.resolve(response({code:'OUTCOME_UNVERIFIED'},503)));await screen.findByRole('button',{name:'Refresh current status'});const before=mock.mock.calls.length;
+  act(()=>click());expect(screen.queryByRole('status',{name:'HOLD findings review'})).toBeNull();expect(mock.mock.calls).toHaveLength(before);
+ });
+ it('keeps reconciliation higher priority than an inconsistent old HOLD alongside settled execution',async()=>{
+  const value=held();value.execution={status:'SETTLED',idempotency_key:'SYNTHETIC-RECORDED'};mount(value);await screen.findByRole('region',{name:'Genuine obligation workspace'});expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();
+ });
+
+ it('clears an opened review announcement when the page is hidden',async()=>{
+  mount();fireEvent.click(await screen.findByRole('button',{name:'View HOLD findings'}));expect(screen.getByRole('status',{name:'HOLD findings review'})).toBeTruthy();
+  act(()=>window.dispatchEvent(new Event('pagehide')));expect(screen.queryByRole('status',{name:'HOLD findings review'})).toBeNull();
+ });
+
 });

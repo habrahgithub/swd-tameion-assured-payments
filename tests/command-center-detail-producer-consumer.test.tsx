@@ -1752,7 +1752,7 @@ describe("real detail GET producer-consumer packet controls", () => {
     expect(explanation.textContent).toContain("Review the normalized field and correct it from authoritative source evidence.");
     expect(explanation.textContent).toContain("Source evidence supporting the corrected normalized field");
     expect(within(card).queryByRole("button", { name: "Reassess after correction" })).toBeNull();
-    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("Review assessment evidence");
+    expect(main.querySelector('button[data-primary-action="true"]')?.textContent).toContain("View HOLD findings");
   });
 
   it("promotes only the existing eligible reassessment option and keeps the simple entry untouched", async () => {
