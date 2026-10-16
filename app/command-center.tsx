@@ -1,5 +1,7 @@
 "use client";
 import type {LinkedInstruction} from "../src/domain/linked-instruction";
+import type {GenuineAssessmentStatus} from "../src/server/genuine-assessment-status";
+import {canonicalize} from "json-canonicalize";
 import {TameionBrand} from "./tameion-brand";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -1478,6 +1480,23 @@ function confirmedFinancialReceipt(result: ActionResult, detail: ObligationDetai
   return null;
 }
 type StageCompletionReceipt = { obligationId: string; message: string };
+const assessmentRequestUuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function exactAssessmentStatus(value:unknown,id:string,key:string,version:string):GenuineAssessmentStatus|null {
+ if(!value||typeof value!=="object"||Array.isArray(value))return null;
+ const v=value as GenuineAssessmentStatus;
+ if(v.obligation_id!==id||v.idempotency_key!==key||v.aggregate_version!==version||v.financial_action_eligible!==false||typeof v.source_record_sha256!=="string"||!/^[a-f0-9]{64}$/.test(v.source_record_sha256)||!["NOT_FOUND","RESERVED","PROVIDER_RESULT_DURABLE","UNKNOWN","STALE","COMPLETED_CURRENT"].includes(v.status))return null;
+ if(v.status==="COMPLETED_CURRENT"&&(!v.receipt||v.receipt.assessment_id!==`ASM-${key}`||v.receipt.aggregate_version!==version||typeof v.receipt.assessment_hash!=="string"||!/^[a-f0-9]{64}$/.test(v.receipt.assessment_hash)))return null;
+ if(v.status!=="COMPLETED_CURRENT"&&v.receipt!==undefined)return null;
+ return v;
+}
+/** Confirmation uses an independent current-detail read, including genuine
+ * source bytes. A status response alone never injects or releases a result. */
+export async function assessmentStatusMatchesDetail(status:GenuineAssessmentStatus,detail:ObligationDetail|null):Promise<boolean> {
+ const receipt=status.receipt,current=assessmentReviewSnapshot(detail?.current_assessment);
+ if(status.status!=="COMPLETED_CURRENT"||!receipt||!detail||detail.source_group!=="GENUINE_COMPANY"||!hasExpectedObligationIdentity(detail,status.obligation_id)||String(detail.aggregate.aggregate_version)!==status.aggregate_version||!current||current.obligation_id!==status.obligation_id||current.assessment_id!==receipt.assessment_id||current.assessment_hash!==receipt.assessment_hash||current.aggregate_version!==status.aggregate_version||!globalThis.crypto?.subtle)return false;
+ const digest=await globalThis.crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonicalize(detail.record)));
+ return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,"0")).join("")===status.source_record_sha256;
+}
 type AssessmentFeedback = {
   obligationId: string;
   expectedVersion: string;
@@ -1536,6 +1555,7 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
   }];
   const unresolved = Boolean(requestKey || feedback && feedback.kind !== "durable");
   if (unresolved) {
+    const exactStatus=feedback?.statusCode?.startsWith("ASM_STATUS_")===true;
     const storageUnavailable = feedback?.statusCode === "REQUEST_IDENTITY_UNAVAILABLE";
     const refusedVersion = !requestKey && feedback?.kind === "stale" && feedback.statusCode === "ASM-001";
     const unavailable = ["ASSESSMENT_UNAVAILABLE", "AUTH_UNAVAILABLE", "GENUINE_WORKFLOW_UNAVAILABLE", "REQUEST_IDENTITY_UNAVAILABLE"].includes(feedback?.statusCode ?? "");
@@ -1543,10 +1563,10 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
     blockers.push({
       kind: refusedVersion ? "assessment-stale" : unavailable ? "system-unavailable" : pending ? "assessment-pending" : "assessment-unverified",
       title: refusedVersion ? "Assessment needs refresh" : unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
-      reason: storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : refusedVersion ? "The payable changed before this assessment could become current." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
+      reason: exactStatus ? feedback!.message : storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : refusedVersion ? "The payable changed before this assessment could become current." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
       impact: storageUnavailable ? "Assessment has not started. Payment remains unavailable." : "Assessment completion is unconfirmed. Payment remains unavailable.",
-      nextAction: storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : refusedVersion ? "Refresh the payable status before taking another assessment action." : "Refresh the payable list to check for newer records. The exact assessment outcome remains unverified. Do not reassess or retry while unresolved.",
-      responsible: refusedVersion || storageUnavailable ? "User · status review" : "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
+      nextAction: exactStatus ? feedback!.nextStep : storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : refusedVersion ? "Refresh the payable status before taking another assessment action." : detail.source_group==="GENUINE_COMPANY" ? "Check the original assessment request. Do not submit another assessment while it is unresolved." : "Refresh the payable list to check for newer records. The exact assessment outcome remains unverified. Do not reassess or retry while unresolved.",
+      responsible: exactStatus ? feedback!.owner : refusedVersion || storageUnavailable ? "User · status review" : "Unassigned · assessment reconciliation owner not recorded", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
       evidence: [requestKey ? `Request reference: ${requestKey}` : refusedVersion ? "Request refused before recording an assessment." : "Request reference unavailable.", "Confirmed assessment receipt unavailable.", ...(feedback?.statusCode ? [`Status code: ${feedback.statusCode}`] : [])],
     });
   } else {
@@ -2031,6 +2051,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } | null>(null);
   const activePayableListCheck = useRef<number | null>(null);
   const payableListCheckSequence = useRef(0);
+  const [exactAssessmentCheck,setExactAssessmentCheck]=useState<{
+    obligationId:string;key:string;generation:number;epoch:number;token:number;detailRequest:number;
+    status:"checking"|"pending"|"unknown"|"stale"|"failed"|"identity-unavailable"|"confirmed";
+    message:string;receipt?:GenuineAssessmentStatus["receipt"];
+  }|null>(null);
+  const exactAssessmentLifetime=useRef({mounted:false,epoch:0});
+  const activeExactAssessmentCheck=useRef<number|null>(null),exactAssessmentSequence=useRef(0);
   const [stageCompletionReceipt, setStageCompletionReceipt] = useState<StageCompletionReceipt | null>(null);
   const [displayedAssessment, setDisplayedAssessment] = useState<AssessmentReviewSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2041,6 +2068,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
   const selectionGeneration = useRef(0);
+  useEffect(()=>{
+    exactAssessmentLifetime.current.mounted=true;
+    const invalidate=()=>{exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;setExactAssessmentCheck(null);};
+    const restore=(event:PageTransitionEvent)=>{if(event.persisted)invalidate();};
+    window.addEventListener("pagehide",invalidate);window.addEventListener("pageshow",restore);
+    return()=>{exactAssessmentLifetime.current.mounted=false;exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;window.removeEventListener("pagehide",invalidate);window.removeEventListener("pageshow",restore);};
+  },[]);
   const stageHeadingRef = useRef<HTMLHeadingElement>(null);
   const focusConfirmedStageRef = useRef(false);
   const postCommand = (url: string, body?: unknown, headers: Record<string, string> = {}) =>
@@ -2175,6 +2209,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setAssessmentFeedback(null);
     setPayableListCheck(null);
     activePayableListCheck.current = null;
+    setExactAssessmentCheck(null);
+    activeExactAssessmentCheck.current=null;
     if (selectedId) void refreshDetail(selectedId);
   }, [selectedId]);
 
@@ -2426,6 +2462,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setLastResult(null);
     setAssessmentFeedback(null);
     setDisplayedAssessment(null);
+    setExactAssessmentCheck(null);
+    activeExactAssessmentCheck.current=null;
     setStageCompletionReceipt(null);
     setMobileQueueOpen(false);
   };
@@ -2794,6 +2832,82 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   );
   const assessmentFeedbackIsCurrent = feedbackMatchesKnownSelection && durableFeedbackMatchesCurrentAssessment;
   const selectedRequestKey = retainedAssessmentRequestKey(selectedId);
+  const exactCheckRenderGeneration=selectionGeneration.current,exactCheckRenderDetail=detailGeneration.current,exactCheckRenderEpoch=exactAssessmentLifetime.current.epoch;
+  const checkAssessmentRequest=async()=>{
+    if(!selectedId||selectedRef.current!==selectedId||selectionGeneration.current!==exactCheckRenderGeneration||detailGeneration.current!==exactCheckRenderDetail||exactAssessmentLifetime.current.epoch!==exactCheckRenderEpoch||!exactAssessmentLifetime.current.mounted||activeExactAssessmentCheck.current!==null||busy||!detail||detailIsStale||detail.source_group!=="GENUINE_COMPANY")return;
+    const key=retainedAssessmentRequestKey(selectedId),version=String(detail.aggregate.aggregate_version);
+    if(key!==selectedRequestKey&&key!=="Request identity unavailable")return;
+    const token=++exactAssessmentSequence.current,generation=exactCheckRenderGeneration,epoch=exactCheckRenderEpoch;
+    let expectedDetail=exactCheckRenderDetail;
+    const bound={obligationId:selectedId,key:key??"",generation,epoch,token,detailRequest:expectedDetail};
+    const feedback=(kind:AssessmentFeedback["kind"],message:string,code:string)=>setAssessmentFeedback({obligationId:selectedId,expectedVersion:version,selectionGeneration:generation,kind,title:"Assessment request status",message,durability:"Read-only observation; no assessment was resubmitted.",nextStep:"Ask the workspace owner to review the original request. Do not submit another assessment.",owner:"Workspace owner · request review",statusCode:`ASM_STATUS_${code}`});
+    if(!key||!assessmentRequestUuid.test(key)){
+      setExactAssessmentCheck({...bound,status:key==="Request identity unavailable"?"identity-unavailable":"unknown",message:"The original request reference could not be verified. Restore browser storage or ask the workspace owner to investigate."});
+      feedback("unconfirmed","The original request reference could not be verified.","IDENTITY_UNAVAILABLE");return;
+    }
+    activeExactAssessmentCheck.current=token;
+    const current=()=>exactAssessmentLifetime.current.mounted&&exactAssessmentLifetime.current.epoch===epoch&&selectionGeneration.current===generation&&selectedRef.current===selectedId&&detailGeneration.current===expectedDetail&&activeExactAssessmentCheck.current===token;
+    const identityCurrent=()=>{
+      if(!current())return false;
+      const live=retainedAssessmentRequestKey(selectedId);
+      if(live===key)return true;
+      if(live==="Request identity unavailable")setExactAssessmentCheck({...bound,key:live,detailRequest:expectedDetail,status:"identity-unavailable",message:"Request storage is unavailable. Restore browser storage and ask the workspace owner to review the original request."});
+      else setExactAssessmentCheck(null);
+      feedback("unconfirmed","The original request reference changed or is unavailable; completion was not confirmed.","IDENTITY_UNAVAILABLE");return false;
+    };
+    const unresolved=(status:GenuineAssessmentStatus["status"]|"FAILED")=>{
+      const message=status==="RESERVED"?"Assessment is pending; completion is not confirmed."
+        :status==="PROVIDER_RESULT_DURABLE"?"An assessment result is saved but has not been confirmed."
+        :status==="UNKNOWN"?"The original assessment outcome is unknown."
+        :status==="STALE"?"This request does not confirm a current result for this payable."
+        :status==="NOT_FOUND"?"The original request could not be verified. This does not mean it was never sent."
+        :"Assessment status could not be checked. No assessment was resubmitted.";
+      setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":status==="FAILED"?"failed":"unknown",message});
+      feedback(status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":"unconfirmed",message,status);
+    };
+    setDisplayedAssessment(null);
+    setExactAssessmentCheck({...bound,status:"checking",message:"Checking the original assessment request…"});
+    feedback("unconfirmed","Checking the original assessment request; no new assessment will be sent.","CHECKING");
+    try{
+      const firstResponse=await postCommand(`/api/obligations/${selectedId}/advisory/status`,{idempotency_key:key});
+      if(!identityCurrent())return;
+      const first=firstResponse.ok&&firstResponse.status===200?exactAssessmentStatus(firstResponse.data,selectedId,key,version):null;
+      if(!first){unresolved("FAILED");return;}
+      if(first.status!=="COMPLETED_CURRENT"){unresolved(first.status);return;}
+      const pendingDetail=refreshDetail(selectedId,true,generation);
+      expectedDetail=detailGeneration.current;
+      setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the recorded assessment…"});
+      const refreshed=await pendingDetail;
+      if(!identityCurrent())return;
+      const matches=await assessmentStatusMatchesDetail(first,refreshed);
+      if(!identityCurrent())return;
+      if(!matches){unresolved("STALE");return;}
+      // A second bounded observation closes the status-to-detail gap; it is
+      // confirmation only, never polling, timeout recovery or an AI retry.
+      const finalResponse=await postCommand(`/api/obligations/${selectedId}/advisory/status`,{idempotency_key:key});
+      if(!identityCurrent())return;
+      const final=finalResponse.ok&&finalResponse.status===200?exactAssessmentStatus(finalResponse.data,selectedId,key,version):null;
+      if(!final){unresolved("FAILED");return;}
+      if(final.status!=="COMPLETED_CURRENT"){unresolved(final.status);return;}
+      if(final.source_record_sha256!==first.source_record_sha256||final.receipt?.assessment_id!==first.receipt?.assessment_id||final.receipt?.assessment_hash!==first.receipt?.assessment_hash){unresolved("STALE");return;}
+      if(!identityCurrent())return;
+      const storageKey=`tameion.assessment-request.${selectedId}`;
+      if(localStorage.getItem(storageKey)!==key)return;
+      localStorage.removeItem(storageKey);
+      if(localStorage.getItem(storageKey)!==null)throw new Error("Request storage update unverified");
+      if(assessmentRequestKey.current?.obligationId===selectedId&&assessmentRequestKey.current.key===key)assessmentRequestKey.current=null;
+      setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"confirmed",message:"Assessment confirmed. Review the recorded result.",receipt:final.receipt});
+      setAssessmentFeedback({obligationId:selectedId,expectedVersion:version,selectionGeneration:generation,kind:"durable",title:"Assessment confirmed",message:"The original request matches the current recorded assessment.",durability:"Confirmed by exact-request status and independent payable details.",nextStep:"Review the advisory result. Payment approval remains separate.",owner:"User · assessment review",assessmentId:final.receipt!.assessment_id,assessmentHash:final.receipt!.assessment_hash});
+    }catch{
+      if(current())unresolved("FAILED");
+    }finally{
+      if(activeExactAssessmentCheck.current===token)activeExactAssessmentCheck.current=null;
+    }
+  };
+  const currentExactAssessmentCheck=exactAssessmentCheck?.obligationId===selectedId&&exactAssessmentCheck.generation===selectionGeneration.current&&exactAssessmentCheck.epoch===exactAssessmentLifetime.current.epoch&&exactAssessmentCheck.detailRequest===detailGeneration.current&&(
+    exactAssessmentCheck.key===selectedRequestKey||exactAssessmentCheck.status==="confirmed"&&selectedRequestKey===null&&detailState==="loaded"&&currentAssessment?.assessment_id===exactAssessmentCheck.receipt?.assessment_id&&currentAssessment?.assessment_hash===exactAssessmentCheck.receipt?.assessment_hash
+  )?exactAssessmentCheck:null;
+  const checkingExactAssessment=currentExactAssessmentCheck?.status==="checking";
   // Bind the callback to this render's selection, including A → B → A.
   // A queue observation is never an exact-request receipt or retry authority.
   const listCheckGeneration = selectionGeneration.current;
@@ -2855,7 +2969,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       window.removeEventListener("resize", updateClearance);
       root.style.removeProperty("--payable-action-clearance");
     };
-  }, [dashboardVisible, currentPayableListCheck?.status]);
+  }, [dashboardVisible, currentPayableListCheck?.status, currentExactAssessmentCheck?.status]);
   const currentFeedback = assessmentFeedbackIsCurrent ? assessmentFeedback : null;
   const assessmentRequestUnresolved = Boolean(selectedRequestKey || currentFeedback && currentFeedback.kind !== "durable");
   const selectedBlockers = payableBlockers({detail, state: detailState, selectedId, feedback: currentFeedback,
@@ -2938,7 +3052,11 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (assessmentRequestUnresolved && !detail?.execution) {
-    workspaceAction = { label: "Refresh payable list", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
+    workspaceAction = detail?.source_group==="GENUINE_COMPANY"&&selectedRequestKey
+      ?{label:"Check assessment request",actor:"User · original request status",run:()=>{void checkAssessmentRequest();}}
+      :{ label: "Refresh payable list", actor: "User · read-only status review", run: () => { void refreshAssessmentQueueSummary(); } };
+  } else if (currentExactAssessmentCheck?.status==="confirmed"&&hasCurrentAssessment&&currentAssessment) {
+    workspaceAction={label:"Review assessment",actor:"User · advisory review",run:()=>{setDisplayedAssessment(currentAssessment);showStage("Assessment");setExactAssessmentCheck(null);}};
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
     workspaceAction = { label: "View Assessment", actor: "You · read-only navigation", run: () => showStage("Assessment") };
   } else if (viewedStage === "Obligation" && currentLifecycleStage !== "Obligation" && !(currentLifecycleStage === "Assessment" && !hasCurrentAssessment)) {
@@ -3996,12 +4114,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{selectedId || "No payable selected"}{selected ? ` · ${detailState === "loaded" && detail && sourceText(detail.record, "beneficiary_name") !== "Not captured" ? sourceText(detail.record, "beneficiary_name") : "Supplier not recorded"} · ${businessAmount(detailState === "loaded" && detail ? detail.record.amount : selected.amount)} ${detailState === "loaded" && detail ? detail.record.currency : selected.currency}` : ""}</p>
           </div>
-          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy || checkingPayableList} disabled={busy || checkingPayableList || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{checkingPayableList?'Refreshing payable list…':busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
+          {contextualAction && <PrimaryButton ariaLabel={contextualAction.label} busy={busy || checkingPayableList || checkingExactAssessment} disabled={busy || checkingPayableList || checkingExactAssessment || (contextualAction.exactConfirmation && ((!exactPacketSubmissionReady && !currentPacketNeedsRelease) || !executionConfirmation.isBound || !executionConfirmation.matchesExact))} danger={contextualAction.exactConfirmation} onClick={contextualAction.run}>{checkingExactAssessment?'Checking assessment request…':checkingPayableList?'Refreshing payable list…':busy&&activeActionLabel==='assess'?'Assessing obligation…':busy&&activeActionLabel==='release'?'Recording approval…':busy&&activeActionLabel==='execute'?'Submitting payment…':contextualAction.label}</PrimaryButton>}
         </div>
         {currentPayableListCheck && <p role="status" aria-label="Payable list check" className="payable-list-check mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">
           {currentPayableListCheck.status === "checking" ? "Checking payable list…" : currentPayableListCheck.status === "checked" ? "Payable list checked." : currentPayableListCheck.status === "identity-unavailable" ? "Request identity could not be read. Reload when storage is available." : "Payable list could not be checked."}
           {" "}Assessment outcome remains unverified.
         </p>}
+        {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
       </section>}
     </main>
   );

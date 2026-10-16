@@ -1,6 +1,7 @@
 import { syntheticSourceResponse } from "./source-fixtures";
 import AxeBuilder from "@axe-core/playwright";
 import { createHash } from "node:crypto";
+import { canonicalize } from "json-canonicalize";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { expect, test, type Page, type TestInfo } from "./network-fence";
@@ -2370,4 +2371,38 @@ for (const width of [320,195]) for (const sample of ["large","micro"]) test(`exa
   expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   expect(writes).toEqual([]);
   await page.screenshot({path:testInfo.outputPath(`exact-payable-amount-${sample}-${width}.png`),fullPage:true});
+});
+
+for(const width of [1365,390])for(const outcome of ['COMPLETED_CURRENT','UNKNOWN','BECAME_UNKNOWN'])test(`exact original assessment recovery ${outcome} at ${width}px is read-only and identity bound`,async({page},testInfo)=>{
+  const id='OBL-EXACT-BROWSER',key='00000000-0000-4000-8000-000000000097';
+  const value={...detail,financial_action_eligible:false,advisory_action_eligible:true,source_group:'GENUINE_COMPANY',record:{...detail.record,obligation_id:id},current_assessment:{...detail.current_assessment,obligation_id:id,assessment_id:`ASM-${key}`}};
+  const complete={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
+  const unknown={status:'UNKNOWN',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:complete.source_record_sha256,financial_action_eligible:false};
+  const posts:string[]=[];let detailReads=0;
+  await page.setViewportSize({width,height:844});
+  await page.addInitScript(({id,key})=>localStorage.setItem(`tameion.assessment-request.${id}`,key),{id,key});
+  await page.route('**/api/obligations**',async route=>{
+    const req=route.request(),path=new URL(req.url()).pathname;
+    if(req.method()==='POST'){
+      posts.push(path);expect(path).toBe(`/api/obligations/${id}/advisory/status`);expect(req.postDataJSON()).toEqual({idempotency_key:key});expect(req.headers()['x-tameion-csrf']).toBe('MOCK-ONLY-CSRF');
+      return route.fulfill({json:outcome==='UNKNOWN'||outcome==='BECAME_UNKNOWN'&&posts.length===2?unknown:complete});
+    }
+    if(path==='/api/obligations')return route.fulfill({json:{obligations:[{...obligation,obligation_id:id,source_group:'GENUINE_COMPANY',financial_action_eligible:false}]}});
+    if(path===`/api/obligations/${id}`){detailReads++;return route.fulfill({json:value});}
+    return route.fulfill({status:503,json:{code:'FIXTURE_FORBIDDEN'}});
+  });
+  await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+  await page.getByRole('button',{name:'Check assessment request',exact:true}).click();
+  const banner=page.getByRole('status',{name:'Assessment request check'});
+  if(outcome==='COMPLETED_CURRENT'){
+    await expect(banner).toContainText('Assessment confirmed');await expect(page.getByRole('button',{name:'Review assessment',exact:true})).toBeVisible();
+    expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBeNull();expect(posts).toHaveLength(2);expect(detailReads).toBe(2);
+  }else{
+    await expect(banner).toContainText('outcome is unknown');await expect(banner).toContainText('workspace owner');expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBe(key);
+    expect(posts).toHaveLength(outcome==='UNKNOWN'?1:2);expect(detailReads).toBe(outcome==='UNKNOWN'?1:2);await expect(page.getByRole('button',{name:'Review assessment',exact:true})).toHaveCount(0);
+  }
+  await expect(page.getByRole('button',{name:/Run AI Assessment|Create linked testnet instruction|Authorize payment|Submit payment/})).toHaveCount(0);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  const strip=page.getByRole('region',{name:'Current payable action'}),bounds=await strip.boundingBox();expect(bounds!.y).toBeGreaterThanOrEqual(0);expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(845);
+  await page.screenshot({path:testInfo.outputPath(`exact-status-${outcome}-${width}.png`),fullPage:true});
 });

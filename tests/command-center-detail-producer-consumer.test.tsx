@@ -14,7 +14,7 @@ import { GET as getObligationDetail } from "../app/api/obligations/[id]/route";
 import { GET as getObligationList } from "../app/api/obligations/route";
 import { POST as approveObligation } from "../app/api/obligations/[id]/approve/route";
 import { POST as postAssessment } from "../src/server/legacy-routes/obligations/[id]/assess/route";
-import { CommandCenter, SourceObligationLineage, selectedObligationInitialStage, useExecutionConfirmation, workflowState } from "../app/command-center";
+import { assessmentStatusMatchesDetail, CommandCenter, SourceObligationLineage, selectedObligationInitialStage, useExecutionConfirmation, workflowState } from "../app/command-center";
 import { DEMO_ORGANIZATION_ID, DemoState, parseDemoStateSnapshot } from "../src/server/demo-state";
 import { approveAndSealPae } from "../src/pipeline/authorize-and-seal";
 import { ArcCircleProviderAdapter, type J2aCircleClient } from "../src/execution/provider-adapter";
@@ -25,6 +25,12 @@ import { sealDurableAssuranceRecord } from "../src/pae/durable-records";
 import { sealPae } from "../src/pae/sign-verify";
 import { canonicalBytes, sha256Hex } from "../src/pae/canonicalize";
 import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
+
+import { webcrypto, createHash } from "node:crypto";
+import { canonicalize } from "json-canonicalize";
+import { syntheticSourceRecords } from "./test-support/synthetic-source-records";
+import { parseOperatorSource } from "../src/server/operator-source-records";
+import { createGenuineAssessmentStatusHandler } from "../src/server/genuine-assessment-status";
 
 const originalPrimePacketHash = process.env.J2A_EXECUTION_AUTHORIZED_PACKET_SHA256;
 const signingKeyId = "SETTLEMENT-PROXY-ROUTE-TEST-KEY";
@@ -2183,4 +2189,42 @@ vi.mock("../src/server/operator-obligation-routes", async original => {
  const actual=await original<typeof import("../src/server/operator-obligation-routes")>();
  const {getDemoState}=await import("../src/server/demo-state");
  return {...actual,obligationReaders:actual.createObligationReaders(async()=>({session:{operator_key:"SYNTHETIC-OWNER",credential_version:1},revalidate:async()=>{}} as import("../src/server/operator-auth").AuthContext),getDemoState)};
+});
+
+describe('exact status and independent production detail confirmation',()=>{
+ const key='00000000-0000-4000-8000-000000000093',other='00000000-0000-4000-8000-000000000094';
+ const hash=(v:unknown)=>createHash('sha256').update(canonicalize(v)).digest('hex');
+ function pair(){
+  const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
+  const state=new DemoState(undefined,undefined,undefined,undefined,{},records),id=records[0].obligation_id;
+  const initial=state.exportSnapshot(),{assessments,...base}=initial.authority;
+  const packet={schema_version:3,record_count:records.length,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:DEMO_ORGANIZATION_ID,state_binding:{namespace:'FICTIONAL-PRODUCER-STATUS',revision:7,authority_sha256:hash(initial.authority),workflow_base_sha256:hash(base)},records};
+  const bytes=Buffer.from(JSON.stringify(packet)),source=()=>parseOperatorSource(bytes,createHash('sha256').update(bytes).digest('hex'));
+  const sealed=sealTestAssessment(state.store,DEMO_ORGANIZATION_ID,id,1,{assessment_id:`ASM-${key}`,source_record_sha256:hash(records[0]),decision:'PAY'}),snapshot=state.exportSnapshot();
+  snapshot.assessment_operations=[{idempotency_key:key,obligation_id:id,aggregate_version:1,status:'COMPLETED',assessment_hash:sealed.assessment_hash}];
+  const handler=createGenuineAssessmentStatusHandler({guard:async()=>({revalidate:async()=>{}} as any),source,repository:{loadExisting:async()=>({revision:8,snapshot:snapshot as any})}});
+  const read=async()=>await(await handler(new Request('https://fixture.invalid',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idempotency_key:key})}),id)).json();
+  const detail=async(sourceHash=hash(records[0]))=>await projectObligationDetail(state,id,false,undefined,'GENUINE_COMPANY',sourceHash).json();
+  return {state,id,records,snapshot,read,detail};
+ }
+ afterEach(()=>{vi.unstubAllGlobals();});
+ it('matches actual producer receipt and canonical genuine source bytes with no authority elevation',async()=>{
+  vi.stubGlobal('crypto',webcrypto);const h=pair(),status=await h.read(),detail=await h.detail();
+  expect(status.status).toBe('COMPLETED_CURRENT');expect(await assessmentStatusMatchesDetail(status,detail)).toBe(true);expect(detail.financial_action_eligible).toBe(false);expect(detail.source_payable_state).toBe('OUTSTANDING');expect(detail.pae_sealed).toBe(false);expect(detail.execution).toBeNull();
+ });
+ it('rejects a real newer producer assessment after the first status receipt',async()=>{
+  vi.stubGlobal('crypto',webcrypto);const h=pair(),status=await h.read();sealTestAssessment(h.state.store,DEMO_ORGANIZATION_ID,h.id,1,{assessment_id:`ASM-${other}`,source_record_sha256:hash(h.records[0]),decision:'HOLD'});
+  expect(await assessmentStatusMatchesDetail(status,await h.detail())).toBe(false);
+ });
+ it('does not release older current PAY detail when newer operation becomes UNKNOWN',async()=>{
+  vi.stubGlobal('crypto',webcrypto);const h=pair(),initial=await h.read(),detail=await h.detail();expect(await assessmentStatusMatchesDetail(initial,detail)).toBe(true);
+  h.snapshot.assessment_operations.push({idempotency_key:other,obligation_id:h.id,aggregate_version:1,status:'UNKNOWN'});
+  const final=await h.read();expect(final.status).toBe('STALE');expect(final.receipt).toBeUndefined();expect(await assessmentStatusMatchesDetail(final,detail)).toBe(false);
+ });
+ it('does not confirm a historical receipt hidden by the producer after source change',async()=>{
+  vi.stubGlobal('crypto',webcrypto);const h=pair(),status=await h.read(),detail=await h.detail('b'.repeat(64));expect(detail.current_assessment).toBeNull();expect(await assessmentStatusMatchesDetail(status,detail)).toBe(false);
+ });
+ it('fails closed when WebCrypto is unavailable',async()=>{
+  const h=pair();vi.stubGlobal('crypto',{});expect(await assessmentStatusMatchesDetail(await h.read(),await h.detail())).toBe(false);
+ });
 });

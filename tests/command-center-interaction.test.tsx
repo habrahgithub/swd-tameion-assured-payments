@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 
 import { CommandCenter, isRetryableProviderValidationFailure } from "../app/command-center";
+import { webcrypto, createHash } from "node:crypto";
+import { canonicalize } from "json-canonicalize";
 import { assessmentReviewSnapshot } from "../src/client/assessment-review-snapshot";
 
 function obligationRow(id: string): HTMLButtonElement {
@@ -2974,4 +2976,138 @@ describe("current controls preserve history and unresolved payment states",()=>{
     expect(screen.getByText("Payment control record",{exact:true})).toBeTruthy();
     expect(screen.getByText("Payment processing",{exact:true})).toBeTruthy();
   });
+});
+
+
+describe('genuine exact assessment status recovery',()=>{
+ const id='OBL-EXACT-STATUS-A', key='00000000-0000-4000-8000-000000000091';
+ afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
+ it('offers the original request status action after reload without resubmitting assessment',async()=>{
+  localStorage.setItem(`tameion.assessment-request.${id}`,key);
+  const selected=assessedDetail(id,'HOLD');Object.assign(selected,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const mock=vi.fn<typeof fetch>(input=>Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'}]}:selected)));
+  vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection();
+  expect(await screen.findByRole('button',{name:'Check assessment request'})).toBeTruthy();
+  expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
+  expect(localStorage.getItem(`tameion.assessment-request.${id}`)).toBe(key);
+ });
+});
+
+describe('exact assessment recovery gates and races',()=>{
+ const id='OBL-EXACT-STATUS-A',secondId='OBL-EXACT-STATUS-B',key='00000000-0000-4000-8000-000000000091',nextKey='00000000-0000-4000-8000-000000000092';
+ const storageKey=`tameion.assessment-request.${id}`;
+ function genuine(selectedId=id,decision:'PAY'|'HOLD'|'ESCALATE'='HOLD'){
+  const value=assessedDetail(selectedId,decision);Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});value.current_assessment.assessment_id=`ASM-${key}`;return value;
+ }
+ function status(value=genuine(),state='COMPLETED_CURRENT'){
+  return {status:state,obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,...(state==='COMPLETED_CURRENT'?{receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}}:{})};
+ }
+ function mount(options:{state?:string;selected?:Record<string,any>;statusResponse?:(n:number)=>Promise<Response>;detailResponse?:(n:number)=>Promise<Response>}={}){
+  const value=options.selected??genuine();let statuses=0,details=0;
+  localStorage.setItem(storageKey,key);vi.stubGlobal('crypto',webcrypto);
+  const mock=vi.fn<typeof fetch>((input,init)=>{
+   const url=String(input);
+   if(init?.method==='POST'){
+    if(url!==`/api/obligations/${id}/advisory/status`)throw new Error('Unexpected mutation '+url);
+    return options.statusResponse?.(++statuses)??Promise.resolve(response(status(value,options.state)));
+   }
+   if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(id,true),source_group:'GENUINE_COMPANY'},{...obligation(secondId,true),source_group:'GENUINE_COMPANY'}]}));
+   if(url===`/api/obligations/${id}`)return options.detailResponse?.(++details)??Promise.resolve(response(value));
+   if(url===`/api/obligations/${secondId}`)return Promise.resolve(response(genuine(secondId)));
+   throw new Error('Unexpected request '+url);
+  });vi.stubGlobal('fetch',mock);return {mock,view:renderWithExplicitFirstSelection('FICTIONAL-CSRF'),value};
+ }
+ const posts=(mock:ReturnType<typeof vi.fn<typeof fetch>>)=>mock.mock.calls.filter(([,init])=>init?.method==='POST');
+ const result=()=>screen.findByRole('status',{name:'Assessment request check'});
+ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ it.each(['PAY','HOLD','ESCALATE'] as const)('confirms the original %s receipt after independent detail and final status, enabling review only',async decision=>{
+  const {mock}=mount({selected:genuine(id,decision)});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  await screen.findByRole('button',{name:'Review assessment'});expect((await result()).textContent).toContain('Assessment confirmed');expect(localStorage.getItem(storageKey)).toBeNull();
+  expect(posts(mock)).toHaveLength(2);for(const [url,init] of posts(mock)){expect(url).toBe(`/api/obligations/${id}/advisory/status`);expect(JSON.parse(init!.body as string)).toEqual({idempotency_key:key});expect(init!.headers).toMatchObject({'X-Tameion-CSRF':'FICTIONAL-CSRF'});}
+  expect(mock.mock.calls.filter(([url,init])=>String(url)===`/api/obligations/${id}`&&init?.method!=='POST')).toHaveLength(2);
+  expect(screen.queryByRole('button',{name:/Authorize payment|Submit payment|Create linked testnet instruction/})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Review assessment'}));expect(posts(mock)).toHaveLength(2);
+  if(decision==='PAY')expect(await screen.findByRole('button',{name:'Create linked testnet instruction'})).toBeTruthy();
+ });
+ it.each(['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN','STALE','NOT_FOUND'])('keeps %s unresolved with owner guidance, one status read and original key',async state=>{
+  const {mock}=mount({state});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect((screen.getByRole('status',{name:'Assessment request check'})).textContent).toMatch(/workspace owner/i));
+  expect(localStorage.getItem(storageKey)).toBe(key);expect(posts(mock)).toHaveLength(1);expect(screen.queryByRole('button',{name:/Review assessment$|Reassess after correction|Run AI Assessment|Create linked/})).toBeNull();
+  expect(mock.mock.calls.filter(([url])=>url===`/api/obligations/${id}`)).toHaveLength(1);
+ });
+ it.each([401,403,409,503])('does not clear or retry after HTTP %s',async code=>{
+  const {mock}=mount({statusResponse:async()=>response({code:'UNAVAILABLE'},code)});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(storageKey)).toBe(key);
+ });
+ it.each(['key','payable','version','hash','source','eligibility'])('refuses mismatched initial %s without detail promotion',async field=>{
+  const first=status();if(field==='key')first.idempotency_key=nextKey;if(field==='payable')first.obligation_id=secondId;if(field==='version')first.aggregate_version='2';if(field==='hash')first.receipt!.assessment_hash='bad';if(field==='source')first.source_record_sha256='bad';if(field==='eligibility')(first as any).financial_action_eligible=true;
+  const {mock}=mount({statusResponse:async()=>response(first)});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(storageKey)).toBe(key);
+ });
+ it.each(['receipt','version','source','missing','foreign','error'])('withholds final confirmation when independent detail has %s mismatch',async field=>{
+  const value=genuine();const changed=structuredClone(value);if(field==='receipt')changed.current_assessment.assessment_hash='b'.repeat(64);if(field==='version')changed.aggregate.aggregate_version=2;if(field==='source')changed.record.amount='126.00';if(field==='missing')changed.current_assessment=null;if(field==='foreign')changed.record.obligation_id=secondId;
+  const {mock}=mount({selected:value,detailResponse:async n=>n===1?response(value):response(changed,field==='error'?503:200)});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('does not confirm'));expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(storageKey)).toBe(key);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
+ });
+ it.each(['UNKNOWN','STALE','NOT_FOUND','FAILED','changed-source','changed-receipt'])('does not release after %s appears between status and detail confirmation',async field=>{
+  const value=genuine();let final=status(value);if(field==='changed-source')final.source_record_sha256='c'.repeat(64);else if(field==='changed-receipt')final.receipt!.assessment_hash='b'.repeat(64);else final=status(value,field);
+  const {mock}=mount({statusResponse:async n=>n===1?response(status(value)):response(final,field==='FAILED'?503:200)});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toMatch(/workspace owner/i));expect(posts(mock)).toHaveLength(2);expect(localStorage.getItem(storageKey)).toBe(key);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
+ });
+ it('guards duplicate callbacks synchronously while the original status is pending',async()=>{
+  const pending=deferred<Response>(),{mock}=mount({statusResponse:()=>pending.promise});const button=await screen.findByRole('button',{name:'Check assessment request'}) as HTMLButtonElement;
+  void invokeClickHandler(button);void invokeClickHandler(button);expect(posts(mock)).toHaveLength(1);expect(screen.getByRole('button',{name:'Check assessment request'}).hasAttribute('disabled')).toBe(true);
+  await act(async()=>pending.resolve(response(status(genuine(),'UNKNOWN'))));expect(localStorage.getItem(storageKey)).toBe(key);
+ });
+ it.each(['A-B-A','unmount','pagehide','BFCache','replaced-key','removed-key','storage-fails'])('ignores a late positive response after %s',async transition=>{
+  const pending=deferred<Response>(),{mock,view}=mount({statusResponse:()=>pending.promise});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  if(transition==='A-B-A'){fireEvent.click(obligationRow(secondId));await waitFor(()=>expect(screen.getAllByText('Source evidence is incomplete.').length).toBeGreaterThan(0));fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Check assessment request'});}
+  if(transition==='unmount'){view.unmount();renderWithExplicitFirstSelection();await screen.findByRole('button',{name:'Check assessment request'});}
+  if(transition==='pagehide')act(()=>window.dispatchEvent(new Event('pagehide')));
+  if(transition==='BFCache'){const event=new Event('pageshow');Object.defineProperty(event,'persisted',{value:true});act(()=>window.dispatchEvent(event));}
+  if(transition==='replaced-key')localStorage.setItem(storageKey,nextKey);
+  if(transition==='removed-key')localStorage.removeItem(storageKey);
+  if(transition==='storage-fails')vi.spyOn(Storage.prototype,'getItem').mockImplementation(()=>{throw new Error('Denied');});
+  await act(async()=>pending.resolve(response(status())));expect(posts(mock)).toHaveLength(1);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();vi.restoreAllMocks();expect(localStorage.getItem(storageKey)).toBe(transition==='removed-key'?null:transition==='replaced-key'?nextKey:key);
+ });
+ it('refuses an old render callback after A-B-A before issuing a status request',async()=>{
+  const {mock}=mount(),button=await screen.findByRole('button',{name:'Check assessment request'}) as HTMLButtonElement;
+  const propsKey=Object.keys(button).find(k=>k.startsWith('__reactProps$'))!;const oldClick=(button as any)[propsKey].onClick as ()=>void;
+  fireEvent.click(obligationRow(secondId));await waitFor(()=>expect(screen.getAllByText('Source evidence is incomplete.').length).toBeGreaterThan(0));fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Check assessment request'});act(()=>oldClick());expect(posts(mock)).toHaveLength(0);expect(localStorage.getItem(storageKey)).toBe(key);
+ });
+ it.each(['detail-await','digest-await','final-await'])('keeps retained identity when selection changes during %s',async phase=>{
+  const value=genuine(),pending=deferred<Response>(),digest=deferred<ArrayBuffer>();let digestStarted=false;
+  const {mock}=mount({selected:value,detailResponse:async n=>n===2&&phase==='detail-await'?pending.promise:response(value),statusResponse:async n=>n===2&&phase==='final-await'?pending.promise:response(status(value))});
+  if(phase==='digest-await')vi.stubGlobal('crypto',{subtle:{digest:()=>{digestStarted=true;return digest.promise;}}});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>{if(phase==='detail-await')expect(mock.mock.calls.filter(([url])=>url===`/api/obligations/${id}`)).toHaveLength(2);if(phase==='digest-await')expect(digestStarted).toBe(true);if(phase==='final-await')expect(posts(mock)).toHaveLength(2);});
+  fireEvent.click(obligationRow(secondId));await waitFor(()=>expect(screen.getAllByText('Source evidence is incomplete.').length).toBeGreaterThan(0));fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Check assessment request'});
+  await act(async()=>{if(phase==='digest-await')digest.resolve(new Uint8Array(Buffer.from(status(value).source_record_sha256,'hex')).buffer);else pending.resolve(response(phase==='detail-await'?value:status(value)));});
+  expect(localStorage.getItem(storageKey)).toBe(key);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();expect(posts(mock)).toHaveLength(phase==='final-await'?2:1);
+ });
+ it.each(['malformed-key','storage-denied'])('shows owner escalation without a request for %s',async variant=>{
+  const {mock}=mount();if(variant==='malformed-key')localStorage.setItem(storageKey,'invalid');else vi.spyOn(Storage.prototype,'getItem').mockImplementation(()=>{throw new Error('Denied');});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toMatch(/workspace owner|Workspace owner/));expect(posts(mock)).toHaveLength(0);
+ });
+ it('reports storage denial occurring after the actionable render but before its click',async()=>{
+  const {mock}=mount();const button=await screen.findByRole('button',{name:'Check assessment request'}) as HTMLButtonElement;
+  vi.spyOn(Storage.prototype,'getItem').mockImplementation(()=>{throw new Error('Denied after render');});
+  void invokeClickHandler(button);
+  expect((await result()).textContent).toMatch(/original request reference could not be verified/);
+  expect(posts(mock)).toHaveLength(0);vi.restoreAllMocks();expect(localStorage.getItem(storageKey)).toBe(key);
+ });
+ it('holds a matching result when clearing retained storage is denied',async()=>{
+  const {mock}=mount();vi.spyOn(Storage.prototype,'removeItem').mockImplementation(()=>{throw new Error('Denied');});fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));expect(localStorage.getItem(storageKey)).toBe(key);expect(posts(mock)).toHaveLength(2);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
+ });
+});
+
+describe('exact assessment HTTP completion contract',()=>{
+ afterEach(()=>{cleanup();vi.unstubAllGlobals();localStorage.clear();});
+ it.each([[201,1],[202,1],[201,2],[202,2]])('does not release a completed-looking HTTP %s at observation %s',async(code,phase)=>{
+  const id='OBL-EXACT-HTTP',key='00000000-0000-4000-8000-000000000096',storageKey=`tameion.assessment-request.${id}`;
+  const value=assessedDetail(id,'PAY');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});value.current_assessment.assessment_id=`ASM-${key}`;
+  const status={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
+  let calls=0;localStorage.setItem(storageKey,key);vi.stubGlobal('crypto',webcrypto);
+  const mock=vi.fn<typeof fetch>((url,init)=>Promise.resolve(response(init?.method==='POST'?status:String(url)==='/api/obligations'?{obligations:[obligation(id,true)]}:value,init?.method==='POST'&&++calls===phase?code:200)));
+  vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection();fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));
+  expect(localStorage.getItem(storageKey)).toBe(key);expect(calls).toBe(phase);expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
+ });
 });
