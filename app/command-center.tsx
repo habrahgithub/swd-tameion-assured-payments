@@ -72,6 +72,22 @@ interface ObligationDetail {
   linked_testnet_instructions?: LinkedInstruction[];
   source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   financial_action_eligible: boolean;
+  selected_financial_scope?: {
+    schema_version: "SELECTED-FINANCIAL-SCOPE-1";
+    status: "PASS" | "BLOCKED" | "UNAVAILABLE";
+    scope: "CONTROLLED_FINANCIAL_NAMESPACE";
+    namespace: string;
+    selected_obligation_id: string;
+    selected_aggregate_version: number;
+    selected_source_record_sha256: string;
+    source_valid_until: string;
+    observed_at: string;
+    membership: "COMPLETE" | "UNAVAILABLE";
+    assessment_coverage: { status: "PASS" | "BLOCKED" | "UNAVAILABLE" };
+    competing_candidate: { status: "NONE" | "PRESENT" | "UNAVAILABLE" };
+    uncertain_execution: { status: "NONE" | "PRESENT" | "UNAVAILABLE" };
+    reason: string;
+  } | null;
   truth: PaymentTruthLayers;
   aggregate: AggregateView;
   record: Record<string, unknown> & { obligation_id: string; amount: string; currency: string };
@@ -154,6 +170,54 @@ interface ObligationDetail {
   payment_release_current?: boolean;
   execution_kill_switched: boolean;
   assurance_evidence?: AssuranceEvidenceView;
+}
+
+async function canonicalRecordSha256(record: Record<string, unknown>): Promise<string | null> {
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalize(record)));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function selectedFinancialScopeReadiness(
+  detail: ObligationDetail | null,
+  selectedId: string,
+  selectedSourceGroup: ObligationSummary["source_group"],
+  lifetimeCurrent: boolean,
+  now = Date.now(),
+) {
+  const controlledSelection = selectedSourceGroup === "DEMO_ARC_TESTNET" || detail?.source_group === "DEMO_ARC_TESTNET";
+  if (!controlledSelection) {
+    return { applies: false, ready: false, reason: "" };
+  }
+  if (!lifetimeCurrent || selectedSourceGroup !== "DEMO_ARC_TESTNET" || !detail || detail.financial_action_eligible !== true || detail.source_group !== "DEMO_ARC_TESTNET") {
+    return { applies: true, ready: false, reason: "The selected controlled payment scope is unavailable. Refresh before continuing." };
+  }
+  const value = detail.selected_financial_scope;
+  const observedAt = Date.parse(value?.observed_at ?? "");
+  const validUntil = Date.parse(value?.source_valid_until ?? "");
+  const identityCurrent = Boolean(
+    value &&
+    value.schema_version === "SELECTED-FINANCIAL-SCOPE-1" &&
+    value.scope === "CONTROLLED_FINANCIAL_NAMESPACE" &&
+    value.selected_obligation_id === selectedId &&
+    value.selected_obligation_id === detail.record.obligation_id &&
+    value.selected_aggregate_version === detail.aggregate.aggregate_version &&
+    /^[a-f0-9]{64}$/.test(value.selected_source_record_sha256) &&
+    Number.isFinite(observedAt) && observedAt <= now + 30_000 && now - observedAt <= 5 * 60_000 &&
+    Number.isFinite(validUntil) && now < validUntil
+  );
+  const valid = Boolean(
+    identityCurrent && value &&
+    value.status === "PASS" &&
+    value.membership === "COMPLETE" &&
+    value.assessment_coverage?.status === "PASS" &&
+    value.competing_candidate?.status === "NONE" &&
+    value.uncertain_execution?.status === "NONE"
+  );
+  const reason = identityCurrent && value?.status !== "PASS" && typeof value?.reason === "string" && value.reason
+    ? value.reason
+    : "The selected controlled payment scope is unavailable. Refresh before continuing.";
+  return { applies: true, ready: valid, reason };
 }
 
 function isRouteAssuranceReady(detail: ObligationDetail | null): boolean {
@@ -2090,9 +2154,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const detailGeneration = useRef(0);
   const selectedRef = useRef("");
   const selectionGeneration = useRef(0);
+  const [detailLifetimeEpoch,setDetailLifetimeEpoch]=useState(-1);
   useEffect(()=>{
     exactAssessmentLifetime.current.mounted=true;
-    const invalidate=()=>{exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;cancelExactAssessmentWait.current?.();cancelExactAssessmentWait.current=null;setExactAssessmentCheck(null);setAssessmentConflict(null);setHoldReview(null);};
+    const invalidate=()=>{exactAssessmentLifetime.current.epoch++;setDetailLifetimeEpoch(-1);activeExactAssessmentCheck.current=null;cancelExactAssessmentWait.current?.();cancelExactAssessmentWait.current=null;setExactAssessmentCheck(null);setAssessmentConflict(null);setHoldReview(null);};
     const restore=(event:PageTransitionEvent)=>{if(event.persisted)invalidate();};
     window.addEventListener("pagehide",invalidate);window.addEventListener("pageshow",restore);
     return()=>{exactAssessmentLifetime.current.mounted=false;exactAssessmentLifetime.current.epoch++;activeExactAssessmentCheck.current=null;cancelExactAssessmentWait.current?.();cancelExactAssessmentWait.current=null;window.removeEventListener("pagehide",invalidate);window.removeEventListener("pageshow",restore);};
@@ -2181,7 +2246,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
 
   const refreshDetail = async (id: string, preserveLastKnown = false, expectedSelectionGeneration?: number, acceptResult:()=>boolean=()=>true): Promise<ObligationDetail | null> => {
     const requestId = ++detailGeneration.current;
-    const isCurrent = () => acceptResult() &&
+    const requestEpoch = exactAssessmentLifetime.current.epoch;
+    const isCurrent = () => acceptResult() && exactAssessmentLifetime.current.mounted && requestEpoch === exactAssessmentLifetime.current.epoch &&
       (expectedSelectionGeneration === undefined || expectedSelectionGeneration === selectionGeneration.current) &&
       isCurrentRequest({
         requestId,
@@ -2201,14 +2267,24 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if (!hasExpectedObligationIdentity(data, id)) {
         throw new Error("Selected obligation detail identity could not be confirmed.");
       }
-      setDetail(data as ObligationDetail);
+      let accepted = data as ObligationDetail;
+      if (accepted.source_group === "DEMO_ARC_TESTNET") {
+        const sourceHash = await canonicalRecordSha256(accepted.record);
+        if (!isCurrent()) return null;
+        if (!sourceHash || accepted.selected_financial_scope?.selected_source_record_sha256 !== sourceHash) {
+          accepted = { ...accepted, selected_financial_scope: null };
+        }
+      }
+      setDetail(accepted);
+      setDetailLifetimeEpoch(requestEpoch);
       setDetailIsStale(false);
       setDetailError(null);
-      return data as ObligationDetail;
+      return accepted;
     } catch (error) {
       if (!isCurrent()) return null;
       if (!preserveLastKnown) {
         setDetail(null);
+        setDetailLifetimeEpoch(-1);
         setDetailIsStale(false);
       } else if (detail?.record.obligation_id !== id) {
         setDetailIsStale(false);
@@ -2224,6 +2300,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     detailGeneration.current += 1;
     setDisplayedAssessment(null);
     setDetail(null);
+    setDetailLifetimeEpoch(-1);
     setDetailIsStale(false);
     setDetailError(null);
     setStageCompletionReceipt(null);
@@ -2481,6 +2558,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     selectionGeneration.current += 1;
     detailGeneration.current += 1;
     setDetail(null);
+    setDetailLifetimeEpoch(-1);
     setDetailIsStale(false);
     setDetailError(null);
     setSelectedId(obligationId);
@@ -2545,13 +2623,20 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   // Remediation says when reassessment may become possible, not that the
   // correction has occurred. The current read model has no such eligibility.
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
+  const selectedFinancialScope = selectedFinancialScopeReadiness(
+    detailState === "loaded" ? detail : null,
+    selectedId,
+    selected?.source_group,
+    detailLifetimeEpoch === exactAssessmentLifetime.current.epoch,
+  );
+  const authorizationCoverageReady = selectedFinancialScope.applies ? selectedFinancialScope.ready : allAssessed;
   const assessmentPaymentEligibility = hasCurrentPayAssessment
     ? {
         summary: `PAY is advisory.${routeAssuranceReady ? " Business eligibility, funds and payment authority remain separate checks." : " Route checks pending; authorization locked."}`,
       }
     : null;
   const proxyPreparationReady = Boolean(detailState === "loaded" && detail && selectedId && !detail.settlement_proxy && !detail.pae_sealed &&
-    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && allAssessed &&
+    hasCurrentPayAssessment && currentAssessment?.provider_truth?.provider_mode === "LIVE_AI" && authorizationCoverageReady &&
     currentAssessment?.race && currentAssessment.race.result.validated_findings.length === 0 && currentAssessment.race.remediation.length === 0 &&
     currentAssessment.race.evidence.authoritative_facts.obligation_id === selectedId);
   const authorizationAssessment = detailState === "loaded" && hasCurrentPayAssessment
@@ -2566,7 +2651,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     decision: currentAssessment?.decision,
     assessmentReviewAvailable: Boolean(currentAssessment?.race),
     reviewed: Boolean(authorizationAssessment),
-    allAssessed,
+    allAssessed: authorizationCoverageReady,
     routeAssuranceReady,
     retryableProviderFailure: false,
     remediableHold: false,
@@ -2675,7 +2760,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const canContinueToAssessment = currentLifecycleStage === "Obligation" && detailState === "loaded" &&
     Boolean(detail && hasExpectedObligationIdentity(detail, selectedId));
   const canContinueToAuthorization = currentLifecycleStage === "Assessment" && detailState === "loaded" && !detailIsStale &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && allAssessed &&
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && authorizationCoverageReady &&
     routeAssuranceReady && Boolean(detail?.settlement_proxy) && assessmentAction === "continue";
   const showContinueToAuthorization = viewedStage === "Assessment" && canContinueToAuthorization;
   const canContinueToPayment = currentLifecycleStage === "Assurance" && detailState === "loaded" && Boolean(detail?.pae_sealed) &&
@@ -2760,8 +2845,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             ? "Current PAY is eligible for read-only proxy preparation; fresh assessment and review follow, with route assurance still required."
             : !hasCurrentAssessment || !currentAssessment
               ? "This payable has no current advisory assessment."
-              : !allAssessed
-                ? "Other obligations still need assessment before authorization review."
+              : !authorizationCoverageReady
+                ? selectedFinancialScope.applies
+                  ? selectedFinancialScope.reason
+                  : "Other obligations still need assessment before authorization review."
                 : currentAssessment.decision !== "PAY"
                   ? `Blocked: current assessment is ${currentAssessment.decision}; resolve its findings before reassessment.`
                   : !authorizationAssessment
@@ -2828,7 +2915,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
 
   const firstUnmetPrerequisite = authorizationBlockers({
     hasSelection: Boolean(selectedId),
-    allAssessed,
+    allAssessed: authorizationCoverageReady,
     hasCurrentPayAssessment,
     routeAssuranceReady,
     destinationVerification: detail?.aggregate.destination_verification_status,
@@ -3113,6 +3200,17 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const executionCurrentState = detail ? submissionEvidenceCopy(detail) : "Execution state is unavailable.";
 
   type WorkspaceAction = { label: string; actor: string; run: () => void; exactConfirmation?: boolean };
+  const financialScopeRenderSelection = selectionGeneration.current;
+  const financialScopeRenderDetail = detailGeneration.current;
+  const financialScopeRenderEpoch = exactAssessmentLifetime.current.epoch;
+  const financialScopeContextCurrent = () => Boolean(
+    exactAssessmentLifetime.current.mounted &&
+    financialScopeRenderSelection === selectionGeneration.current &&
+    financialScopeRenderDetail === detailGeneration.current &&
+    financialScopeRenderEpoch === exactAssessmentLifetime.current.epoch &&
+    detailLifetimeEpoch === exactAssessmentLifetime.current.epoch &&
+    selectedRef.current === selectedId,
+  );
   let workspaceAction: WorkspaceAction | null = null;
   if (!selectedId && listPresentation === "ready" && obligations.length > 0) {
     workspaceAction = { label: "Choose a payable", actor: "You", run: () => setMobileQueueOpen(true) };
@@ -3166,6 +3264,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     } };
   } else if (viewedStage === "Assessment" && proxyPreparationReady && detail?.financial_action_eligible === true) {
     workspaceAction = { label: "Prepare testnet payment details", actor: "Authorized user", run: () => {
+      if (!financialScopeContextCurrent()) return;
+      const scope = selectedFinancialScopeReadiness(detail, selectedId, selected?.source_group, true);if (scope.applies && !scope.ready) return;
       void run("proxy preflight", () => postCommand("/api/internal/demo/real-testnet-payment/preflight", {
         obligation_id: selectedId,
         expected_version: detail.aggregate.aggregate_version,
@@ -3186,9 +3286,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     }};
   } else if (viewedStage === "Assessment" && assessmentAction === "review") {
     workspaceAction = { label: "Review current PAY assessment", actor: "Human reviewer · unassigned", run: () => { reviewCurrentAssessment(); showStage("Assessment"); } };
-  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
+  } else if (viewedStage === "Authorization" && detailState === "loaded" && detail?.financial_action_eligible === true && detail.settlement_proxy && authorizationAssessment?.decision === "PAY" && authorizationCoverageReady && routeAssuranceReady && killSwitchView === "inactive" && !detail.pae_sealed && !detail.execution) {
     workspaceAction = { label: "Authorize payment", actor: "Authorized user · identity not shown", run: () => {
-      if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || !routeAssuranceReady || killSwitchView !== "inactive") return;
+      if (!financialScopeContextCurrent()) return;
+      const scope = selectedFinancialScopeReadiness(detail, selectedId, selected?.source_group, true);if (detailState !== "loaded" || !detail?.settlement_proxy || authorizationAssessment?.decision !== "PAY" || (scope.applies && !scope.ready) || !routeAssuranceReady || killSwitchView !== "inactive") return;
       void run("approve", () => postCommand(`/api/obligations/${selectedId}/approve`, {
         expected_version: Number(authorizationAssessment.aggregate_version),
         reviewed_assessment_id: authorizationAssessment.assessment_id,
@@ -3239,15 +3340,17 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         ? "Review this advisory assessment before any separate human authorization decision."
         : workspaceAction?.label === "Authorize payment"
           ? "An authorized approver may review this payable."
-          : !allAssessed
-            ? "Assess the remaining payables before authorization review."
+          : !authorizationCoverageReady
+            ? selectedFinancialScope.applies
+              ? selectedFinancialScope.reason
+              : "Assess the remaining payables before authorization review."
             : !routeAssuranceReady
               ? "Complete current payment-route assurance before authorization review."
-              : assessmentNextAction("PAY", allAssessed).replace(/^Next action:\s*/, "")
+              : assessmentNextAction("PAY", authorizationCoverageReady).replace(/^Next action:\s*/, "")
     : assessmentRemediation.length > 0
       ? [...new Set(assessmentRemediation.map((item) => item.required_action))].join(" ")
       : assessmentResult
-        ? assessmentNextAction(assessmentResult.decision, allAssessed).replace(/^Next action:\s*/, "")
+        ? assessmentNextAction(assessmentResult.decision, authorizationCoverageReady).replace(/^Next action:\s*/, "")
         : "Run AI Assessment from the permanent action strip.";
   const assessmentOwnerRoles = assessmentResult?.decision === "ESCALATE"
     ? assessmentRemediation.map((item) => item.escalation_target).filter((role): role is string => Boolean(role))
@@ -3774,7 +3877,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                 {authorizationPrerequisitesVisible(detailState, Boolean(selectedId), Boolean(detail?.pae_sealed), Boolean(detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution)) && (() => {
                   const blockers = authorizationBlockers({
                     hasSelection: Boolean(selectedId),
-                    allAssessed,
+                    allAssessed: authorizationCoverageReady,
                     hasCurrentPayAssessment,
                     routeAssuranceReady,
                     destinationVerification: detail?.aggregate.destination_verification_status,

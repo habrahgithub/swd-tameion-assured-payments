@@ -9,6 +9,7 @@ import {createObligationReaders} from '../src/server/operator-obligation-routes'
 import {loadExistingDemoState} from '../src/server/load-existing-demo-state';
 import {DemoStateConflictError} from '../src/server/supabase-demo-state-repository';
 import type {AuthContext} from '../src/server/operator-auth';
+import {sealTestAssessment} from '../tests/test-support/seal-assessment';
 const originalNvidiaKey=process.env.NVIDIA_API_KEY;
 test.beforeEach(()=>{delete process.env.NVIDIA_API_KEY;});
 test.afterEach(()=>{if(originalNvidiaKey===undefined)delete process.env.NVIDIA_API_KEY;else process.env.NVIDIA_API_KEY=originalNvidiaKey;});
@@ -55,4 +56,30 @@ for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await page.screenshot({path:info.outputPath(`genuine-linked-draft-${width}.png`),fullPage:true});
  // All transport/auth and advisory provider output here are local test fixtures; no live calls.
+});
+
+for(const width of [1365,390,320])test(`selected controlled scope ignores unrelated genuine assessment coverage at ${width}`,async({page},info)=>{
+ const genuine=syntheticSourceRecords().slice(0,1).map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
+ const controlled={obligation_id:'TESTNET-CONTROLLED-VISUAL-001',service_category:'Controlled Arc Testnet settlement validation',recurrence:'ONE_TIME' as const,issue_date:null,due_date:null,due_date_status:'NOT_STATED_ON_SOURCE' as const,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null,amount:'1.00',currency:'USD',state_at_event_baseline:'OUTSTANDING' as const,business_purpose_confirmed:false,commercial_terms:'TESTNET_ONLY NON_ECONOMIC NOT_VENDOR_PAYMENT',source_evidence:[{evidence_id:'CONTROLLED-VISUAL-001',content_sha256:'a'.repeat(64)}],candidate_readiness:{arc_product_destination_status:'NOT_VERIFIED'}};
+ const genuineState=new DemoState(undefined,undefined,undefined,undefined,{},genuine),controlledState=new DemoState(undefined,undefined,undefined,undefined,{},[controlled]);
+ sealTestAssessment(controlledState.store,'ORG-DEMO-001',controlled.obligation_id,1,{provider_mode:'LIVE_AI',provider_name:'local-browser-fixture'});
+ const genuineSnapshot=genuineState.exportSnapshot(),controlledSnapshot=controlledState.exportSnapshot(),namespace='CONTROLLED-VISUAL-NAMESPACE';
+ const sourceAdmission={purpose:'TESTNET_FINANCIAL_SOURCE' as const,approval_id:'CONTROLLED-VISUAL-APPROVAL',organization_id:'ORG-DEMO-001' as const,deployment_id:'dpl_visual',namespace,valid_from:new Date(Date.now()-60_000).toISOString(),expires_at:new Date(Date.now()+10*60_000).toISOString(),intent_id:'CONTROLLED-VISUAL-INTENT',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT' as const,principal:'1.000000' as const,estimated_fee_ceiling:'0.002000' as const,estimated_total_ceiling:'1.002000' as const,source:controlled};
+ const guard=async()=>({session:{operator_key:'visual',credential_version:1},revalidate:async()=>{}} as unknown as AuthContext);
+ const readers=createObligationReaders(guard,async(records,_binding,requestedNamespace)=>loadExistingDemoState({call:async()=>requestedNamespace===namespace?{revision:1,snapshot:controlledSnapshot}:{revision:1,snapshot:genuineSnapshot}},requestedNamespace??'GENUINE-VISUAL',records),()=>genuine,()=>sourceAdmission);
+ const posts:string[]=[];
+ await page.route('**/api/**',async route=>{const req=route.request(),path=new URL(req.url()).pathname;
+  if(path==='/api/operator/session')return route.fulfill({json:{authenticated:true,csrf_token:'MOCK-CSRF',expires_at:new Date(Date.now()+3600000).toISOString()}});
+  if(path==='/api/wallet/balance/refresh')return route.fulfill({status:503,json:{code:'MOCK_BALANCE_UNAVAILABLE'}});
+  if(req.method()==='POST'){posts.push(path);return route.fulfill({status:500,json:{error:'Unexpected POST'}});}
+  const request=new Request(req.url(),{method:req.method(),headers:req.headers()});
+  const response=path==='/api/obligations'?await readers.list(request):await readers.detail(request,path.split('/').pop()!);
+  return route.fulfill({status:response.status,json:await response.json()});
+ });
+ await page.setViewportSize({width,height:900});await page.goto('/');await page.getByRole('button',{name:'Open workspace'}).click();await page.getByRole('button',{name:'Review payables',exact:true}).click();
+ if(width<768)await page.getByRole('button',{name:'Choose a payable',exact:true}).first().click();
+ await page.locator(`button[data-obligation-id="${controlled.obligation_id}"]`).click();await page.getByRole('button',{name:'View Assessment',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Prepare testnet payment details',exact:true})).toBeVisible();
+ await expect(page.locator(`button[data-obligation-id="${genuine[0].obligation_id}"]`)).toHaveCount(1);expect(posts).toEqual([]);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await page.screenshot({path:info.outputPath(`selected-controlled-scope-${width}.png`),fullPage:true});
 });

@@ -149,6 +149,26 @@ function detail(id: string): Record<string, any> {
   };
 }
 
+function selectedFinancialScope(id: string, aggregateVersion = 1, record: Record<string, unknown> = detail(id).record) {
+  const now = Date.now();
+  return {
+    schema_version: "SELECTED-FINANCIAL-SCOPE-1",
+    status: "PASS",
+    scope: "CONTROLLED_FINANCIAL_NAMESPACE",
+    namespace: "CONTROLLED-UAT",
+    selected_obligation_id: id,
+    selected_aggregate_version: aggregateVersion,
+    selected_source_record_sha256: createHash("sha256").update(canonicalize(record)).digest("hex"),
+    source_valid_until: new Date(now + 60_000).toISOString(),
+    observed_at: new Date(now).toISOString(),
+    membership: "COMPLETE",
+    assessment_coverage: { status: "PASS" },
+    competing_candidate: { status: "NONE" },
+    uncertain_execution: { status: "NONE" },
+    reason: "Selected controlled instruction is current in the complete controlled financial namespace.",
+  };
+}
+
 function proxyPrepared(value: ReturnType<typeof detail>) {
   value.settlement_proxy = {
     source_aggregate_version: 1,
@@ -284,12 +304,18 @@ function deferred<T>() {
 }
 
 function invokeClickHandler(button: HTMLButtonElement): Promise<unknown> {
+  const onClick = captureClickHandler(button);
+  let operation: unknown;
+  act(() => { operation = onClick(); });
+  return operation as Promise<unknown>;
+}
+
+function captureClickHandler(button: HTMLButtonElement): () => unknown {
   const reactPropsKey = Object.keys(button).find((key) => key.startsWith("__reactProps$"));
   if (!reactPropsKey) throw new Error("React click callback is unavailable");
-  const reactProps = (button as unknown as Record<string, { onClick?: () => unknown }>)[reactPropsKey];
-  let operation: unknown;
-  act(() => { operation = reactProps.onClick?.(); });
-  return operation as Promise<unknown>;
+  const onClick = (button as unknown as Record<string, { onClick?: () => unknown }>)[reactPropsKey].onClick;
+  if (!onClick) throw new Error("React click callback is unavailable");
+  return onClick;
 }
 
 describe("Command Center mounted Operational Report", () => {
@@ -1273,6 +1299,186 @@ describe("Command Center mounted Operational Report", () => {
       obligation_id: "OBL-PREFLIGHT-FEE-CAP",
       expected_version: 1,
     });
+  });
+
+  it("uses the selected controlled namespace observation instead of unrelated genuine assessment coverage", async () => {
+    const selectedId = "TESTNET-CONTROLLED-SELECTED-001";
+    const controlled = assessedDetail(selectedId, "PAY");
+    controlled.source_group = "DEMO_ARC_TESTNET";
+    controlled.selected_financial_scope = selectedFinancialScope(selectedId);
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [
+        { ...obligation("OBL-GENUINE-UNASSESSED"), source_group: "GENUINE_COMPANY" },
+        { ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" },
+      ] }))
+      : Promise.resolve(response(structuredClone(controlled))));
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow(selectedId)).toBeTruthy());
+    fireEvent.click(obligationRow(selectedId));
+    await screen.findByRole("region", { name: "Selected source payable" });
+    fireEvent.click(await screen.findByRole("button", { name: "View Assessment" }));
+    expect(screen.getByRole("button", { name: "Prepare testnet payment details" })).toBeTruthy();
+    expect(screen.getByRole("main").textContent).not.toContain("Assess the remaining payables before authorization review");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["foreign", { ...selectedFinancialScope("TESTNET-CONTROLLED-OTHER"), selected_obligation_id: "TESTNET-CONTROLLED-OTHER" }],
+    ["stale", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), selected_aggregate_version: 2 }],
+    ["aged", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), observed_at: new Date(Date.now() - 5 * 60_000 - 1).toISOString() }],
+    ["expired", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), source_valid_until: new Date(Date.now() - 1).toISOString() }],
+    ["source-hash mismatch", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), selected_source_record_sha256: "0".repeat(64) }],
+    ["malformed", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), assessment_coverage: undefined }],
+    ["unknown", { ...selectedFinancialScope("TESTNET-CONTROLLED-SCOPE-LOCK"), status: "BLOCKED", uncertain_execution: { status: "PRESENT" }, reason: "An execution outcome is unknown." }],
+  ])("keeps financial progression locked for a %s selected-scope observation", async (_label, observation) => {
+    const selectedId = "TESTNET-CONTROLLED-SCOPE-LOCK";
+    const controlled = assessedDetail(selectedId, "PAY");
+    controlled.source_group = "DEMO_ARC_TESTNET";
+    controlled.selected_financial_scope = observation;
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" }] }))
+      : Promise.resolve(response(structuredClone(controlled))));
+
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    expect(screen.queryByRole("button", { name: "Prepare testnet payment details" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    expect(screen.getByRole("main").textContent).toMatch(/controlled payment scope|execution outcome is unknown/i);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it.each([undefined, "UNVERIFIED", "GENUINE_COMPANY"] as const)("fails closed when a controlled queue row receives %s detail", async sourceGroup => {
+    const selectedId = "TESTNET-CONTROLLED-LANE-MISMATCH";
+    const controlled = assessedDetail(selectedId, "PAY");
+    controlled.source_group = sourceGroup;
+    controlled.selected_financial_scope = selectedFinancialScope(selectedId);
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    fetchMock.mockImplementation((input) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" }] }))
+      : Promise.resolve(response(structuredClone(controlled))));
+
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    expect(screen.queryByRole("button", { name: "Prepare testnet payment details" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("invalidates a retained controlled payment callback across pagehide", async () => {
+    const selectedId = "TESTNET-CONTROLLED-PAGE-LIFETIME";
+    const controlled = assessedDetail(selectedId, "PAY");
+    controlled.source_group = "DEMO_ARC_TESTNET";
+    controlled.selected_financial_scope = selectedFinancialScope(selectedId);
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    fetchMock.mockImplementation((input, init) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" }] }))
+      : init?.method === "POST"
+        ? Promise.resolve(response({ error: "POST must remain unreachable" }, 500))
+        : Promise.resolve(response(structuredClone(controlled))));
+
+    renderWithExplicitFirstSelection();
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(screen.getByRole("button", { name: "View Assessment" }));
+    const retained = await screen.findByRole("button", { name: "Prepare testnet payment details" }) as HTMLButtonElement;
+    const retainedClick = captureClickHandler(retained);
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(screen.queryByRole("button", { name: "Prepare testnet payment details" })).toBeNull();
+    act(() => { void retainedClick(); });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("invalidates a retained controlled authorization callback across pagehide", async () => {
+    const selectedId = "TESTNET-CONTROLLED-AUTH-LIFETIME";
+    const controlled = proxyPrepared(assessedDetail(selectedId, "PAY"));
+    controlled.source_group = "DEMO_ARC_TESTNET";
+    controlled.selected_financial_scope = selectedFinancialScope(selectedId);
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    Object.assign(controlled.aggregate, {
+      destination_verification_status: "VERIFIED",
+      destination_operational_status: "ACTIVE",
+      source_wallet_status: "ACTIVE",
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+    });
+    fetchMock.mockImplementation((input, init) => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI", route_assurance_status: "Route assurance ready" }] }))
+      : init?.method === "POST"
+        ? Promise.resolve(response({ error: "POST must remain unreachable" }, 500))
+        : Promise.resolve(response(structuredClone(controlled))));
+
+    renderWithExplicitFirstSelection("verified-session-csrf");
+    await screen.findByRole("region", { name: "Genuine obligation workspace" });
+    fireEvent.click(await screen.findByRole("button", { name: "View Assessment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review current PAY assessment" }));
+    navigateStage("Authorization");
+    const authorize = await screen.findByRole("button", { name: "Authorize payment" }) as HTMLButtonElement;
+    const retainedClick = captureClickHandler(authorize);
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    act(() => { void retainedClick(); });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("rejects a retained controlled payment callback after A to B to A selection", async () => {
+    const firstId = "TESTNET-CONTROLLED-CALLBACK-A", secondId = "TESTNET-CONTROLLED-CALLBACK-B";
+    const details = new Map([firstId, secondId].map(id => {
+      const value = assessedDetail(id, "PAY");
+      value.source_group = "DEMO_ARC_TESTNET";
+      value.selected_financial_scope = selectedFinancialScope(id);
+      value.current_assessment.provider_mode = "LIVE_AI";
+      value.current_assessment.provider_used = "test-live-ai";
+      return [id, value] as const;
+    }));
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url === "/api/obligations") return Promise.resolve(response({ obligations: [firstId, secondId].map(id => ({ ...obligation(id, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" })) }));
+      if (init?.method === "POST") return Promise.resolve(response({ error: "POST must remain unreachable" }, 500));
+      return Promise.resolve(response(structuredClone(details.get(url.split("/").pop()!)!)));
+    });
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow(firstId)).toBeTruthy());
+    fireEvent.click(obligationRow(firstId));
+    fireEvent.click(await screen.findByRole("button", { name: "View Assessment" }));
+    const retained = await screen.findByRole("button", { name: "Prepare testnet payment details" }) as HTMLButtonElement;
+    const retainedClick = captureClickHandler(retained);
+    fireEvent.click(obligationRow(secondId));
+    await waitFor(() => expect(obligationRow(secondId).getAttribute("aria-current")).toBe("true"));
+    fireEvent.click(obligationRow(firstId));
+    await waitFor(() => expect(obligationRow(firstId).getAttribute("aria-current")).toBe("true"));
+    fireEvent.click(await screen.findByRole("button", { name: "View Assessment" }));
+    await screen.findByRole("button", { name: "Prepare testnet payment details" });
+    act(() => { void retainedClick(); });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("does not adopt a controlled detail response that resolves after pagehide", async () => {
+    const selectedId = "TESTNET-CONTROLLED-LATE-DETAIL";
+    const controlled = assessedDetail(selectedId, "PAY");
+    controlled.source_group = "DEMO_ARC_TESTNET";
+    controlled.selected_financial_scope = selectedFinancialScope(selectedId);
+    controlled.current_assessment.provider_mode = "LIVE_AI";
+    controlled.current_assessment.provider_used = "test-live-ai";
+    const pending = deferred<Response>();
+    fetchMock.mockImplementation(input => String(input) === "/api/obligations"
+      ? Promise.resolve(response({ obligations: [{ ...obligation(selectedId, true), source_group: "DEMO_ARC_TESTNET", decision: "PAY", provider_mode: "LIVE_AI" }] }))
+      : pending.promise);
+
+    rtlRender(<CommandCenter />);
+    await waitFor(() => expect(obligationRow(selectedId)).toBeTruthy());
+    fireEvent.click(obligationRow(selectedId));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input) === `/api/obligations/${selectedId}`)).toBe(true));
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    await act(async () => { pending.resolve(response(structuredClone(controlled)));await Promise.resolve(); });
+    expect(screen.queryByRole("button", { name: "Prepare testnet payment details" })).toBeNull();
   });
 
   it("uses safe finance wording for an unknown payment-detail blocker", async () => {

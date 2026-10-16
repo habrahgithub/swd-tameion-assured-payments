@@ -13,11 +13,12 @@ import {loadPublicSourceRecords} from './source-records';
 import {AccessError} from './route-access-policy';
 import {runtimeRpc,type RpcClient} from './operator-auth-repository';
 import type {DemoState,DemoStateSnapshot} from './demo-state';
+import type {ExecutionRecord} from '../execution/worker';
 import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState={canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState={canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
 export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding):Promise<ExistingState> {
@@ -46,6 +47,9 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
       getCanonicalObligation:id=>{const r=records.find(r=>r.obligation_id===id);return r?adaptDirectEvidenceObligation(r):undefined;},
       getSealedPae:id=>sealed.get(id),getSettlementProxy:id=>s.settlement_proxies?.find(p=>p.preflight.obligation_id===id),
       getAuthorizationArtifacts:id=>[...s.authorization_history].reverse().find(a=>a.sealed_pae.payload.organization_id===DEMO_ORGANIZATION_ID&&a.sealed_pae.payload.obligation_ids.length===1&&a.sealed_pae.payload.obligation_ids[0]===id),
+      // Internal read-only evidence for complete-namespace projections. A
+      // fresh clone prevents callers from mutating restored durable state.
+      getCompleteExecutionRecords:()=>structuredClone(s.execution_ledger),
       worker:{getExecutionRecord:key=>s.execution_ledger.find(r=>r.idempotency_key===key)},
       // Match financial-runtime transport selection without constructing it.
       // This metadata does not grant release authority or prove settlement.

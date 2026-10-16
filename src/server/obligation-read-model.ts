@@ -6,12 +6,200 @@ import { DEMO_ARC_TRUST_SIMULATED, DEMO_ORGANIZATION_ID, type ExistingState } fr
 import { buildPaymentTruthLayers } from "../domain/payment-control-boundary";
 import { getCurrentSettlementProxyPacket, getSettlementEvidenceBinding } from "./settlement-proxy-packet";
 import { projectAssuranceEvidence } from "./assurance-evidence-projection";
+import { sameEvmAddressIdentity } from "../execution/evm-address";
 
 /** Pure projections of an already loaded state. No hydration, provider I/O,
  * recovery or persistence. Source admission belongs to the calling GET boundary.
  * Browser fixtures use these same projections with independently invented data.
  */
 export type ObligationSourceGroup = "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
+export type SelectedFinancialScopeBinding = {
+  namespace: string;
+  selected_obligation_id: string;
+  selected_source_record_sha256: string;
+  source_valid_until: string;
+};
+
+export type SelectedFinancialScopeObservation = {
+  schema_version: "SELECTED-FINANCIAL-SCOPE-1";
+  status: "PASS" | "BLOCKED" | "UNAVAILABLE";
+  scope: "CONTROLLED_FINANCIAL_NAMESPACE";
+  namespace: string;
+  selected_obligation_id: string;
+  selected_aggregate_version: number;
+  selected_source_record_sha256: string;
+  source_valid_until: string;
+  observed_at: string;
+  membership: "COMPLETE" | "UNAVAILABLE";
+  assessment_coverage: { status: "PASS" | "BLOCKED" | "UNAVAILABLE" };
+  competing_candidate: { status: "NONE" | "PRESENT" | "UNAVAILABLE" };
+  uncertain_execution: { status: "NONE" | "PRESENT" | "UNAVAILABLE" };
+  reason: string;
+};
+
+/** Read-only parity projection for the selected controlled instruction. The
+ * canonical AUT-012/AUT-008 predicates remain owned by AuthorityStore; this
+ * function only reports their result for the complete restored namespace. */
+export function projectSelectedFinancialScope(
+  state: ExistingState,
+  id: string,
+  aggregateVersion: number,
+  binding?: SelectedFinancialScopeBinding,
+): SelectedFinancialScopeObservation | null {
+  if (!binding) return null;
+  const observedAt = new Date().toISOString();
+  const unavailable = (reason: string): SelectedFinancialScopeObservation => ({
+    schema_version: "SELECTED-FINANCIAL-SCOPE-1",
+    status: "UNAVAILABLE",
+    scope: "CONTROLLED_FINANCIAL_NAMESPACE",
+    namespace: binding.namespace,
+    selected_obligation_id: id,
+    selected_aggregate_version: aggregateVersion,
+    selected_source_record_sha256: binding.selected_source_record_sha256,
+    source_valid_until: binding.source_valid_until,
+    observed_at: observedAt,
+    membership: "UNAVAILABLE",
+    assessment_coverage: { status: "UNAVAILABLE" },
+    competing_candidate: { status: "UNAVAILABLE" },
+    uncertain_execution: { status: "UNAVAILABLE" },
+    reason,
+  });
+  try {
+    if (
+      binding.selected_obligation_id !== id ||
+      !binding.namespace || binding.namespace.length > 128 ||
+      !/^[a-f0-9]{64}$/.test(binding.selected_source_record_sha256) ||
+      !Number.isFinite(Date.parse(binding.source_valid_until)) ||
+      Date.parse(binding.source_valid_until) <= Date.now()
+    ) return unavailable("The selected controlled source binding is unavailable or no longer current.");
+
+    const restoredAggregates = state.store.exportSnapshot().aggregates;
+    const aggregates = restoredAggregates.filter((item) => item.organization_id === DEMO_ORGANIZATION_ID);
+    const unclassifiedOrganizationPresent = restoredAggregates.some((item) => item.organization_id !== DEMO_ORGANIZATION_ID);
+    const selected = aggregates.filter((item) => item.obligation_id === id);
+    if (selected.length !== 1 || selected[0].aggregate_version !== aggregateVersion) {
+      return unavailable("The selected controlled instruction does not match the current financial state.");
+    }
+
+    const executionRecords = state.getCompleteExecutionRecords?.();
+    if (!Array.isArray(executionRecords)) {
+      return unavailable("Complete controlled payment history is unavailable.");
+    }
+    const aggregateById = new Map<string, (typeof aggregates)[number]>();
+    let ledgerIntegrity = true;
+    for (const aggregate of aggregates) {
+      if (aggregateById.has(aggregate.obligation_id)) ledgerIntegrity = false;
+      aggregateById.set(aggregate.obligation_id, aggregate);
+    }
+    const executionByKey = new Map<string, (typeof executionRecords)[number]>();
+    let uncertainExecutionPresent = false;
+    const validExecutionStatuses = new Set(["SUBMITTING", "SETTLED", "FAILED", "UNKNOWN", "BLOCKED"]);
+    for (const record of executionRecords) {
+      const providerReferenceValid = record?.provider_ref === null || (
+        typeof record?.provider_ref === "string" &&
+        record.provider_ref.length > 0 &&
+        record.provider_ref.length <= 256 &&
+        /^[\x20-\x7e]+$/.test(record.provider_ref)
+      );
+      const structurallyValid = Boolean(
+        record && typeof record === "object" &&
+        typeof record.obligation_id === "string" && record.obligation_id.length > 0 &&
+        typeof record.idempotency_key === "string" && record.idempotency_key.length > 0 &&
+        typeof record.atomic_amount === "string" && /^(0|[1-9][0-9]*)$/.test(record.atomic_amount) &&
+        typeof record.destination_address === "string" &&
+        validExecutionStatuses.has(record.status) &&
+        providerReferenceValid &&
+        (record.status !== "SUBMITTING" || record.provider_ref === null) &&
+        (!["SETTLED", "FAILED"].includes(record.status) || record.provider_ref !== null),
+      );
+      if (!structurallyValid) {
+        ledgerIntegrity = false;
+        continue;
+      }
+      if (record.status === "SUBMITTING" || record.status === "UNKNOWN") uncertainExecutionPresent = true;
+      if (executionByKey.has(record.idempotency_key)) ledgerIntegrity = false;
+      executionByKey.set(record.idempotency_key, record);
+      const owner = aggregateById.get(record.obligation_id);
+      const sealedPae = owner ? state.getSealedPae(owner.obligation_id) : undefined;
+      if (
+        !owner || owner.execution_idempotency_key !== record.idempotency_key ||
+        !sealedPae || sealedPae.payload.organization_id !== DEMO_ORGANIZATION_ID ||
+        sealedPae.payload.obligation_ids.length !== 1 || sealedPae.payload.obligation_ids[0] !== record.obligation_id ||
+        sealedPae.payload.idempotency_key !== record.idempotency_key ||
+        sealedPae.payload.atomic_amount !== record.atomic_amount ||
+        !sameEvmAddressIdentity(sealedPae.payload.destination_address, record.destination_address)
+      ) ledgerIntegrity = false;
+    }
+    for (const aggregate of aggregates) {
+      const aggregateUncertain = ["RESERVED", "SUBMITTING", "SUBMITTED", "CONFIRMING", "UNKNOWN"].includes(aggregate.execution_state);
+      if (aggregateUncertain) uncertainExecutionPresent = true;
+      if ((aggregate.execution_state === "NONE") !== (aggregate.execution_idempotency_key === null)) ledgerIntegrity = false;
+      if (aggregate.execution_idempotency_key) {
+        const record = executionByKey.get(aggregate.execution_idempotency_key);
+        if (!record || record.obligation_id !== aggregate.obligation_id) ledgerIntegrity = false;
+      }
+    }
+    // An unresolved submission is the highest-priority safety fact even when
+    // its identity evidence is incomplete. Other malformed/asymmetric ledger
+    // evidence cannot support a PASS observation.
+    if (!ledgerIntegrity && !uncertainExecutionPresent) {
+      return unavailable("Complete controlled payment history could not be verified.");
+    }
+
+    const coverageBlocker = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
+    const competingId = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, id);
+    const assessmentCoverage = coverageBlocker
+      ? { status: "BLOCKED" as const }
+      : { status: "PASS" as const };
+    const competingCandidate = competingId
+      ? { status: "PRESENT" as const }
+      : { status: "NONE" as const };
+    const uncertainExecution = uncertainExecutionPresent
+      ? { status: "PRESENT" as const }
+      : { status: "NONE" as const };
+    const membership = aggregates.length === 1 && !unclassifiedOrganizationPresent && ledgerIntegrity
+      ? "COMPLETE" as const
+      : "UNAVAILABLE" as const;
+
+    let status: SelectedFinancialScopeObservation["status"] = "PASS";
+    let reason = "Selected controlled instruction is current in the complete controlled financial namespace.";
+    if (uncertainExecutionPresent) {
+      status = "BLOCKED";
+      reason = "An existing controlled payment is submitting or has an unknown outcome and must be reconciled first.";
+    } else if (coverageBlocker) {
+      status = "BLOCKED";
+      reason = "The controlled financial namespace contains an instruction without a current assessment.";
+    } else if (competingId) {
+      status = "BLOCKED";
+      reason = "Another controlled instruction is already committed for payment.";
+    } else if (selected[0].state === "CANCELLED") {
+      status = "BLOCKED";
+      reason = "The selected controlled instruction is cancelled.";
+    } else if (membership === "UNAVAILABLE") {
+      status = "UNAVAILABLE";
+      reason = "Complete approved membership of the controlled financial namespace is unavailable.";
+    }
+
+    return {
+      schema_version: "SELECTED-FINANCIAL-SCOPE-1",
+      status,
+      scope: "CONTROLLED_FINANCIAL_NAMESPACE",
+      namespace: binding.namespace,
+      selected_obligation_id: id,
+      selected_aggregate_version: aggregateVersion,
+      selected_source_record_sha256: binding.selected_source_record_sha256,
+      source_valid_until: binding.source_valid_until,
+      observed_at: observedAt,
+      membership,
+      assessment_coverage: assessmentCoverage,
+      competing_candidate: competingCandidate,
+      uncertain_execution: uncertainExecution,
+      reason,
+    };
+  } catch {
+    return unavailable("The controlled financial namespace could not be verified.");
+  }
+}
 export function projectObligationListData(state: ExistingState, sourceGroup: ObligationSourceGroup = "UNVERIFIED", bindAdvisorySource=false) {
   const obligations = state.listObligations().map((o) => {
     const sealed = state.store.getSealedAssessment(DEMO_ORGANIZATION_ID, o.obligation_id);
@@ -51,7 +239,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED", advisorySourceHash?:string) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED", advisorySourceHash?:string, selectedFinancialScopeBinding?:SelectedFinancialScopeBinding) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -135,6 +323,9 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
     return NextResponse.json({
       financial_action_eligible: financialActionEligible,
       source_group: sourceGroup,
+      selected_financial_scope: financialActionEligible && sourceGroup === "DEMO_ARC_TESTNET"
+        ? projectSelectedFinancialScope(state, id, aggregate.aggregate_version, selectedFinancialScopeBinding)
+        : null,
       truth,
       aggregate,
       record,

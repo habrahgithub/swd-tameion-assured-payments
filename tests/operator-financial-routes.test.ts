@@ -41,7 +41,7 @@ function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:
  const repo={loadExisting:vi.fn(async()=>{if(linkDriftOnNextRead){linkDriftOnNextRead=false;linkChanged=true;}if(advanceOnNextRead){advanceOnNextRead=false;vi.spyOn(Date,'now').mockReturnValue(Date.parse(snapshot.payment_release_approvals![0].record.expires_at)+options.finalExpiryOffset!);}return {revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>};}),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
  const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"],revalidateLinkAtSend?:()=>Promise<void>)=>{
  let validations=0;let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
- state=await loadExistingFinancialState(repo,s.namespace,[s.source],{revalidateLinkedInstructionAtProviderSend:options.omitFinalLinkHook?undefined:revalidateLinkAtSend,assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();validations++;if(options.finalExpiryOffset!==undefined&&validations===2)advanceOnNextRead=true;if(options.linkedChangedOnFinalRead&&validations===2)linkDriftOnNextRead=true;}},adapter);return state;
+ state=await loadExistingFinancialState(repo,s.namespace,[s.source],{revalidateLinkedInstructionAtProviderSend:options.omitFinalLinkHook?undefined:revalidateLinkAtSend,assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();validations++;if(options.finalExpiryOffset!==undefined&&validations===2)advanceOnNextRead=true;if(options.linkedChangedOnFinalRead&&validations===2)linkDriftOnNextRead=true;}},adapter);return Object.assign(state,{getCompleteExecutionRecords:()=>structuredClone(snapshot.execution_ledger)});
  });
  const handler=createFinancialHandlers({verifyLink:async(source)=>{await options.verifyLink?.(source);if(linkChanged)throw new AccessError('LINK_SOURCE_STALE',409);},guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
  const request=(body:unknown)=>new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'00000000-0000-4000-8000-000000000001'},body:JSON.stringify(body)});
@@ -195,8 +195,105 @@ describe('R1 durable release feedback',()=>{
  });
 });
 
-import {projectObligationDetail} from '../src/server/obligation-read-model';
+import {projectObligationDetail,projectSelectedFinancialScope} from '../src/server/obligation-read-model';
 import {paymentReleaseBindings} from '../src/domain/payment-release-approval';
+const selectedScopeBinding=(h:ReturnType<typeof controlledHarness>)=>({
+ namespace:h.source.namespace,
+ selected_obligation_id:h.source.source.obligation_id,
+ selected_source_record_sha256:createHash('sha256').update(JSON.stringify(h.source.source)).digest('hex'),
+ source_valid_until:h.source.expires_at,
+});
+describe('M2 selected controlled financial scope projection',()=>{
+ it('reports PASS from the canonical complete controlled namespace without provider or persistence effects',async()=>{
+  const h=controlledHarness();await h.sealCurrent();const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id;
+  const before=structuredClone(h.snapshot()),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length,observation=projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'PASS',membership:'COMPLETE',assessment_coverage:{status:'PASS'},competing_candidate:{status:'NONE'},uncertain_execution:{status:'NONE'}});
+  expect(h.snapshot()).toEqual(before);expect(h.repo.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.client.getWallet).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each([
+  ['unassessed','APPROVAL_PENDING','assessment_coverage','BLOCKED'],
+  ['committed','AUTHORIZED','competing_candidate','PRESENT'],
+ ] as const)('blocks a hidden %s controlled aggregate using canonical predicates',async(_label,stateName,field,fieldStatus)=>{
+  const h=controlledHarness();await h.sealCurrent();const selected=h.snapshot().authority.aggregates[0];
+  h.snapshot().authority.aggregates.push({...structuredClone(selected),obligation_id:'TESTNET-CONTROLLED-HIDDEN-002',state:stateName,aggregate_version:stateName==='AUTHORIZED'?2:1});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id;
+  const observation=projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'BLOCKED',membership:'UNAVAILABLE',[field]:{status:fieldStatus}});
+  expect(JSON.stringify(observation)).not.toContain('TESTNET-CONTROLLED-HIDDEN-002');
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['UNKNOWN','SUBMITTING'] as const)('gives %s execution priority and never presents it as a clear namespace',async status=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),sealed=h.snapshot().sealed_paes.find(([id])=>id===p.id)?.[1];expect(sealed).toBeTruthy();
+  h.snapshot().execution_ledger.push({obligation_id:p.id,idempotency_key:sealed!.payload.idempotency_key,status,atomic_amount:'1000000',destination_address:h.snapshot().authority.aggregates[0].destination_address,provider_ref:null});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),observation=projectSelectedFinancialScope(state,p.id,state.store.get(DEMO_ORGANIZATION_ID,p.id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'BLOCKED',uncertain_execution:{status:'PRESENT'}});expect(observation?.reason).toMatch(/submitting or has an unknown outcome/i);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('fails closed from canonical aggregate execution state when a ledger lookup is unavailable',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),aggregate=h.snapshot().authority.aggregates[0];
+  aggregate.execution_state='UNKNOWN';aggregate.execution_idempotency_key='CONTROLLED-MISSING-LEDGER-KEY';
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),observation=projectSelectedFinancialScope(state,p.id,state.store.get(DEMO_ORGANIZATION_ID,p.id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'BLOCKED',uncertain_execution:{status:'PRESENT'}});expect(h.snapshot().execution_ledger).toEqual([]);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('blocks an orphan unresolved execution without exposing its private identity',async()=>{
+  const h=controlledHarness();await h.sealCurrent();const selected=h.snapshot().authority.aggregates[0];
+  h.snapshot().execution_ledger.push({obligation_id:'TESTNET-CONTROLLED-HIDDEN-ORPHAN',idempotency_key:'HIDDEN-UNRESOLVED-KEY',status:'UNKNOWN',atomic_amount:'1000000',destination_address:selected.destination_address,provider_ref:null});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id,observation=projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'BLOCKED',uncertain_execution:{status:'PRESENT'}});expect(JSON.stringify(observation)).not.toContain('TESTNET-CONTROLLED-HIDDEN-ORPHAN');expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['missing-accessor','orphan-terminal'] as const)('never reports PASS for %s complete-ledger evidence',async fault=>{
+  const h=controlledHarness();await h.sealCurrent();const selected=h.snapshot().authority.aggregates[0];
+  if(fault==='orphan-terminal')h.snapshot().execution_ledger.push({obligation_id:'TESTNET-CONTROLLED-HIDDEN-TERMINAL',idempotency_key:'HIDDEN-TERMINAL-KEY',status:'FAILED',atomic_amount:'1000000',destination_address:selected.destination_address,provider_ref:null});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{});if(fault==='missing-accessor')delete (state as {getCompleteExecutionRecords?:()=>unknown[]}).getCompleteExecutionRecords;
+  const observation=projectSelectedFinancialScope(state,selected.obligation_id,state.store.get(DEMO_ORGANIZATION_ID,selected.obligation_id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE'});expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('isolates duplicate execution-key rejection from otherwise valid terminal evidence',async()=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),snapshot=h.snapshot(),aggregate=snapshot.authority.aggregates[0],sealed=snapshot.sealed_paes.find(([id])=>id===p.id)?.[1];expect(sealed).toBeTruthy();
+  aggregate.execution_state='FAILED';aggregate.execution_idempotency_key=sealed!.payload.idempotency_key;
+  const record={obligation_id:p.id,idempotency_key:sealed!.payload.idempotency_key,status:'FAILED' as const,atomic_amount:sealed!.payload.atomic_amount,destination_address:sealed!.payload.destination_address,provider_ref:'recorded-provider-reference'};
+  snapshot.execution_ledger.push(record);
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),version=state.store.get(DEMO_ORGANIZATION_ID,p.id).aggregate_version,binding=selectedScopeBinding(h);
+  expect(projectSelectedFinancialScope(state,p.id,version,binding)).toMatchObject({status:'PASS',membership:'COMPLETE'});
+  state.getCompleteExecutionRecords=()=>[structuredClone(record),structuredClone(record)];
+  expect(projectSelectedFinancialScope(state,p.id,version,binding)).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE'});
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['amount','destination','provider-ref'] as const)('rejects matching-key execution evidence with asymmetric %s identity',async fault=>{
+  const h=controlledHarness(),p=await preparedApproval(h,false),snapshot=h.snapshot(),aggregate=snapshot.authority.aggregates[0],sealed=snapshot.sealed_paes.find(([id])=>id===p.id)?.[1];expect(sealed).toBeTruthy();
+  aggregate.execution_state='FAILED';aggregate.execution_idempotency_key=sealed!.payload.idempotency_key;
+  snapshot.execution_ledger.push({
+   obligation_id:p.id,
+   idempotency_key:sealed!.payload.idempotency_key,
+   status:'FAILED',
+   atomic_amount:fault==='amount'?(BigInt(sealed!.payload.atomic_amount)+1n).toString():sealed!.payload.atomic_amount,
+   destination_address:fault==='destination'?'0x'+'9'.repeat(40):sealed!.payload.destination_address,
+   provider_ref:fault==='provider-ref'?'':'recorded-provider-reference',
+  });
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),observation=projectSelectedFinancialScope(state,p.id,state.store.get(DEMO_ORGANIZATION_ID,p.id).aggregate_version,selectedScopeBinding(h));
+  expect(observation).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE'});expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('does not treat an extra cancelled aggregate as approved namespace membership',async()=>{
+  const h=controlledHarness();await h.sealCurrent();const selected=h.snapshot().authority.aggregates[0];
+  h.snapshot().authority.aggregates.push({...structuredClone(selected),obligation_id:'TESTNET-CONTROLLED-CANCELLED-002',state:'CANCELLED'});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id;
+  expect(projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,selectedScopeBinding(h))).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE',assessment_coverage:{status:'PASS'},competing_candidate:{status:'NONE'}});
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it('does not classify a foreign-organization aggregate as outside the restored financial namespace',async()=>{
+  const h=controlledHarness();await h.sealCurrent();const selected=h.snapshot().authority.aggregates[0];
+  h.snapshot().authority.aggregates.push({...structuredClone(selected),organization_id:'ORG-UNCLASSIFIED-FOREIGN',obligation_id:'TESTNET-CONTROLLED-FOREIGN-ORG'});
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id;
+  expect(projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,selectedScopeBinding(h))).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE'});
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+ it.each(['missing','foreign','expired'] as const)('fails closed for %s source-scope authority',async fault=>{
+  const h=controlledHarness();await h.sealCurrent();const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),id=h.source.source.obligation_id,binding=selectedScopeBinding(h);
+  const candidate=fault==='missing'?undefined:fault==='foreign'?{...binding,selected_obligation_id:'TESTNET-CONTROLLED-FOREIGN'}:{...binding,source_valid_until:new Date(Date.now()-1).toISOString()};
+  const observation=projectSelectedFinancialScope(state,id,state.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,candidate);
+  if(fault==='missing')expect(observation).toBeNull();else expect(observation).toMatchObject({status:'UNAVAILABLE',membership:'UNAVAILABLE'});
+  expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
 describe('R1 release capability and projection',()=>{
  it('approval never calls any provider method',async()=>{
   const h=controlledHarness(),p=await preparedApproval(h,false);

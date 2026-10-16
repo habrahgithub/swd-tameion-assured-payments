@@ -5,8 +5,10 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {pathToFileURL} from "node:url";
 import {afterEach,describe,expect,it,vi} from "vitest";
+import {canonicalize} from "json-canonicalize";
 import {DemoState} from "../src/server/demo-state";
 import {createObligationReaders} from "../src/server/operator-obligation-routes";
+import {loadExistingDemoState} from "../src/server/load-existing-demo-state";
 import {loadFinancialRequesterBinding,loadFinancialSourceAdmission,loadOptionalFinancialSourceAdmission} from "../src/server/financial-source-admission";
 import {AccessError} from "../src/server/route-access-policy";
 import type {AuthContext} from "../src/server/operator-auth";
@@ -42,16 +44,35 @@ function childEnv(env:Record<string,string>,clock:number){
 
 describe("controlled obligation read isolation",()=>{
  it("combines five view-only obligations with exactly one controlled obligation and routes detail by namespace",async()=>{
-  const f=fixture(),historical=syntheticSourceRecords(),historicalState=new DemoState(undefined,undefined,undefined,undefined,{},historical),controlledState=new DemoState(undefined,undefined,undefined,undefined,{},[f.record]);
+  const f=fixture(),historical=syntheticSourceRecords(),historicalState=new DemoState(undefined,undefined,undefined,undefined,{},historical),controlledState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},[f.record]),{getCompleteExecutionRecords:()=>[]});
   const load=vi.fn(async(records:readonly {obligation_id:string}[],_binding?:unknown,namespace?:string)=>namespace===f.source.namespace?controlledState:historicalState);
   const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),load as never,()=>historical,()=>loadFinancialSourceAdmission());
   const list=await readers.list(new Request("https://operator.example.invalid")),body=await list.json();
   expect(body.total_count).toBe(6);expect(body.obligations.map((item:{obligation_id:string})=>item.obligation_id)).toEqual([...historical.map(item=>item.obligation_id),f.record.obligation_id]);
-  const controlled=await readers.detail(new Request("https://operator.example.invalid"),f.record.obligation_id);expect(await controlled.json()).toMatchObject({financial_action_eligible:true});
+  const controlled=await readers.detail(new Request("https://operator.example.invalid"),f.record.obligation_id);expect(await controlled.json()).toMatchObject({
+   financial_action_eligible:true,
+   selected_financial_scope:{
+    schema_version:"SELECTED-FINANCIAL-SCOPE-1",
+    status:"BLOCKED",
+    scope:"CONTROLLED_FINANCIAL_NAMESPACE",
+    selected_obligation_id:f.record.obligation_id,
+    selected_aggregate_version:1,
+    selected_source_record_sha256:createHash("sha256").update(canonicalize(f.record)).digest("hex"),
+    assessment_coverage:{status:"BLOCKED"},
+    competing_candidate:{status:"NONE"},
+    uncertain_execution:{status:"NONE"},
+   },
+  });
   const old=await readers.detail(new Request("https://operator.example.invalid"),historical[0].obligation_id);expect(await old.json()).toMatchObject({financial_action_eligible:false});
   expect(load.mock.calls.some(call=>call[2]===f.source.namespace&&call[0].length===1)).toBe(true);
   expect(load.mock.calls.some(call=>call[2]===f.source.namespace&&call[0].some((item:{obligation_id:string})=>item.obligation_id===historical[0].obligation_id))).toBe(false);
   expect(historicalState.exportSnapshot()).toEqual(new DemoState(undefined,undefined,undefined,undefined,{},historical).exportSnapshot());expect(controlledState.exportSnapshot()).toEqual(new DemoState(undefined,undefined,undefined,undefined,{},[f.record]).exportSnapshot());
+ });
+ it("returns a fresh private clone of the complete restored execution ledger",async()=>{
+  const records=syntheticSourceRecords(),snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot();
+  const state=await loadExistingDemoState({call:async()=>({revision:1,snapshot})},"PRIVATE-LEDGER-VIEW",records);
+  const first=state.getCompleteExecutionRecords?.() as unknown[];first.push({forged:true});
+  expect(state.getCompleteExecutionRecords?.()).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);
  });
  it("denies unauthenticated requests before either source or state is read",async()=>{const operator=vi.fn(),controlled=vi.fn(),load=vi.fn();const readers=createObligationReaders(async()=>{throw new AccessError("SESSION_REQUIRED",401);},load,operator,controlled);expect((await readers.list(new Request("https://operator.example.invalid"))).status).toBe(401);expect(operator).not.toHaveBeenCalled();expect(controlled).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();});
  it("keeps the five view-only obligations available after controlled financial authority expires",async()=>{
