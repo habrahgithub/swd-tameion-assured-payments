@@ -458,6 +458,7 @@ describe('linked UNKNOWN execution reconciliation after genuine reassessment',()
  it('reads the exact existing provider transaction without resubmitting after the genuine assessment changes',async()=>{
   const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,amount:'1.00',currency:'USD',source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
   const hash=(value:unknown)=>createHash('sha256').update(canonicalize(value)).digest('hex');
+  for(const r of records){const evidence=r.source_evidence[0];r.assessment_basis={transaction_type:'INVOICE',classification_evidence:evidence,timing:{basis:'INVOICE_CASH_TERM',date:r.effective_due_date,evidence},simulation:{mode:'HISTORICAL_AS_OF',as_of_date:'2020-01-05',evidence,owner_authority_reference:'SYNTHETIC-READMISSION'}};}
   let snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),revision=7;
   const {assessments,...base}=snapshot.authority;
   const bytes=Buffer.from(JSON.stringify({schema_version:3,record_count:5,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:DEMO_ORGANIZATION_ID,state_binding:{namespace:'FICTIONAL-GENUINE',revision,authority_sha256:hash(snapshot.authority),workflow_base_sha256:hash(base)},records}));

@@ -1,3 +1,5 @@
+import {parseDemoStateSnapshot} from "./demo-state";
+import {genuineAssessmentVisibility,type GenuineAssessmentVisibility} from "./genuine-assessment-recovery";
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
@@ -18,7 +20,7 @@ import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState={canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState={getGenuineAssessmentVisibility?:(id:string)=>GenuineAssessmentVisibility;canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
 export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding):Promise<ExistingState> {
@@ -37,8 +39,12 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     const records=structuredClone(sourceRecords);
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
+    const assessmentSnapshot=binding?.workflow_base_sha256?parseDemoStateSnapshot(s):undefined;
     return {store,trustedKeys,
-      canAssessGenuine:id=>!genuineHasFinancialHistory(s,id),
+      getGenuineAssessmentVisibility:assessmentSnapshot?id=>genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version):undefined,
+      canAssessGenuine:id=>!genuineHasFinancialHistory(s,id)&&(!assessmentSnapshot||
+        !assessmentSnapshot.assessment_operations.some(operation=>operation.obligation_id===id&&operation.recovery?.generation===1)&&
+        !["UNKNOWN","IN_PROGRESS"].includes(genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version).status)),
       getLinkedInstructions:id=>linkedInstructions.filter(r=>r.source_obligation_id===id),
       resolveDesignatedApprover:(organizationId=DEMO_ORGANIZATION_ID,now=new Date())=>actorAuthorities.resolveDesignatedApprover(organizationId,now),
       getPaymentReleaseApproval:id=>releases.find(a=>a.record.namespace===namespace&&a.record.pae_instruction_hash===sealed.get(id)?.instruction_hash),

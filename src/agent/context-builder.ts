@@ -1,3 +1,4 @@
+import {historicalBasisValid,historicalDatePosition,type HistoricalAssessmentBasis} from "./assessment-context";
 import {createHash} from "node:crypto";
 import {loadFinancialSourceAdmission} from "../server/financial-source-admission";
 import {controlledInstructionSchema,type ControlledInstruction} from "./schema";
@@ -5,6 +6,7 @@ import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 
 /** Shape of one record in data/live-usage/LIVE_USAGE_SET.json (J0-C). */
 export interface LiveUsageObligationRecord {
+  assessment_basis?: HistoricalAssessmentBasis;
   obligation_id: string;
   service_category: string;
   recurrence: "MONTHLY" | "YEARLY" | "ONE_TIME";
@@ -44,6 +46,7 @@ export function buildFinanceAgentContext(
   aggregateVersion: number | string = 0,
   asOfDate = new Date().toISOString().slice(0, 10),
   currentReadiness?: CurrentReadinessOverlay,
+  requireHistoricalBasis = false,
 ): FinanceAgentContext {
   const trustedCurrentReadiness = currentReadiness?.source === "CURRENT_PRODUCT_TRUST_EVIDENCE" &&
     currentReadiness.destination_status === "READY";
@@ -52,9 +55,11 @@ export function buildFinanceAgentContext(
     ? trustedCurrentReadiness ? "READY" : currentReadiness.destination_status === "READY" ? "NOT_READY_SIMULATED_FIXTURE" : currentReadiness.destination_status
     : sourceDestinationStatus === "READY" ? "NOT_READY_SOURCE_EVIDENCE_ONLY" : sourceDestinationStatus;
   if (!isCalendarDate(asOfDate)) throw new Error("Application assessment as-of date is invalid.");
+  const historicalValid = historicalBasisValid(record,new Date().toISOString().slice(0,10));
+  if(historicalValid)asOfDate=record.assessment_basis!.simulation.as_of_date;
   const hasEffectiveDateFields = record.issue_date != null || record.effective_due_date != null ||
     record.effective_due_date_basis != null || record.effective_due_date_provenance != null;
-  const requiresEffectiveDateContract = /^OBL-J0C-[0-9]{3}$/.test(record.obligation_id) || hasEffectiveDateFields;
+  const requiresEffectiveDateContract = record.assessment_basis?.transaction_type === "INVOICE" || /^OBL-J0C-[0-9]{3}$/.test(record.obligation_id) || hasEffectiveDateFields;
   const rawDueDateConsistent = record.due_date_status === "NOT_STATED_ON_SOURCE"
     ? record.due_date === null
     : record.due_date_status === "STATED_ON_SOURCE" && !!record.due_date && isCalendarDate(record.due_date);
@@ -77,7 +82,7 @@ export function buildFinanceAgentContext(
           ? "DUE_TODAY"
           : "FUTURE";
   const controlled = record.obligation_id.startsWith("TESTNET-CONTROLLED-") ? controlledInstructionFor(record,String(aggregateVersion)) : undefined;
-  const dueDatePosition = controlled ? "CONTROLLED_WINDOW_OPEN" as const : !requiresEffectiveDateContract
+  const invoiceDueDatePosition = controlled ? "CONTROLLED_WINDOW_OPEN" as const : !requiresEffectiveDateContract
     ? legacyDueDatePosition
     : !rawDueDateConsistent || !effectiveDateValid
       ? "INVALID"
@@ -86,7 +91,13 @@ export function buildFinanceAgentContext(
         : record.effective_due_date === asOfDate
           ? "DUE_TODAY"
           : "FUTURE";
+  const dueDatePosition = record.assessment_basis || requireHistoricalBasis
+    ? !historicalValid ? "INVALID" : record.assessment_basis!.transaction_type === "INVOICE"
+      ? invoiceDueDatePosition : !rawDueDateConsistent ? "INVALID" : historicalDatePosition(record.assessment_basis!)
+    : invoiceDueDatePosition;
   return {
+    ...(record.assessment_basis ? {assessment_basis:record.assessment_basis} : {}),
+    ...(record.assessment_basis||requireHistoricalBasis?{historical_basis_verified:historicalValid}:{}),
     obligation_id: record.obligation_id,
     aggregate_version: String(aggregateVersion),
     as_of_date: asOfDate,
@@ -96,7 +107,7 @@ export function buildFinanceAgentContext(
     recurrence: record.recurrence,
     due_date: record.due_date,
     due_date_status: record.due_date_status,
-    ...(requiresEffectiveDateContract ? {
+    ...(requiresEffectiveDateContract && record.assessment_basis?.transaction_type !== "PREPAID_NO_INVOICE" ? {
       issue_date: record.issue_date,
       effective_due_date: record.effective_due_date,
       effective_due_date_basis: record.effective_due_date_basis,

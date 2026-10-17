@@ -57,7 +57,7 @@ export abstract class AssessmentState {
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
     if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
       operation.status = "STALE";
-      delete operation.reserved_at;
+      if(!operation.recovery)delete operation.reserved_at;
       return { ...operation };
     }
     const validated = durableAssessmentRecordSchema.parse(record);
@@ -87,7 +87,7 @@ export abstract class AssessmentState {
     if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
       operation.status = "STALE";
       delete operation.provider_result;
-      delete operation.reserved_at;
+      if(!operation.recovery)delete operation.reserved_at;
       return { ...operation };
     }
     if(this.sourceRecordHash(operation.obligation_id)&&operation.provider_result.source_record_sha256!==this.sourceRecordHash(operation.obligation_id)){operation.status="STALE";delete operation.provider_result;return {...operation};}
@@ -95,7 +95,7 @@ export abstract class AssessmentState {
     operation.status = "COMPLETED";
     operation.assessment_hash = sealed.assessment_hash;
     delete operation.provider_result;
-    delete operation.reserved_at;
+    if(!operation.recovery)delete operation.reserved_at;
     return { ...operation };
   }
 

@@ -2473,3 +2473,25 @@ for(const width of [390,320])test(`long recorded HOLD evidence wraps without los
   }
   const box=await owner.boundingBox(),strip=await page.getByRole('region',{name:'Current payable action'}).boundingBox();expect(box!.y).toBeGreaterThanOrEqual(0);expect(box!.y+box!.height).toBeLessThanOrEqual(strip!.y);
 });
+
+for(const width of [1365,390])for(const eligible of [false,true])test(`Stage 2 server UNKNOWN separates historical HOLD and deliberate successor ${eligible} at ${width}px`,async({page},testInfo)=>{
+ await page.setViewportSize({width,height:844});const id='OBL-STAGE2-OFFLINE';
+ const historical={...detail.current_assessment,obligation_id:id,decision:'HOLD',reasons:['Synthetic source normalization requires review.']};
+ const value:any={...detail,source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:false,record:{...detail.record,obligation_id:id},current_assessment:null,historical_assessment:historical,genuine_assessment:{status:'UNKNOWN',recovery_eligible:eligible,recovery_reason:eligible?'ELIGIBLE':'LEGACY_EVIDENCE_MISSING'}};
+ const posts:Array<{path:string;body:any;key:string|undefined}>=[];
+ await page.route('**/api/obligations**',async route=>{
+  const r=route.request(),path=new URL(r.url()).pathname;
+  if(r.method()==='POST'){posts.push({path,body:r.postDataJSON(),key:r.headers()['idempotency-key']});value.genuine_assessment={status:'UNKNOWN',recovery_eligible:false,recovery_reason:'ACTIVE_OR_SUCCESSOR'};return route.fulfill({status:409,json:{code:'ASM-UNKNOWN',status:'UNKNOWN'}});}
+  if(path==='/api/obligations')return route.fulfill({json:{obligations:[{...obligation,obligation_id:id,assessed:false,decision:null,source_group:'GENUINE_COMPANY'}]}});
+  return route.fulfill({json:value});
+ });
+ await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+ await expect(page.getByRole('region',{name:'Hold reason and next action'}).getByText('Latest assessment UNKNOWN',{exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:/Run AI Assessment|View HOLD findings|Create linked testnet instruction|Authorize payment|Pay testnet USDC/})).toHaveCount(0);
+ await expandLifecycleStages(page);await page.getByRole('navigation',{name:'Payment lifecycle navigation'}).getByRole('button',{name:'Assessment',exact:true}).click();
+ await expect(page.getByText('Historical assessment · HOLD',{exact:true})).toBeVisible();expect(posts).toHaveLength(0);
+ if(eligible){await page.getByRole('button',{name:'Request one new assessment',exact:true}).click();await expect.poll(()=>posts.length).toBe(1);expect(posts[0]).toMatchObject({path:`/api/obligations/${id}/advisory`,body:{recovery:true,expected_version:1}});expect(posts[0].key).toMatch(/^[0-9a-f-]{36}$/);expect(posts[0].body.source_record_sha256).toBe(createHash('sha256').update(canonicalize(value.record)).digest('hex'));await expect(page.getByRole('button',{name:'Request one new assessment',exact:true})).toHaveCount(0);}
+ else await expect(page.getByRole('button',{name:'Request one new assessment',exact:true})).toHaveCount(0);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+ await page.screenshot({path:testInfo.outputPath(`stage2-unknown-${eligible}-${width}.png`),fullPage:true});
+});

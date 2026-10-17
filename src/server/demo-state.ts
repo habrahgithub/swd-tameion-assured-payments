@@ -1,3 +1,4 @@
+import {assessmentRecoverySchema,assertAssessmentLineage,type AssessmentRecovery} from "./genuine-assessment-recovery";
 import {AssessmentState} from './assessment-state';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
@@ -101,6 +102,7 @@ export interface StoredSettlementProxy {
 }
 
 export interface AssessmentOperation {
+  recovery?: AssessmentRecovery;
   idempotency_key: string;
   obligation_id: string;
   aggregate_version: number;
@@ -257,6 +259,7 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   const rawAssessmentOperations = snapshot.assessment_operations ?? [];
   if (!Array.isArray(rawAssessmentOperations)) throw new Error("Malformed persisted assessment operations.");
   const assessmentOperations = rawAssessmentOperations.map(parseAssessmentOperation);
+  assertAssessmentLineage(assessmentOperations);
   if (new Set(assessmentOperations.map((operation) => operation.idempotency_key)).size !== assessmentOperations.length) {
     throw new Error("Persisted assessment operations contain duplicate idempotency keys.");
   }
@@ -346,7 +349,8 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
   if (status === "RESERVED" && (!Number.isSafeInteger(operation.reserved_at) || (operation.reserved_at as number) < 0)) {
     throw new Error("Reserved assessment operation is missing its reservation time.");
   }
-  return { ...operation, status, provider_result: providerResult } as unknown as AssessmentOperation;
+  const recovery=operation.recovery===undefined?undefined:assessmentRecoverySchema.parse(operation.recovery);
+  return { ...operation, status, ...(recovery?{recovery}:{}), ...(providerResult?{provider_result:providerResult}:{}) } as unknown as AssessmentOperation;
 }
 
 function parseExecutionRecord(value: unknown): ExecutionRecord {

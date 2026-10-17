@@ -187,6 +187,8 @@ function normalize(
         effective_due_date_provenance: context.effective_due_date_provenance,
         due_date_position: context.due_date_position,
         as_of_date: context.as_of_date,
+        ...(context.assessment_basis?{assessment_basis:context.assessment_basis}:{}),
+        ...(context.historical_basis_verified!==undefined?{historical_basis_verified:context.historical_basis_verified}:{}),
         state_at_event_baseline: context.state_at_event_baseline,
         business_purpose_confirmed: context.business_purpose_confirmed,
         ...(context.controlled_instruction?{controlled_instruction:context.controlled_instruction}:{}),

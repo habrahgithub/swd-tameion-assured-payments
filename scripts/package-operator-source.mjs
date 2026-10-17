@@ -6,7 +6,7 @@ import { registerHooks } from "node:module";
 // Native Node24 strips TS. Resolve this one canonical production import without
 // adding a transpiler/dependency or changing application module resolution.
 const sourceUrl=new URL("../src/server/operator-source-records.ts",import.meta.url).href;
-const hook=registerHooks({resolve(specifier,context,next){return next(specifier==="../domain/payment-control-boundary"&&context.parentURL===sourceUrl?new URL("../src/domain/payment-control-boundary.ts",import.meta.url).href:specifier,context);}});
+const hook=registerHooks({resolve(specifier,context,next){return next(["../domain/payment-control-boundary","../agent/assessment-context"].includes(specifier)&&context.parentURL===sourceUrl?new URL(specifier+".ts",sourceUrl).href:specifier,context);}});
 let source;
 try{source=await import(sourceUrl);}finally{hook.deregister();}
 export const {parseOperatorSource,OPERATOR_SOURCE_PATH,MAX_OPERATOR_SOURCE_BYTES}=source;

@@ -21,11 +21,18 @@ const DEFAULT_RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export interface AssessmentHandlerOptions {reservationTimeoutMs?:number;maxPersistenceAttempts?:number;providerSignal?:()=>AbortSignal}
+export interface AssessmentHandlerOptions {controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;providerSignal?:()=>AbortSignal}
 export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {},options:AssessmentHandlerOptions={}) {
 const getDemoState = load;
 const MAX_PERSISTENCE_ATTEMPTS=options.maxPersistenceAttempts??DEFAULT_MAX_PERSISTENCE_ATTEMPTS;
 const RESERVED_OPERATION_TIMEOUT_MS=options.reservationTimeoutMs??DEFAULT_RESERVED_OPERATION_TIMEOUT_MS;
+async function assessWithinBudget(context:Parameters<typeof assessObligation>[0],provider:Parameters<typeof assessObligation>[1],signal?:AbortSignal){
+  if(!signal)return assessObligation(context,provider);
+  let abort!:()=>void;
+  const cancelled=new Promise<never>((_resolve,reject)=>{abort=()=>reject(new Error("Assessment provider budget expired"));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();});
+  try{return await Promise.race([assessObligation(context,provider,{signal}),cancelled]);}
+  finally{signal.removeEventListener('abort',abort);}
+}
 function reservationExpired(operation: AssessmentOperation): boolean {
   return operation.status === "RESERVED" && Date.now() - (operation.reserved_at ?? 0) > RESERVED_OPERATION_TIMEOUT_MS;
 }
@@ -216,6 +223,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
       if (existing.obligation_id !== id) {
         return NextResponse.json({ error: "Idempotency key is already bound to a different assessment request.", code: "ASM-002" }, { status: 400 });
       }
+      if(options.controlledRecovery)return existingOperationResponse(state,existing);
       if (reservationExpired(existing)) {
         return markUnknownAndReply(state, idempotencyKey);
       }
@@ -224,10 +232,10 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     }
 
     aggregateVersion = state.store.get(DEMO_ORGANIZATION_ID, id).aggregate_version;
-    const expiredReservation = state.findUnresolvedAssessmentOperations(id).find(reservationExpired);
+    const expiredReservation = !options.controlledRecovery && state.findUnresolvedAssessmentOperations(id).find(reservationExpired);
     if (expiredReservation) return markUnknownAndReply(state, expiredReservation.idempotency_key);
     const unresolved = state.findUnresolvedAssessmentOperation(id, aggregateVersion);
-    if (unresolved) {
+    if (unresolved && !options.controlledRecovery) {
       if (reservationExpired(unresolved)) return markUnknownAndReply(state, unresolved.idempotency_key);
       return NextResponse.json(
         { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status, idempotency_key: unresolved.idempotency_key },
@@ -267,9 +275,16 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     );
   }
 
+  if(options.recheckReservationBeforeProvider){
+    const fresh=await getDemoState(),operation=fresh.getAssessmentOperation(idempotencyKey);
+    if(!operation||operation.obligation_id!==id||operation.aggregate_version!==aggregateVersion)throw new Error("ASSESSMENT_RESERVATION_CHANGED");
+    if(operation.status!=="RESERVED")return existingOperationResponse(fresh,operation);
+    if(fresh.hasLivePaeAuthority(id))return NextResponse.json({code:"ASM-CLOSED-AUTHORITY"},{status:409});
+    state=fresh;
+  }
   const record = state.getRecord(id)!;
   const isLiveNvidia = Boolean(process.env.NVIDIA_API_KEY);
-  const provider = isLiveNvidia ? new NvidiaProvider() : new DeterministicFallbackProvider();
+  const provider = isLiveNvidia ? new NvidiaProvider(options.controlledRecovery?{maxTransportAttempts:1}:{}) : new DeterministicFallbackProvider();
   const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
   const productTrustEvidence = hasCurrentProductTrustEvidence(aggregate);
   const destinationReady = productTrustEvidence && aggregate.destination_verification_status === "VERIFIED" &&
@@ -287,7 +302,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
   await revalidate();
   const providerSignal=options.providerSignal?.();
   let decision:Awaited<ReturnType<typeof assessObligation>>;
-  try{decision=await assessObligation(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay),provider,providerSignal?{signal:providerSignal}:{});}
+  try{decision=await assessWithinBudget(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay,options.requireHistoricalBasis),provider,providerSignal);}
   catch(error){if(providerSignal?.aborted)return markUnknownAndReply(state,idempotencyKey);throw error;}
   await revalidate();
   if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);

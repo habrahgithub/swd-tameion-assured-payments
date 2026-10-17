@@ -1,5 +1,25 @@
 import { expect, test } from "./network-fence";
 import AxeBuilder from "@axe-core/playwright";
+import type { Locator } from "@playwright/test";
+
+async function expectReadableSurface(target: Locator, label: string) {
+  const result = await target.evaluate((element: Element) => {
+    const style = getComputedStyle(element);
+    const rgb = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (value: string) => {
+      const [red, green, blue] = rgb(value).map(channel => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    };
+    const foreground = style.color;
+    const background = style.backgroundColor;
+    const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+    return { foreground, background, ratio: (lighter + 0.05) / (darker + 0.05) };
+  });
+  expect(result.ratio, `${label}: ${result.foreground} on ${result.background}`).toBeGreaterThanOrEqual(4.5);
+}
 
 test.beforeEach(async({page})=>{
   page.on("request",request=>{
@@ -105,6 +125,32 @@ for(const viewport of [{width:1365,height:951},{width:390,height:844},{width:320
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.screenshot({path:test.info().outputPath(`local-mock-${viewport.width}.png`),fullPage:true});
   });
+}
+
+for (const theme of ["system-light", "system-dark", "explicit-dark"] as const) {
+  for (const viewport of [{ width: 1365, height: 951 }, { width: 320, height: 640 }]) {
+    test(`local walkthrough keeps controls and receipts readable in ${theme} at ${viewport.width}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme === "system-dark" ? "dark" : "light" });
+      if (theme === "explicit-dark") await page.addInitScript(() => { document.documentElement.dataset.theme = "dark"; });
+      await page.setViewportSize(viewport);
+      await page.goto("/local-demo");
+
+      await expectReadableSurface(page.getByTestId("synthetic-notice"), "synthetic notice");
+      await expectReadableSurface(page.getByRole("button", { name: "Mock case A" }), "case selector");
+      await expectReadableSurface(page.getByTestId("next-action"), "next-action card");
+      await expectReadableSurface(page.getByLabel("Mock scenario"), "scenario selector");
+
+      await page.getByRole("button", { name: "Assess mock case", exact: true }).click();
+      await page.getByRole("button", { name: "Acknowledge exact mock intent" }).click();
+      await page.getByRole("button", { name: "Submit to fake adapter", exact: true }).click();
+      await page.getByRole("button", { name: "Observe recorded fake outcome" }).click();
+
+      await expectReadableSurface(page.getByTestId("mock-audit"), "reconciled receipt");
+      await expectReadableSurface(page.getByRole("region", { name: "Current mock next action" }), "fixed action strip");
+      await expectReadableSurface(page.getByRole("button", { name: "Review receipt" }), "receipt action");
+      expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    });
+  }
 }
 
 test("hosted and embedded activation is rejected without a mock journey",async({page})=>{

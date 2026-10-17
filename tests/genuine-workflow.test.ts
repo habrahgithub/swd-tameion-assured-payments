@@ -10,12 +10,12 @@ import {projectObligationDetail,projectObligationListData} from '../src/server/o
 import {loadExistingDemoState} from '../src/server/load-existing-demo-state';
 import {assertLinkedHistoryAppend,parseLinkedInstructions} from '../src/domain/linked-instruction';
 import {validateLinkedActivation} from '../src/server/linked-instruction-activation';
-import {createGenuineWorkflowHandlers,assertGenuineSnapshotSize,MAX_GENUINE_SNAPSHOT_BYTES} from '../src/server/genuine-workflow';
+import {createGenuineWorkflowHandlers,assertGenuineSnapshotSize,GENUINE_REQUEST_BUDGET_MS,MAX_GENUINE_SNAPSHOT_BYTES} from '../src/server/genuine-workflow';
 import {syntheticSourceRecords} from './test-support/synthetic-source-records';
 import type {AuthContext} from '../src/server/operator-auth';
 const hash=(v:unknown)=>createHash('sha256').update(canonicalize(v)).digest('hex');
 function harness(){
- const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));let snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),revision=7;
+ const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));for(const r of records){const evidence=r.source_evidence[0];r.assessment_basis={transaction_type:'INVOICE',classification_evidence:evidence,timing:{basis:'INVOICE_CASH_TERM',date:r.effective_due_date,evidence},simulation:{mode:'HISTORICAL_AS_OF',as_of_date:'2020-01-05',evidence,owner_authority_reference:'SYNTHETIC-READMISSION'}};}let snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),revision=7;
  const {assessments,...base}=snapshot.authority;
  const packet={schema_version:3,record_count:5,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:'ORG-DEMO-001',state_binding:{namespace:'FICTIONAL-GENUINE',revision:7,authority_sha256:hash(snapshot.authority),workflow_base_sha256:hash(base)},records};
  const bytes=Buffer.from(JSON.stringify(packet)); const source=vi.fn(()=>parseOperatorSource(bytes,createHash('sha256').update(bytes).digest('hex')));
@@ -137,10 +137,132 @@ describe('genuine advisory and separate linked instruction',()=>{
   vi.spyOn(Date,'now').mockImplementation(()=>now);h.guard.mockImplementation(async()=>{now=start+45001;return {revalidate:async()=>{}} as AuthContext;});
   const result=await h.handler('assess',h.request({}),id);expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'GENUINE_ASSESSMENT_TIME_BUDGET'});expect(h.repository.loadExisting).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();
  });
+ it.each(['authentication','repository load'] as const)('ends a hung %s inside the request budget without provider dispatch or persistence',async boundary=>{
+  vi.useFakeTimers();const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id;
+  const never=new Promise<never>(()=>{});
+  if(boundary==='authentication')h.guard.mockImplementation(()=>never);
+  else h.repository.loadExisting.mockImplementation(()=>never);
+  const pending=h.handler('assess',h.request({}),id);
+  const observed=Promise.race([pending,new Promise<'STALLED'>(resolve=>setTimeout(()=>resolve('STALLED'),GENUINE_REQUEST_BUDGET_MS+1))]);
+  await vi.advanceTimersByTimeAsync(GENUINE_REQUEST_BUDGET_MS+1);
+  const result=await observed;expect(result).not.toBe('STALLED');expect((result as Response).status).toBe(503);expect(await (result as Response).json()).toMatchObject({code:'GENUINE_ASSESSMENT_TIME_BUDGET'});
+  expect(fetcher).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
 
  it('does not classify malformed server-owned linkage as a client body error',async()=>{
   const h=harness();h.snapshot().linked_settlement_instructions=[{schema_version:99}] as any;
   const result=await h.handler('assess',h.request({}),h.records[0].obligation_id);expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'GENUINE_WORKFLOW_UNAVAILABLE'});expect(h.repository.compareAndSet).not.toHaveBeenCalled();
  });
 
+});
+
+// Synthetic durable state only. These records do not reproduce private K2.
+function seedUnknown(h:ReturnType<typeof harness>,options:{legacy?:boolean;age?:number;status?:'UNKNOWN'|'RESERVED'}={}){
+ const id=h.records[0].obligation_id,now=Date.now(),reserved_at=now-(options.age??106_000);
+ const original:any={idempotency_key:'11111111-1111-4111-8111-111111111111',obligation_id:id,aggregate_version:1,status:options.status??'UNKNOWN',reserved_at};
+ if(!options.legacy)original.recovery={generation:0,source_record_sha256:hash(h.records[0]),binding_sha256:hash(h.source().state_binding),...(original.status==='UNKNOWN'?{unknown_at:reserved_at+20_000}:{})};
+ h.snapshot().assessment_operations.push(original);return structuredClone(original);
+}
+function recover(h:ReturnType<typeof harness>,key='22222222-2222-4222-8222-222222222222'){
+ return h.handler('assess',h.request({recovery:true,expected_version:1,source_record_sha256:hash(h.source().records[0])},key),h.records[0].obligation_id);
+}
+async function genuineGet(h:ReturnType<typeof harness>){
+ const readers=createObligationReaders(h.guard,async(records,binding)=>loadExistingDemoState({call:async()=>({revision:h.revision(),snapshot:structuredClone(h.snapshot())})},h.source().state_binding.namespace,records,binding),h.source,()=>undefined);
+ return readers.detail(new Request('https://fixture.invalid'),h.records[0].obligation_id);
+}
+describe('Stage 2 durable visibility and controlled successor',()=>{
+ it('shows historical HOLD separately from categorical UNKNOWN to two independent authenticated readers without a local key',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY',undefined);const h=harness(),id=h.records[0].obligation_id;
+  const state=new DemoState(h.snapshot(),undefined,undefined,undefined,{},h.records);
+  sealTestAssessment(state.store,'ORG-DEMO-001',id,1,{decision:'HOLD',source_record_sha256:hash(h.records[0])});h.snapshot().authority=state.store.exportSnapshot();
+  await h.repository.compareAndSet(h.source().state_binding.namespace,h.revision(),h.snapshot());
+  const original=seedUnknown(h,{legacy:true}),before=JSON.stringify(h.snapshot());h.repository.compareAndSet.mockClear();
+  const responses=await Promise.all([genuineGet(h),genuineGet(h)]);
+  for(const r of responses){expect(r.status).toBe(200);const d=await r.json();expect(d).toMatchObject({current_assessment:null,historical_assessment:{decision:'HOLD'},advisory_action_eligible:false,financial_action_eligible:false,genuine_assessment:{status:'UNKNOWN',recovery_eligible:false,recovery_reason:'LEGACY_EVIDENCE_MISSING'}});expect(JSON.stringify(d)).not.toContain(original.idempotency_key);}
+  expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+  const changed=structuredClone(h.source()),originalSourceHash=hash(changed.records[0]);changed.records[0].commercial_terms='SYNTHETIC OWNER READMISSION';h.source.mockReturnValue(changed);
+  const reread=await(await genuineGet(h)).json();expect(reread.current_assessment).toBeNull();expect(reread.historical_assessment).toMatchObject({decision:'HOLD',source_record_sha256:originalSourceHash});expect(JSON.stringify(h.snapshot())).toBe(before);
+ });
+ it('admits one successor across ten clicks, independent handler instances and CAS races; preserves original bytes',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const h=harness(),original=seedUnknown(h),before=JSON.stringify(original);
+  const fetcher=vi.fn(async()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({obligation_id:h.records[0].obligation_id,decision:'HOLD',finding_codes:[],evidence_ids:h.records[0].source_evidence.map((e:any)=>e.evidence_id),uncertainty_signal:true,explanation:'Mock model declines'})}}]}),{status:200}));vi.stubGlobal('fetch',fetcher);
+  const instances=Array.from({length:10},()=>createGenuineWorkflowHandlers({guard:h.guard,source:h.source,repository:h.repository}));
+  const responses=await Promise.all(instances.map((handler,i)=>handler('assess',h.request({recovery:true,expected_version:1,source_record_sha256:hash(h.records[0])},`22222222-2222-4222-8222-${String(i).padStart(12,'0')}`),h.records[0].obligation_id)));
+  expect(responses.filter(r=>r.status===200)).toHaveLength(1);expect(fetcher).toHaveBeenCalledOnce();
+  expect(h.snapshot().assessment_operations).toHaveLength(2);expect(JSON.stringify(h.snapshot().assessment_operations[0])).toBe(before);
+  const successor=h.snapshot().assessment_operations[1];expect(successor).toMatchObject({status:'COMPLETED',recovery:{generation:1,predecessor_key:original.idempotency_key,predecessor_sha256:hash(original)}});expect(parseDemoStateSnapshot(h.snapshot()).assessment_operations).toHaveLength(2);
+  const projected=await(await genuineGet(h)).json();expect(projected).toMatchObject({genuine_assessment:{status:'COMPLETED',recovery_eligible:false,recovery_reason:'ACTIVE_OR_SUCCESSOR'},advisory_action_eligible:false});
+  expect((await recover(h,'33333333-3333-4333-8333-333333333333')).status).toBe(409);expect(fetcher).toHaveBeenCalledOnce();
+  const normal=await h.handler('assess',h.request({},'44444444-4444-4444-8444-444444444444'),h.records[0].obligation_id);expect(normal.status).toBe(409);expect(fetcher).toHaveBeenCalledOnce();
+ });
+ it('never replays K2 and never seals it when deliberately submitted as the successor key',async()=>{
+  const h=harness(),original=seedUnknown(h),before=JSON.stringify(h.snapshot());
+  const response=await recover(h,original.idempotency_key);expect(response.status).toBe(409);expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
+ it.each([20_000,44_999,45_000,60_000,104_999])('denies successor at reservation age %i until request-window plus grace',async age=>{
+  const h=harness();vi.spyOn(Date,'now').mockReturnValue(Date.now());seedUnknown(h,{age});const before=JSON.stringify(h.snapshot());const result=await recover(h);expect(result.status).toBe(409);expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
+ it('admits at the exact verified grace boundary',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY',undefined);const h=harness();const now=Date.now();vi.spyOn(Date,'now').mockReturnValue(now);seedUnknown(h,{age:105_000});expect((await recover(h)).status).toBe(200);
+ });
+ it.each(['legacy','reserved','source','binding','version','financial','cap','malformed','timing','second-active'])('denies %s without a successor provider dispatch',async kind=>{
+  vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),original=seedUnknown(h,{legacy:kind==='legacy',status:kind==='reserved'?'RESERVED':'UNKNOWN'});
+  const op=h.snapshot().assessment_operations[0];
+  if(kind==='source')op.recovery!.source_record_sha256='f'.repeat(64);
+  if(kind==='binding')op.recovery!.binding_sha256='f'.repeat(64);
+  if(kind==='version')op.aggregate_version=2;
+  if(kind==='financial')h.snapshot().execution_ledger.push({obligation_id:h.records[0].obligation_id,idempotency_key:'FICTIONAL-FINANCIAL-UNKNOWN',status:'UNKNOWN',atomic_amount:'1',destination_address:'0x'+'1'.repeat(40),provider_ref:null});
+  if(kind==='cap')for(let i=0;i<3;i++)h.snapshot().assessment_operations.push({idempotency_key:`33333333-3333-4333-8333-${String(i).padStart(12,'0')}`,obligation_id:original.obligation_id,aggregate_version:1,status:'STALE'});
+  if(kind==='malformed')op.recovery!.generation=99 as any;
+  if(kind==='timing')op.recovery!.unknown_at=op.reserved_at!-1;
+  if(kind==='second-active')h.snapshot().assessment_operations.push({idempotency_key:'33333333-3333-4333-8333-333333333333',obligation_id:original.obligation_id,aggregate_version:1,status:'RESERVED',reserved_at:Date.now()});
+  const before=JSON.stringify(h.snapshot()),result=await recover(h);expect(result.status).toBeGreaterThanOrEqual(400);expect(fetcher).not.toHaveBeenCalled();expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
+ it('makes one transport attempt for A2 failure and never dispatches A3, including reload and repeat click',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const fetcher=vi.fn(async()=>new Response('{}',{status:503}));vi.stubGlobal('fetch',fetcher);const h=harness(),original=seedUnknown(h);
+  const result=await recover(h);expect(result.status).toBe(409);expect(await result.json()).toMatchObject({status:'UNKNOWN'});expect(fetcher).toHaveBeenCalledOnce();
+  expect(h.snapshot().assessment_operations[0]).toEqual(original);expect(h.snapshot().assessment_operations[1].status).toBe('UNKNOWN');
+  expect((await recover(h)).status).toBe(409);expect((await recover(h,'33333333-3333-4333-8333-333333333333')).status).toBe(409);expect(fetcher).toHaveBeenCalledOnce();
+  const d=await(await genuineGet(h)).json();expect(d.genuine_assessment).toMatchObject({status:'UNKNOWN',recovery_eligible:false});
+ });
+ it('never uses timeout alone as recovery authority or mutates a RESERVED original on a recovery click',async()=>{
+  const h=harness();seedUnknown(h,{status:'RESERVED',age:900_000});const before=JSON.stringify(h.snapshot());expect((await recover(h)).status).toBe(409);expect(JSON.stringify(h.snapshot())).toBe(before);
+ });
+ it('loses admission when session or source changes during reservation rechecks',async()=>{
+  for(const kind of ['session','source']){const h=harness();seedUnknown(h);let checks=0;
+   h.guard.mockResolvedValue({revalidate:async()=>{if(++checks===3){if(kind==='session')throw new Error('SYNTHETIC_SESSION_REVOKED');const view=structuredClone(h.source());view.records[0].commercial_terms='Synthetic drift';h.source.mockReturnValue(view);}}} as AuthContext);
+   expect((await recover(h)).status).toBeGreaterThanOrEqual(400);expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+  }
+ });
+ it('prevents a late original response from replacing the successor or altering its predecessor',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const h=harness(),start=Date.now();let clock=start;vi.spyOn(Date,'now').mockImplementation(()=>clock);
+  let finish!:(r:Response)=>void,started!:()=>void;const ready=new Promise<void>(r=>{started=r;});
+  const output=()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({obligation_id:h.records[0].obligation_id,decision:'PAY',finding_codes:[],evidence_ids:h.records[0].source_evidence.map((e:any)=>e.evidence_id),uncertainty_signal:false,explanation:'Mock only'})}}]}));
+  const fetcher=vi.fn().mockImplementationOnce(()=>new Promise<Response>(resolve=>{finish=resolve;started();})).mockImplementation(async()=>output());vi.stubGlobal('fetch',fetcher);
+  const originalRequest=h.handler('assess',h.request({},'11111111-1111-4111-8111-111111111111'),h.records[0].obligation_id);await ready;
+  clock=start+45_001;expect((await h.handler('assess',h.request({},'11111111-1111-4111-8111-111111111111'),h.records[0].obligation_id)).status).toBe(409);
+  const original=structuredClone(h.snapshot().assessment_operations[0]);clock=start+105_002;expect((await recover(h)).status).toBe(200);const after=JSON.stringify(h.snapshot());
+  finish(output());expect((await originalRequest).status).toBe(503);expect(JSON.stringify(h.snapshot())).toBe(after);expect(h.snapshot().assessment_operations[0]).toEqual(original);expect(fetcher).toHaveBeenCalledTimes(2);
+ });
+ it('rejects mutated predecessor identity, duplicate lineage and malformed generation on reload',()=>{
+  const h=harness(),original=seedUnknown(h);
+  const child:any={idempotency_key:'22222222-2222-4222-8222-222222222222',obligation_id:original.obligation_id,aggregate_version:1,status:'RESERVED',reserved_at:Date.now(),recovery:{...original.recovery,generation:1,unknown_at:undefined,predecessor_key:original.idempotency_key,predecessor_sha256:hash(original)}};
+  h.snapshot().assessment_operations.push(child);expect(()=>parseDemoStateSnapshot(h.snapshot())).not.toThrow();
+  h.snapshot().assessment_operations[0].reserved_at=original.reserved_at!-1;expect(()=>parseDemoStateSnapshot(h.snapshot())).toThrow();
+  h.snapshot().assessment_operations[0]=original;h.snapshot().assessment_operations.push({...child,idempotency_key:'33333333-3333-4333-8333-333333333333'});expect(()=>parseDemoStateSnapshot(h.snapshot())).toThrow();
+ });
+});
+
+it('rechecks durable financial absence after successor CAS and before provider dispatch',async()=>{
+ vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),original=seedUnknown(h);
+ h.repository.loadExisting.mockImplementation(async()=>{if(h.snapshot().assessment_operations.length===2)h.snapshot().execution_ledger.push({obligation_id:original.obligation_id,idempotency_key:'FICTIONAL-CONCURRENT-FINANCIAL',status:'UNKNOWN',atomic_amount:'1',destination_address:'0x'+'1'.repeat(40),provider_ref:null});return {revision:h.revision(),snapshot:structuredClone(h.snapshot()) as any};});
+ expect((await recover(h)).status).toBeGreaterThanOrEqual(400);expect(fetcher).not.toHaveBeenCalled();expect(h.snapshot().assessment_operations[0]).toEqual(original);expect(h.snapshot().assessment_operations[1].status).toBe('RESERVED');
+});
+
+it('enforces the A2 provider budget even when a transport body ignores abort, and discards its late result',async()=>{
+ vi.useFakeTimers();vi.spyOn(AbortSignal,'timeout').mockImplementation(ms=>{const c=new AbortController();setTimeout(()=>c.abort(),ms);return c.signal;});vi.stubEnv('NVIDIA_API_KEY','OFFLINE_MOCK_ONLY');const h=harness(),original=seedUnknown(h);
+ let finish!:(value:unknown)=>void,started!:()=>void;const ready=new Promise<void>(r=>{started=r;});const body=new Promise<unknown>(r=>{finish=r;});
+ const fetcher=vi.fn(async()=>{const response=new Response('{}');response.json=async()=>{started();return body;};return response;});vi.stubGlobal('fetch',fetcher);
+ const pending=recover(h);await ready;await vi.advanceTimersByTimeAsync(20_001);const result=await pending;expect(result.status).toBe(409);expect(await result.json()).toMatchObject({status:'UNKNOWN'});expect(fetcher).toHaveBeenCalledOnce();
+ const before=JSON.stringify(h.snapshot());finish({choices:[{message:{content:JSON.stringify({obligation_id:original.obligation_id,decision:'PAY',finding_codes:[],evidence_ids:h.records[0].source_evidence.map((e:any)=>e.evidence_id),uncertainty_signal:false,explanation:'Mock late body'})}}]});await Promise.resolve();await Promise.resolve();expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.snapshot().assessment_operations[0]).toEqual(original);
 });

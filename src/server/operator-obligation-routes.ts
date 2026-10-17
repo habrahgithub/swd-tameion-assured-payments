@@ -40,7 +40,12 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
         let bindings;try {if(controlledMember)bindings=paymentReleaseBindings(controlled,loadFinancialRequesterBinding());}catch { /* readable, but no release capability */ }
         response=projectObligationDetail(selectedState!,id,controlledMember||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{...bindings,namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined,controlledMember?"DEMO_ARC_TESTNET":binding?"GENUINE_COMPANY":"UNVERIFIED",binding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===id)):undefined,controlledMember?{namespace:controlled!.namespace,selected_obligation_id:controlled!.source.obligation_id,selected_source_record_sha256:contentHash(controlled!.source),source_valid_until:controlled!.expires_at}:undefined);}
       if(id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256&&response.ok){
-        const data=await response.json();response=privateJson({...data,advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]},response.status);
+        const data=await response.json();
+        const visibility=selectedState?.getGenuineAssessmentVisibility?.(id);
+        const unresolved=visibility&&['UNKNOWN','IN_PROGRESS'].includes(visibility.status);
+        const prior=unresolved?selectedState?.store.getAssessmentHistory('ORG-DEMO-001',id).reverse().find(a=>a.record.source_record_sha256):undefined;
+        const historical=prior?{obligation_id:id,assessment_id:prior.record.assessment_id,assessment_hash:prior.hash,aggregate_version:prior.record.aggregate_version,source_record_sha256:prior.record.source_record_sha256,decision:prior.record.decision,reasons:prior.record.reasons,provider_mode:prior.record.provider_mode}:null;
+        response=privateJson({...data,...(visibility?{genuine_assessment:visibility}:{}),...(unresolved?{historical_assessment:historical,current_assessment:null,financial_action_eligible:false,truth:{...data.truth,tameion_control_truth:{...data.truth.tameion_control_truth,assessment_state:"NOT_ASSESSED"}}}:{}),advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]},response.status);
       }
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}

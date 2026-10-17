@@ -1,3 +1,4 @@
+import {historicalAssessmentBasisSchema,historicalDatePosition} from "./assessment-context";
 import { z } from "zod";
 import { FINDING_CATALOG, findingCodeSchema } from "./finding-catalog";
 
@@ -79,6 +80,8 @@ export const raceAssessmentSchema = z.object({
   evidence: z.object({
     evidence_ids: z.array(z.string().min(1)),
     authoritative_facts: z.object({
+      assessment_basis:historicalAssessmentBasisSchema.optional(),
+      historical_basis_verified:z.boolean().optional(),
       obligation_id: z.string().min(1),
       aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
       amount: z.string().min(1),
@@ -153,7 +156,7 @@ export const raceAssessmentSchema = z.object({
   }
   const controlled=facts.controlled_instruction;
   if(controlled && (controlled.obligation_id!==facts.obligation_id||controlled.aggregate_version!==facts.aggregate_version||facts.amount!=="1.00"||facts.currency!=="USD"||facts.issue_date!=null||facts.due_date!==null||facts.effective_due_date!=null||facts.effective_due_date_basis!=null||facts.business_purpose_confirmed!==false))ctx.addIssue({code:"custom",message:"Controlled source facts mismatch"});
-  const expectedDuePosition = controlled ? "CONTROLLED_WINDOW_OPEN" : hasEffectiveDateContract
+  const invoiceExpectedDuePosition = controlled ? "CONTROLLED_WINDOW_OPEN" : hasEffectiveDateContract
     ? !rawDueDateConsistent || !effectiveDateContractValid
       ? "INVALID"
       : facts.effective_due_date! < facts.as_of_date
@@ -170,6 +173,16 @@ export const raceAssessmentSchema = z.object({
           : facts.due_date === facts.as_of_date
             ? "DUE_TODAY"
             : "FUTURE";
+  const b=facts.assessment_basis;
+  const expectedDuePosition=facts.historical_basis_verified===false?"INVALID":b
+    ? !facts.historical_basis_verified ? "INVALID" : b.transaction_type==='INVOICE' ? invoiceExpectedDuePosition
+      : !rawDueDateConsistent ? "INVALID" : historicalDatePosition(b)
+    : invoiceExpectedDuePosition;
+  if(b && facts.historical_basis_verified && (facts.as_of_date!==b.simulation.as_of_date ||
+    [b.classification_evidence,b.timing.evidence,b.simulation.evidence].some(p=>!race.evidence.evidence_ids.includes(p.evidence_id)) ||
+    b.transaction_type==='PREPAID_NO_INVOICE'&&(facts.issue_date!=null||facts.effective_due_date!=null||facts.effective_due_date_basis!=null)||
+    b.timing.basis==='STATED_SOURCE_DUE_DATE'&&(facts.due_date!==b.timing.date||facts.due_date_status!=='STATED_ON_SOURCE')))
+    ctx.addIssue({code:'custom',message:'Historical assessment basis inconsistent'});
   if (facts.due_date_position !== expectedDuePosition) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "due_date_position must match the application-derived calendar dates" });
   }
@@ -212,6 +225,8 @@ export type FinanceAgentModelRecommendation = z.infer<typeof financeAgentModelRe
 /** The minimal, allowlisted, read-only context handed to the AI provider. No PII, no secrets. */
 export const financeAgentContextSchema = z
   .object({
+    assessment_basis:historicalAssessmentBasisSchema.optional(),
+    historical_basis_verified:z.boolean().optional(),
     obligation_id: z.string(),
     aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
     as_of_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

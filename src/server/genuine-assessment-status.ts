@@ -71,7 +71,7 @@ export function createGenuineAssessmentStatusHandler(deps:Dependencies){
     if(operation.aggregate_version!==aggregate.aggregate_version||operation.status==='STALE')result.status='STALE';
     else if(operation.status==='COMPLETED'){
      const current=store.getCurrentAssessment(organization,id);
-     const otherUnresolved=snapshot.assessment_operations.some(item=>item.idempotency_key!==key&&item.obligation_id===id&&item.aggregate_version===aggregate.aggregate_version&&['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN'].includes(item.status));
+     const otherUnresolved=snapshot.assessment_operations.some(item=>item.idempotency_key!==key&&!snapshot.assessment_operations.some(child=>child.recovery?.predecessor_key===item.idempotency_key)&&item.obligation_id===id&&item.aggregate_version===aggregate.aggregate_version&&['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN'].includes(item.status));
      if(!otherUnresolved&&current&&current.hash===operation.assessment_hash&&current.record.assessment_id===`ASM-${key}`&&current.record.organization_id===organization&&current.record.obligation_id===id&&current.record.aggregate_version===String(aggregate.aggregate_version)&&current.record.source_record_sha256===sourceHash){
       result.status='COMPLETED_CURRENT';
       result.receipt={assessment_id:current.record.assessment_id,assessment_hash:current.hash,aggregate_version:current.record.aggregate_version};

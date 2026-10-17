@@ -22,7 +22,7 @@ export interface AiProvider {
   assess(context: FinanceAgentContext, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
-export const CARE_PROMPT_VERSION = "tameion-finance-care-v6";
+export const CARE_PROMPT_VERSION = "tameion-finance-care-v7";
 export const CARE_SYSTEM_PROMPT = `C — CONTEXT
 You receive an application-built JSON context containing obligation identity and aggregate version,
 authoritative financial facts, supplied evidence IDs, original issue date, raw source due-date truth,
@@ -36,7 +36,17 @@ OVERDUE is a timing and urgency fact, not an assessment blocker. Do not require 
 solely because an invoice is overdue. Evaluate the current OUTSTANDING obligation using its supplied
 evidence and business facts.
 
-When effective_due_date is valid and due_date_position is OVERDUE, DUE_TODAY, or FUTURE, that
+An assessment_basis with historical_basis_verified true declares an owner-admitted historical
+simulation date and an explicit evidence-backed transaction type. as_of_date is that declared date,
+not a claim that the machine clock changed. PREPAID_NO_INVOICE has no invoice: assess its proven
+prepaid service date or stated source due date and supplied business evidence. Do not invent invoice
+dates, purpose, approval, due dates, or provenance. RECURRING_OTHER requires its explicitly evidenced
+source due date. For these types a valid application due_date_position supplies timing without an
+invoice cash-term date. These facts never guarantee PAY; use genuine inference on the evidence.
+Missing or invalid historical provenance remains a normalization blocker. INVOICE retains the
+invoice-date cash-term rule below. Historical simulation does not settle the original expenditure.
+
+For invoice transactions, when effective_due_date is valid and due_date_position is OVERDUE, DUE_TODAY, or FUTURE, that
 effective date is the operative assessment date. If due_date_status is NOT_STATED_ON_SOURCE in this
 case, it records only that the source lacks a separately printed due-date field; with valid
 effective-date basis and provenance, it is provenance only and is not an assessment blocker. Do not
@@ -115,12 +125,13 @@ function runtimeHash(config: object): string {
 export class NvidiaProvider implements AiProvider {
   readonly name = "nvidia-nemotron-3-super-120b-a12b";
   readonly promptIdentity = { version: CARE_PROMPT_VERSION, sha256: CARE_PROMPT_SHA256 };
-  readonly runtimeIdentity = {
+  get runtimeIdentity(){return {
     provider_name: "NVIDIA Build",
     model_id: NVIDIA_RUNTIME_CONFIG.model_id,
     model_config_version: NVIDIA_RUNTIME_CONFIG.model_config_version,
-    runtime_config_sha256: runtimeHash(NVIDIA_RUNTIME_CONFIG),
-  };
+    runtime_config_sha256: runtimeHash(this.transport.maxTransportAttempts?{...NVIDIA_RUNTIME_CONFIG,max_transport_attempts:this.transport.maxTransportAttempts}:NVIDIA_RUNTIME_CONFIG),
+  };}
+  constructor(private readonly transport:{maxTransportAttempts?:1}={}){}
   static readonly REQUEST_TIMEOUT_MS = NVIDIA_RUNTIME_CONFIG.timeout_ms;
 
   async assess(context: FinanceAgentContext, options: { signal?: AbortSignal } = {}): Promise<unknown> {
@@ -129,8 +140,9 @@ export class NvidiaProvider implements AiProvider {
       throw new AiProviderError("NVIDIA_API_KEY is not configured in this environment");
     }
 
+    const maxAttempts=this.transport.maxTransportAttempts??NVIDIA_RUNTIME_CONFIG.max_transport_attempts;
     let response: Response | undefined;
-    for (let attempt = 1; attempt <= NVIDIA_RUNTIME_CONFIG.max_transport_attempts; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (options.signal?.aborted) throw new AiProviderError("NVIDIA request cancelled");
       const timeoutSignal = AbortSignal.timeout(NvidiaProvider.REQUEST_TIMEOUT_MS);
       const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
@@ -161,17 +173,17 @@ export class NvidiaProvider implements AiProvider {
           throw new AiProviderError("NVIDIA request cancelled");
         }
         if (timeoutSignal.aborted) {
-          if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
+          if (attempt === maxAttempts) {
             throw new AiProviderError("NVIDIA request timed out");
           }
           continue;
         }
-        if (attempt === NVIDIA_RUNTIME_CONFIG.max_transport_attempts) {
+        if (attempt === maxAttempts) {
           throw new AiProviderError(error instanceof Error ? `NVIDIA transport failed: ${error.message}` : "NVIDIA transport failed");
         }
         continue;
       }
-      if (response.status >= 500 && attempt < NVIDIA_RUNTIME_CONFIG.max_transport_attempts) continue;
+      if (response.status >= 500 && attempt < maxAttempts) continue;
       break;
     }
 

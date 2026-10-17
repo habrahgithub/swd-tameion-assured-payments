@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { openLocalWalkthrough, SCENARIOS, SYNTHETIC_NOTICE, type Scenario, type WalkthroughView } from "../../src/demo/local-walkthrough";
 
 type Journey = ReturnType<typeof openLocalWalkthrough>;
-const button="rounded border border-[var(--color-border-strong)] bg-white px-4 py-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50";
-const terminalButton="min-h-11 w-full rounded border border-[var(--color-border-strong)] bg-white px-2 py-2 text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto";
-const card="min-w-0 rounded-lg border border-[var(--color-border)] bg-white p-4 sm:p-6";
+const themedSurface="bg-[var(--color-surface)] text-[var(--color-ink)]";
+const button=`rounded border border-[var(--color-border-strong)] ${themedSurface} px-4 py-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50`;
+const terminalButton=`min-h-11 w-full rounded border border-[var(--color-border-strong)] ${themedSurface} px-2 py-2 text-[13px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto`;
+const card=`min-w-0 rounded-lg border border-[var(--color-border)] ${themedSurface} p-4 sm:p-6`;
 function guidance(v:WalkthroughView):string {
   if(v.stage==="UNKNOWN")return "OUTCOME_UNVERIFIED / NO RETRY. Observe recorded fake evidence only; do not resubmit.";
   if(v.stage==="RECONCILED_MOCK")return "Mock confirmation recorded. Review the audit trail or select the other invented case. No vendor payment occurred.";
@@ -54,14 +55,14 @@ export function LocalWalkthrough() {
     <header className="space-y-2">
       <p className="text-xs font-bold uppercase tracking-widest">Tameion · local demonstration</p>
       <h1 className="text-2xl font-semibold sm:text-3xl">Local synthetic walkthrough</h1>
-      <p data-testid="synthetic-notice" className="rounded border border-[var(--color-border-strong)] bg-white p-3 font-bold">{SYNTHETIC_NOTICE}</p>
+      <p data-testid="synthetic-notice" className={`rounded border border-[var(--color-border-strong)] ${themedSurface} p-3 font-bold`}>{SYNTHETIC_NOTICE}</p>
       <p>Invented cases · browser memory only · fake adapter · no real authentication, signing or payment. Reload discards this session. The genuine queue remains withdrawn.</p>
       <a className="underline" href="/">View the withdrawn genuine queue</a>
     </header>
     <nav aria-label="Invented case selection" className="flex flex-wrap gap-3">
       {(["A","B"] as const).map(id=><button key={id} className={button} aria-pressed={view.caseId===`MOCK-CASE-${id}`} disabled={busy} onClick={()=>void act(j=>j.select(`MOCK-CASE-${id}`))}>Mock case {id}</button>)}
     </nav>
-    {error&&<p role="alert" className="rounded border border-[var(--color-border-strong)] bg-white p-4 font-semibold">{error}</p>}
+    {error&&<p role="alert" className={`rounded border border-[var(--color-border-strong)] ${themedSurface} p-4 font-semibold`}>{error}</p>}
     <section className={card} aria-labelledby="next-heading" data-testid="next-action">
       <h2 id="next-heading" className="text-lg font-semibold">Next action · {view.caseId}</h2>
       <p className="my-3">{guidance(view)}</p>
@@ -83,7 +84,7 @@ export function LocalWalkthrough() {
           <dt>Stage</dt><dd data-testid="journey-stage" className="font-semibold">{view.stage}</dd>
         </dl>
         <label htmlFor="mock-scenario" className="block font-semibold">Mock scenario</label>
-        <select id="mock-scenario" className="my-2 w-full rounded border border-[var(--color-border-strong)] bg-white p-3" value={view.scenario} disabled={!canEdit} onChange={e=>void act(j=>j.scenario(e.target.value as Scenario))}>
+        <select id="mock-scenario" className={`my-2 w-full rounded border border-[var(--color-border-strong)] ${themedSurface} p-3`} value={view.scenario} disabled={!canEdit} onChange={e=>void act(j=>j.scenario(e.target.value as Scenario))}>
           {SCENARIOS.map(s=><option key={s} value={s}>{s.replaceAll("_"," ")}</option>)}
         </select>
         <p className="mb-3 text-sm">Changing inputs increments the version. Previous evidence remains in the audit, but cannot authorize the new intent.</p>
@@ -106,7 +107,7 @@ export function LocalWalkthrough() {
       </section>
     </div>
     <section ref={receiptRef} tabIndex={-1} className={card} aria-labelledby="audit-heading" data-testid="mock-audit"><h2 id="audit-heading" className="text-base font-semibold sm:text-lg">{view.stage==="RECONCILED_MOCK"?"Mock receipt":`Session audit · ${view.caseId}`}</h2>{view.stage==="RECONCILED_MOCK"&&<p data-testid="mock-receipt-outcome" className="mt-2 text-[13px]">Mock {view.reconciliation} · fake submissions: {view.submissions}.</p>}<ol className="mt-4 space-y-3">{view.events.map((e,i)=><li key={i} className="border-s-2 border-[var(--color-border-strong)] ps-3"><strong>{e.action}</strong> · {e.caseId} · version {e.version}<p>{e.detail}</p>{e.intent&&<p className="text-sm">Recorded intent: {e.intent.amount} · {e.intent.destination}</p>}{e.assessment&&<p className="text-sm">Assessment: {e.assessment.id}</p>}{e.packet&&<p className="text-sm">Unsigned packet: {e.packet.id} · {e.packet.intent.caseId} · version {e.packet.intent.version}</p>}</li>)}</ol></section>
-    <section role="region" aria-label="Current mock next action" className="fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] bg-white p-3 shadow-lg">
+    <section role="region" aria-label="Current mock next action" className={`fixed inset-x-0 bottom-0 z-20 border-t-2 border-[var(--color-border-strong)] ${themedSurface} p-3 shadow-lg`}>
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2">
         <div className="min-w-0"><p className="text-[11px] font-bold leading-tight">{reviewingReceipt?"SIMULATED":SYNTHETIC_NOTICE}</p><p className="text-[12px] leading-tight">{view.caseId} · {view.stage==="RECONCILED_MOCK"?"Complete":view.stage}{view.stage==="UNKNOWN"?" · NO RETRY":""}</p></div>
         {view.stage==="RECONCILED_MOCK" && reviewingReceipt ? <button className={terminalButton} onClick={()=>setReviewingReceipt(false)}>Show actions</button> : view.stage==="RECONCILED_MOCK" ? <>

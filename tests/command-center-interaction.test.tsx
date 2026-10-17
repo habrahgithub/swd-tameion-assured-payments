@@ -3448,7 +3448,7 @@ describe('R1 conflict-aware assessment recovery',()=>{
  it.each([conflict,{code:'ASM-UNKNOWN',status:'UNKNOWN',error:'Earlier outcome unknown.',idempotency_key:earlier}])('explains a separate server-reported reference without adopting or checking it: %j',async payload=>{
   const {mock}=mount(payload);await submit();
   await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('earlier unresolved assessment'));
-  const card=screen.getByRole('region',{name:'Hold reason and next action'});expect(card.textContent).toContain(earlier);expect(card.textContent).toContain('source/version unverified');
+  const card=screen.getByRole('region',{name:'Hold reason and next action'});expect(card.textContent).not.toContain(attempted);expect(card.textContent).not.toContain(earlier);expect(card.textContent).toContain('source/version unverified');
   expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(1);
   fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be verified'));
@@ -3479,9 +3479,10 @@ describe('R1 conflict-aware assessment recovery',()=>{
  });
  it.each([401,403])('withdraws earlier-reference presentation after status HTTP %s without removing identity',async code=>{
   const {mock}=mount(conflict,{statusResponse:Promise.resolve(response({code:'SESSION_REQUIRED'},code))});await submit();
-  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain(earlier));fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Server reported a separate earlier request'));
+  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(attempted);expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('could not be checked'));
-  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(2);
+  expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain('Server reported a separate earlier request');expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).not.toContain(earlier);expect(localStorage.getItem(storageKey)).toBe(attempted);expect(posts(mock)).toHaveLength(2);
  });
  it('invalidates the ephemeral explanation after A-B-A and reload while preserving attempted storage',async()=>{
   const {mock,view}=mount();await submit();await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('earlier unresolved assessment'));
@@ -3563,4 +3564,122 @@ describe('R1 contradictory receipt containment',()=>{
   await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Assessment outcome unverified'));
   expect(localStorage.getItem(`tameion.assessment-request.${id}`)).not.toBeNull();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
  });
+});
+
+describe('Stage 2 server-owned UNKNOWN presentation and deliberate recovery',()=>{
+ beforeEach(()=>{localStorage.clear();vi.stubGlobal('crypto',webcrypto);});
+ afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();localStorage.clear();});
+ const id='FICTIONAL-STAGE2';
+ function mountStage2(eligible=false){
+  const held=assessedDetail(id,'HOLD'),value={...held,record:held.record,source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:false,current_assessment:null,historical_assessment:held.current_assessment,genuine_assessment:{status:'UNKNOWN',recovery_eligible:eligible,recovery_reason:eligible?'ELIGIBLE':'LEGACY_EVIDENCE_MISSING'}};
+  const statusMock=vi.fn((init?:RequestInit)=>Promise.resolve(response({status:'UNKNOWN',obligation_id:id,idempotency_key:JSON.parse(String(init?.body)).idempotency_key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false})));
+  const pending=deferred<Response>();const mock=vi.fn<typeof fetch>((input,init)=>init?.method==='POST'?String(input).endsWith('/status')?statusMock(init):pending.promise:Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id),source_group:'GENUINE_COMPANY'},obligation('FICTIONAL-OTHER')]}:String(input).includes('FICTIONAL-OTHER')?detail('FICTIONAL-OTHER'):value)));
+  vi.stubGlobal('fetch',mock);const view=renderWithExplicitFirstSelection('FICTIONAL-CSRF');return {value,mock,pending,statusMock,view};
+ }
+ it('shows UNKNOWN without browser identity, keeps HOLD historical and denies financial actions',async()=>{
+  const h=mountStage2();await screen.findByRole('region',{name:'Hold reason and next action'});await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Latest assessment UNKNOWN'));
+  expect(screen.queryByRole('button',{name:'Run AI Assessment'})).toBeNull();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();
+  navigateStage('Assessment');expect(screen.getByText('Historical assessment · HOLD')).toBeTruthy();expect(screen.queryByRole('button',{name:/Authorize payment|Create linked testnet instruction|Pay testnet USDC/})).toBeNull();
+  expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.length).toBe(0);
+ });
+ it('offers no third assessment in a fresh browser after the server reports a completed successor',async()=>{
+  const value=assessedDetail(id,'PAY');Object.assign(value,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:false,genuine_assessment:{status:'COMPLETED',recovery_eligible:false,recovery_reason:'ACTIVE_OR_SUCCESSOR'}});
+  const mock=vi.fn<typeof fetch>((input,init)=>{if(init?.method==='POST')throw new Error('Forbidden A3');return Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id),source_group:'GENUINE_COMPANY'}]}:value));});
+  vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');await screen.findByRole('region',{name:'Selected source payable'});
+  expect(screen.queryByRole('button',{name:/Run AI Assessment|Request one new assessment|Reassess after correction/})).toBeNull();
+  expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.length).toBe(0);
+ });
+ it('one deliberate click creates a fresh identity, never replays retained K2, and duplicate callbacks dispatch once',async()=>{
+  const key='11111111-1111-4111-8111-111111111111';localStorage.setItem(`tameion.assessment-request.${id}`,key);
+  const h=mountStage2(true),button=await screen.findByRole('button',{name:'Request one new assessment'}),callback=captureClickHandler(button as HTMLButtonElement);
+  act(()=>{for(let i=0;i<10;i++)callback();});
+  await waitFor(()=>expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1));
+  const [url,init]=h.mock.mock.calls.find(([,init])=>init?.method==='POST')!;
+  expect(String(url)).toBe(`/api/obligations/${id}/advisory`);expect(new Headers(init!.headers).get('Idempotency-Key')).not.toBe(key);
+  expect(localStorage.getItem(`tameion.assessment-request.${id}`)).toBe(key);
+  expect(localStorage.getItem(`tameion.assessment-successor.${id}`)).toBe(new Headers(init!.headers).get('Idempotency-Key'));
+  expect(JSON.parse(String(init!.body))).toEqual({recovery:true,expected_version:1,source_record_sha256:createHash('sha256').update(canonicalize(h.value.record)).digest('hex')});
+  h.value.genuine_assessment.recovery_eligible=false;
+  await act(async()=>h.pending.resolve(response({code:'ASM-UNKNOWN',status:'UNKNOWN'},409)));
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull());
+ });
+ it('a captured recovery callback cannot write a key or submit after A → B → A selection',async()=>{
+  const h=mountStage2(true),button=await screen.findByRole('button',{name:'Request one new assessment'}),callback=captureClickHandler(button as HTMLButtonElement);
+  fireEvent.click(obligationRow('FICTIONAL-OTHER'));await waitFor(()=>expect(screen.getByRole('region',{name:'Selected source payable'}).textContent).toContain('FICTIONAL-OTHER'));
+  fireEvent.click(obligationRow(id));await screen.findByRole('button',{name:'Request one new assessment'});act(()=>{callback();});
+  expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.length).toBe(0);
+ });
+ it('suppresses dispatch when selection changes while the source digest is pending',async()=>{
+  const digest=deferred<ArrayBuffer>();vi.stubGlobal('crypto',{randomUUID:()=>webcrypto.randomUUID(),subtle:{digest:()=>digest.promise}});
+  const h=mountStage2(true);vi.stubGlobal('crypto',{randomUUID:()=>webcrypto.randomUUID(),subtle:{digest:()=>digest.promise}});
+  fireEvent.click(await screen.findByRole('button',{name:'Request one new assessment'}));fireEvent.click(obligationRow('FICTIONAL-OTHER'));
+  await act(async()=>{digest.resolve(new ArrayBuffer(32));await Promise.resolve();});
+  expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
+ });
+ it.each([409,503,'network'] as const)('retains K2 and A2 after %s and reload; exact observation never sends A3',async failure=>{
+  const original='11111111-1111-4111-8111-111111111111',originalSlot=`tameion.assessment-request.${id}`,successorSlot=`tameion.assessment-successor.${id}`;
+  localStorage.setItem(originalSlot,original);const h=mountStage2(true);
+  fireEvent.click(await screen.findByRole('button',{name:'Request one new assessment'}));
+  await waitFor(()=>expect(localStorage.getItem(successorSlot)).not.toBeNull());const successor=localStorage.getItem(successorSlot);
+  await act(async()=>{if(failure==='network')h.pending.reject(new Error('Synthetic lost response'));else h.pending.resolve(response({code:'ASM-UNKNOWN',status:'UNKNOWN'},failure));});
+  await screen.findByRole('button',{name:'Check assessment request'});
+  expect(localStorage.getItem(originalSlot)).toBe(original);expect(localStorage.getItem(successorSlot)).toBe(successor);
+  h.view.unmount();const reloaded=mountStage2(true);
+  expect(await screen.findByRole('button',{name:'Check assessment request'})).toBeTruthy();expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(reloaded.statusMock).toHaveBeenCalledTimes(1));
+  expect(JSON.parse(String(reloaded.statusMock.mock.calls[0][0]?.body))).toEqual({idempotency_key:successor});
+  await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toContain('unknown'));
+  expect(reloaded.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1);
+  expect(localStorage.getItem(originalSlot)).toBe(original);expect(localStorage.getItem(successorSlot)).toBe(successor);
+  expect(screen.queryByRole('button',{name:/Authorize payment|Pay testnet USDC|View HOLD findings/})).toBeNull();
+ });
+ it.each(['throws','silent'] as const)('sends zero assessments when successor storage %s',async mode=>{
+  const slot=`tameion.assessment-request.${id}`,original='11111111-1111-4111-8111-111111111111';localStorage.setItem(slot,original);
+  const h=mountStage2(true),button=await screen.findByRole('button',{name:'Request one new assessment'});
+  vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{if(mode==='throws')throw new Error('Denied');});
+  fireEvent.click(button);await waitFor(()=>expect(screen.queryByText('Waiting for a response for the selected obligation. No duplicate request has been sent.')).toBeNull());
+  expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.getItem(slot)).toBe(original);
+ });
+ it('clears only A2 after two exact status and independent current-detail confirmations',async()=>{
+  const original='11111111-1111-4111-8111-111111111111',originalSlot=`tameion.assessment-request.${id}`,successorSlot=`tameion.assessment-successor.${id}`;
+  localStorage.setItem(originalSlot,original);const h=mountStage2(true);
+  fireEvent.click(await screen.findByRole('button',{name:'Request one new assessment'}));await waitFor(()=>expect(localStorage.getItem(successorSlot)).not.toBeNull());
+  const key=localStorage.getItem(successorSlot)!;
+  await act(async()=>h.pending.resolve(response({code:'ASM-UNKNOWN'},503)));await screen.findByRole('button',{name:'Check assessment request'});
+  const current=assessedDetail(id,'PAY').current_assessment;current.assessment_id=`ASM-${key}`;Object.assign(h.value,{current_assessment:current,genuine_assessment:{status:'COMPLETED_CURRENT',recovery_eligible:false}});
+  const status={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(h.value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:current.assessment_hash,aggregate_version:'1'}};
+  h.statusMock.mockImplementation(()=>Promise.resolve(response(status)));
+  const readsBefore=h.mock.mock.calls.filter(([url,init])=>String(url)===`/api/obligations/${id}`&&init?.method!=='POST').length;
+  fireEvent.click(screen.getByRole('button',{name:'Check assessment request'}));
+  await waitFor(()=>expect(localStorage.getItem(successorSlot)).toBeNull());
+  expect(h.statusMock).toHaveBeenCalledTimes(2);expect(localStorage.getItem(originalSlot)).toBe(original);
+  expect(localStorage.getItem(`tameion.assessment-successor-ack.${id}`)).toBe(key);
+  expect(await screen.findByRole('button',{name:'Review assessment'})).toBeTruthy();
+  expect(h.mock.mock.calls.filter(([url,init])=>String(url)===`/api/obligations/${id}`&&init?.method!=='POST').length-readsBefore).toBe(2);
+  expect(h.mock.mock.calls.filter(([url,init])=>init?.method==='POST'&&!String(url).endsWith('/status'))).toHaveLength(1);
+  h.view.unmount();const reloaded=mountStage2(true);await screen.findByRole('region',{name:'Hold reason and next action'});
+  expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();expect(reloaded.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
+  expect(localStorage.getItem(originalSlot)).toBe(original);
+ });
+
+ it('a successful A2 POST alone cannot clear either key',async()=>{
+  const original='11111111-1111-4111-8111-111111111111';localStorage.setItem(`tameion.assessment-request.${id}`,original);
+  const h=mountStage2(true);fireEvent.click(await screen.findByRole('button',{name:'Request one new assessment'}));
+  await waitFor(()=>expect(localStorage.getItem(`tameion.assessment-successor.${id}`)).not.toBeNull());const key=localStorage.getItem(`tameion.assessment-successor.${id}`)!;
+  const current=assessedDetail(id,'PAY').current_assessment;current.assessment_id=`ASM-${key}`;Object.assign(h.value,{current_assessment:current,genuine_assessment:{status:'COMPLETED_CURRENT',recovery_eligible:false}});
+  await act(async()=>h.pending.resolve(response(current)));
+  await screen.findByRole('button',{name:'Check assessment request'});
+  expect(localStorage.getItem(`tameion.assessment-request.${id}`)).toBe(original);expect(localStorage.getItem(`tameion.assessment-successor.${id}`)).toBe(key);
+  expect(h.statusMock).not.toHaveBeenCalled();
+ });
+
+ it('a newly rendered recovery callback after pagehide cannot use stale session detail',async()=>{
+  const h=mountStage2(true);await screen.findByRole('button',{name:'Request one new assessment'});
+  act(()=>window.dispatchEvent(new Event('pagehide')));
+  const button=screen.getByRole('button',{name:'Request one new assessment'});
+  await act(async()=>{captureClickHandler(button as HTMLButtonElement)();await Promise.resolve();});
+  expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.length).toBe(0);
+ });
+
 });

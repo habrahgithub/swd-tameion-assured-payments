@@ -215,7 +215,8 @@ export function projectObligationListData(state: ExistingState, sourceGroup: Obl
     // bound to the obligation's current version — the same staleness rule
     // approve() itself enforces (AUT-009); a stale assessment must not be
     // shown as "assessed" here either.
-    const isCurrent = sealed?.record.aggregate_version === String(current.aggregate_version) && (!bindAdvisorySource||sealed?.record.source_record_sha256===contentHash(state.getRecord(o.obligation_id)));
+    const unresolvedAssessment=["UNKNOWN","IN_PROGRESS"].includes(state.getGenuineAssessmentVisibility?.(o.obligation_id).status??"");
+    const isCurrent = !unresolvedAssessment && sealed?.record.aggregate_version === String(current.aggregate_version) && (!bindAdvisorySource||sealed?.record.source_record_sha256===contentHash(state.getRecord(o.obligation_id)));
     return {
       ...o,
       source_group: sourceGroup,

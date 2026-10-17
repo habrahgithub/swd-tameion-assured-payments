@@ -1,3 +1,4 @@
+import {historicalAssessmentBasisSchema} from "../agent/assessment-context";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ const date = z.iso.date();
 export const operatorSourceRecordSchema = z.object({
   obligation_id: text().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/),
   service_category: text(256), recurrence: z.enum(["MONTHLY", "YEARLY", "ONE_TIME"]),
+  assessment_basis: historicalAssessmentBasisSchema.optional(),
   issue_date: date.nullable().optional(), due_date: date.nullable(),
   due_date_status: z.enum(["STATED_ON_SOURCE", "NOT_STATED_ON_SOURCE"]),
   effective_due_date: date.nullable().optional(), effective_due_date_basis: z.literal("INVOICE_DATE_CASH_TERM").nullable().optional(),
