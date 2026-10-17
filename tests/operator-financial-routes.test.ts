@@ -486,6 +486,37 @@ describe('linked UNKNOWN execution reconciliation after genuine reassessment',()
   expect(vi.mocked(h.client.listTransactions).mock.calls.length).toBeGreaterThan(reads);expect(verifyLink).toHaveBeenCalledTimes(checks);expect(h.client.createTransaction).toHaveBeenCalledOnce();
   expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);expect(snapshot.authority.aggregates).toEqual(genuineAggregates);
  });
+ it('connects a genuine payable to one separate controlled instruction through the six-stage settled path',async()=>{
+  const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,amount:'1.00',currency:'USD',source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
+  const hash=(value:unknown)=>createHash('sha256').update(canonicalize(value)).digest('hex');
+  for(const record of records){const evidence=record.source_evidence[0];record.assessment_basis={transaction_type:'INVOICE',classification_evidence:evidence,timing:{basis:'INVOICE_CASH_TERM',date:record.effective_due_date,evidence},simulation:{mode:'HISTORICAL_AS_OF',as_of_date:'2020-01-05',evidence,owner_authority_reference:'SYNTHETIC-HAPPY-PATH-ADMISSION'}};}
+  let genuineSnapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),genuineRevision=7;
+  const {assessments,...base}=genuineSnapshot.authority;
+  const bytes=Buffer.from(JSON.stringify({schema_version:3,record_count:5,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:DEMO_ORGANIZATION_ID,state_binding:{namespace:'FICTIONAL-HAPPY-PATH',revision:genuineRevision,authority_sha256:hash(genuineSnapshot.authority),workflow_base_sha256:hash(base)},records}));
+  const view=parseOperatorSource(bytes,createHash('sha256').update(bytes).digest('hex'));
+  const genuine=createGenuineWorkflowHandlers({guard:async()=>({session:{operator_key:'fictional',credential_version:1},revalidate:async()=>{}} as unknown as AuthContext),source:()=>view,repository:{loadExisting:async()=>({revision:genuineRevision,snapshot:structuredClone(genuineSnapshot) as any}),compareAndSet:async(_n:string,r:number,next:any)=>{if(r!==genuineRevision)throw new DemoStateConflictError();genuineSnapshot=structuredClone(next);return ++genuineRevision;}}});
+  const request=(body:unknown,key:string)=>new Request('https://fixture.invalid',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(body)});
+  vi.stubEnv('NVIDIA_API_KEY',undefined);
+  const genuineId=records[0].obligation_id,assessed=await genuine('assess',request({},'d23a9d3a-39a1-4f36-9556-04f523969ab1'),genuineId);
+  expect(assessed.status).toBe(200);const assessment=await assessed.json();expect(assessment.decision.decision).toBe('PAY');
+  const drafted=await genuine('draft',request({expected_version:1,assessment_id:assessment.assessment_id,assessment_hash:assessment.assessment_hash},'d23a9d3a-39a1-4f36-9556-04f523969ab2'),genuineId);
+  expect(drafted.status).toBe(201);const {instruction}=await drafted.json();
+  const genuineBeforeFinancial=structuredClone(genuineSnapshot),verifyLink=vi.fn(async(source:ReturnType<typeof loadFinancialSourceAdmission>)=>validateLinkedActivation(source,view,genuineSnapshot,genuineRevision));
+  const h=controlledHarness({linkedDraft:instruction,verifyLink}),id=h.source.source.obligation_id;
+  await h.sealCurrent();
+  const preflight=await h.handler('preflight',h.request({obligation_id:id,expected_version:1}));expect(preflight.status).toBe(200);expect(await preflight.json()).toMatchObject({amount:'1.000000',estimated_network_fee:'0.002000',max_total_debit:'1.002000'});
+  await h.sealCurrent();
+  const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),aggregate=state.store.get(DEMO_ORGANIZATION_ID,id),review=currentAssessmentReview(state.store,DEMO_ORGANIZATION_ID,id);
+  const approved=await h.handler('approve',h.request({expected_version:aggregate.aggregate_version,reviewed_assessment_id:review.reviewedAssessmentId,reviewed_assessment_hash:review.reviewedAssessmentHash,reason_text:'Exact controlled testnet instruction reviewed for offline UAT.'}),id);
+  expect(approved.status).toBe(200);const authority=await approved.json();vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',authority.packet_sha256);
+  const payment={expected_version:authority.aggregate.aggregate_version,packet_sha256:authority.packet_sha256,pae_instruction_hash:authority.pae_instruction_hash,confirmation:'SUBMIT EXACT TESTNET SETTLEMENT PROXY'};
+  const released=await h.handler('release',h.request({...payment,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),id);expect(released.status).toBe(200);
+  const executed=await h.handler('execute',h.request(payment),id);expect(executed.status).toBe(200);expect(await executed.json()).toMatchObject({code:'RECONCILED',execution:{status:'SETTLED'}});
+  expect((await h.handler('execute',h.request(payment),id)).status).toBe(409);expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(verifyLink).toHaveBeenCalled();
+  expect(h.snapshot().authority.aggregates[0]).toMatchObject({obligation_id:id,state:'RECONCILED'});
+  expect(genuineSnapshot.authority.aggregates).toEqual(genuineBeforeFinancial.authority.aggregates);expect(genuineSnapshot.authorization_history).toEqual([]);expect(genuineSnapshot.execution_ledger).toEqual([]);
+  expect(genuineSnapshot.linked_settlement_instructions).toHaveLength(1);expect(genuineSnapshot.authority.aggregates.find(row=>row.obligation_id===genuineId)?.state).toBe('APPROVAL_PENDING');
+ });
 });
 
 describe('exact uncertain execution recovery without fresh operator funding',()=>{

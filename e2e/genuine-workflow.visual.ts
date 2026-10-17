@@ -10,12 +10,17 @@ import {loadExistingDemoState} from '../src/server/load-existing-demo-state';
 import {DemoStateConflictError} from '../src/server/supabase-demo-state-repository';
 import type {AuthContext} from '../src/server/operator-auth';
 import {sealTestAssessment} from '../tests/test-support/seal-assessment';
-const originalNvidiaKey=process.env.NVIDIA_API_KEY;
-test.beforeEach(()=>{delete process.env.NVIDIA_API_KEY;});
-test.afterEach(()=>{if(originalNvidiaKey===undefined)delete process.env.NVIDIA_API_KEY;else process.env.NVIDIA_API_KEY=originalNvidiaKey;});
-for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine ${expected} advisory stays separate and locked at ${width}`,async({page},info)=>{
+const originalNvidiaKey=process.env.NVIDIA_API_KEY,originalNodeFetch=globalThis.fetch;
+test.afterEach(()=>{globalThis.fetch=originalNodeFetch;if(originalNvidiaKey===undefined)delete process.env.NVIDIA_API_KEY;else process.env.NVIDIA_API_KEY=originalNvidiaKey;});
+for(const width of [1365,390,320])for(const transactionType of ['INVOICE','PREPAID_NO_INVOICE'] as const)for(const expected of ["PAY","HOLD"] as const)test(`genuine ${transactionType} ${expected} advisory stays separate and locked at ${width}`,async({page},info)=>{
  const records=syntheticSourceRecords().map(({counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...r}:any)=>({...r,source_evidence:r.source_evidence.map(({evidence_id,content_sha256}:any)=>({evidence_id,content_sha256}))}));
- if(expected==='HOLD'){Object.assign(records[0],{issue_date:null,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null});}
+ for(const record of records){const evidence=record.source_evidence[0];record.assessment_basis={transaction_type:'INVOICE',classification_evidence:evidence,timing:{basis:'INVOICE_CASH_TERM',date:record.effective_due_date,evidence},simulation:{mode:'HISTORICAL_AS_OF',as_of_date:'2020-01-05',evidence,owner_authority_reference:'SYNTHETIC-BROWSER-OWNER-ADMISSION'}};}
+ if(transactionType==='PREPAID_NO_INVOICE'){
+  const record=records[0],evidence=record.source_evidence[0],serviceDate=record.issue_date;Object.assign(record,{issue_date:null,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null,assessment_basis:{transaction_type:transactionType,classification_evidence:evidence,timing:{basis:'PREPAID_SERVICE_DATE',date:serviceDate,evidence},simulation:{mode:'HISTORICAL_AS_OF',as_of_date:serviceDate,evidence,owner_authority_reference:'SYNTHETIC-BROWSER-OWNER-ADMISSION'}}});
+ }
+ if(expected==='HOLD')records[0].assessment_basis.classification_evidence={...records[0].assessment_basis.classification_evidence,content_sha256:'f'.repeat(64)};
+ process.env.NVIDIA_API_KEY='NETWORK_DENIED_SYNTHETIC_NOT_A_CREDENTIAL';let providerCalls=0;
+ globalThis.fetch=async(input)=>{if(String(input)!=='https://integrate.api.nvidia.com/v1/chat/completions')throw new Error(`External Node request forbidden: ${String(input)}`);providerCalls++;return Response.json({choices:[{message:{content:JSON.stringify({obligation_id:records[0].obligation_id,decision:'PAY',finding_codes:[],evidence_ids:records[0].source_evidence.map((e:any)=>e.evidence_id),uncertainty_signal:false,explanation:'Offline browser provider fixture; no live inference.'})}}]});};
  let snapshot=new DemoState(undefined,undefined,undefined,undefined,{},records).exportSnapshot(),revision=7;
  const digest=(v:unknown)=>createHash('sha256').update(canonicalize(v)).digest('hex'),{assessments,...base}=snapshot.authority;
  const bytes=Buffer.from(JSON.stringify({schema_version:3,record_count:5,provenance:'GENUINE_COMPANY_OBLIGATIONS',purpose:'GENUINE_ADVISORY_SOURCE',organization_id:'ORG-DEMO-001',state_binding:{namespace:'FICTIONAL-VIEW',revision,authority_sha256:digest(snapshot.authority),workflow_base_sha256:digest(base)},records}));
@@ -45,16 +50,18 @@ for(const width of [1365,390])for(const expected of ["PAY","HOLD"])test(`genuine
  if(expected==='HOLD'){
   await expect(page.getByRole('heading',{name:'Assessment result — HOLD',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Create linked testnet instruction',exact:true})).toHaveCount(0);
-  expect(posts).toEqual([`/api/obligations/${records[0].obligation_id}/advisory`]);expect(snapshot.linked_settlement_instructions).toBeUndefined();expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);
-  await page.screenshot({path:info.outputPath(`genuine-hold-${width}.png`),fullPage:true});return;
+  expect(posts).toEqual([`/api/obligations/${records[0].obligation_id}/advisory`]);expect(providerCalls).toBe(1);expect(snapshot.authority.assessments[0]?.record).toMatchObject({provider_mode:'LIVE_AI',decision:'HOLD'});expect(snapshot.linked_settlement_instructions).toBeUndefined();expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);
+  await page.screenshot({path:info.outputPath(`genuine-${transactionType.toLowerCase()}-hold-${width}.png`),fullPage:true});return;
  }
  await expect(page.getByRole('button',{name:'Create linked testnet instruction',exact:true})).toBeVisible();
+ await expect(page.getByRole('region',{name:'Assessment result'})).toContainText('AI-assisted payment review · advisory.');
  await page.getByRole('button',{name:'Create linked testnet instruction',exact:true}).click();
  await expect(page.getByRole('region',{name:'Linked Arc Testnet instructions'})).toContainText('Draft · payment authority required');
  expect(posts).toEqual([`/api/obligations/${records[0].obligation_id}/advisory`,`/api/obligations/${records[0].obligation_id}/testnet-instruction`]);
+ expect(providerCalls).toBe(1);expect(snapshot.authority.assessments[0]?.record.provider_mode).toBe('LIVE_AI');
  expect(snapshot.authorization_history).toEqual([]);expect(snapshot.execution_ledger).toEqual([]);expect(snapshot.linked_settlement_instructions).toHaveLength(1);
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
- await page.screenshot({path:info.outputPath(`genuine-linked-draft-${width}.png`),fullPage:true});
+ await page.screenshot({path:info.outputPath(`genuine-${transactionType.toLowerCase()}-linked-draft-${width}.png`),fullPage:true});
  // All transport/auth and advisory provider output here are local test fixtures; no live calls.
 });
 

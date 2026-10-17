@@ -1,9 +1,49 @@
 # Combined M1/M2 UAT candidate
 
-This is one local candidate under Job #65, on `codex/m1-m2-uat-01a13166`,
-branched from `c0eb1a1c4f849e73ad2e8113da80451dfe995fa6`. Resolve the candidate
-with `git rev-parse HEAD`; the controller receipt binds that exact commit to
-verification artifacts. M1 is protected operator access and read-only balance;
+## Stage 2 six-stage offline UAT journey
+
+The current code-only candidate includes one contiguous, route-backed browser
+journey at 1365px, 390px and 320px. It uses the real Command Center controls and
+a stateful offline route fixture. The matching integration test uses the
+production genuine-workflow and controlled-financial handlers with a fake
+provider adapter. No hosted service, database, AI provider, Circle endpoint or
+payment network is contacted.
+
+Run the focused proof with the repository's pinned Node/npm versions:
+
+```bash
+npx vitest run tests/operator-financial-routes.test.ts --pool=forks --maxWorkers=1 --no-file-parallelism -t "connects a genuine payable"
+npx playwright test e2e/command-center.visual.ts --workers=1 --grep "stateful six-stage controlled UAT journey"
+```
+
+The browser journey requires these user-visible transitions:
+
+1. **Obligation:** select the separate controlled USD 1 Arc Testnet instruction.
+   The genuine USD 1 source payable remains visible and outstanding.
+2. **Assessment:** run the advisory assessment, prepare the exact testnet
+   details, then run the required fresh assessment for the prepared version.
+3. **Authorization:** continue to the authorization screen and authorize the
+   exact current instruction.
+4. **Assurance:** inspect the recorded deterministic PASS and continue to
+   payment. Navigation alone has no payment effect.
+5. **Payment:** explicitly confirm and record payment release, confirm the same
+   packet again, then submit once through the fake provider adapter.
+6. **Reconciliation:** verify the settled testnet receipt, exact amount and
+   destination, while the source payable still reads OUTSTANDING.
+
+Stop the walkthrough if the selected instruction, source binding, assessment
+version, exact packet, destination, release approval or reconciliation identity
+does not match. An UNKNOWN result is read-only reconciliation only; do not
+resubmit. A second submission of the completed fixture must be rejected, and
+the provider submission count must remain one.
+
+This is one local candidate under Job #65, on
+`codex/ui-ux-corrections-20261014`, based at
+`de0c14eca39e11beb6f5e8ee7cce08c75f797d0c`. The Stage 2 candidate is an
+uncommitted, manifest-bound eight-file snapshot. Bind review evidence to the
+base commit plus the frozen patch and file hashes in the current acceptance
+packet; `git rev-parse HEAD` alone does not identify this snapshot. M1 is
+protected operator access and read-only balance;
 M2 is lifecycle acceptance preparation. Local tests do not establish hosted
 or financial acceptance. The current Tameion-only independent-review waiver
 supersedes the older independent-review prerequisite in the demo documents;

@@ -49,12 +49,14 @@ interface Dependencies {guard:(r:Request,post:boolean)=>Promise<AuthContext>;sou
 export function createGenuineWorkflowHandlers(deps:Dependencies){return async(kind:'assess'|'draft',request:Request,id:string):Promise<Response>=>{
  if(request.method!=='POST')return methodNotAllowed();let saving=false;const deadline=Date.now()+GENUINE_REQUEST_BUDGET_MS;
  const checkBudget=()=>{if(Date.now()+5000>deadline)throw new AccessError('GENUINE_ASSESSMENT_TIME_BUDGET',503);};
- const withinBudget=async<T>(run:()=>Promise<T>):Promise<T>=>{
-  checkBudget();const remaining=deadline-Date.now()-5000;let timer:ReturnType<typeof setTimeout>|undefined;
-  try{return await Promise.race([run(),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new AccessError('GENUINE_ASSESSMENT_TIME_BUDGET',503)),remaining);})]);}
+ const withinBudget=async<T>(run:(signal:AbortSignal)=>Promise<T>):Promise<T>=>{
+  checkBudget();const remaining=deadline-Date.now()-5000,controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+  const expired=new AccessError('GENUINE_ASSESSMENT_TIME_BUDGET',503);
+  try{return await Promise.race([run(controller.signal),new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort(expired);reject(expired);},remaining);})]);}
+  catch(error){if(controller.signal.aborted&&controller.signal.reason===expired)throw expired;throw error;}
   finally{if(timer)clearTimeout(timer);}
  };
- const repository:Repository={loadExisting:namespace=>withinBudget(()=>deps.repository.loadExisting(namespace)),compareAndSet:(namespace,revision,snapshot)=>withinBudget(()=>deps.repository.compareAndSet(namespace,revision,snapshot))};
+ const repository:Repository={loadExisting:namespace=>withinBudget(signal=>deps.repository.loadExisting(namespace,signal)),compareAndSet:(namespace,revision,snapshot)=>withinBudget(signal=>deps.repository.compareAndSet(namespace,revision,snapshot,signal))};
  try{
   const auth=await withinBudget(()=>deps.guard(request,true));checkBudget();requireJson(request);const raw=await readBoundedJson(request,4096);
   const parsed=kind==='assess'?z.union([z.object({}).strict(),z.object({recovery:z.literal(true),expected_version:z.number().int().positive(),source_record_sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict()]).safeParse(raw):z.object({expected_version:z.number().int().positive(),assessment_id:z.string().min(1).max(128),assessment_hash:z.string().regex(/^[a-f0-9]{64}$/)}).strict().safeParse(raw);if(!parsed.success)throw new AccessError('BODY_REJECTED',400);const input=parsed.data;const recoveryRequest=kind==='assess'&&'recovery' in input;
@@ -82,5 +84,5 @@ export function createGenuineWorkflowHandlers(deps:Dependencies){return async(ki
   throw new AccessError('LINK_CONFLICT_REFRESH_REQUIRED',409);
  }catch(e){if(saving)return privateJson({code:'OUTCOME_UNVERIFIED',retry_submission:false},503);if(e instanceof AccessError)return privateJson({code:e.code},e.status);return privateJson({code:saving?'OUTCOME_UNVERIFIED':'GENUINE_WORKFLOW_UNAVAILABLE',retry_submission:false},503);}
 };}
-export const genuineWorkflowHandlers=createGenuineWorkflowHandlers({guard:operatorHandlers.guard,source:()=>loadOperatorSourceRecords(),repository:{loadExisting:async n=>runtimeRepository().loadExisting(n),compareAndSet:async(n,r,s)=>runtimeRepository().compareAndSet(n,r,s)}});
+export const genuineWorkflowHandlers=createGenuineWorkflowHandlers({guard:operatorHandlers.guard,source:()=>loadOperatorSourceRecords(),repository:{loadExisting:async(n,signal)=>runtimeRepository().loadExisting(n,signal),compareAndSet:async(n,r,s,signal)=>runtimeRepository().compareAndSet(n,r,s,signal)}});
 function runtimeRepository(){const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);return new SupabaseDemoStateRepository(url,key);}

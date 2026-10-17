@@ -37,15 +37,16 @@ export class SupabaseDemoStateRepository {
     return parseRevision(result);
   }
 
-  async loadExisting(namespace: string): Promise<DemoStateRevision> {
+  async loadExisting(namespace: string, signal?: AbortSignal): Promise<DemoStateRevision> {
     if (!namespace || namespace.length > 128) throw new DemoStatePersistenceError("Existing namespace is required.");
-    return parseRevision(await this.rpc("tameion_state_load_existing", {p_namespace: namespace, p_expected_schema_version: 2}));
+    return parseRevision(await this.rpc("tameion_state_load_existing", {p_namespace: namespace, p_expected_schema_version: 2}, signal));
   }
 
   async compareAndSet(
     namespace: string,
     expectedRevision: number,
     nextSnapshot: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<number> {
     let response: Record<string, unknown>;
     try {
@@ -53,7 +54,7 @@ export class SupabaseDemoStateRepository {
         p_namespace: namespace,
         p_expected_revision: expectedRevision,
         p_next_snapshot: nextSnapshot,
-      });
+      }, signal);
       response = asRecord(result);
     } catch (error) {
       throw new DemoStatePersistenceError("Durable demo-state compare-and-set failed.", { cause: error });
@@ -65,12 +66,13 @@ export class SupabaseDemoStateRepository {
     return response.revision as number;
   }
 
-  private async rpc(functionName: string, body: Record<string, unknown>): Promise<unknown> {
+  private async rpc(functionName: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const timeoutSignal = AbortSignal.timeout(5000);
     const response = await this.fetcher(`${this.baseUrl}/rest/v1/rpc/${functionName}`, {
       method: "POST",
       cache: "no-store",
       redirect: "error",
-      signal: AbortSignal.timeout(5000),
+      signal: signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal,
       headers: {
         apikey: this.serviceRoleKey,
         Authorization: `Bearer ${this.serviceRoleKey}`,

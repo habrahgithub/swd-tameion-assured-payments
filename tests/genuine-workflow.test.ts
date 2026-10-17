@@ -149,6 +149,48 @@ describe('genuine advisory and separate linked instruction',()=>{
   expect(fetcher).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();
  });
 
+ it('bounds a hung request body before any repository or provider work',async()=>{
+  vi.useFakeTimers();const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id;
+  const body=new ReadableStream<Uint8Array>({start(){}});
+  const request=new Request('https://fixture.invalid',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'c23a9d3a-39a1-4f36-9556-04f523969abb'},body,duplex:'half'} as RequestInit);
+  const pending=h.handler('assess',request,id);await vi.advanceTimersByTimeAsync(2_001);const response=await pending;
+  expect(response.status).toBe(408);expect(await response.json()).toMatchObject({code:'BODY_REJECTED'});
+  expect(h.repository.loadExisting).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+ });
+
+ it('ends a hung authority revalidation inside the request budget without provider dispatch or persistence',async()=>{
+  vi.useFakeTimers();const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id;
+  h.guard.mockResolvedValue({revalidate:()=>new Promise<never>(()=>{})} as unknown as AuthContext);
+  const pending=h.handler('assess',h.request({}),id);await vi.advanceTimersByTimeAsync(GENUINE_REQUEST_BUDGET_MS+1);const response=await pending;
+  expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'GENUINE_ASSESSMENT_TIME_BUDGET'});
+  expect(h.repository.loadExisting).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+ });
+
+ it('aborts an in-flight reservation CAS at the request deadline and fences its late write',async()=>{
+  vi.useFakeTimers();const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id;
+  let operationSignal:AbortSignal|undefined,lateWrite=false,started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});
+  h.repository.compareAndSet.mockImplementation(async(_namespace:string,_revision:number,_next:any,signal?:AbortSignal)=>{
+   operationSignal=signal;started();return new Promise<number>((resolve,reject)=>{
+    signal?.addEventListener('abort',()=>reject(signal.reason),{once:true});
+    setTimeout(()=>{if(!signal?.aborted){lateWrite=true;resolve(8);}},GENUINE_REQUEST_BUDGET_MS+1);
+   });
+  });
+  const pending=h.handler('assess',h.request({}),id);await ready;await vi.advanceTimersByTimeAsync(GENUINE_REQUEST_BUDGET_MS+1);const response=await pending;
+  expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'OUTCOME_UNVERIFIED',retry_submission:false});
+  expect(operationSignal).toBeDefined();expect(operationSignal?.aborted).toBe(true);expect(fetcher).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(GENUINE_REQUEST_BUDGET_MS+2);expect(lateWrite).toBe(false);
+ });
+
+ it('does not continue a repository load that resolves after the request deadline',async()=>{
+  vi.useFakeTimers();const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id;
+  let finish!:(value:any)=>void,started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});
+  h.repository.loadExisting.mockImplementation(()=>new Promise(resolve=>{finish=resolve;started();}));
+  const pending=h.handler('assess',h.request({}),id);await ready;await vi.advanceTimersByTimeAsync(GENUINE_REQUEST_BUDGET_MS+1);const response=await pending;
+  expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'GENUINE_ASSESSMENT_TIME_BUDGET'});
+  finish({revision:h.revision(),snapshot:structuredClone(h.snapshot())});await Promise.resolve();await Promise.resolve();
+  expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+ });
+
  it('does not classify malformed server-owned linkage as a client body error',async()=>{
   const h=harness();h.snapshot().linked_settlement_instructions=[{schema_version:99}] as any;
   const result=await h.handler('assess',h.request({}),h.records[0].obligation_id);expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'GENUINE_WORKFLOW_UNAVAILABLE'});expect(h.repository.compareAndSet).not.toHaveBeenCalled();

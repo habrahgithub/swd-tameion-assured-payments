@@ -44,4 +44,20 @@ describe("Supabase durable-state repository", () => {
     expect(results.filter((result) => result.status === "rejected" && result.reason instanceof DemoStateConflictError)).toHaveLength(1);
     expect(revision).toBe(2);
   });
+
+  it("propagates caller cancellation to an in-flight compare-and-set transport", async () => {
+    const controller = new AbortController();
+    let transportSignal: AbortSignal | null | undefined;
+    const repository = new SupabaseDemoStateRepository("https://example.supabase.co", "test-only-secret", async (_url, init) => {
+      transportSignal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const pending = repository.compareAndSet("preview-pr10", 1, { update: "cancelled" }, controller.signal);
+    controller.abort(new Error("test deadline"));
+    await expect(pending).rejects.toThrow("compare-and-set failed");
+    expect(transportSignal).toBeInstanceOf(AbortSignal);
+    expect(transportSignal?.aborted).toBe(true);
+  });
 });
