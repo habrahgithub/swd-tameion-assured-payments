@@ -1,0 +1,727 @@
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { AuthorityStore, type AuthorityAggregate } from "../src/authority/aggregate";
+import { approveAndSealPae, AssuranceFailedError } from "../src/pipeline/authorize-and-seal";
+import { ExecutionWorker as BaseExecutionWorker, ExecutionBlockedError, type ExecutionWorkerOptions, type WorkerAuthorizationArtifacts } from "../src/execution/worker";
+import { FakeProviderAdapter } from "../src/execution/fake-provider-adapter";
+import { ProviderPreSubmitBlockedError, type ProviderAdapter } from "../src/execution/provider-adapter";
+import { currentAssessmentReview, sealTestAssessment } from "./test-support/seal-assessment";
+
+const SIGNING_KEY_ID = "TEST-SIGNING-KEY-1";
+const authorizationByIdentity = new Map<string, WorkerAuthorizationArtifacts>();
+
+class ExecutionWorker extends BaseExecutionWorker {
+  constructor(
+    store: AuthorityStore,
+    adapter: ConstructorParameters<typeof BaseExecutionWorker>[1],
+    onDurableStateChange?: () => Promise<void>,
+    overrides: Partial<ExecutionWorkerOptions> = {},
+  ) {
+    const options: ExecutionWorkerOptions = {
+      loadAuthorizationArtifacts: (organizationId, obligationId) => authorizationByIdentity.get(`${organizationId}/${obligationId}`),
+      resolveActorAuthority: (actorId, organizationId) => {
+        const approval = authorizationByIdentity.get(`${organizationId}/OBL-J0C-002`)?.approval_record;
+        return approval?.actor_id === actorId ? {
+          organization_id: approval.organization_id,
+          actor_id: approval.actor_id,
+          actor_role: approval.actor_role,
+          authority_version: approval.authority_version,
+          status: "ACTIVE",
+          permissions: ["T1_SINGLE_APPROVAL"],
+          valid_from: "2020-01-01T00:00:00.000Z",
+          expires_at: null,
+        } : undefined;
+      },
+    };
+    super(store, adapter, onDurableStateChange, undefined, { ...options, ...overrides });
+  }
+}
+
+function baseAggregate(overrides: Partial<AuthorityAggregate> = {}): AuthorityAggregate {
+  return {
+    organization_id: "ORG-DEMO-001",
+    obligation_id: "OBL-J0C-002",
+    aggregate_version: 3,
+    state: "APPROVAL_PENDING",
+    amount: "21.000000",
+    asset: "USDC",
+    network: "ARC_TESTNET",
+    counterparty_id: "CP-J0C-002",
+    counterparty_version: 1,
+    counterparty_status: "VERIFIED",
+    destination_ref: "DEST-J0C-999",
+    destination_version: 1,
+    product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+    destination_address: "0x1234567890abcdef1234567890abcdef12345678",
+    destination_verification_status: "VERIFIED",
+    destination_operational_status: "ACTIVE",
+    source_wallet_ref: "WALLET-SOURCE-P0-1",
+    source_wallet_version: 1,
+    source_wallet_status: "ACTIVE",
+    evidence_hashes: ["4e9ef92032f893a9c24e4a14d881f3b83ff737a8436e7f6daae4f08b80608a54"],
+    policy_version: "POLICY-P0-1",
+    business_hold: false,
+    security_freeze: false,
+    external_settlement_state: "NONE",
+    pae_state: "UNUSED",
+    execution_state: "NONE",
+    execution_idempotency_key: null,
+    reviewed_aggregate_version: null,
+    source_amount: "21.00",
+    source_currency: "USD",
+    settlement_conversion_rate: null,
+    ...overrides,
+  };
+}
+
+function setupAuthorizedFixture(paeState: AuthorityAggregate["pae_state"] = "UNUSED") {
+  const store = new AuthorityStore();
+  store.seed(baseAggregate({ pae_state: paeState }));
+  sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
+  const { aggregate, sealed, approvalRecord, assuranceRecord } = approveAndSealPae(store, SIGNING_KEY_ID, {
+    organizationId: "ORG-DEMO-001",
+    obligationId: "OBL-J0C-002",
+    expectedVersion: 3,
+    ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
+    actorId: "USR-OPERATOR-001",
+    actorRole: "FINANCE_APPROVER",
+    policyVersion: "POLICY-P0-1",
+    reasonText: "Reviewed and approved for testnet product payment.",
+  });
+  const artifacts: WorkerAuthorizationArtifacts = {
+    approval_record: approvalRecord.record,
+    approval_record_hash: approvalRecord.approval_record_hash,
+    assurance_record: assuranceRecord.record,
+    assurance_hash: assuranceRecord.assurance_hash,
+    sealed_pae: sealed,
+  };
+  authorizationByIdentity.set("ORG-DEMO-001/OBL-J0C-002", artifacts);
+  return { store, aggregate, sealed };
+}
+
+describe("human approval + Safety Kernel (P0 core tests 2-3)", () => {
+  it("binds reviewed N and atomically creates authorized N+1", () => {
+    const { store, aggregate } = setupAuthorizedFixture("REVOKED");
+    expect(aggregate.aggregate_version).toBe(4);
+    expect(aggregate.state).toBe("AUTHORIZED");
+    const persisted = store.get("ORG-DEMO-001", "OBL-J0C-002");
+    expect(persisted.aggregate_version).toBe(4);
+    expect(aggregate.pae_state).toBe(persisted.pae_state);
+    expect(aggregate.pae_state).toBe("UNUSED");
+  });
+
+  it("refuses to seal a PAE when the Safety Kernel does not PASS", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ destination_verification_status: "PENDING_VERIFICATION" }));
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
+    expect(() =>
+      approveAndSealPae(store, SIGNING_KEY_ID, {
+        organizationId: "ORG-DEMO-001",
+        obligationId: "OBL-J0C-002",
+        expectedVersion: 3,
+        ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
+        actorId: "USR-OPERATOR-001",
+        actorRole: "FINANCE_APPROVER",
+        policyVersion: "POLICY-P0-1",
+        reasonText: "Attempting approval with an unverified destination.",
+      }),
+    ).toThrow(AssuranceFailedError);
+  });
+
+  it("AssuranceFailedError carries the real per-control breakdown, not just an embedded message string", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate({ destination_verification_status: "PENDING_VERIFICATION" }));
+    sealTestAssessment(store, "ORG-DEMO-001", "OBL-J0C-002", 3);
+    try {
+      approveAndSealPae(store, SIGNING_KEY_ID, {
+        organizationId: "ORG-DEMO-001",
+        obligationId: "OBL-J0C-002",
+        expectedVersion: 3,
+        ...currentAssessmentReview(store, "ORG-DEMO-001", "OBL-J0C-002"),
+        actorId: "USR-OPERATOR-001",
+        actorRole: "FINANCE_APPROVER",
+        policyVersion: "POLICY-P0-1",
+        reasonText: "Attempting approval with an unverified destination.",
+      });
+      expect.unreachable("expected approveAndSealPae to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AssuranceFailedError);
+      const failure = error as AssuranceFailedError;
+      expect(failure.controlResults.length).toBe(10);
+      const destinationControl = failure.controlResults.find((c) => c.control_id === "SK-DESTINATION-TRUST");
+      expect(destinationControl?.result).toBe("BLOCK");
+    }
+  });
+
+  it("rejects a stale approval attempt (STALE_STATE)", () => {
+    const store = new AuthorityStore();
+    store.seed(baseAggregate());
+    expect(() =>
+      approveAndSealPae(store, SIGNING_KEY_ID, {
+        organizationId: "ORG-DEMO-001",
+        obligationId: "OBL-J0C-002",
+        expectedVersion: 2, // stale; current is 3
+        reviewedAssessmentId: "stale-assessment",
+        reviewedAssessmentHash: "0".repeat(64),
+        actorId: "USR-OPERATOR-001",
+        actorRole: "FINANCE_APPROVER",
+        policyVersion: "POLICY-P0-1",
+        reasonText: "Stale approval attempt.",
+      }),
+    ).toThrow(/STALE_STATE/);
+  });
+});
+
+describe("Execution Worker (P0 core tests 6-11)", () => {
+  it("(6) executes and settles with a valid PAE on the mocked golden path", async () => {
+    const { store, sealed } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("CONFIRMED");
+    const worker = new ExecutionWorker(store, adapter);
+    const record = await worker.execute(sealed);
+    expect(record.status).toBe("SETTLED");
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").state).toBe("RECONCILED");
+  });
+
+  it("(6) refuses execution when the PAE signature is invalid", async () => {
+    const { store, sealed } = setupAuthorizedFixture();
+    const tampered = { ...sealed, signature: "0".repeat(128) };
+    const worker = new ExecutionWorker(store, new FakeProviderAdapter());
+    await expect(worker.execute(tampered)).rejects.toThrow();
+  });
+
+  it("(7) replay/concurrent execute produces at most one provider submission", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("CONFIRMED");
+    const worker = new ExecutionWorker(store, adapter);
+
+    const [first, second] = await Promise.all([worker.execute(sealed), worker.execute(sealed).catch((e) => e)]);
+    // Whichever call wins the atomic claim submits once; the other either
+    // returns the same terminal record or is rejected — never a second submission.
+    expect(adapter.getSubmissionCount()).toBe(1);
+    expect(first.status).toBe("SETTLED");
+    if (!(second instanceof Error)) {
+      expect(second.provider_ref).toBe(first.provider_ref);
+    }
+
+    // A later call with the exact same sealed PAE after settlement must also
+    // be idempotent, not a fresh submission.
+    const third = await worker.execute(sealed);
+    expect(third.provider_ref).toBe(first.provider_ref);
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("(8) provider timeout/UNKNOWN performs status lookup and never blind-retries", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("TIMEOUT");
+    const worker = new ExecutionWorker(store, adapter);
+
+    const record = await worker.execute(sealed);
+    expect(record.status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(1);
+
+    // Calling execute again with the same PAE must not resubmit.
+    const again = await worker.execute(sealed);
+    expect(again.status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(1);
+
+    // The chain eventually confirms; reconciliation must query provider
+    // truth, not guess or resubmit.
+    adapter.resolvePending(record.provider_ref!, "CONFIRMED");
+    const resolved = await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+    expect(resolved.status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("persists an accepted provider reference before a failing status lookup and recovers after restart", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    const originalStatus = adapter.getStatus.bind(adapter);
+    let durableStore = store.exportSnapshot();
+    let durableRecords: ReturnType<ExecutionWorker["exportSnapshot"]> = [];
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      durableStore = store.exportSnapshot();
+      durableRecords = worker.exportSnapshot();
+    });
+    adapter.getStatus = async (ref) => {
+      expect(durableRecords[0]).toMatchObject({ provider_ref: ref, status: "UNKNOWN" });
+      throw new Error("status transport unavailable");
+    };
+    await expect(worker.execute(sealed)).rejects.toThrow("status transport unavailable");
+    expect(durableRecords[0]?.provider_ref).toBeTruthy();
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    adapter.getStatus = originalStatus;
+    const restarted = new ExecutionWorker(AuthorityStore.fromSnapshot(durableStore), adapter);
+    restarted.restoreSnapshot(durableRecords);
+    expect((await restarted.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("does not query status or publish an accepted reference when its checkpoint persistence fails", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let writes = 0;
+    let statusReads = 0;
+    const originalStatus = adapter.getStatus.bind(adapter);
+    adapter.getStatus = async (ref) => { statusReads += 1; return originalStatus(ref); };
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (++writes === 2) throw new Error("accepted checkpoint conflict");
+    });
+    await expect(worker.execute(sealed)).rejects.toThrow("accepted checkpoint conflict");
+    expect(statusReads).toBe(0);
+    expect(worker.exportSnapshot()[0]).toMatchObject({ status: "SUBMITTING", provider_ref: null });
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("retains the accepted checkpoint if the final settlement write conflicts", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let writes = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (++writes === 3) throw new Error("settlement checkpoint conflict");
+    });
+    await expect(worker.execute(sealed)).rejects.toThrow("settlement checkpoint conflict");
+    expect(worker.exportSnapshot()[0]).toMatchObject({ status: "UNKNOWN", provider_ref: expect.any(String) });
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect((await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("does not expose unpersisted settlement after reconciliation CAS failure", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("TIMEOUT");
+    let rejectWrite = false;
+    const worker = new ExecutionWorker(store, adapter, async () => {
+      if (rejectWrite) throw new Error("reconciliation checkpoint conflict");
+    });
+    const first = await worker.execute(sealed);
+    adapter.resolvePending(first.provider_ref!, "CONFIRMED");
+    rejectWrite = true;
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).rejects.toThrow("reconciliation checkpoint conflict");
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(first);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect((await worker.execute(sealed)).status).toBe("UNKNOWN");
+    rejectWrite = false;
+    expect((await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id)).status).toBe("SETTLED");
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("does not persist a reconciliation result if requester authority changes during the provider read", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const fakeAdapter = new FakeProviderAdapter();
+    fakeAdapter.queueOutcome("TIMEOUT");
+    const adapter: ProviderAdapter = fakeAdapter;
+    let requesterRevoked = false;
+    let durableWrites = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (requesterRevoked) throw new Error("requester revoked");
+      },
+    });
+    const initial = await worker.execute(sealed);
+    expect(initial.status).toBe("UNKNOWN");
+    const writesBeforeReconciliation = durableWrites;
+    const getStatus = adapter.getStatus.bind(adapter);
+    adapter.getStatus = async (providerRef, idempotencyKey, revalidate) => {
+      await revalidate?.();
+      requesterRevoked = true;
+      return getStatus(providerRef, idempotencyKey);
+    };
+
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(initial);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect(durableWrites).toBe(writesBeforeReconciliation);
+    expect(fakeAdapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("rolls back in-memory reconciliation if requester validation fails immediately before durable save", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("TIMEOUT");
+    let reconciling = false;
+    let reconciliationChecks = 0;
+    let durableWrites = 0;
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (reconciling && ++reconciliationChecks === 3) throw new Error("requester revoked before save");
+      },
+    });
+    const initial = await worker.execute(sealed);
+    expect(initial.status).toBe("UNKNOWN");
+    adapter.resolvePending(initial.provider_ref!, "CONFIRMED");
+    reconciling = true;
+    const writesBeforeReconciliation = durableWrites;
+
+    await expect(worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked before save");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(initial);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]).execution_state).toBe("UNKNOWN");
+    expect(durableWrites).toBe(writesBeforeReconciliation);
+    expect(adapter.getSubmissionCount()).toBe(1);
+  });
+
+  it("keeps a provider PENDING response UNKNOWN with its reference for read-only reconciliation", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let status: "PENDING" | "CONFIRMED" = "PENDING";
+    let submissions = 0;
+    const adapter = {
+      name: "pending-provider-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        return { providerRef: "circle-transaction-1", status: "SUBMITTED" as const };
+      },
+      async getStatus() {
+        return status === "PENDING"
+          ? { status: "PENDING" as const }
+          : { status: "CONFIRMED" as const, destinationAddress: baseAggregate().destination_address, atomicAmount: "21000000" };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const first = await worker.execute(sealed);
+    expect(first).toMatchObject({ status: "UNKNOWN", provider_ref: "circle-transaction-1" });
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+    expect(submissions).toBe(1);
+
+    status = "CONFIRMED";
+    const reconciled = await worker.reconcilePendingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+    expect(reconciled.status).toBe("SETTLED");
+    expect(submissions).toBe(1);
+  });
+
+  it("retains provider reconciliation evidence in the durable execution record", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = {
+      name: "circle-evidence-test-adapter",
+      async submitTransfer() { return { providerRef: "circle-tx-evidence", status: "SUBMITTED" as const }; },
+      async getStatus(_providerRef: string, idempotencyKey?: string) {
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+          transaction_id: "circle-tx-evidence",
+          transaction_state: "COMPLETE",
+          tx_hash: "0xabc123",
+          wallet_id: baseAggregate().source_wallet_ref,
+          token_id: "native-arc-usdc",
+          network: "ARC-TESTNET",
+          amounts: ["21.000000"],
+          operation: "TRANSFER",
+          ref_id: idempotencyKey,
+          network_fee: "0.001000",
+          provider_created_at: "2026-10-04T10:00:00.000Z",
+          provider_updated_at: "2026-10-04T10:01:00.000Z",
+          reconciled_at: "2026-10-04T10:02:00.000Z",
+        };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+    const record = await worker.execute(sealed);
+
+    expect(record.status).toBe("SETTLED");
+    expect(record.provider_evidence).toMatchObject({
+      transaction_id: "circle-tx-evidence",
+      transaction_state: "COMPLETE",
+      tx_hash: "0xabc123",
+      network_fee: "0.001000",
+      provider_created_at: "2026-10-04T10:00:00.000Z",
+      provider_updated_at: "2026-10-04T10:01:00.000Z",
+      reconciled_at: "2026-10-04T10:02:00.000Z",
+    });
+    expect(worker.exportSnapshot()[0]?.provider_evidence).toEqual(record.provider_evidence);
+  });
+
+  it("recovers persisted SUBMITTING as UNKNOWN through a read-only path without provider submission", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+    worker.restoreSnapshot([{
+      obligation_id: sealed.payload.obligation_ids[0],
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING",
+      atomic_amount: sealed.payload.atomic_amount,
+      destination_address: sealed.payload.destination_address,
+    }]);
+
+    const recovered = await worker.recoverSubmittingByIdempotencyKey(sealed.payload.idempotency_key, "ORG-DEMO-001");
+
+    expect(recovered?.status).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)?.status).toBe("UNKNOWN");
+  });
+
+  it("restores SUBMITTING state if requester authority changes before recovery is saved", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let validations = 0;
+    let durableWrites = 0;
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter, async () => { durableWrites += 1; }, {
+      revalidateRequester: async () => {
+        if (++validations === 2) throw new Error("requester revoked before recovery save");
+      },
+    });
+    const submitting = {
+      obligation_id: sealed.payload.obligation_ids[0],
+      idempotency_key: sealed.payload.idempotency_key,
+      provider_ref: null,
+      status: "SUBMITTING" as const,
+      atomic_amount: sealed.payload.atomic_amount,
+      destination_address: sealed.payload.destination_address,
+    };
+    worker.restoreSnapshot([submitting]);
+    const aggregateBefore = store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0]);
+
+    await expect(worker.recoverSubmittingByIdempotencyKey(sealed.payload.idempotency_key, sealed.payload.organization_id))
+      .rejects.toThrow("requester revoked before recovery save");
+
+    expect(worker.getExecutionRecord(sealed.payload.idempotency_key)).toEqual(submitting);
+    expect(store.get(sealed.payload.organization_id, sealed.payload.obligation_ids[0])).toEqual(aggregateBefore);
+    expect(durableWrites).toBe(0);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("marks a typed pre-submit provider refusal BLOCKED without classifying it as UNKNOWN", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissions = 0;
+    const adapter = {
+      name: "pre-submit-block-test-adapter",
+      async submitTransfer() {
+        submissions += 1;
+        throw new ProviderPreSubmitBlockedError("fresh route evidence changed");
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const result = await worker.execute(sealed);
+
+    expect(result.status).toBe("BLOCKED");
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("BLOCKED");
+    expect(submissions).toBe(1);
+  });
+
+  it("records a thrown provider submission as UNKNOWN and never resubmits it", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissionCount = 0;
+    const adapter = {
+      name: "throw-after-submit-test-adapter",
+      async submitTransfer() {
+        submissionCount += 1;
+        throw new Error("transport closed after request dispatch");
+      },
+      async getStatus() {
+        return { status: "UNKNOWN" as const };
+      },
+    };
+    const worker = new ExecutionWorker(store, adapter);
+
+    const first = await worker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(first.provider_ref).toBeNull();
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+
+    const replay = await worker.execute(sealed);
+    expect(replay).toEqual(first);
+    expect(submissionCount).toBe(1);
+  });
+
+  it("reconciles an accepted-but-lost provider response after restart by the same idempotency key", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    let submissionCount = 0;
+    let acceptedIdempotencyKey: string | undefined;
+    const adapter = {
+      name: "accepted-lost-response-test-adapter",
+      async submitTransfer(request: { idempotencyKey: string }) {
+        submissionCount += 1;
+        acceptedIdempotencyKey = request.idempotencyKey;
+        throw new Error("provider accepted request but response was lost");
+      },
+      async getStatusByIdempotencyKey(idempotencyKey: string) {
+        expect(idempotencyKey).toBe(acceptedIdempotencyKey);
+        return {
+          status: "CONFIRMED" as const,
+          destinationAddress: baseAggregate().destination_address,
+          atomicAmount: "21000000",
+        };
+      },
+      async getStatus() { return { status: "UNKNOWN" as const }; },
+    };
+    const firstWorker = new ExecutionWorker(store, adapter);
+    const first = await firstWorker.execute(sealed);
+    expect(first.status).toBe("UNKNOWN");
+    expect(submissionCount).toBe(1);
+
+    const restartedStore = AuthorityStore.fromSnapshot(store.exportSnapshot());
+    const restartedWorker = new ExecutionWorker(restartedStore, adapter);
+    restartedWorker.restoreSnapshot(firstWorker.exportSnapshot());
+    const recovered = await restartedWorker.reconcilePendingByIdempotencyKey(
+      sealed.payload.idempotency_key,
+      sealed.payload.organization_id,
+    );
+
+    expect(recovered.status).toBe("SETTLED");
+    expect(acceptedIdempotencyKey).toBe(sealed.payload.idempotency_key);
+    expect(submissionCount).toBe(1);
+  });
+
+  it("recovers a persisted SUBMITTING marker as UNKNOWN after restart without a provider resubmit", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    let crashSnapshot: ReturnType<AuthorityStore["exportSnapshot"]> | undefined;
+    let executionSnapshot: ReturnType<ExecutionWorker["exportSnapshot"]> | undefined;
+    const interruptedWorker = new ExecutionWorker(store, adapter, async () => {
+      crashSnapshot = store.exportSnapshot();
+      executionSnapshot = interruptedWorker.exportSnapshot();
+      throw new Error("simulated process loss after durable SUBMITTING marker");
+    });
+
+    await expect(interruptedWorker.execute(sealed)).rejects.toThrow(/simulated process loss/);
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(executionSnapshot?.[0]?.status).toBe("SUBMITTING");
+
+    const restartedStore = AuthorityStore.fromSnapshot(crashSnapshot!);
+    const restartedWorker = new ExecutionWorker(restartedStore, adapter);
+    restartedWorker.restoreSnapshot(executionSnapshot!);
+    const recovered = await restartedWorker.execute(sealed);
+    expect(recovered.status).toBe("UNKNOWN");
+    expect(restartedStore.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("UNKNOWN");
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(9) BLOCKs pre-submit with zero unauthorized movement when the destination changed after authorization", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    // Simulate an attacker/operator changing the destination after the PAE was sealed.
+    store.applyMaterialChange("ORG-DEMO-001", "OBL-J0C-002", 4, {
+      destination_ref: "DEST-J0C-ATTACKER",
+      destination_version: 2,
+      destination_address: "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      destination_verification_status: "PENDING_VERIFICATION",
+    });
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").execution_state).toBe("BLOCKED");
+  });
+
+  it("(9b) BLOCKs when the source wallet became inactive, even with aggregate_version unchanged (defense in depth beyond the version check)", async () => {
+    const { sealed, store, aggregate } = setupAuthorizedFixture();
+    // Directly overwrite the wallet status without going through
+    // applyMaterialChange, so aggregate_version still matches the PAE.
+    // This proves the Execution Worker re-checks wallet status itself
+    // rather than relying solely on the version-mismatch shortcut.
+    store.seed({ ...aggregate, source_wallet_status: "INACTIVE" });
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(9c) BLOCKs when the destination operational status degraded, even with ref/version/address unchanged", async () => {
+    const { sealed, store, aggregate } = setupAuthorizedFixture();
+    store.seed({ ...aggregate, destination_operational_status: "BLOCKED" });
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(10) kill switch prevents execution", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    store.activateKillSwitch("GLOBAL_EXECUTION_DISABLED");
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(10b) organization-scoped kill switch blocks execution for that organization", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    store.activateKillSwitch("ORGANIZATION_EXECUTION_DISABLED", "ORG-DEMO-001");
+    const adapter = new FakeProviderAdapter();
+    const worker = new ExecutionWorker(store, adapter);
+
+    await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+    expect(adapter.getSubmissionCount()).toBe(0);
+  });
+
+  it("(10c) transaction-scoped kill switch blocks only its exact obligation, never an unrelated one", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    // Kill switch for a different obligation must not affect this one.
+    store.activateKillSwitch("TRANSACTION_DISABLED", "OBL-SOME-OTHER-OBLIGATION");
+    const adapter = new FakeProviderAdapter();
+    adapter.queueOutcome("CONFIRMED");
+    const worker = new ExecutionWorker(store, adapter);
+    await expect(worker.execute(sealed)).resolves.toMatchObject({ status: "SETTLED" });
+
+    // Now activate it for the exact obligation and prove it blocks a fresh one.
+    const second = setupAuthorizedFixture();
+    second.store.activateKillSwitch("TRANSACTION_DISABLED", "OBL-J0C-002");
+    const worker2 = new ExecutionWorker(second.store, new FakeProviderAdapter());
+    await expect(worker2.execute(second.sealed)).rejects.toThrow(ExecutionBlockedError);
+  });
+
+  it("cancel-vs-execute race yields exactly one winner, never both", async () => {
+    // Case A: cancel completes fully before execute is ever invoked -> execute must lose.
+    {
+      const { sealed, store, aggregate } = setupAuthorizedFixture();
+      store.cancel("ORG-DEMO-001", "OBL-J0C-002", aggregate.aggregate_version);
+      const worker = new ExecutionWorker(store, new FakeProviderAdapter());
+      await expect(worker.execute(sealed)).rejects.toThrow(ExecutionBlockedError);
+      expect(store.get("ORG-DEMO-001", "OBL-J0C-002").state).toBe("CANCELLED");
+    }
+
+    // Case B: execute's synchronous claim (verify -> checks -> RESERVED -> SUBMITTING)
+    // runs to completion before any interleaved code can act, so a cancel
+    // attempted immediately after invoking (not awaiting) execute() must
+    // observe the provider-submit boundary and be rejected — execute wins.
+    {
+      const { sealed, store, aggregate } = setupAuthorizedFixture();
+      const adapter = new FakeProviderAdapter();
+      adapter.queueOutcome("CONFIRMED");
+      const worker = new ExecutionWorker(store, adapter);
+
+      const executePromise = worker.execute(sealed); // not awaited yet
+      expect(() => store.cancel("ORG-DEMO-001", "OBL-J0C-002", aggregate.aggregate_version)).toThrow(
+        /provider-submit boundary/,
+      );
+      const record = await executePromise;
+      expect(record.status).toBe("SETTLED");
+      expect(adapter.getSubmissionCount()).toBe(1);
+    }
+  });
+
+  it("(11) settlement amount/destination/status must reconcile exactly to the obligation", async () => {
+    const { sealed, store } = setupAuthorizedFixture();
+    const adapter = new FakeProviderAdapter();
+    // Force a provider confirmation whose recorded amount silently differs
+    // (simulating a corrupted/incorrect settlement observation).
+    const originalGetStatus = adapter.getStatus.bind(adapter);
+    adapter.getStatus = async (ref: string) => {
+      const result = await originalGetStatus(ref);
+      if (result.status === "CONFIRMED") {
+        return { ...result, atomicAmount: "1" };
+      }
+      return result;
+    };
+    adapter.queueOutcome("CONFIRMED");
+    const worker = new ExecutionWorker(store, adapter);
+
+    const record = await worker.execute(sealed);
+    expect(record.status).toBe("BLOCKED");
+    expect(store.get("ORG-DEMO-001", "OBL-J0C-002").state).not.toBe("RECONCILED");
+  });
+});

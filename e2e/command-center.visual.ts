@@ -1,0 +1,2543 @@
+import { syntheticSourceResponse } from "./source-fixtures";
+import AxeBuilder from "@axe-core/playwright";
+import { createHash } from "node:crypto";
+import { canonicalize } from "json-canonicalize";
+import { execFileSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { expect, test, type Page, type TestInfo } from "./network-fence";
+
+const obligation = {
+  obligation_id: "OBL-UAT-01",
+  service_category: "SOFTWARE_SERVICES",
+  amount: "125.00",
+  currency: "USD",
+  recurrence: "MONTHLY",
+  due_date: "2026-10-05",
+  commercial_terms: "Net 30",
+  assessed: true,
+  decision: "PAY",
+  provider_mode: "NOT_LIVE_AI",
+  route_assurance_status: "Route assurance not ready",
+};
+const secondObligation = { ...obligation, obligation_id: "OBL-UAT-02", amount: "40.00", due_date: "2026-10-10" };
+const proxiedObligation = { ...obligation, obligation_id: "OBL-UAT-03", amount: "125.00", due_date: "2026-10-15" };
+const queueItem = (page: Page, id: string) => page.locator(`button[data-obligation-id="${id}"]`);
+const mobileQueueToggle = (page: Page) => page.getByRole("complementary").getByRole("button", { name: /^(?:Choose a payable|Close payables list|Switch payable(?: ·.*)?)$/ });
+async function openReviewPayables(page: Page) {
+  const privacyEntry = page.getByRole("button", { name: "Open workspace", exact: true });
+  const reviewPayables = page.getByRole("button", { name: "Review payables", exact: true });
+  await expect(page.getByRole("button", { name: /Open workspace|Review payables/ }).first()).toBeVisible();
+  if (await privacyEntry.isVisible()) await privacyEntry.click();
+  await expect(reviewPayables).toBeVisible();
+  await reviewPayables.click();
+}
+async function openMobileQueue(page: Page) {
+  await expect.poll(() => mobileQueueToggle(page).count()).toBe(1);
+  const toggle = mobileQueueToggle(page);
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+}
+
+async function expandLifecycleStages(page: Page) {
+  const disclosure = page.getByRole("button", { name: "View all stages", exact: true });
+  if (await disclosure.count() && await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+}
+
+async function collapseLifecycleStages(page: Page) {
+  const disclosure = page.getByRole("button", { name: "View all stages", exact: true });
+  if (await disclosure.count() && await disclosure.getAttribute("aria-expanded") === "true") await disclosure.click();
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "GET" && /^\/api\/obligations(?:\/[^/]+)?$/.test(pathname)) {
+      const response = await syntheticSourceResponse(pathname);
+      return route.fulfill({ status: response.status, json: await response.json() });
+    }
+    return route.fulfill({ status: 503, json: { error: "Unmocked API call forbidden in browser verification." } });
+  });
+});
+
+test("dashboard navigation moves keyboard focus to each destination without reloading the queue", async ({ page }) => {
+  const queueReads: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/obligations") queueReads.push(request.url());
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+  const dashboardHeading = page.getByRole("heading", { name: "Dashboard", exact: true });
+  await expect(dashboardHeading).toBeVisible();
+
+  const reviewPayables = page.getByRole("button", { name: "Review payables", exact: true });
+  await reviewPayables.focus();
+  await page.keyboard.press("Enter");
+  const stageHeading = page.getByRole("heading", { name: "Choose a payable", exact: true });
+  await expect(stageHeading).toBeFocused();
+  await expect(stageHeading).toHaveAttribute("tabindex", "-1");
+
+  const dashboardButton = page.getByRole("button", { name: "Dashboard", exact: true });
+  await dashboardButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(dashboardHeading).toBeFocused();
+  await expect(dashboardHeading).toHaveAttribute("tabindex", "-1");
+  expect(queueReads).toHaveLength(1);
+});
+
+test("genuine first view keeps the payable, current stage, reason and legal next action in the initial viewport", async ({ page }, testInfo) => {
+  const listResponse = await syntheticSourceResponse("/api/obligations");
+  expect(listResponse.ok).toBe(true);
+  const list = await listResponse.json() as { obligations: Array<Record<string, any>> };
+  const first = list.obligations[0];
+  expect(first).toBeTruthy();
+  const detailResponse = await syntheticSourceResponse(`/api/obligations/${first.obligation_id}`);
+  expect(detailResponse.ok).toBe(true);
+  const expected = await detailResponse.json() as Record<string, any>;
+  expect(expected.current_assessment).toBeNull();
+
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/") && new URL(request.url()).pathname !== "/api/wallet/balance/refresh") {
+      writes.push(`${request.method()} ${new URL(request.url()).pathname}`);
+    }
+  });
+
+  const assertGenuineFirstView = async (viewportHeight: number, mobile = false) => {
+    await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText(`${expected.record.amount} ${expected.record.currency}`);
+    await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+    await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" })).toHaveCount(0);
+    await expect(page.getByText("Payment journey")).toHaveCount(0);
+    await expect(page.getByText(/Payment activity/)).toHaveCount(0);
+    await expect(page.getByText("Control and audit records")).toHaveCount(0);
+    await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/Payment review report/)).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Wallet funding and payment readiness" })).toHaveCount(0);
+    const wallet = page.getByRole("region", { name: "Read-only wallet balance" });
+    await expect(wallet).toContainText("Balance not checked");
+    const balanceRefresh = wallet.getByRole("button", { name: "Refresh wallet balance" });
+    await expect(balanceRefresh).toBeVisible();
+    await expect(balanceRefresh).toBeEnabled();
+    await expect(wallet).not.toContainText("AUTH_GATE_UNVERIFIED");
+    expect(await balanceRefresh.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    await expect(page.getByTestId("current-next-step")).not.toContainText(/Safety Kernel|PAE|provider|reconciliation/i);
+    await expect(page.getByRole("region",{name:"Current payable action"})).toContainText("Run AI Assessment");
+    await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
+    await expect(page.getByTestId("current-next-step")).toContainText("This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.");
+    await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+    await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(1);
+    const queueRows = page.locator('button[data-obligation-id]');
+    for (const row of await queueRows.all()) {
+      await expect(row).not.toContainText(/Sole PAY candidate|route assurance|PAE|execution|provider/i);
+    }
+
+    await expect(page.getByText("Demonstrations", { exact: true })).toHaveCount(0);
+
+    const selectedCard = page.getByRole("region", { name: "Selected source payable" });
+    const stageCard = page.getByTestId("current-next-step");
+    const primary = page.getByRole("button", { name: "Run AI Assessment" });
+    const sourceContext = selectedCard.getByTestId("source-service-context");
+    await expect(selectedCard.locator("h2")).toHaveText(new RegExp(`^${String(first.service_category).replaceAll("_", " ")}$`, "i"));
+    if (expected.record.beneficiary_name && expected.record.beneficiary_name !== "Not captured")
+      await expect(selectedCard).toContainText(`Supplier: ${expected.record.beneficiary_name}`);
+    // Overnight selected-payable admission makes the immutable reference essential.
+    await expect(selectedCard).toContainText(expected.record.obligation_id);
+    await expect(sourceContext).toContainText(expected.record.commercial_terms);
+    await expect(stageCard.locator("p").first()).toContainText("This obligation needs an assessment before it can proceed.");
+    const firstViewport = await Promise.all([
+      selectedCard.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+      sourceContext.evaluate((element) => element.getBoundingClientRect().bottom),
+      stageCard.locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
+      stageCard.locator("p").nth(1).evaluate((element) => element.getBoundingClientRect().bottom),
+      primary.evaluate((element) => element.getBoundingClientRect().bottom),
+    ]);
+    expect(firstViewport.every((bottom) => bottom <= viewportHeight), JSON.stringify(firstViewport)).toBe(true);
+    const actionBounds = await primary.evaluate((element) => ({
+      top: element.getBoundingClientRect().top,
+      bottom: element.getBoundingClientRect().bottom,
+      scrollY: window.scrollY,
+    }));
+    const widths = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+    expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+    console.log("GENUINE_OBLIGATION_FIRST_VIEWPORT", JSON.stringify({
+      viewport: await page.evaluate(() => ({ width: document.documentElement.clientWidth, height: window.innerHeight })),
+      obligationId: expected.record.obligation_id,
+      businessName: String(first.service_category).replaceAll("_", " "),
+      state: "unassessed · source OUTSTANDING",
+      actionLabel: "Run AI Assessment",
+      actionCount: await page.locator('main button[data-primary-action="true"]:not(:disabled)').count(),
+      actionBounds,
+      scrollY: actionBounds.scrollY,
+      disclosureOpen: await page.getByRole("main").locator("details[open]").count() > 0,
+      navigationMutationCount: writes.length,
+      documentWidth: widths.document,
+    }));
+  };
+
+  await page.setViewportSize({ width: 1173, height: 751 });
+  await page.goto("/");
+  await openReviewPayables(page);
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toHaveCount(0);
+  await queueItem(page, first.obligation_id).click();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await assertGenuineFirstView(751);
+  await page.screenshot({ path: testInfo.outputPath("genuine-desktop-first-view.png") });
+
+  const fifthResponse = await syntheticSourceResponse("/api/obligations/OBL-J0C-005");
+  expect(fifthResponse.ok).toBe(true);
+  const fifth = await fifthResponse.json() as Record<string, any>;
+  await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
+  const fifthSource = page.getByRole("region", { name: "Selected source payable" });
+  await expect(fifthSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
+  await expect(fifthSource.getByTestId("source-service-context")).toContainText("synthetic test only");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
+  const fifthDesktopBounds = await Promise.all([
+    fifthSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+    fifthSource.getByTestId("source-service-context").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").first().evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
+  ]);
+  expect(fifthDesktopBounds.every((bottom) => bottom <= 760), JSON.stringify(fifthDesktopBounds)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("genuine-desktop-source-context-005.png") });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await openReviewPayables(page);
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await openMobileQueue(page);
+  await queueItem(page, first.obligation_id).click();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await assertGenuineFirstView(844, true);
+  await page.screenshot({ path: testInfo.outputPath("genuine-mobile-first-view.png") });
+  await openMobileQueue(page);
+  await page.locator('button[data-obligation-id="OBL-J0C-005"]').click();
+  const fifthMobileSource = page.getByRole("region", { name: "Selected source payable" });
+  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText(fifth.record.commercial_terms);
+  await expect(fifthMobileSource.getByTestId("source-service-context")).toContainText("synthetic test only");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toBeVisible();
+  await expect(page.getByTestId("current-next-step")).toContainText("This obligation needs an assessment before it can proceed.");
+  const fifthMobileBounds = await Promise.all([
+    fifthMobileSource.locator("h2").evaluate((element) => element.getBoundingClientRect().bottom),
+    fifthMobileSource.getByTestId("source-service-context").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("h3").evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByTestId("current-next-step").locator("p").first().evaluate((element) => element.getBoundingClientRect().bottom),
+    page.getByRole("button", { name: "Run AI Assessment" }).evaluate((element) => element.getBoundingClientRect().bottom),
+  ]);
+  expect(fifthMobileBounds.every((bottom) => bottom <= 844), JSON.stringify(fifthMobileBounds)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("genuine-mobile-source-context-005.png") });
+  expect(writes).toEqual([]);
+});
+
+const detail = {
+  financial_action_eligible: true,
+  truth: {
+    source_truth: {
+      role: "SOURCE_OF_RECORD",
+      source: { source_kind: "DIRECT_EVIDENCE", source_system_id: "UAT-SOURCE", record_type: "BUSINESS_OBLIGATION", record_id: "UAT-INV-01", record_version: "1", approval_state: "NOT_ASSERTED", execution_authority: "NONE" },
+      obligation_state: "OUTSTANDING",
+    },
+    tameion_control_truth: { role: "ASSURED_PAYMENT_CONTROL_PLANE", aggregate_version: 1, aggregate_state: "APPROVAL_PENDING", assessment_state: "ASSESSED", pae_state: "UNUSED", pae_sealed: false, execution_state: "NONE", execution_kill_switched: false, execution_release_authority: "NOT_GRANTED" },
+    settlement_truth: { role: "SETTLEMENT_PROVIDER", provider_target: "CIRCLE_DCW", network: "ARC_TESTNET", runtime: "SIMULATED", status: "NOT_SUBMITTED", provider_ref: null, settlement_amount: "125.000000", settlement_atomic_amount: "125000000", source_amount: "125.00", source_currency: "USD", settlement_conversion_rate: null },
+  },
+  aggregate: { aggregate_version: 1, state: "APPROVAL_PENDING", amount: "125.000000", asset: "USDC", network: "ARC_TESTNET", destination_address: "0x1111111111111111111111111111111111111111", destination_verification_status: "PENDING_VERIFICATION", destination_operational_status: "ON_HOLD", source_wallet_ref: "UAT-WALLET", source_wallet_status: "INACTIVE", product_trust_provenance: "UNVERIFIED_CURRENT_TRUST", execution_state: "NONE", pae_state: "UNUSED" },
+  record: { obligation_id: "OBL-UAT-01", amount: "125.00", currency: "USD", due_date: "2026-10-05", issue_date: "2026-09-01", commercial_terms: "Net 30" },
+  current_assessment: { obligation_id: "OBL-UAT-01", assessment_id: "ASM-UAT-01", assessment_hash: "a".repeat(64), aggregate_version: "1", decision: "PAY", reasons: ["No validated blocker was found; existing deterministic authorization and Safety Kernel gates still apply."], provider_mode: "NOT_LIVE_AI" },
+  demo_arc_trust_simulated: false,
+  pae_sealed: false,
+  execution: null,
+  execution_kill_switched: false,
+};
+
+function detailFor(obligationId: string, sourceAmount: string, dueDate: string, sourceRecordId: string) {
+  const [whole, fraction = ""] = sourceAmount.split(".");
+  const atomicAmount = (BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"))).toString();
+  const settlementAmount = `${whole}.${fraction.padEnd(6, "0")}`;
+  return {
+    ...detail,
+    truth: {
+      ...detail.truth,
+      tameion_control_truth: { ...detail.truth.tameion_control_truth },
+      source_truth: { ...detail.truth.source_truth, source: { ...detail.truth.source_truth.source, record_id: sourceRecordId } },
+      settlement_truth: { ...detail.truth.settlement_truth, settlement_amount: settlementAmount, settlement_atomic_amount: atomicAmount, source_amount: sourceAmount },
+    },
+    aggregate: { ...detail.aggregate, amount: settlementAmount },
+    record: { ...detail.record, obligation_id: obligationId, amount: sourceAmount, due_date: dueDate },
+    current_assessment: { ...detail.current_assessment, obligation_id: obligationId, assessment_id: `ASM-${obligationId}`, assessment_hash: "b".repeat(64) },
+  };
+}
+
+function detailWithProxy(): Record<string, any> {
+  const source = detailFor("OBL-UAT-03", "125.00", "2026-10-15", "UAT-INV-03");
+  return {
+    ...source,
+    settlement_proxy: {
+      source_aggregate_version: 1,
+      mapped_aggregate_version: 2,
+      preflight: {
+        profile: "circle-arc-testnet",
+        organization_id: "ORG-UAT",
+        obligation_id: "OBL-UAT-03",
+        source_amount: "125.00",
+        source_currency: "USD",
+        amount: "125.000000",
+        asset: "USDC",
+        network: "ARC_TESTNET",
+        source_wallet: { id: "UAT-ARC-SOURCE", address: "0x1111111111111111111111111111111111111111" },
+        destination_wallet: { id: "UAT-ARC-PROXY", address: "0x2222222222222222222222222222222222222222", name: "Arc Testnet settlement proxy" },
+        captured_at: "2026-10-06T18:00:00.000Z",
+        evidence_sha256: "c".repeat(64),
+        max_network_fee: "0.010000",
+        estimated_network_fee: "0.001000",
+        max_total_debit: "125.010000",
+      },
+    },
+    aggregate: { ...source.aggregate, aggregate_version: 2, amount: "125.000000" },
+  };
+}
+
+function proxyLifecycleDetail(status: "AUTHORIZED" | "SUBMITTED" | "UNKNOWN" | "SETTLED"): Record<string, any> {
+  const source: Record<string, any> = detailWithProxy();
+  source.record.obligation_id = "OBL-UAT-01";
+  source.current_assessment.obligation_id = "OBL-UAT-01";
+  source.current_assessment.aggregate_version = "2";
+  source.settlement_proxy.preflight.obligation_id = "OBL-UAT-01";
+  const settled = status === "SETTLED";
+  const executionStatus = settled ? "SETTLED" : status === "AUTHORIZED" ? null : status;
+  const settledIdempotencyKey = "idem-OBL-UAT-01-SETTLED";
+  const settledAtomicAmount = "125000000";
+  const settledDestination = source.settlement_proxy.preflight.destination_wallet.address;
+  return {
+    ...source,
+    assurance_evidence: status === "AUTHORIZED" ? {
+      state: "AVAILABLE_CURRENT_BINDING",
+      assurance_id: "ASSURANCE-UAT",
+      recorded_at: "2026-10-07T12:00:00.000Z",
+      organization_id: "ORG-UAT",
+      obligation_id: "OBL-UAT-01",
+      aggregate_version: 2,
+      policy_version: "policy-u1",
+      approval_record_hash: "f".repeat(64),
+      pae_instruction_hash: "d".repeat(64),
+      assurance_hash: "a".repeat(64),
+      overall: "PASS",
+      control_results: ["approval", "amount", "destination", "expiry", "kill-switch", "organization", "obligation", "policy", "source-wallet", "currentness"].map((control_id) => ({ control_id, result: "PASS" })),
+    } : undefined,
+    truth: {
+      ...source.truth,
+      tameion_control_truth: {
+        ...source.truth.tameion_control_truth,
+        aggregate_state: settled ? "RECONCILED" : status === "UNKNOWN" ? "IN_DOUBT" : "AUTHORIZED",
+        pae_state: settled ? "CONSUMED" : "SEALED",
+        execution_state: executionStatus ?? "NONE",
+        execution_release_authority: settled ? "CONSUMED" : status === "SUBMITTED" ? "SUBMITTED_TO_PROVIDER" : status === "UNKNOWN" ? "IN_DOUBT_PROVIDER_SUBMISSION" : "TAMEION_PAE_REVERIFY_REQUIRED",
+      },
+      settlement_truth: {
+        ...source.truth.settlement_truth,
+        runtime: settled ? "LIVE" : "SIMULATED",
+        status: executionStatus ?? "NOT_SUBMITTED",
+        provider_ref: executionStatus ? "MOCK-ARC-REFERENCE" : null,
+      },
+    },
+    aggregate: {
+      ...source.aggregate,
+      state: settled ? "RECONCILED" : status === "UNKNOWN" ? "IN_DOUBT" : "AUTHORIZED",
+      execution_state: executionStatus ?? "NONE",
+      pae_state: settled ? "CONSUMED" : "SEALED",
+      destination_verification_status: "VERIFIED",
+      destination_operational_status: "ACTIVE",
+      source_wallet_status: "ACTIVE",
+      product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+    },
+    pae_sealed: true,
+    execution_gate: status === "AUTHORIZED" ? "PORTAL_RELEASE_APPROVAL_REQUIRED" : "LOCKED_AFTER_SUBMISSION",
+    execution_packet: status === "AUTHORIZED" ? { packet_sha256: "e".repeat(64), packet: { obligation_id: "OBL-UAT-01" } } : settled ? {
+      packet_sha256: "f".repeat(64),
+      packet: {
+        organization_id: "ORG-UAT",
+        obligation_id: "OBL-UAT-01",
+        aggregate_version: 2,
+        settlement_amount: "125.000000",
+        asset: "USDC",
+        network: "ARC_TESTNET",
+        provider_token: { decimals: 6 },
+        circle_arc_execution_instruction: { amount: "125.000000", decimals: 6, destination_address: settledDestination },
+        pae: { instruction_hash: "d".repeat(64), idempotency_key: settledIdempotencyKey },
+      },
+    } : null,
+    sealed_pae_instruction_hash: "d".repeat(64),
+    execution: executionStatus ? {
+      status: executionStatus,
+      provider_ref: "MOCK-ARC-REFERENCE",
+      ...(settled ? {
+        idempotency_key: settledIdempotencyKey,
+        atomic_amount: settledAtomicAmount,
+        destination_address: settledDestination,
+        provider_evidence: {
+          status: "CONFIRMED",
+          atomic_amount: settledAtomicAmount,
+          destination_address: settledDestination,
+          reconciled_at: "2026-10-07T12:00:00.000Z",
+        },
+      } : {}),
+    } : null,
+  };
+}
+
+function postApprovalNPlusOneDetail(paeSealed: boolean): Record<string, any> {
+  const approved = detailWithProxy();
+  approved.record.obligation_id = "OBL-UAT-01";
+  approved.truth.source_truth.source.record_id = "UAT-INV-01";
+  approved.aggregate.aggregate_version = 3;
+  approved.aggregate.state = "AUTHORIZED";
+  approved.aggregate.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.aggregate_version = 3;
+  approved.truth.tameion_control_truth.aggregate_state = "AUTHORIZED";
+  approved.truth.tameion_control_truth.assessment_state = "NOT_CURRENT";
+  approved.truth.tameion_control_truth.pae_state = paeSealed ? "SEALED" : "UNUSED";
+  approved.truth.tameion_control_truth.pae_sealed = paeSealed;
+  approved.truth.tameion_control_truth.execution_state = "NONE";
+  approved.truth.tameion_control_truth.execution_release_authority = paeSealed ? "TAMEION_PAE_REVERIFY_REQUIRED" : "NOT_GRANTED";
+  approved.settlement_proxy.mapped_aggregate_version = 2;
+  approved.current_assessment = null;
+  approved.pae_sealed = paeSealed;
+  approved.execution = null;
+  approved.execution_packet = null;
+  approved.execution_gate = paeSealed ? "LOCKED_UNTIL_CURRENT_AUTHORIZATION" : "LOCKED_AFTER_ASSURANCE_HOLD";
+  approved.sealed_pae_instruction_hash = paeSealed ? "d".repeat(64) : null;
+  return approved;
+}
+
+function liveWinnerForPreparation(): Record<string, any> {
+  const candidate: Record<string, any> = detailFor("OBL-UAT-01", "125.00", "2026-10-05", "UAT-INV-01");
+  candidate.current_assessment.provider_used = "mocked-test-provider";
+  candidate.current_assessment.provider_mode = "LIVE_AI";
+  candidate.current_assessment.race = {
+    result: { decision: "PAY", decision_summary: "No validated blocker was found; existing deterministic authorization and Safety Kernel gates still apply.", validated_findings: [] },
+    action_taken: { summary: "Required checks evaluated.", checks: ["Source identity", "Current obligation"] },
+    caveats: { missing_context: [], uncertainty_signal: false, model_explanation: "Advisory fixture.", model_explanation_authority: "NON_AUTHORITATIVE" },
+    evidence: {
+      evidence_ids: ["UAT-EVIDENCE-1"],
+      authoritative_facts: {
+        obligation_id: "OBL-UAT-01", aggregate_version: "1", amount: "125.00", currency: "USD",
+        due_date: null, due_date_status: "NOT_STATED_ON_SOURCE", due_date_position: "NOT_STATED",
+        as_of_date: "2026-10-04", state_at_event_baseline: "OUTSTANDING", business_purpose_confirmed: true,
+        source_evidence_present: true, destination_status: "PENDING_VERIFICATION",
+      },
+    },
+    remediation: [], prompt_identity: { version: "uat-fixture-v1", sha256: "e".repeat(64) },
+  };
+  return candidate;
+}
+
+function postProxyFreshPayWithAggregateRevoked(): Record<string, any> {
+  const candidate = liveWinnerForPreparation();
+  const proxy = detailWithProxy();
+  candidate.settlement_proxy = proxy.settlement_proxy;
+  candidate.aggregate = {
+    ...proxy.aggregate,
+    aggregate_version: 2,
+    state: "APPROVAL_PENDING",
+    pae_state: "REVOKED",
+    destination_verification_status: "VERIFIED",
+    destination_operational_status: "ACTIVE",
+    source_wallet_status: "ACTIVE",
+    product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE",
+  };
+  candidate.current_assessment.aggregate_version = "2";
+  candidate.current_assessment.race.evidence.authoritative_facts.aggregate_version = "2";
+  candidate.truth.tameion_control_truth = {
+    ...candidate.truth.tameion_control_truth,
+    aggregate_version: 2,
+    aggregate_state: "APPROVAL_PENDING",
+    pae_state: "REVOKED",
+    execution_state: "NONE",
+    execution_release_authority: "REVOKED",
+  };
+  candidate.pae_sealed = false;
+  candidate.execution = null;
+  candidate.execution_packet = null;
+  candidate.sealed_pae_instruction_hash = null;
+  candidate.execution_gate = "LOCKED_UNTIL_CURRENT_AUTHORIZATION";
+  return candidate;
+}
+
+async function openFixture(
+  page: Page,
+  selectedDetail: Record<string, any> = detail,
+  queue: Array<Record<string, any>> = [obligation, secondObligation, proxiedObligation],
+  detailById: Record<string, Record<string, any>> = {},
+  solePayCandidateId?: string | null,
+) {
+  const unexpectedWrites: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+    const url = new URL(route.request().url());
+    if (route.request().method() !== "GET") unexpectedWrites.push(`${route.request().method()} ${url.pathname}`);
+    if (url.pathname === "/api/obligations") return route.fulfill({ json: {
+      obligations: queue,
+      assessed_count: queue.filter((item) => item.assessed).length,
+      total_count: queue.length,
+      sole_pay_candidate_id: solePayCandidateId === undefined
+        ? queue.length === 3 ? "OBL-UAT-01" : null
+        : solePayCandidateId,
+    } });
+    if (url.pathname.startsWith("/api/obligations/")) {
+      const id = url.pathname.split("/").at(-1)!;
+      const responseDetail = detailById[id] ?? (id === "OBL-UAT-01" ? selectedDetail
+        : id === "OBL-UAT-02" ? detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02")
+          : id === "OBL-UAT-03" ? detailWithProxy() : null);
+      if (responseDetail) return route.fulfill({ json: responseDetail });
+    }
+    return route.fulfill({ status: 404, json: { error: "This read-only visual fixture does not permit action requests." } });
+  });
+  await page.goto("/");
+  await openReviewPayables(page);
+  const selectedId = String(selectedDetail.record?.obligation_id ?? "OBL-UAT-01");
+  const selectedRow = page.locator(`button[data-obligation-id="${selectedId}"]`);
+  if (await page.evaluate(() => window.innerWidth <= 768)) {
+    await openMobileQueue(page);
+  }
+  await expect(selectedRow).toBeVisible();
+  await selectedRow.click();
+  await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  return unexpectedWrites;
+}
+
+async function actualSourcePayFixtures(page: Page) {
+  const listResponse = await syntheticSourceResponse("/api/obligations");
+  expect(listResponse.ok).toBe(true);
+  const list = await listResponse.json() as { obligations: Array<Record<string, any>> };
+  const sourceById: Record<string, Record<string, any>> = {};
+  for (const id of ["OBL-J0C-001", "OBL-J0C-003"]) {
+    const response = await syntheticSourceResponse(`/api/obligations/${id}`);
+    expect(response.ok).toBe(true);
+    sourceById[id] = await response.json();
+    expect(sourceById[id].record.obligation_id).toBe(id);
+  }
+
+  const queue: Array<Record<string, any>> = list.obligations.map((source) => ({
+    ...source,
+    assessed: true,
+    decision: source.obligation_id === "OBL-J0C-001" || source.obligation_id === "OBL-J0C-003" ? "PAY" : "HOLD",
+    provider_mode: "LIVE_AI",
+    ...(source.obligation_id === "OBL-J0C-001" ? { route_assurance_status: "Route assurance not ready" } : {}),
+  }));
+  expect(queue.find((item) => item.obligation_id === "OBL-J0C-001")?.decision).toBe("PAY");
+  expect(queue.find((item) => item.obligation_id === "OBL-J0C-003")?.decision).toBe("PAY");
+
+  const assessmentTemplate = liveWinnerForPreparation().current_assessment;
+  const payDetailById = Object.fromEntries(Object.entries(sourceById).map(([id, source]) => {
+    const current = structuredClone(source);
+    const aggregateVersion = String(current.aggregate.aggregate_version);
+    const assessment = structuredClone(assessmentTemplate);
+    assessment.obligation_id = id;
+    assessment.assessment_id = `ASM-${id}-VIEWPORT`;
+    assessment.assessment_hash = `${id === "OBL-J0C-001" ? "a" : "b"}`.repeat(64);
+    assessment.aggregate_version = aggregateVersion;
+    assessment.reasons = ["The current assessment found no validated payment blocker; separate payment controls still apply."];
+    assessment.race.result.decision_summary = assessment.reasons[0];
+    assessment.race.evidence.authoritative_facts.obligation_id = id;
+    assessment.race.evidence.authoritative_facts.aggregate_version = aggregateVersion;
+    assessment.race.evidence.authoritative_facts.amount = current.record.amount;
+    assessment.race.evidence.authoritative_facts.currency = current.record.currency;
+    current.current_assessment = assessment;
+    current.aggregate = {
+      ...current.aggregate,
+      state: "APPROVAL_PENDING",
+      destination_verification_status: "PENDING_VERIFICATION",
+      destination_operational_status: "ON_HOLD",
+      source_wallet_status: "INACTIVE",
+      product_trust_provenance: "UNVERIFIED_CURRENT_TRUST",
+      execution_state: "NONE",
+      pae_state: "UNUSED",
+    };
+    current.truth.tameion_control_truth = {
+      ...current.truth.tameion_control_truth,
+      aggregate_state: "APPROVAL_PENDING",
+      assessment_state: "ASSESSED",
+      pae_state: "UNUSED",
+      pae_sealed: false,
+      execution_state: "NONE",
+      execution_release_authority: "NOT_GRANTED",
+    };
+    current.settlement_proxy = null;
+    current.pae_sealed = false;
+    current.execution = null;
+    current.execution_packet = null;
+    current.sealed_pae_instruction_hash = null;
+    current.execution_gate = "LOCKED_UNTIL_CURRENT_AUTHORIZATION";
+    current.execution_kill_switched = false;
+    current.demo_arc_trust_simulated = false;
+    return [id, current];
+  }));
+
+  return { queue, payDetailById, selectedCandidateId: "OBL-J0C-001" };
+}
+
+test("clerk Assessment result renders on desktop and mobile from a read-only producer-shaped detail", async ({ page }, testInfo) => {
+  const result = liveWinnerForPreparation();
+  result.current_assessment.provider_mode = "NOT_LIVE_AI";
+  result.current_assessment.provider_used = "test-fixture-provider";
+  const unexpectedWrites = await openFixture(page, result);
+
+  const openAssessmentOnDesktop = async () => {
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
+    const card = page.getByRole("region", { name: "Assessment result" });
+    const heading = card.getByRole("heading", { name: "Assessment result — PAY" });
+    await expect(heading).toBeVisible();
+    await expect(heading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
+    await expect(card.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
+    await expect(card).toContainText(result.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"));
+    await expect(card).toContainText("What this means");
+    await expect(card).toContainText("What to do next");
+    for (const check of result.current_assessment.race.action_taken.checks) await expect(card).toContainText(check);
+    await expect(card).not.toContainText(result.current_assessment.assessment_id);
+    await expect(card).not.toContainText(result.current_assessment.assessment_hash);
+    await expect(card).not.toContainText("UAT-EVIDENCE-1");
+    return card;
+  };
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const desktopCard = await openAssessmentOnDesktop();
+  const desktopReview = page.getByRole("region",{name:"Current payable action"}).getByRole("button", { name: "Review current PAY assessment" });
+  await expect(desktopReview).toBeVisible();
+  await desktopReview.click();
+  await expect(desktopCard.getByTestId("assessment-supporting-detail")).not.toHaveAttribute("open");
+  await expect(desktopCard.getByRole("button", { name: "Run AI Assessment again" })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("clerk-assessment-desktop.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await openReviewPayables(page);
+  await expect(page.getByRole("main").locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+  await openMobileQueue(page);
+  await queueItem(page, "OBL-UAT-01").click();
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
+  const mobileCard = page.getByRole("region", { name: "Assessment result" });
+  const mobileHeading = mobileCard.getByRole("heading", { name: "Assessment result — PAY" });
+  await expect(mobileHeading).toBeVisible();
+  await expect(mobileHeading).toHaveAccessibleDescription("Workflow now: Assessment. Step 2 of 6.");
+  await expect(mobileCard.getByTestId("assessment-provenance")).toContainText("Rules-based payment review · advisory.");
+  await expect(mobileCard).toContainText(result.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"));
+  await page.getByRole("button", { name: "Review current PAY assessment" }).click();
+  await expect(mobileCard.getByTestId("assessment-supporting-detail")).not.toHaveAttribute("open");
+  await expect(mobileCard.getByRole("button", { name: "Run AI Assessment again" })).toHaveCount(0);
+  const dimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+  await page.screenshot({ path: testInfo.outputPath("clerk-assessment-mobile.png"), fullPage: true });
+  expect(unexpectedWrites).toEqual([]);
+});
+
+for (const viewport of [{ width: 1280, height: 1000, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) for (const stage of ["Assessment","Authorization","Assurance","Payment","Reconciliation"] as const) {
+test(`Screens 2–6: ${stage} renders truthfully on ${viewport.label}`, async ({ browser }, testInfo) => {
+  const authorized = proxyLifecycleDetail("AUTHORIZED");
+  authorized.assurance_evidence = {
+    state: "AVAILABLE_CURRENT_BINDING",
+    assurance_id: "ASSURANCE-UAT",
+    recorded_at: "2026-10-07T12:00:00.000Z",
+    organization_id: "ORG-UAT",
+    obligation_id: "OBL-UAT-01",
+    aggregate_version: 2,
+    policy_version: "policy-u1",
+    approval_record_hash: "f".repeat(64),
+    pae_instruction_hash: "d".repeat(64),
+    assurance_hash: "a".repeat(64),
+    overall: "PASS",
+    control_results: ["approval", "amount", "destination", "expiry", "kill-switch", "organization", "obligation", "policy", "source-wallet", "currentness"].map((control_id) => ({ control_id, result: "PASS" })),
+  };
+  const settled = proxyLifecycleDetail("SETTLED");
+  const scenarios = [
+    { stage: "Assessment", detail: liveWinnerForPreparation(), file: "screen-2-assessment" },
+    { stage: "Authorization", detail: authorized, file: "screen-3-authorization" },
+    { stage: "Assurance", detail: authorized, file: "screen-4-assurance" },
+    { stage: "Payment", detail: authorized, file: "screen-5-payment" },
+    { stage: "Reconciliation", detail: settled, file: "screen-6-reconciliation" },
+  ] as const;
+
+  const scenario=scenarios.find(candidate=>candidate.stage===stage)!;
+      const page = await browser.newPage({ viewport });
+      const unexpectedWrites = await openFixture(page, scenario.detail);
+      const stageButton = page.getByRole("button", { name: scenario.stage, exact: true });
+      await expandLifecycleStages(page);
+      await expect(stageButton).toBeVisible();
+      await expect(stageButton).not.toBeDisabled();
+      await stageButton.click();
+      await collapseLifecycleStages(page);
+
+      const main = page.getByRole("main");
+      const primaryActions = main.locator('button[data-primary-action="true"]');
+      expect(await primaryActions.count()).toBeLessThanOrEqual(1);
+      await expect(main.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(1);
+      if (await primaryActions.count()) {
+        expect(await primaryActions.first().evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      }
+      const dimensions = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+      expect(dimensions.document).toBeLessThanOrEqual(dimensions.viewport);
+      if (viewport.label === "mobile") {
+        const actionStrip = page.getByRole("region", { name: "Current payable action" });
+        expect(await actionStrip.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(120);
+      }
+      const openedDetails = await main.locator("details[open]").allTextContents();
+      expect(openedDetails.filter((text) => !text.includes("View all stages"))).toEqual([]);
+      await expect(page.getByText("Payment activity", { exact: false })).toBeVisible();
+      await expect(page.getByText("Control and audit records", { exact: true }).locator("xpath=..")).not.toHaveAttribute("open");
+      await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+      for (const row of await main.locator('button[data-obligation-id]').all()) {
+        await expect(row).toContainText(/\d[\d,.]*\s+(USD|AED)/);
+        await expect(row).toContainText(/\d{4}-\d{2}-\d{2}|Not captured/);
+        await expect(row).not.toContainText(/Sole PAY candidate|route assurance|PAE|execution|provider|assessment reasons|selected candidate|earliest effective due date/i);
+      }
+
+      const stageRegions = [
+        "Assessment result",
+        "Payment approval decision",
+        "Deterministic assurance result",
+        "Payment status",
+        "Reconciliation receipt",
+      ];
+      const currentRegion = scenario.stage === "Assessment" ? "Assessment result"
+        : scenario.stage === "Authorization" ? "Payment approval decision"
+          : scenario.stage === "Assurance" ? "Deterministic assurance result"
+            : scenario.stage === "Payment" ? "Payment status" : "Reconciliation receipt";
+      for (const region of stageRegions) {
+        await expect(page.getByRole("region", { name: region, exact: true })).toHaveCount(region === currentRegion ? 1 : 0);
+      }
+      await expect(page.getByRole("main").getByRole("region", { name: currentRegion, exact: true })).toHaveCount(1);
+
+      if (scenario.stage === "Assessment") {
+        await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Capability boundary");
+      } else if (scenario.stage === "Authorization") {
+  await expect(page.getByRole("region", { name: "Payment approval decision" })).toContainText("The Arc Testnet payment instruction is approved.");
+        await expect(page.getByRole("region", { name: "Payment approval decision" })).toContainText("OUTSTANDING");
+      } else if (scenario.stage === "Assurance") {
+        await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("ASSURANCE PASSED");
+        await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("Payment controls, not AI, grant or deny release authority.");
+        await expect(page.getByRole("region", { name: "Arc Testnet assurance and payment gate" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Disable this obligation" })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Re-enable" })).toHaveCount(0);
+      } else if (scenario.stage === "Payment") {
+        await expect(page.getByRole("region", { name: "Payment status" })).toContainText("No execution has been recorded for this instruction.");
+        await expect(page.getByRole("region", { name: "Payment status" })).toContainText("Sealed");
+        await expect(page.getByRole("region", { name: "Payment status" })).toContainText("Testnet payment destination");
+        const paymentControls = page.getByText("Payment stop controls", { exact: true });
+        await expect(paymentControls.locator("xpath=.." )).not.toHaveAttribute("open");
+        await paymentControls.click();
+        await expect(page.getByRole("button", { name: "Disable this obligation" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Re-enable" })).toBeVisible();
+        await paymentControls.click();
+        await expect(paymentControls.locator("xpath=.." )).not.toHaveAttribute("open");
+      } else {
+        await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toContainText("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION");
+        await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toContainText("remains outstanding");
+      }
+
+      await page.screenshot({ path: testInfo.outputPath(`${scenario.file}-${viewport.label}.png`), fullPage: true });
+      expect(unexpectedWrites).toEqual([]);
+      await page.close();
+});
+}
+
+for (const viewport of [{width:1173,height:751,label:"desktop-1173x751"},{width:390,height:844,label:"mobile-390x844"}]) for (const evidenceCase of ["unavailable","mismatch","verified"] as const) {
+test(`SETTLED evidence: ${evidenceCase} stays explicit on ${viewport.label}`, async ({ browser }, testInfo) => {
+  const verified = proxyLifecycleDetail("SETTLED");
+  const unavailable = structuredClone(verified);
+  delete unavailable.execution.provider_evidence;
+  unavailable.execution_packet = null;
+  const mismatch = structuredClone(verified);
+  mismatch.execution.provider_evidence.destination_address = "0x1111111111111111111111111111111111111111";
+  const cases = [
+    { name: "unavailable", detail: unavailable, expected: "Recorded as SETTLED — reconciliation evidence unavailable", noSuccess: true },
+    { name: "mismatch", detail: mismatch, expected: "Settlement record mismatch — review required", noSuccess: true },
+    { name: "verified", detail: verified, expected: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", noSuccess: false },
+  ] as const;
+  const captures: Array<Record<string, unknown>> = [];
+
+  const scenario=cases.find(candidate=>candidate.name===evidenceCase)!;
+      const page = await browser.newPage({ viewport });
+      const writes = await openFixture(page, scenario.detail);
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      await expandLifecycleStages(page);
+      const stageNavigator = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
+      await expect(stageNavigator.getByRole("button", { name: "Reconciliation", exact: true })).toBeVisible();
+      await stageNavigator.getByRole("button", { name: "Reconciliation", exact: true }).click();
+      await collapseLifecycleStages(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+
+      const receipt = page.getByRole("region", { name: "Reconciliation receipt" });
+      await expect(receipt).toContainText(scenario.expected);
+      await expect(receipt).toContainText("OUTSTANDING · remains outstanding in the source record");
+      await expect(page.getByRole("button", { name: /Pay testnet USDC|Retry payment|Resubmit/i })).toHaveCount(0);
+      await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
+      if (scenario.noSuccess) {
+        await expect(page.getByRole("main")).not.toContainText(/TESTNET EXECUTION RECONCILED|Settlement matches the authorized obligation exactly/i);
+      } else {
+        await expect(receipt).toContainText("Exact amount verificationconfirmed");
+        await expect(receipt).toContainText("Exact destination verificationconfirmed");
+      }
+
+      const screenState = await page.evaluate(() => {
+        const primary = [...document.querySelectorAll<HTMLElement>('main button[data-primary-action="true"]')];
+        return {
+          browser: navigator.userAgent,
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          disclosureOpen: document.querySelectorAll("main details[open]").length !== 0,
+          primary: primary.map((element) => {
+            const bounds = element.getBoundingClientRect();
+            return { label: element.innerText, bounds: { top: bounds.top, bottom: bounds.bottom, left: bounds.left, right: bounds.right } };
+          }),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        };
+      });
+      expect(screenState.scrollY).toBe(0);
+      expect(screenState.disclosureOpen).toBe(false);
+      expect(screenState.primary.length).toBeLessThanOrEqual(1);
+      expect(screenState.horizontalOverflow).toBe(false);
+      const capture = {
+        fixture: scenario.name,
+        detailSource: "existing producer-shaped mocked detail route; proxyLifecycleDetail('SETTLED') with explicit evidence override",
+        runtime: "LIVE read-model fixture label only; no live provider calls",
+        font: "DejaVu Sans forced for audit geometry",
+        ...screenState,
+        navigationMutationCount: writes.length,
+      };
+      captures.push(capture);
+      console.log("F7_SETTLED_EVIDENCE_CAPTURE", JSON.stringify(capture));
+      await page.screenshot({
+        path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-scroll0-closed.png`),
+        fullPage: false,
+      });
+
+      await receipt.getByText("View reconciliation evidence").click();
+      await expect(receipt).toContainText(`Settlement record classification${scenario.expected}`);
+      if (scenario.name !== "verified") await expect(receipt).toContainText("Recorded payment statusSETTLED");
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-evidence-open-full.png`), fullPage: true });
+      const developerEvidence = page.getByText("Control and audit records", { exact: true });
+      await developerEvidence.click();
+      await expect(page.getByRole("main")).toContainText(scenario.expected);
+      await page.screenshot({ path: testInfo.outputPath(`f7-${scenario.name}-${viewport.label}-developer-evidence.png`), fullPage: true });
+      await expect(page.getByText("Related payment information", { exact: true })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Payment review report" })).toHaveCount(0);
+      expect(writes).toEqual([]);
+      await page.close();
+  await testInfo.attach("f7-settled-evidence-browser-manifest.json", {
+    body: Buffer.from(JSON.stringify(captures, null, 2)),
+    contentType: "application/json",
+  });
+});
+}
+
+test("Assessment PAY dispositions and legal actions fit the audited first viewport for genuine source identities", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  const viewportViolations: Array<Record<string, unknown>> = [];
+  const viewportMeasurements: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    const page = await browser.newPage({ viewport });
+    const fixture = await actualSourcePayFixtures(page);
+    const unexpectedWrites = await openFixture(
+      page,
+      fixture.payDetailById["OBL-J0C-001"],
+      fixture.queue,
+      fixture.payDetailById,
+      fixture.selectedCandidateId,
+    );
+    // Match the Lenovo audit's observed fallback font rather than relying on
+    // the writer host's default font metrics when checking first-view bounds.
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+
+    for (const scenario of [
+      { selectedId: "OBL-J0C-001", businessName: "synthetic service 001", action: "Prepare testnet payment details" },
+      { selectedId: "OBL-J0C-003", businessName: "synthetic service 003", action: "Prepare testnet payment details" },
+    ] as const) {
+      if (viewport.label.startsWith("mobile")) {
+        await openMobileQueue(page);
+      }
+      await queueItem(page, scenario.selectedId).click();
+      await expect(queueItem(page, scenario.selectedId)).toHaveAttribute("aria-current", "true");
+      await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText(scenario.businessName, {ignoreCase:true});
+      await expandLifecycleStages(page);
+      await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
+        .getByRole("button", { name: "Assessment", exact: true }).click();
+      await collapseLifecycleStages(page);
+
+      const detailResponse = fixture.payDetailById[scenario.selectedId];
+      const card = page.getByRole("region", { name: "Assessment result" });
+      const selectedSource = page.getByRole("region", { name: "Selected source payable" });
+      const payResult = card.getByText("Assessment result — PAY", { exact: true });
+      const reason = card.getByText("The current assessment found no validated payment blocker; separate payment controls still apply.", { exact: true });
+      const eligibility = page.getByTestId("payment-eligibility");
+      const action = page.getByRole("region",{name:"Current payable action"}).getByRole("button", { name: scenario.action, exact: true });
+      const identity = selectedSource.locator("h2");
+      const stage = page.getByText("Step 2 of 6 · Assessment", { exact: true });
+      const currentStage = page.locator('[aria-label="Guided lifecycle"]').getByText("Workflow now: Assessment", { exact: true });
+      const viewportScrollY = await page.evaluate(() => window.scrollY);
+      expect(viewportScrollY, `${scenario.selectedId} ${viewport.label} should remain at the top after navigation`).toBe(0);
+      await expect(selectedSource).toBeVisible();
+      await expect(stage).toBeVisible();
+      await expect(currentStage).toBeVisible();
+      await expect(payResult).toBeVisible();
+      await expect(reason).toBeVisible();
+      await expect(eligibility).toBeVisible();
+      await expect(action).toBeVisible();
+      await expect(card.locator("details[open]")).toHaveCount(0);
+      await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
+
+      await expect(eligibility).toContainText("PAY is advisory");
+      if (scenario.selectedId === "OBL-J0C-001") {
+        await expect(eligibility).toContainText(/route checks pending/i);
+      }
+      await expect(card).not.toContainText("Not the selected payment candidate.");
+      await expect(card).not.toContainText("View selected payment candidate");
+      await expect(card).not.toContainText("OBL-J0C-001");
+      await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+      const measurements = await Promise.all([identity, stage, currentStage, payResult, reason, eligibility, action].map(async (locator) => ({
+        label: await locator.innerText(),
+        ...await locator.evaluate((element) => {
+          const { top, bottom, left, right } = element.getBoundingClientRect();
+          return { top, bottom, left, right };
+        }),
+      })));
+      viewportMeasurements.push({
+        obligationId: scenario.selectedId,
+        viewport: viewport.label,
+        viewportSize: { width: viewport.width, height: viewport.height },
+        scrollY: viewportScrollY,
+        disclosureOpen: await page.getByRole("main").locator("details[open]").count() > 0,
+        measurements,
+      });
+      console.log("ASSESSMENT_FIRST_VIEWPORT", JSON.stringify(viewportMeasurements.at(-1)));
+      const outOfViewport = measurements.filter((box) => box.top < 0 || box.bottom > viewport.height || box.left < 0 || box.right > viewport.width);
+      await page.screenshot({
+        path: testInfo.outputPath(`assessment-first-viewport-${scenario.selectedId}-${viewport.label}.png`),
+        fullPage: false,
+      });
+      if (outOfViewport.length > 0) {
+        viewportViolations.push({ scenario, viewport, scrollY: viewportScrollY, measurements: outOfViewport });
+      }
+      expect(unexpectedWrites).toEqual([]);
+    }
+    await page.close();
+  }
+  await testInfo.attach("assessment-first-viewport-bounds.json", {
+    body: Buffer.from(JSON.stringify(viewportMeasurements, null, 2)),
+    contentType: "application/json",
+  });
+  expect(viewportViolations, JSON.stringify(viewportViolations, null, 2)).toEqual([]);
+});
+
+test("manual obligation selection stays bound when multiple queue rows show PAY advisories", async ({ browser }, testInfo) => {
+  const candidateDetail = liveWinnerForPreparation();
+  candidateDetail.current_assessment.provider_mode = "NOT_LIVE_AI";
+  candidateDetail.current_assessment.provider_used = "deterministic-test-fixture";
+  const nonWinnerDetail = detailFor("OBL-UAT-02", "40.00", "2026-10-10", "UAT-INV-02");
+  const queue = [
+    { ...obligation, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" },
+    { ...secondObligation, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" },
+    { ...proxiedObligation, assessed: true, decision: "HOLD", provider_mode: "NOT_LIVE_AI" },
+  ];
+
+  for (const viewport of [{ width: 1280, height: 1000, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+    const page = await browser.newPage({ viewport });
+    const unexpectedWrites = await openFixture(page, candidateDetail, queue, {
+      "OBL-UAT-01": candidateDetail,
+      "OBL-UAT-02": nonWinnerDetail,
+    });
+    if (viewport.label === "mobile") await openMobileQueue(page);
+    await queueItem(page, "OBL-UAT-02").click();
+    await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
+    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("Software services");
+    await expandLifecycleStages(page);
+    const assessmentStage = page.getByRole("button", { name: "Assessment", exact: true });
+    await expect(assessmentStage).toHaveAttribute("data-stage-state", "CURRENT");
+    await assessmentStage.click();
+    await collapseLifecycleStages(page);
+
+    const card = page.getByRole("region", { name: "Assessment result" });
+    await expect(card).toContainText("Assessment result — PAY");
+    await expect(card.getByTestId("payment-eligibility")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Selected source payable" }).locator("h2")).toContainText("Software services");
+    await expect(card).not.toContainText("OBL-UAT-01");
+    await expect(card.getByRole("button", { name: "View selected payment candidate" })).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Continue to Authorization" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Payment approval decision" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Payment status" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toHaveCount(0);
+    const openedDetails = await page.getByRole("main").locator("details[open]").allTextContents();
+    expect(openedDetails.filter((text) => !text.includes("View all stages"))).toEqual([]);
+    for (const row of await page.locator('button[data-obligation-id]').all()) {
+      await expect(row).not.toContainText(/Sole PAY candidate|route assurance|PAE|execution|provider/i);
+    }
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    const primaryAction = page.locator('main button[data-primary-action="true"]');
+    if (await primaryAction.count()) expect(await primaryAction.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    const widths = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+    expect(widths.document).toBeLessThanOrEqual(widths.viewport);
+    await page.screenshot({ path: testInfo.outputPath(`manual-selection-pay-assessment-${viewport.label}.png`), fullPage: true });
+    await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
+    expect(unexpectedWrites).toEqual([]);
+    await page.close();
+  }
+});
+
+test("fresh PAY after proxy preparation does not show stale PAE recovery on desktop or mobile", async ({ browser }, testInfo) => {
+  const freshPay = postProxyFreshPayWithAggregateRevoked();
+
+  for (const viewport of [{ width: 1173, height: 751, label: "desktop-1173x751" }, { width: 390, height: 844, label: "mobile-390x844" }]) {
+    const page = await browser.newPage({ viewport });
+    const unexpectedWrites = await openFixture(page, freshPay);
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "View Assessment" })).toBeVisible();
+    await expect(page.getByTestId("current-next-step")).toContainText("A current PAY advisory assessment is already recorded. View Assessment to review it.");
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-1-${viewport.label}.png`), fullPage: true });
+    await page.getByRole("button", { name: "View Assessment" }).click();
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+    await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("Assessment result — PAY");
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    const assessmentCard = page.getByRole("region", { name: "Assessment result" });
+    const review = page.getByRole("region",{name:"Current payable action"}).getByRole("button", { name: "Review current PAY assessment" });
+    await expect(review).toBeVisible();
+    await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("What to do next");
+    await expect(page.getByText(`Step 2 of 6 · Assessment`, { exact: true })).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const currentPosition = page.locator('[aria-label="Guided lifecycle"]').getByText("Workflow now: Assessment", { exact: true });
+    const sourceIdentity = page.getByRole("region", { name: "Selected source payable" }).locator("h2");
+    const payResult = assessmentCard.getByText("Assessment result — PAY", { exact: true });
+    const assessmentReason = assessmentCard.getByText(freshPay.current_assessment.race.result.decision_summary.replace("Safety Kernel gates", "payment controls"), { exact: true });
+    const measured = await Promise.all([sourceIdentity, page.getByText("Step 2 of 6 · Assessment", { exact: true }), currentPosition, payResult, assessmentReason, review].map(async (locator) => ({
+      label: await locator.innerText(),
+      ...await locator.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY })),
+    })));
+    const reviewBounds = measured.at(-1)!;
+    console.log("FRESH_PAY_REVIEW_FIRST_VIEWPORT", JSON.stringify({
+      viewport,
+      measured,
+      primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+      mutationCount: unexpectedWrites.length,
+    }));
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-assessment-first-view-${viewport.label}.png`), fullPage: false });
+    expect(measured.every((item) => item.scrollY === 0 && item.top >= 0 && item.bottom <= viewport.height), JSON.stringify({ viewport, measured })).toBe(true);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-screen-2-before-review-${viewport.label}.png`), fullPage: true });
+    await page.getByRole("region", { name: "Current payable action" }).getByRole("button", { name: "Review current PAY assessment" }).click();
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue to Authorization" })).toBeVisible();
+    await page.getByRole("button", { name: "Continue to Authorization" }).click();
+    await expect(page.getByRole("region", { name: "Payment approval decision" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Authorize payment" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Exception recovery" })).toHaveCount(0);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    expect(unexpectedWrites).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath(`fresh-pay-authorization-${viewport.label}.png`), fullPage: true });
+    await page.close();
+  }
+});
+
+test("Command Center desktop accessibility and review image", async ({ page }) => {
+  await page.setViewportSize({ width: 1365, height: 900 });
+  const unexpectedWrites = await openFixture(page);
+  await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
+  await expect(queueItem(page, "OBL-UAT-01")).toContainText("Assessment result · PAY");
+  await expect(page.getByRole("button", { name: "View all stages", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" })).toHaveCount(0);
+  await expect(page.getByText("No payment intent created")).toBeHidden();
+  const developerEvidence = page.getByText("Control and audit records");
+  await expect(developerEvidence.locator("xpath=..")).not.toHaveAttribute("open");
+  await expect(page.getByText("Source and current payment records")).toBeHidden();
+  await developerEvidence.focus();
+  await page.keyboard.press("Enter");
+  await expect(developerEvidence.locator("xpath=..")).toHaveAttribute("open", "");
+  await expect(developerEvidence.locator("xpath=..").locator("details[open]")).toHaveCount(0);
+  const sourceEvidence = page.getByText("Source and current payment records");
+  await expect(sourceEvidence.locator("xpath=..")).not.toHaveAttribute("open");
+  await sourceEvidence.click();
+  await expect(page.getByText("Source amount").last()).toBeVisible();
+  await sourceEvidence.click();
+  await developerEvidence.click();
+  await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
+  await expandLifecycleStages(page);
+  const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+  await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
+    "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
+  ]);
+  await expect(lifecycle).toContainText("Approval locked — route assurance not ready");
+  await expect(lifecycle.locator('[aria-current="step"]')).toContainText("Assessment");
+  await expect(page.getByTestId("current-next-step")).toContainText("Workflow now: Assessment");
+  await expect(page.getByTestId("current-next-step")).toContainText("A current PAY advisory assessment is already recorded. View Assessment to review it.");
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment" }).click();
+  await expect(page.getByRole("region", { name: "Assessment result" })).toContainText("no review evidence in this detail; authorization remains locked");
+  await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
+  await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Illustrative payment journey", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
+  await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+  const sourceProxy = page.getByRole("region", { name: "Selected source payable" });
+  await expect(sourceProxy).toContainText("OBL-UAT-01");
+  await expect(sourceProxy).toContainText("125.00 USD");
+  await expect(sourceProxy).toContainText("OUTSTANDING");
+  await expect(page.locator('main button[data-primary-action="true"]:not(:disabled)')).toHaveCount(0);
+  await queueItem(page, "OBL-UAT-02").click();
+  await expect(page.getByRole("heading", { name: "Software services" })).toBeVisible();
+  await expect(sourceProxy).toContainText("OBL-UAT-02");
+  await expect(sourceProxy).toContainText("40.00 USD");
+  await expect(sourceProxy).toContainText("OUTSTANDING");
+  await expect(sourceProxy).not.toContainText("OBL-UAT-01");
+  await expect(page.getByText("Genuine business obligation · Arc Testnet settlement proxy · testnet execution does not discharge the real-world payable.")).toBeHidden();
+  await expect(lifecycle).toContainText("Approval locked — route assurance not ready");
+  await queueItem(page, "OBL-UAT-03").click();
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("125.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).not.toContainText("125.000000 USDC");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).not.toContainText("ARC_TESTNET");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+  await queueItem(page, "OBL-UAT-02").click();
+  await expect(queueItem(page, "OBL-UAT-02")).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("heading", { name: "Software services" })).toBeVisible();
+  await expect(lifecycle.getByRole("listitem")).toHaveCount(6);
+  const stageBoxes = await lifecycle.getByRole("listitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().x));
+  expect(stageBoxes[0]).toBeLessThan(stageBoxes[1]);
+  expect(await page.locator(".tabular").first().evaluate((node) => getComputedStyle(node).direction)).toBe("ltr");
+  const nav = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
+  await nav.getByRole("button", { name: "Assessment" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(nav.getByRole("button", { name: "Assessment" })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => document.activeElement?.textContent?.trim())).toContain("Assessment");
+  await nav.getByRole("list", { name: "Payment lifecycle" }).getByRole("button", { name: "Obligation" }).focus();
+  await page.keyboard.press("Enter");
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  await collapseLifecycleStages(page);
+  const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(axe.violations, JSON.stringify(axe.violations, null, 2)).toEqual([]);
+  await page.evaluate(() => { document.documentElement.style.zoom = "200%"; });
+  const desktopZoom = await page.evaluate(() => ({
+    width: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+    htmlRect: document.documentElement.getBoundingClientRect().toJSON(),
+    bodyRect: document.body.getBoundingClientRect().toJSON(),
+    internalOverflows: Array.from(document.querySelectorAll("body *"))
+      .map((element) => ({ tag: element.tagName, id: (element as HTMLElement).id, cls: (element as HTMLElement).className.toString().slice(0, 100), text: (element.textContent ?? "").trim().slice(0, 45), client: (element as HTMLElement).clientWidth, scroll: (element as HTMLElement).scrollWidth }))
+      .filter((element) => element.scroll > element.client + 1)
+      .sort((a, b) => (b.scroll - b.client) - (a.scroll - a.client))
+      .slice(0, 8),
+    offenders: Array.from(document.querySelectorAll("body *"))
+      .map((element) => ({ tag: element.tagName, text: (element.textContent ?? "").trim().slice(0, 80), left: Math.round(element.getBoundingClientRect().left), right: Math.round(element.getBoundingClientRect().right), width: Math.round(element.getBoundingClientRect().width) }))
+      .filter((element) => element.left < -1 || element.right > document.documentElement.clientWidth + 1)
+      .slice(0, 8),
+  }));
+  expect(desktopZoom.width, JSON.stringify(desktopZoom)).toBeLessThanOrEqual(desktopZoom.viewport);
+  await page.evaluate(() => { document.documentElement.style.zoom = ""; });
+  await page.mouse.move(1, 1);
+  expect(unexpectedWrites).toEqual([]);
+  await expect(page).toHaveScreenshot("command-center-desktop.png", { fullPage: true, animations: "disabled" });
+});
+
+test("post-approval N+1 response states remain blocked without assessment actions", async ({ page }, testInfo: TestInfo) => {
+  for (const scenario of [
+    { paeSealed: false, expectedStage: "Assurance", expectedGuidance: "Approval recorded · payment controls incomplete" },
+    { paeSealed: true, expectedStage: "Assurance", expectedGuidance: "Current payment authority is unavailable. Complete a current payment review and approval before preparing another release record." },
+  ]) {
+    const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
+    const writes = await openFixture(page, postApprovalNPlusOneDetail(scenario.paeSealed), queue);
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+    const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+    await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+    await expect(lifecycle.locator('[aria-current="step"]')).toContainText(scenario.expectedStage);
+    await expect(lifecycle.getByRole("button", { name: "Assurance" })).toHaveAttribute("data-stage-state", scenario.paeSealed ? "CURRENT" : "BLOCKED");
+    await expect(lifecycle.getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "UPCOMING");
+    await collapseLifecycleStages(page);
+    const assurance = page.getByRole("region", { name: "Deterministic assurance result" });
+    await expect(assurance).toContainText(scenario.expectedGuidance);
+    if (scenario.paeSealed) {
+      await page.screenshot({ path: testInfo.outputPath("sealed-no-current-packet.png") });
+    }
+    await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+    await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+    await expandLifecycleStages(page);
+    await expect(page.getByRole("button", { name: "Payment" })).toBeDisabled();
+    expect(writes).toEqual([]);
+    await page.unrouteAll();
+  }
+});
+
+test("an already assessed obligation offers read-only View Assessment in the first viewport", async ({ page }, testInfo: TestInfo) => {
+  await page.setViewportSize({ width: 1188, height: 761 });
+  const writes = await openFixture(page, liveWinnerForPreparation());
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+  await expect(page.getByTestId("current-next-step")).toContainText("A current PAY advisory assessment is already recorded. View Assessment to review it.");
+  await expect(page.getByRole("button", { name: "View Assessment" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "View all stages" })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("region", { name: "Payment approval decision" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Payment status" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Reconciliation receipt" })).toHaveCount(0);
+  const firstViewport = await page.evaluate(() => {
+    const step = document.querySelector('[data-testid="current-next-step"]');
+    const reason = step?.querySelector("p:nth-of-type(2)") ?? null;
+    const elements = [
+      { name: "selected source identity", element: document.querySelector('[aria-label="Selected source payable"] h2') },
+      { name: "viewed and current position", element: document.querySelector('[aria-label="Guided lifecycle"] p:nth-of-type(2)') },
+      { name: "current reason", element: reason },
+      { name: "permitted-action guidance", element: document.querySelector('[aria-label="Current payable action"] button[data-primary-action="true"]') ?? null },
+      { name: "permitted primary action", element: document.querySelector('[aria-label="Current payable action"] button[data-primary-action="true"]') ?? null },
+    ];
+    return elements.map(({ name, element }) => {
+      const rect = element?.getBoundingClientRect();
+      return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null };
+    });
+  });
+  const primaryHeight = await page.locator('[aria-label="Current payable action"] button[data-primary-action="true"]').evaluate((element) => element.getBoundingClientRect().height);
+  expect(primaryHeight).toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: testInfo.outputPath("desktop-short-assessment-resume.png") });
+  expect(firstViewport.every((element) => element.exists && element.top! >= 0 && element.bottom! <= 761), JSON.stringify(firstViewport)).toBe(true);
+  await page.getByRole("button", { name: "View Assessment" }).click();
+  await expect(page.getByRole("region", { name: "Assessment result" })).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test("sealed, submitted, unknown and reconciled proxy states preserve source truth", async ({ page }) => {
+  const scenarios = [
+    { state: "AUTHORIZED" as const, lifecycle: "ASSURANCE PASSED · 10/10 controls passed for the current binding.", position: "Assurance", heading: "Assurance · Payment controls", positionDescription: "Workflow now: Assurance, Payment controls. Step 4 of 6.", action: "Continue to Payment" },
+    { state: "SUBMITTED" as const, lifecycle: "Submission is recorded. The settlement outcome is awaiting reconciliation", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
+    { state: "UNKNOWN" as const, lifecycle: "Outcome unknown · read-only reconciliation only; do not resubmit", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: "Reconcile this same intent" },
+    { state: "SETTLED" as const, lifecycle: "TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION", position: "Reconciliation", heading: "Testnet reconciliation receipt", positionDescription: "Workflow now: Reconciliation, Settlement confirmation. Step 6 of 6.", action: null },
+  ];
+
+  for (const scenario of scenarios) {
+    await page.setViewportSize({ width: 1280, height: 1500 });
+    const writes = await openFixture(page, proxyLifecycleDetail(scenario.state));
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: scenario.position }).click();
+    await collapseLifecycleStages(page);
+    const summary = page.getByRole("region", { name: "Selected source payable" });
+    await expect(summary).toContainText("125.00 USD");
+    await expect(summary).toContainText("OUTSTANDING");
+    await expect(summary).not.toContainText("controlled settlement proxy");
+    await expect(summary).not.toContainText("ARC_TESTNET");
+    const lifecycle = page.getByRole("list", { name: "Payment lifecycle" });
+    const currentStageCard = scenario.position === "Assurance"
+      ? page.getByRole("region", { name: "Deterministic assurance result" })
+      : page.getByRole("region", { name: "Reconciliation receipt" });
+    await expect(currentStageCard).toContainText(scenario.lifecycle);
+    const stageHeading = page.locator('h3[aria-describedby="focused-stage-position-description"]');
+    await expect(stageHeading).toHaveCount(1);
+    await expect(stageHeading).toHaveAccessibleName(scenario.heading);
+    await expect(stageHeading).toHaveAccessibleDescription(scenario.positionDescription);
+    await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(scenario.action ? 1 : 0);
+    if (scenario.action) {
+      await expect(page.getByRole("region",{name:"Current payable action"}).getByRole("button", { name: scenario.action })).toBeVisible();
+    } else {
+      await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+    }
+    if (scenario.state !== "AUTHORIZED") {
+      await expect(page.getByRole("button", { name: /^Continue to / })).toHaveCount(0);
+    }
+    if (scenario.state === "AUTHORIZED") {
+      await expandLifecycleStages(page);
+      await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment" })).toHaveAttribute("data-stage-state", "AVAILABLE");
+      await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+      await expect(page.getByRole("region", { name: "Current payable action" }).getByRole("button", { name: "Continue to Payment" })).toBeVisible();
+    }
+    await expect(page.getByText(/real-world payable settled/i)).toHaveCount(0);
+    expect(writes).toEqual([]);
+  }
+});
+
+test("stale detail offers only a mocked read refresh after an assessment response", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const requests: string[] = [];
+  let detailReads = 0;
+  const unassessed: Record<string, any> = structuredClone(detail);
+  unassessed.current_assessment = null;
+  await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    requests.push(`${method} ${url.pathname}`);
+    if (url.pathname === "/api/obligations" && method === "GET") {
+      return route.fulfill({ json: { obligations: [{ ...obligation, assessed: false, decision: null }], assessed_count: 0, total_count: 1 } });
+    }
+    if (url.pathname === "/api/obligations/OBL-UAT-01" && method === "GET") {
+      detailReads += 1;
+      return detailReads === 1 ? route.fulfill({ json: unassessed }) : route.fulfill({ status: 503, json: { error: "Mocked current detail unavailable" } });
+    }
+    if (url.pathname === "/api/obligations/OBL-UAT-01/assess" && method === "POST") {
+      return route.fulfill({ json: { error: "Mocked assessment is unavailable" }, status: 503 });
+    }
+    return route.fulfill({ status: 404, json: { error: "This fixture does not permit other actions." } });
+  });
+  await page.goto("/");
+  await openReviewPayables(page);
+  await queueItem(page, "OBL-UAT-01").click();
+  await expect(page.getByTestId("current-next-step").getByRole("heading")).not.toHaveText("Loading");
+  await expect(page.getByRole("region", { name: "Genuine obligation workspace" })).toBeVisible();
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  await page.getByRole("button", { name: "Run AI Assessment" }).click();
+  await expect(page.getByTestId("current-next-step")).toContainText("Last-known state — stale");
+  await expect(page.getByRole("button", { name: "Refresh current status" })).toBeVisible();
+  await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+  expect(requests.filter((request) => /\/approve$|\/execute$|preflight|provider/i.test(request))).toEqual([]);
+  expect(requests.filter((request) => request.startsWith("POST"))).toEqual(["POST /api/obligations/OBL-UAT-01/assess"]);
+});
+
+test("read-only wallet summary stays readable without overflow at 200% equivalent mobile zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
+  const wallet = page.getByRole("region",{name:"Read-only wallet balance"});
+  const refresh = wallet.getByRole("button", { name: "Refresh wallet balance", exact: true });
+  await expect(refresh).toBeEnabled();
+  await expect(wallet).toContainText("Balance not checked");
+  // Browser zoom halves the CSS viewport. A root CSS zoom scales the layout
+  // without changing media-query width and does not model browser zoom.
+  await page.setViewportSize({ width: 195, height: 422 });
+  const dimensions = await wallet.evaluate(element => ({document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth, wallet: element.getBoundingClientRect().toJSON(),offenders:Array.from(document.querySelectorAll("body *")).map(e=>({tag:e.tagName,text:e.textContent?.slice(0,55),right:e.getBoundingClientRect().right,width:e.getBoundingClientRect().width})).filter(e=>e.right>document.documentElement.clientWidth+0.01).slice(0,12)}));
+  expect(dimensions.document, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewport);
+  expect(dimensions.wallet.right).toBeLessThanOrEqual(dimensions.viewport);
+  await expect(refresh).toBeEnabled();
+  expect(unexpectedWrites).toEqual([]);
+});
+
+test("operator workflow reflows without hidden actions at 400% equivalent zoom", async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 320, height: 640 },
+    deviceScaleFactor: 4,
+  });
+  const page = await context.newPage();
+  const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
+
+  const strip = page.getByRole("region", { name: "Current payable action" });
+  const primary = strip.locator('button[data-primary-action="true"]');
+  await expect(strip).toBeVisible();
+  await expect(primary).toBeVisible();
+  await expect(primary).toBeEnabled();
+
+  const dimensions = await page.evaluate(() => {
+    const action = document.querySelector<HTMLElement>('[aria-label="Current payable action"]');
+    const button = action?.querySelector<HTMLElement>('button[data-primary-action="true"]');
+    const actionBox = action?.getBoundingClientRect();
+    const buttonBox = button?.getBoundingClientRect();
+    return {
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      actionRight: actionBox?.right ?? Number.POSITIVE_INFINITY,
+      buttonRight: buttonBox?.right ?? Number.POSITIVE_INFINITY,
+      buttonHeight: buttonBox?.height ?? 0,
+    };
+  });
+  expect(dimensions.documentWidth, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewportWidth);
+  expect(dimensions.actionRight, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewportWidth + 1);
+  expect(dimensions.buttonRight, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.viewportWidth + 1);
+  expect(dimensions.buttonHeight).toBeGreaterThanOrEqual(44);
+  expect(unexpectedWrites).toEqual([]);
+  await context.close();
+});
+
+test("Command Center mobile layout and review image", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const unexpectedWrites = await openFixture(page, liveWinnerForPreparation());
+  await expect(page.locator("main")).toHaveAttribute("dir", "ltr");
+  await expect(mobileQueueToggle(page)).toBeVisible();
+  const assertMobileTarget = async (locator: ReturnType<typeof page.getByRole> | ReturnType<typeof page.locator>, label: string) => {
+    expect(await locator.evaluate((element) => element.getBoundingClientRect().height), `${label} mobile target`).toBeGreaterThanOrEqual(44);
+  };
+  await assertMobileTarget(mobileQueueToggle(page), "Obligation queue toggle");
+  await expect(queueItem(page, "OBL-UAT-01")).toBeHidden();
+  await openMobileQueue(page);
+  await expect(queueItem(page, "OBL-UAT-01")).toBeVisible();
+  await assertMobileTarget(queueItem(page, "OBL-UAT-01"), "Queue obligation");
+  await page.getByRole("button", { name: "Close payables list" }).click();
+  const mobilePrimary = page.locator('[aria-label="Current payable action"] button[data-primary-action="true"]');
+  await expect(mobilePrimary).toBeVisible();
+  expect(await mobilePrimary.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await expect(page.getByText("No payment intent created")).toBeHidden();
+  await expect(page.getByText("Arc Testnet settlement proxy", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+  await expect(page.getByText("Step 1 of 6 · Obligation")).toHaveAttribute("aria-live", "polite");
+  await assertMobileTarget(page.getByRole("button", { name: "View all stages" }), "View all stages");
+  const mobileBack = page.getByRole("button", { name: "Back" });
+  await expect(mobileBack).toBeVisible();
+  expect(await mobileBack.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
+  const lifecycle = page.getByRole("navigation", { name: "Payment lifecycle navigation" });
+  await expect(lifecycle.locator("li button > span:nth-child(2)")).toHaveText([
+    "Obligation", "Assessment", "Authorization", "Assurance", "Payment", "Reconciliation",
+  ]);
+  await expect(page.getByText("Training scenario", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Illustrative payment journey", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Payment review report" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Authorization" })).toBeDisabled();
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("125.00 USD");
+  await expect(page.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+  await page.getByRole("button", { name: "View all stages", exact: true }).click();
+  const dimensions = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }));
+  expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+  // Model 200% browser zoom by halving the CSS viewport so responsive
+  // breakpoints follow the same path as a user zooming the browser.
+  await page.setViewportSize({ width: 195, height: 422 });
+  const zoomedDimensions = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+    offenders: Array.from(document.querySelectorAll("body *"))
+      .map((element) => ({ tag: element.tagName, text: (element.textContent ?? "").trim().slice(0, 70), right: Math.round(element.getBoundingClientRect().right) }))
+      .filter((element) => element.right > document.documentElement.clientWidth + 0.01)
+      .slice(0, 8),
+  }));
+  expect(zoomedDimensions.documentWidth, JSON.stringify(zoomedDimensions)).toBeLessThanOrEqual(zoomedDimensions.viewportWidth);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.mouse.move(1, 1);
+  expect(unexpectedWrites).toEqual([]);
+  await expect(page).toHaveScreenshot("command-center-mobile.png", { fullPage: true, animations: "disabled" });
+});
+
+test("Assurance Continue is a 44px read-only navigation control in the first viewport", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  for (const viewport of viewports) {
+    const page = await browser.newPage({ viewport });
+    const writes = await openFixture(page, proxyLifecycleDetail("AUTHORIZED"));
+    await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+    await expect(page.getByText("Step 1 of 6 · Obligation")).toBeVisible();
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance" }).click();
+    await collapseLifecycleStages(page);
+    await expect(page.getByText("Step 4 of 6 · Assurance")).toBeVisible();
+    const continueButton = page.getByRole("button", { name: "Continue to Payment" }).last();
+    await expect(continueButton).toBeVisible();
+    expect(await continueButton.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+    const continueBounds = await continueButton.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+    const selectedIdentity = page.getByRole("region", { name: "Selected source payable" }).locator("h2");
+    await expect(selectedIdentity).toBeVisible();
+    await expect(page.getByRole("region", { name: "Deterministic assurance result" })).toContainText("ASSURANCE PASSED");
+    console.log("ASSURANCE_CONTINUE_FIRST_VIEWPORT", JSON.stringify({ viewport, continueBounds }));
+    await page.screenshot({ path: testInfo.outputPath(`assurance-continue-first-viewport-${viewport.label}.png`), fullPage: false });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(continueBounds.bottom).toBeLessThanOrEqual(viewport.height);
+    const before = writes.length;
+    await continueButton.click();
+    await expect(page.getByText("Step 5 of 6 · Payment")).toBeVisible();
+    expect(writes.slice(before)).toEqual([]);
+    expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
+    await page.close();
+  }
+});
+
+test("blocked Assurance and historical Assessment keep truthful no-action guidance in the mobile first viewport", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const queue = [{ ...obligation, assessed: false, decision: null, provider_mode: null }];
+  const writes = await openFixture(page, postApprovalNPlusOneDetail(false), queue);
+  await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+
+  await expandLifecycleStages(page);
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assurance", exact: true }).click();
+  await collapseLifecycleStages(page);
+  const assurance = page.getByRole("region", { name: "Deterministic assurance result" });
+  const noAction = assurance.getByTestId("assurance-no-action-guidance");
+  await expect(assurance).toContainText("Approval recorded · payment controls incomplete");
+  await expect(noAction).toContainText("No further payment action is available in this state.");
+  await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  const assuranceBounds = await noAction.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  console.log("BLOCKED_ASSURANCE_GUIDANCE_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...assuranceBounds,
+    primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+    mutationCount: writes.length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("blocked-assurance-first-viewport-mobile.png"), fullPage: false });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(assuranceBounds.bottom).toBeLessThanOrEqual(844);
+
+  await expandLifecycleStages(page);
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment", exact: true }).click();
+  await collapseLifecycleStages(page);
+  const assessmentStatus = page.getByRole("region", { name: "Assessment result" }).getByRole("status");
+  await expect(assessmentStatus).toContainText("Approval is recorded, but required payment controls did not complete");
+  await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+  const assessmentBounds = await assessmentStatus.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  console.log("HISTORICAL_ASSESSMENT_GUIDANCE_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...assessmentBounds,
+    primaryActionCount: await page.locator('main button[data-primary-action="true"]').count(),
+    mutationCount: writes.length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("historical-assessment-guidance-first-viewport-mobile.png"), fullPage: false });
+  expect(assessmentBounds.scrollY).toBe(0);
+  expect(assessmentBounds.bottom).toBeLessThanOrEqual(844);
+  const currentRecovery = page.getByTestId("historical-current-recovery-disclosure");
+  await expect(currentRecovery).not.toHaveAttribute("open", "");
+  await currentRecovery.locator("summary").click();
+  await expect(currentRecovery.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  expect(writes).toEqual([]);
+});
+
+test("failed 503 detail is presented as Unavailable, never as still Loading", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const requests: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+    const { pathname } = new URL(route.request().url());
+    requests.push(`${route.request().method()} ${pathname}`);
+    if (pathname === "/api/obligations" && route.request().method() === "GET") {
+      return route.fulfill({ json: { obligations: [{ ...obligation, assessed: false, decision: null }], assessed_count: 0, total_count: 1 } });
+    }
+    if (pathname === "/api/obligations/OBL-UAT-01" && route.request().method() === "GET") {
+      return route.fulfill({ status: 503, json: { error: "Mocked current detail unavailable" } });
+    }
+    return route.fulfill({ status: 404, json: { error: "Read-only 503 fixture; no mutation route is available." } });
+  });
+  await page.goto("/");
+  await openReviewPayables(page);
+  await openMobileQueue(page);
+  await expect(page.locator('button[data-obligation-id="OBL-UAT-01"]')).toBeVisible();
+  await page.locator('button[data-obligation-id="OBL-UAT-01"]').click();
+  await expect(page.getByRole("region", { name: "Payable details" })).toBeVisible();
+  await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+  const unavailable = page.getByText("Unavailable", { exact: true }).first();
+  await expect(unavailable).toBeVisible();
+  await expect(page.getByText("Loading", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Source and control details are unavailable; no current action is inferred.")).toBeVisible();
+  const primaryActions = page.locator('main button[data-primary-action="true"]');
+  const refresh = page.getByRole("button", { name: "Refresh current status", exact: true });
+  await expect(refresh).toBeVisible();
+  await expect(primaryActions).toHaveCount(1);
+  const recoveryDetails = page.getByTestId("unavailable-detail-recovery-disclosure");
+  await expect(recoveryDetails).not.toHaveAttribute("open", "");
+  const unavailableBounds = await unavailable.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, scrollY: window.scrollY }));
+  const refreshBounds = await refresh.evaluate((element) => ({ top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom }));
+  console.log("UNAVAILABLE_503_FIRST_VIEWPORT", JSON.stringify({
+    viewport: { width: 390, height: 844 }, ...unavailableBounds,
+    primaryActionCount: await primaryActions.count(),
+    actionLabel: "Refresh current status",
+    actionBounds: refreshBounds,
+    mutationCount: requests.filter((request) => !request.startsWith("GET ")).length,
+  }));
+  await page.screenshot({ path: testInfo.outputPath("failed-503-unavailable-first-viewport-mobile.png"), fullPage: false });
+  expect(unavailableBounds.scrollY).toBe(0);
+  expect(refreshBounds.bottom).toBeLessThanOrEqual(844);
+  await recoveryDetails.locator("summary").click();
+  await expect(recoveryDetails.getByRole("region", { name: "Exception recovery" })).toBeVisible();
+  expect(requests.filter((request) => request.startsWith("POST"))).toEqual([]);
+});
+
+test("Stage 1 queue states stay truthful with no default selection at desktop and mobile", async ({ browser, page }, testInfo) => {
+  test.setTimeout(120_000);
+  const oracle = await syntheticSourceResponse("/api/obligations");
+  expect(oracle.ok).toBe(true);
+  const sourceQueue = await oracle.json() as Record<string, any>;
+  expect(sourceQueue.obligations).toHaveLength(5);
+  expect(sourceQueue.obligations.map((row: Record<string, unknown>) => row.obligation_id)).toContain("OBL-J0C-003");
+  const detailOracle = await syntheticSourceResponse("/api/obligations/OBL-J0C-003");
+  expect(detailOracle.ok).toBe(true);
+  const source003Detail = await detailOracle.json() as Record<string, any>;
+  expect(source003Detail.record.obligation_id).toBe("OBL-J0C-003");
+  const selected003DetailFixture = structuredClone(source003Detail);
+  const selected003Assessment = {
+    obligation_id: "OBL-J0C-003",
+    assessment_id: "TEST-ONLY-OBL-J0C-003-ASSESSMENT",
+    assessment_hash: createHash("sha256").update("isolated-stage1-003-assessment-fixture").digest("hex"),
+    aggregate_version: String(selected003DetailFixture.aggregate.aggregate_version),
+    decision: "PAY",
+    reasons: ["Isolated producer-shaped PAY advisory for explicitly selected source obligation 003."],
+    provider_used: "Deterministic test fixture",
+    provider_mode: "NOT_LIVE_AI",
+  };
+  selected003DetailFixture.current_assessment = selected003Assessment;
+  const selected003QueueFixture = {
+    ...sourceQueue,
+    obligations: sourceQueue.obligations.map((row: Record<string, any>) => row.obligation_id === "OBL-J0C-003"
+      ? { ...row, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" }
+      : row),
+  };
+
+  const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const captureDir = testInfo.outputPath("stage1-initial-state-captures");
+  await mkdir(captureDir, { recursive: true });
+  const viewports = [
+    { label: "desktop-1173x751", width: 1173, height: 751 },
+    { label: "mobile-390x844", width: 390, height: 844 },
+  ] as const;
+  const states = ["loading", "loaded-none", "true-empty", "error", "selected-003"] as const;
+  const manifest: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const stateName of states) {
+      const statePage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const observedRequests: string[] = [];
+      let releaseLoading!: () => void;
+      const delayedQueue = new Promise<void>((resolve) => { releaseLoading = resolve; });
+      await statePage.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+        const request = route.request();
+        const url = new URL(request.url());
+        observedRequests.push(`${request.method()} ${url.pathname}`);
+        if (url.pathname === "/api/obligations" && request.method() === "GET") {
+          if (stateName === "loading") {
+            await delayedQueue;
+            return route.fulfill({ json: sourceQueue });
+          }
+          if (stateName === "true-empty") return route.fulfill({ json: { ...sourceQueue, obligations: [] } });
+          if (stateName === "error") return route.fulfill({ status: 503, json: { error: "Mocked genuine queue unavailable" } });
+          return route.fulfill({ json: stateName === "selected-003" ? selected003QueueFixture : sourceQueue });
+        }
+        if (url.pathname === "/api/obligations/OBL-J0C-003" && request.method() === "GET" && stateName === "selected-003") {
+          return route.fulfill({ json: selected003DetailFixture });
+        }
+        return route.fulfill({ status: 404, json: { error: "Read-only queue-state fixture; no other route is enabled." } });
+      });
+      await statePage.goto("/");
+      await openReviewPayables(statePage);
+      await statePage.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      await statePage.evaluate(() => document.fonts.ready.then(() => true));
+
+      if (stateName === "loading") {
+        await expect(statePage.getByRole("main").getByRole("status").filter({hasText:"Loading payables"})).toContainText("Loading payables");
+        await expect(statePage.getByRole("main").getByText(/no genuine obligations|open demo mode|choose one obligation/i)).toHaveCount(0);
+        await expect(statePage.getByRole("main").locator('button[data-obligation-id]')).toHaveCount(0);
+      } else if (stateName === "loaded-none") {
+        await expect(statePage.locator('button[data-obligation-id]')).toHaveCount(5);
+        await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(0);
+        if (viewport.width < 768) {
+          await expect(statePage.getByRole("button", { name: "Close payables list" })).toBeVisible();
+          await expect(statePage.locator('button[data-obligation-id="OBL-J0C-001"]')).toBeVisible();
+        }
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("Choose a payable");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Choose a payable to review its current status.");
+        await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
+      } else if (stateName === "true-empty") {
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("No payables");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Refresh the list to check again");
+        await expect(statePage.getByRole("main")).not.toContainText(/open demo mode|loading genuine obligations/i);
+      } else if (stateName === "error") {
+        await expect(statePage.getByTestId("current-next-step").locator("h3")).toHaveText("Payables unavailable");
+        await expect(statePage.getByTestId("current-next-step")).toContainText("Retry before selecting a payable");
+        if (viewport.width >= 768) {
+          await expect(statePage.getByRole("main").getByRole("alert")).toContainText("Payables are unavailable");
+          await expect(statePage.getByRole("button", { name: "Retry payables" })).toBeVisible();
+        } else {
+          await expect(statePage.getByRole("button", { name: "Open queue to retry" })).toBeVisible();
+        }
+        await expect(statePage.getByRole("main")).not.toContainText(/no genuine obligations to show|open demo mode|loading genuine obligations/i);
+      } else {
+        if (viewport.width < 768) await openMobileQueue(statePage);
+        await statePage.locator('button[data-obligation-id="OBL-J0C-003"]').click();
+        await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+        await expect(statePage.locator('button[data-obligation-id][aria-current="true"]')).toHaveCount(1);
+        await expect(statePage.getByRole("region", { name: "Selected source payable" })).toContainText("OUTSTANDING");
+        const selectedGuidance = statePage.getByTestId("current-next-step");
+        await expect(selectedGuidance).not.toContainText(/001|Selected payment candidate/);
+        await expect(selectedGuidance).toContainText("A current PAY advisory assessment");
+      }
+
+      await statePage.evaluate(() => window.scrollTo(0, 0));
+      const measurement = await statePage.evaluate(() => {
+        const primary = Array.from(document.querySelectorAll<HTMLButtonElement>('main button[data-primary-action="true"]'));
+        const rect = (element?: Element) => {
+          if (!element) return null;
+          const box = element.getBoundingClientRect();
+          return { x: box.x, y: box.y, width: box.width, height: box.height, bottom: box.bottom };
+        };
+        const stageToggle = document.querySelector<HTMLButtonElement>('button[aria-controls="all-payment-stages"]');
+        return {
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          primaryActionCount: primary.filter((button) => !button.disabled).length,
+          primaryActions: primary.map((button) => ({ label: button.innerText.trim(), disabled: button.disabled, bounds: rect(button) })),
+          rowCount: document.querySelectorAll('button[data-obligation-id]').length,
+          selectedIds: Array.from(document.querySelectorAll<HTMLButtonElement>('button[data-obligation-id][aria-current="true"]')).map((row) => row.dataset.obligationId),
+          openDetails: document.querySelectorAll('main details[open]').length,
+          navigatorExpanded: stageToggle?.getAttribute("aria-expanded") ?? null,
+          documentWidth: document.documentElement.scrollWidth,
+          fontFamily: getComputedStyle(document.body).fontFamily,
+          userAgent: navigator.userAgent,
+          queueHeading: document.querySelector('[data-testid="current-next-step"] h3')?.textContent ?? null,
+          stageAnnouncement: (() => {
+            const heading = document.querySelector('[data-testid="current-next-step"] h3');
+            const descriptionId = heading?.getAttribute("aria-describedby");
+            return descriptionId ? document.getElementById(descriptionId)?.textContent ?? null : null;
+          })(),
+          providerMode: null,
+        };
+      });
+      expect(measurement.scrollY).toBe(0);
+      expect(measurement.documentWidth).toBeLessThanOrEqual(viewport.width);
+      expect(measurement.openDetails).toBe(0);
+      expect(measurement.navigatorExpanded).not.toBe("true");
+      expect(observedRequests.filter((request) => !request.startsWith("GET /api/obligations"))).toEqual([]);
+      expect(observedRequests.some((request) => request.startsWith("POST "))).toBe(false);
+
+      const filename = `stage1-${stateName}-${viewport.label}.png`;
+      const screenshotPath = testInfo.outputPath(`stage1-initial-state-captures/${filename}`);
+      const png = await statePage.screenshot({ path: screenshotPath, fullPage: false });
+      const mode = stateName === "selected-003" ? "NOT_LIVE_AI (test overlay; not live provider evidence)" : null;
+      const record = {
+        candidateSha,
+        filename,
+        sha256: createHash("sha256").update(png).digest("hex"),
+        state: stateName,
+        viewport: `${viewport.width}x${viewport.height}`,
+        scrollY: measurement.scrollY,
+        disclosuresOpen: measurement.openDetails,
+        navigatorExpanded: measurement.navigatorExpanded,
+        sourceProvenance: stateName === "true-empty" || stateName === "error"
+          ? "Test-only queue response override; based on real producer queue, no financial calls."
+          : stateName === "loading"
+            ? "Real local /api/obligations producer response intentionally delayed by mocked transport."
+            : stateName === "selected-003"
+              ? "Real local source queue/detail GETs replayed through an isolated route; only the current 003 PAY assessment is a producer-shaped NOT_LIVE_AI test overlay, not a provider result."
+              : "Real local GET /api/obligations response replayed through an isolated read-only browser route.",
+        assessmentProviderMode: mode,
+        browser: measurement.userAgent,
+        font: measurement.fontFamily,
+        queueHeading: measurement.queueHeading,
+        stageAnnouncement: measurement.stageAnnouncement,
+        rowCount: measurement.rowCount,
+        selectedIds: measurement.selectedIds,
+        actionCount: measurement.primaryActionCount,
+        actions: measurement.primaryActions,
+        navigationPostCount: observedRequests.filter((request) => request.startsWith("POST ")).length,
+        providerRouteCount: observedRequests.filter((request) => /balance|preflight|provider|circle|execute/i.test(request)).length,
+      };
+      manifest.push(record);
+      await testInfo.attach(filename, { path: screenshotPath, contentType: "image/png" });
+      if (stateName === "selected-003") {
+        const viewAssessment = statePage.getByRole("button", { name: "View Assessment", exact: true });
+        await expect(viewAssessment).toHaveCount(1);
+        await viewAssessment.click();
+        await expect(statePage.locator('button[data-obligation-id="OBL-J0C-003"]')).toHaveAttribute("aria-current", "true");
+        await expect(statePage.getByRole("main")).toContainText("Assessment result — PAY");
+        expect(observedRequests.filter((request) => request.startsWith("POST "))).toEqual([]);
+        await statePage.evaluate(() => window.scrollTo(0, 0));
+        const assessmentFilename = `stage1-selected-003-assessment-${viewport.label}.png`;
+        const assessmentPath = testInfo.outputPath(`stage1-initial-state-captures/${assessmentFilename}`);
+        const assessmentPng = await statePage.screenshot({ path: assessmentPath, fullPage: false });
+        manifest.push({
+          ...record,
+          filename: assessmentFilename,
+          sha256: createHash("sha256").update(assessmentPng).digest("hex"),
+          state: "selected-003-assessment",
+          queueHeading: "Assessment result — PAY",
+          sourceProvenance: "Actual OBL-J0C-003 source record and local detail GET; isolated NOT_LIVE_AI PAY assessment overlay only.",
+          assessmentProviderMode: mode,
+          selectedIds: ["OBL-J0C-003"],
+          navigationPostCount: 0,
+        });
+        await testInfo.attach(assessmentFilename, { path: assessmentPath, contentType: "image/png" });
+      }
+      if (stateName === "loading") {
+        releaseLoading();
+        await expect(statePage.locator('button[data-obligation-id]')).toHaveCount(5);
+      }
+      await statePage.close();
+    }
+  }
+
+  const manifestPath = testInfo.outputPath("stage1-initial-state-captures/manifest.json");
+  await writeFile(manifestPath, JSON.stringify({ candidateSha, source: "Production read-model projection with synthetic fixture; only empty/error states are overridden", entries: manifest }, null, 2));
+  await testInfo.attach("stage1-initial-state-manifest.json", { path: manifestPath, contentType: "application/json" });
+  console.log("STAGE1_INITIAL_STATE_CAPTURE_MANIFEST", JSON.stringify(manifest));
+});
+
+test("active kill switch takes precedence over a waiting exact-packet gate", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const suspended = proxyLifecycleDetail("AUTHORIZED");
+  suspended.execution_kill_switched = true;
+  const writes = await openFixture(page, suspended);
+  await expandLifecycleStages(page);
+  await expect(page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment", exact: true })).toHaveAttribute("data-stage-state", "BLOCKED");
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment" }).click();
+  await collapseLifecycleStages(page);
+  await expect(page.getByRole("region", { name: "Payment status" })).toContainText("A payment stop is active. No execution is permitted.");
+  await expect(page.getByRole("region", { name: "Payment status" })).toContainText("A payment stop is active. No execution is permitted.");
+  await expect(page.getByRole("region", { name: "Exception recovery" })).not.toContainText("Current issue:");
+  await expect(page.getByRole("region", { name: "Payment status" })).not.toContainText("Final payment authorization");
+  await expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test("revoked release authority overrides retained packet and exact gate on desktop and mobile", async ({ browser }, testInfo) => {
+  const revoked = proxyLifecycleDetail("AUTHORIZED");
+  revoked.truth.tameion_control_truth.pae_state = "REVOKED";
+  revoked.truth.tameion_control_truth.execution_release_authority = "BLOCKED";
+  revoked.execution_gate = "PORTAL_APPROVED_EXACT_PACKET";
+  revoked.execution_kill_switched = false;
+
+  for (const viewport of [{ width: 1280, height: 900, label: "desktop" }, { width: 390, height: 844, label: "mobile" }]) {
+    const page = await browser.newPage({ viewport });
+    const writes = await openFixture(page, revoked);
+    await expandLifecycleStages(page);
+    await page.getByRole("button", { name: "Payment", exact: true }).click();
+    await collapseLifecycleStages(page);
+
+    const payment = page.getByRole("region", { name: "Payment status" });
+    await expect(payment.locator("h3")).toContainText("Payment authority is revoked");
+    await expect(payment).not.toContainText("ready for confirmation");
+    await expect(page.getByRole("button", { name: "Pay testnet USDC" })).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name: /I have reviewed the exact testnet/ })).toHaveCount(0);
+    expect(await page.locator('main button[data-primary-action="true"]').count()).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`screen-5-revoked-${viewport.label}.png`), fullPage: true });
+    expect(writes).toEqual([]);
+    await page.close();
+  }
+});
+
+test("dark-mode exact payment confirmation keeps accessible contrast without submitting", async ({ page }) => {
+  const exactPacket = proxyLifecycleDetail("AUTHORIZED");
+  exactPacket.execution_gate = "PORTAL_APPROVED_EXACT_PACKET";
+  const writes = await openFixture(page, exactPacket);
+  await expandLifecycleStages(page);
+  await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Payment", exact: true }).click();
+  await collapseLifecycleStages(page);
+  const confirmation = page.getByRole("checkbox", { name: /I have reviewed the exact testnet/ });
+  await expect(confirmation).toBeVisible();
+  await confirmation.check();
+  const execute = page.getByRole("button", { name: "Pay testnet USDC" });
+  await expect(execute).toBeEnabled();
+  for (const mode of ["explicit", "system"] as const) {
+    await page.emulateMedia({ colorScheme: mode === "system" ? "dark" : "light" });
+    await page.locator("html").evaluate((element, selectedMode) => {
+      if (selectedMode === "explicit") element.setAttribute("data-theme", "dark");
+      else element.removeAttribute("data-theme");
+    }, mode);
+    const contrast = await execute.evaluate((button) => {
+      const toLinear = (value: number) => {
+        const channel = value / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      };
+      const luminance = (color: string) => {
+        const [red, green, blue] = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(toLinear);
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      };
+      const style = getComputedStyle(button);
+      const foreground = luminance(style.color);
+      const background = luminance(style.backgroundColor);
+      return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+    });
+    expect(contrast, `${mode} dark mode button contrast`).toBeGreaterThanOrEqual(4.5);
+    const contrastAudit = await new AxeBuilder({ page }).withRules(["color-contrast"]).analyze();
+    expect(contrastAudit.violations, `${mode} dark mode color contrast violations`).toEqual([]);
+  }
+  expect(writes).toEqual([]);
+});
+
+test("blocked payment-detail preparation is focused and visible on mobile without retry", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const writes = await openFixture(page, liveWinnerForPreparation());
+  const preflightRequests: Array<{ headers: Record<string, string>; body: unknown }> = [];
+  await page.route("**/api/internal/demo/real-testnet-payment/preflight", async (route) => {
+    const request = route.request();
+    preflightRequests.push({ headers: request.headers(), body: request.postDataJSON() });
+    await route.fulfill({
+      status: 409,
+      json: { readiness: "BLOCKED", blocker: "FEE_CAP_EXCEEDED", captured_at: "2026-10-14T08:00:00.000Z" },
+    });
+  });
+
+  await page.getByRole("button", { name: "View Assessment" }).click();
+  const action = page.getByRole("button", { name: "Prepare testnet payment details" });
+  await expect(action).toBeVisible();
+  await action.click();
+
+  const alert = page.getByText("Payment details not prepared", { exact: true }).locator("..");
+  await expect(alert).toHaveAttribute("role", "alert");
+  await expect(alert).toContainText("Payment details not prepared");
+  await expect(alert).toContainText("approved network-fee limit");
+  await expect(alert).toContainText("No payment was submitted");
+  await expect(alert).toBeFocused();
+  await expect(action).toBeEnabled();
+  const bounds = await alert.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, viewportHeight: window.innerHeight, scrollY: window.scrollY };
+  });
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewportHeight);
+  expect(preflightRequests).toHaveLength(1);
+  expect(preflightRequests[0]?.headers["x-tameion-csrf"]).toBe("MOCK-ONLY-CSRF");
+  expect(preflightRequests[0]?.body).toEqual({ obligation_id: "OBL-UAT-01", expected_version: 1 });
+  expect(writes).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("blocked-payment-detail-mobile-visible.png"), fullPage: false });
+});
+
+test("UNKNOWN Payment and Reconciliation keep same-intent guidance and action in the first viewport", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  const results: Array<Record<string, unknown>> = [];
+  const violations: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const stage of ["Payment", "Reconciliation"] as const) {
+      const page = await browser.newPage({ viewport });
+      const writes = await openFixture(page, proxyLifecycleDetail("UNKNOWN"));
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      await expandLifecycleStages(page);
+      await page.getByRole("navigation", { name: "Payment lifecycle navigation" })
+        .getByRole("button", { name: stage, exact: true }).click();
+      await collapseLifecycleStages(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+
+      const region = page.getByRole("region", { name: stage === "Payment" ? "Payment status" : "Reconciliation receipt" });
+      const action = page.getByRole("main").locator('button[data-primary-action="true"]');
+      const selectedIdentity = page.getByRole("region", { name: "Selected source payable" }).locator("h2");
+      const status = stage === "Payment" ? region.locator("h3") : region.locator("p").first();
+      const noRetry = stage === "Payment"
+        ? region.getByRole("status")
+        : region.locator("p").first();
+      const stagePosition = page.getByText(stage === "Payment"
+        ? "Reviewing step 5 of 6 · Payment"
+        : "Step 6 of 6 · Reconciliation", { exact: true });
+      const currentViewedLabel = stage === "Payment"
+        ? page.locator('[aria-label="Guided lifecycle"] p:visible').filter({ hasText: "Reviewing: Payment · Workflow now: Reconciliation · Settlement confirmation" })
+        : page.locator('[aria-label="Guided lifecycle"] p:visible').filter({ hasText: "Workflow now" });
+
+      await expect(region).toBeVisible();
+      await expect(stagePosition).toHaveCount(1);
+      await expect(currentViewedLabel).toHaveCount(1);
+      await expect(status).toContainText("Outcome unknown");
+      await expect(noRetry).toContainText(/no blind retry|do not resubmit|no resubmission/i);
+      await expect(action).toHaveCount(1);
+      await expect(action).toHaveText("Reconcile this same intent");
+      expect(await action.first().evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      await expect(page.getByRole("main").locator("details[open]")).toHaveCount(0);
+
+      const measurement = await page.evaluate(() => {
+        const find = (selector: string) => document.querySelector(selector);
+        const lifecycleParagraphs = document.querySelectorAll('[aria-label="Guided lifecycle"] p');
+        const boxes = [
+          ["selected obligation identity", find('[aria-label="Selected source payable"] h2')],
+          ["UNKNOWN outcome headline", find('[aria-label="Hold reason and next action"] h3')],
+          ["no-resubmission guidance", find('[aria-label="Hold reason and next action"] p')],
+          ["impact, next action and responsibility", find('[aria-label="Hold reason and next action"] dl')],
+          ["reconciliation action", find('main button[data-primary-action="true"]')],
+        ] as const;
+        return {
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          scrollY: window.scrollY,
+          documentWidth: document.documentElement.scrollWidth,
+          boxes: boxes.map(([name, element]) => {
+            const rect = element?.getBoundingClientRect();
+            return { name, exists: Boolean(element), top: rect?.top ?? null, bottom: rect?.bottom ?? null, left: rect?.left ?? null, right: rect?.right ?? null };
+          }),
+          primaryActionCount: document.querySelectorAll('main button[data-primary-action="true"]').length,
+          primaryActionHeight: document.querySelector('main button[data-primary-action="true"]')?.getBoundingClientRect().height ?? null,
+        };
+      });
+      const evidence = { ...measurement, navigationPostCount: writes.filter((request) => request.startsWith("POST ")).length };
+      results.push({ stage, ...viewport, ...evidence });
+      console.log("UNKNOWN_FIRST_VIEWPORT", JSON.stringify({ stage, ...viewport, ...evidence }));
+      await page.screenshot({ path: testInfo.outputPath(`unknown-${stage.toLowerCase()}-${viewport.label}.png`), fullPage: false });
+
+      expect(measurement.scrollY, `${stage} ${viewport.label} must be measured at the top`).toBe(0);
+      expect(measurement.documentWidth, `${stage} ${viewport.label} must not overflow`).toBeLessThanOrEqual(viewport.width);
+      const outOfViewport = measurement.boxes.filter((box) => !box.exists || box.top! < 0 || box.bottom! > viewport.height || box.left! < 0 || box.right! > viewport.width);
+      if (outOfViewport.length > 0) violations.push({ stage, viewport, outOfViewport });
+      expect(measurement.primaryActionCount).toBe(1);
+      expect(writes, `${stage} navigation must not issue mutations`).toEqual([]);
+      await page.close();
+    }
+  }
+
+  await testInfo.attach("unknown-first-viewport-bounds.json", {
+    body: Buffer.from(JSON.stringify(results, null, 2)),
+    contentType: "application/json",
+  });
+  expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+});
+
+test("selected OBL-J0C-003 assessment response feedback is visible on Obligation and Assessment without navigation writes", async ({ browser }, testInfo) => {
+  const viewports = [
+    { width: 1173, height: 751, label: "desktop-1173x751" },
+    { width: 390, height: 844, label: "mobile-390x844" },
+  ] as const;
+  const outcomes = [
+    { name: "503-unavailable", status: 503, body: { code: "ASSESSMENT_UNAVAILABLE", error: "Assessment service unavailable in the controlled fixture." } },
+    { name: "202-in-progress", status: 202, body: { status: "IN_PROGRESS", message: "This assessment is reserved. Replays will not submit a second provider request." } },
+  ] as const;
+  const manifest: Array<Record<string, unknown>> = [];
+
+  for (const viewport of viewports) {
+    for (const outcome of outcomes) {
+      const page = await browser.newPage({ viewport });
+      const source = await actualSourcePayFixtures(page);
+      const selectedDetail = structuredClone(source.payDetailById["OBL-J0C-003"]);
+      selectedDetail.current_assessment.provider_mode = "NOT_LIVE_AI";
+      selectedDetail.current_assessment.provider_used = "deterministic-browser-fixture";
+      const staleVersion = String(selectedDetail.aggregate.aggregate_version);
+      const responseVersion = Number(staleVersion) + 1;
+      selectedDetail.aggregate.aggregate_version = responseVersion;
+      selectedDetail.truth.tameion_control_truth.aggregate_version = responseVersion;
+      selectedDetail.current_assessment.aggregate_version = staleVersion;
+      const queue = source.queue.map((item) => ({ ...item, assessed: true, decision: "PAY", provider_mode: "NOT_LIVE_AI" }));
+      const requests: string[] = [];
+      const mutations: string[] = [];
+      await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname === "/api/operator/session") return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(new URL(route.request().url()).pathname === "/api/wallet/balance/refresh") return route.fulfill({status:503,json:{code:"BALANCE_UNVERIFIED"}});
+        const request = route.request();
+        const url = new URL(request.url());
+        requests.push(`${request.method()} ${url.pathname}`);
+        if (request.method() !== "GET") mutations.push(`${request.method()} ${url.pathname}`);
+        if (url.pathname === "/api/obligations" && request.method() === "GET") {
+          return route.fulfill({ json: { obligations: queue, assessed_count: 5, total_count: 5, sole_pay_candidate_id: "OBL-J0C-001" } });
+        }
+        if (url.pathname === "/api/obligations/OBL-J0C-003" && request.method() === "GET") return route.fulfill({ json: selectedDetail });
+        if (url.pathname === "/api/obligations/OBL-J0C-003/assess" && request.method() === "POST") {
+          return route.fulfill({ status: outcome.status, json: outcome.body });
+        }
+        return route.fulfill({ status: 404, json: { error: "This controlled assessment feedback fixture allows no other route." } });
+      });
+
+      await page.goto("/");
+      await openReviewPayables(page);
+      await page.addStyleTag({ content: '* { font-family: "DejaVu Sans", sans-serif !important; }' });
+      if (viewport.width <= 768) await openMobileQueue(page);
+      await queueItem(page, "OBL-J0C-003").click();
+      await expect(page.getByRole("region", { name: "Selected source payable" })).toBeVisible();
+      const stageHeading = page.getByTestId("current-next-step").getByRole("heading", { name: "Outstanding" });
+      await expect(stageHeading).toBeVisible();
+      await expect(stageHeading).toHaveAccessibleDescription(/Reviewing: Obligation.*Workflow now: Assessment/);
+      await page.getByRole("button", { name: "Run AI Assessment" }).click();
+      const feedback = page.getByRole("status", { name: "Assessment request status" });
+      await expect(feedback).toBeVisible();
+      await expect(feedback).toContainText(outcome.name.startsWith("202") ? "Assessment pending" : "Assessment unavailable");
+      await expect(page.getByRole("button", { name: "Run AI Assessment" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Refresh payable list" })).toBeVisible();
+      await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+      const viewStages = ["Obligation", "Assessment"] as const;
+      for (const stage of viewStages) {
+        if (stage === "Assessment") {
+          await expandLifecycleStages(page);
+          await page.getByRole("navigation", { name: "Payment lifecycle navigation" }).getByRole("button", { name: "Assessment", exact: true }).click();
+        }
+        await expect(page.getByRole("status", { name: "Assessment request status" })).toBeVisible();
+        await expect(page.locator('main button[data-primary-action="true"]')).toHaveCount(1);
+        const measurement = await page.evaluate(() => {
+          const primary = document.querySelector('main button[data-primary-action="true"]');
+          const status = document.querySelector('[aria-label="Assessment request status"]');
+          const box = (element: Element | null) => {
+            const rect = element?.getBoundingClientRect();
+            return rect ? { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right, width: rect.width, height: rect.height } : null;
+          };
+          return {
+            viewport: { width: innerWidth, height: innerHeight },
+            scrollY,
+            stage: document.querySelector('[aria-label="Guided lifecycle"] [aria-live="polite"]')?.textContent ?? "Screen 1",
+            feedback: status?.textContent ?? null,
+            feedbackBounds: box(status),
+            primaryLabel: primary?.textContent?.trim() ?? null,
+            primaryBounds: box(primary),
+            primaryCount: document.querySelectorAll('main button[data-primary-action="true"]').length,
+            horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          };
+        });
+        const pngPath = testInfo.outputPath(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}.png`);
+        const png = await page.screenshot({ path: pngPath, fullPage: true });
+        const viewportPngPath = testInfo.outputPath(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}-viewport.png`);
+        const viewportPng = await page.screenshot({ path: viewportPngPath, fullPage: false });
+        const record = {
+          candidate: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+          outcome: outcome.name,
+          viewedStage: stage,
+          targetViewport: viewport,
+          source: "production detail projection with synthetic source OBL-J0C-003, then controlled browser mock",
+          overrides: ["aggregate version incremented to make the existing assessment pointer stale", "all five queue advisory rows marked PAY for this isolated fixture", "assessment provenance set to NOT_LIVE_AI fixture", "assessment POST response mocked; no AI/provider request"],
+          providerMode: "NOT_LIVE_AI queue mock; no assessment provider call",
+          browserVersion: browser.version(),
+          font: "DejaVu Sans browser override",
+          ...measurement,
+          mutationRequests: mutations,
+          navigationPostCount: mutations.filter((entry) => entry.endsWith("/assess") === false).length,
+          fullPageImage: { file: pngPath, sha256: createHash("sha256").update(png).digest("hex") },
+          viewportImage: { file: viewportPngPath, sha256: createHash("sha256").update(viewportPng).digest("hex") },
+        };
+        manifest.push(record);
+        console.log("ASSESSMENT_FEEDBACK_CAPTURE", JSON.stringify(record));
+        await testInfo.attach(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}.png`, { path: pngPath, contentType: "image/png" });
+        await testInfo.attach(`assessment-feedback-${outcome.name}-${viewport.label}-${stage.toLowerCase()}-viewport.png`, { path: viewportPngPath, contentType: "image/png" });
+        expect(measurement.horizontalOverflow).toBe(false);
+        expect(measurement.primaryCount).toBe(1);
+        if (stage === "Assessment") {
+          const queueReadsBefore = requests.filter((entry) => entry === "GET /api/obligations").length;
+          const detailReadsBefore = requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003").length;
+          await page.getByRole("button", { name: "Refresh payable list" }).click();
+          await expect(feedback).toContainText("read-only queue summary was refreshed");
+          expect(requests.filter((entry) => entry === "GET /api/obligations")).toHaveLength(queueReadsBefore + 1);
+          expect(requests.filter((entry) => entry === "GET /api/obligations/OBL-J0C-003")).toHaveLength(detailReadsBefore);
+          expect(mutations).toEqual([`POST /api/obligations/OBL-J0C-003/assess`]);
+        }
+      }
+      expect(mutations).toEqual([`POST /api/obligations/OBL-J0C-003/assess`]);
+      await page.close();
+    }
+  }
+
+  await testInfo.attach("assessment-feedback-captures.json", {
+    body: Buffer.from(JSON.stringify(manifest, null, 2)),
+    contentType: "application/json",
+  });
+});
+
+for (const viewport of [{width:1365,height:951},{width:390,height:844},{width:320,height:640}]) {
+  test(`contextual action keeps identity and meaning through scrolling at ${viewport.width}`, async ({page},testInfo)=>{
+    await page.setViewportSize(viewport);
+    const unexpectedWrites=await openFixture(page,liveWinnerForPreparation());
+    const strip=page.getByRole("region",{name:"Current payable action"});
+    const verify=async()=>{
+      const geometry=await strip.evaluate(element=>{
+        const rect=element.getBoundingClientRect();
+        const button=element.querySelector<HTMLButtonElement>('button[data-primary-action="true"]');
+        return {text:element.textContent,top:rect.top,bottom:rect.bottom,width:rect.width,viewport:window.innerHeight,
+          action:button?.textContent,actionBox:button?.getBoundingClientRect().toJSON(),scrollY:window.scrollY,
+          overflow:document.documentElement.scrollWidth>window.innerWidth};
+      });
+      expect(geometry.text).toContain("OBL-UAT-01");expect(geometry.text).toContain("125.00 USD");
+      expect(geometry.text).toContain("Supplier not recorded");expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(viewport.height);expect(geometry.overflow).toBe(false);
+      expect(geometry.actionBox!.height).toBeGreaterThanOrEqual(44);
+      await expect(page.locator('button[data-primary-action="true"]:enabled')).toHaveCount(1);
+      return geometry;
+    };
+    await page.evaluate(()=>window.scrollTo(0,0));const top=await verify();
+    await page.screenshot({path:testInfo.outputPath(`context-top-${viewport.width}.png`)});
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));const bottom=await verify();
+    expect(bottom.action).toEqual(top.action);expect(bottom.scrollY).toBeGreaterThan(top.scrollY);
+    await page.screenshot({path:testInfo.outputPath(`context-bottom-${viewport.width}.png`)});
+    await strip.getByRole("button").focus();await expect(strip.getByRole("button")).toBeFocused();
+    await page.evaluate(()=>window.scrollTo(0,0));
+    if(viewport.width<768)await openMobileQueue(page);
+    await queueItem(page,"OBL-UAT-02").click();
+    await expect(strip).toContainText("OBL-UAT-02");await expect(strip).not.toContainText("OBL-UAT-01");
+    await expect(strip).toContainText("40.00 USD");
+    await testInfo.attach("strip-geometry",{body:JSON.stringify({top,bottom}),contentType:"application/json"});
+    expect(unexpectedWrites).toEqual([]);
+  });
+}
+
+for(const width of [1365,390,320]){
+  test(`authorization summary preserves exact destination disclosure at ${width}`,async({page},testInfo)=>{
+    await page.setViewportSize({width,height:width===320?640:844});
+    const fixture=proxyLifecycleDetail("AUTHORIZED");
+    const writes=await openFixture(page,fixture);
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation",{name:"Payment lifecycle navigation"}).getByRole("button",{name:"Authorization",exact:true}).click();
+    await collapseLifecycleStages(page);
+    const summary=page.getByRole("region",{name:"Authorization summary"});
+    const address=fixture.settlement_proxy.preflight.destination_wallet.address;
+    await expect(summary).toContainText(`${address.slice(0,6)}…${address.slice(-4)}`);
+    await expect(summary).toContainText(fixture.settlement_proxy.preflight.network);
+    await expect(summary).toContainText("does not discharge the real-world payable");
+    await expect(summary).toContainText("Next owner");await expect(summary).toContainText("Reason:");
+    const disclosure=page.getByText("View payment instruction details",{exact:true});
+    await expect(disclosure.locator("..")).not.toHaveAttribute("open","");
+    const strip=page.getByRole("region",{name:"Current payable action"});
+    await expect(strip).toContainText("OBL-UAT-01");
+    await expect(strip).toContainText("Supplier not recorded");
+    await expect(strip).toContainText("125.00 USD");
+    await expect(strip).not.toContainText("Review current PAY assessment before authorization");
+    await page.screenshot({path:testInfo.outputPath(`authorization-summary-${width}.png`),fullPage:true});
+    await disclosure.click();
+    await expect(page.getByText(address,{exact:true})).toBeVisible();
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+    expect(writes).toEqual([]);
+  });
+}
+
+test("portal final release is visible on desktop and mobile and never auto-submits", async ({ browser }) => {
+  for(const width of [390,1280]) {
+    const page=await browser.newPage({viewport:{width,height:900}});
+    const exact=proxyLifecycleDetail("AUTHORIZED");
+    exact.execution_gate="PORTAL_RELEASE_APPROVAL_REQUIRED";
+    const writes=await openFixture(page,exact);
+    let releases=0;
+    await page.route("**/api/obligations/*/release",async route=>{
+      expect(route.request().headers()["x-tameion-csrf"]).toBe("MOCK-ONLY-CSRF");
+      expect(route.request().postDataJSON()).toMatchObject({packet_sha256:exact.execution_packet.packet_sha256,pae_instruction_hash:exact.sealed_pae_instruction_hash,confirmation:"APPROVE EXACT TESTNET SETTLEMENT PROXY"});
+      releases++;
+      exact.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+      await route.fulfill({json:{code:"PAYMENT_RELEASE_APPROVED"}});
+    });
+    await expandLifecycleStages(page);
+    await page.getByRole("navigation",{name:"Payment lifecycle navigation"}).getByRole("button",{name:"Payment",exact:true}).click();
+    await collapseLifecycleStages(page);
+    const approve=page.getByRole("button",{name:"Approve payment release"});
+    await expect(approve).toBeVisible();await expect(approve).toBeDisabled();
+    await page.getByRole("checkbox",{name:/I have reviewed the exact testnet/}).check();
+    await approve.click();
+    const pay=page.getByRole("button",{name:"Pay testnet USDC"});
+    await expect(pay).toBeVisible();await expect(pay).toBeDisabled();
+    await expect(page.getByRole("checkbox",{name:/I have reviewed the exact testnet/})).not.toBeChecked();
+    expect(releases).toBe(1);expect(writes).toEqual([]);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
+    await page.close();
+  }
+});
+
+for(const viewport of [{width:1365,height:900,label:'desktop'},{width:390,height:844,label:'mobile'},{width:320,height:844,label:'mobile-320'}])test(`stateful six-stage controlled UAT journey completes once at ${viewport.label}`,async({page},testInfo)=>{
+  await page.unroute('**/api/**');await page.setViewportSize({width:viewport.width,height:viewport.height});
+  const controlledId='TESTNET-CONTROLLED-UAT-001',genuineId='OBL-SWD-UAT-001';
+  const genuine={...obligation,obligation_id:genuineId,service_category:'Mobile internet payment',amount:'1.00',due_date:'2026-10-17',assessed:true,decision:'PAY',source_group:'GENUINE_COMPANY',financial_action_eligible:false};
+  const adapt=(input:Record<string,any>)=>{
+    const value=structuredClone(input);value.financial_action_eligible=true;value.advisory_action_eligible=false;value.source_group='DEMO_ARC_TESTNET';value.source_payable_state='OUTSTANDING';
+    value.record={...value.record,obligation_id:controlledId,amount:'1.00',currency:'USD',source_evidence:[{evidence_id:'CONTROLLED-UAT-EVIDENCE',content_sha256:'a'.repeat(64)}]};
+    value.aggregate={...value.aggregate,amount:'1.000000',product_trust_provenance:'CURRENT_PRODUCT_EVIDENCE',destination_verification_status:'VERIFIED',destination_operational_status:'ACTIVE',source_wallet_status:'ACTIVE'};value.truth={...value.truth,source_truth:{...value.truth.source_truth,obligation_state:'OUTSTANDING',source:{...value.truth.source_truth.source,record_id:controlledId}},settlement_truth:{...value.truth.settlement_truth,settlement_amount:'1.000000',settlement_atomic_amount:'1000000',source_amount:'1.00',source_currency:'USD'}};
+    if(value.current_assessment){value.current_assessment={...value.current_assessment,obligation_id:controlledId};if(value.current_assessment.race?.evidence?.authoritative_facts)value.current_assessment.race.evidence.authoritative_facts={...value.current_assessment.race.evidence.authoritative_facts,obligation_id:controlledId,amount:'1.00',currency:'USD'};}
+    if(value.settlement_proxy){value.settlement_proxy.preflight={...value.settlement_proxy.preflight,obligation_id:controlledId,source_amount:'1.00',source_currency:'USD',amount:'1.000000',max_total_debit:'1.002000',estimated_network_fee:'0.002000',max_network_fee:'0.002000',source_evidence_ids:['CONTROLLED-UAT-EVIDENCE'],beneficiary_id:'CONTROLLED-UAT-BENEFICIARY',business_payment_instruction:{payer:{organization_id:value.settlement_proxy.preflight.organization_id},beneficiary:{beneficiary_id:'CONTROLLED-UAT-BENEFICIARY',destination_wallet_id:value.settlement_proxy.preflight.destination_wallet.id},commercial:{obligation_id:controlledId,source_amount:'1.00',source_currency:'USD',settlement_amount:'1.000000',settlement_asset:'USDC',source_evidence_id:'CONTROLLED-UAT-EVIDENCE',source_evidence_ids:['CONTROLLED-UAT-EVIDENCE']}}};}
+    if(value.execution)value.execution={...value.execution,obligation_id:controlledId,atomic_amount:value.execution.status==='SETTLED'?'1000000':value.execution.atomic_amount,...(value.execution.provider_evidence?{provider_evidence:{...value.execution.provider_evidence,atomic_amount:'1000000'}}:{})};
+    if(value.execution_packet?.packet)value.execution_packet.packet={...value.execution_packet.packet,obligation_id:controlledId,settlement_amount:'1.000000',circle_arc_execution_instruction:{...value.execution_packet.packet.circle_arc_execution_instruction,amount:'1.000000'}};
+    return value;
+  };
+  let current=adapt(detailFor(controlledId,'1.00','2026-10-17',controlledId));current.current_assessment=null;current.aggregate.aggregate_version=1;current.truth.tameion_control_truth.aggregate_version=1;current.truth.tameion_control_truth.assessment_state='NOT_ASSESSED';
+  const scoped=()=>{const value=structuredClone(current),now=new Date();value.selected_financial_scope={schema_version:'SELECTED-FINANCIAL-SCOPE-1',status:'PASS',scope:'CONTROLLED_FINANCIAL_NAMESPACE',namespace:'OFFLINE-UAT-CONTROLLED',selected_obligation_id:controlledId,selected_aggregate_version:value.aggregate.aggregate_version,selected_source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),source_valid_until:new Date(now.getTime()+600000).toISOString(),observed_at:now.toISOString(),membership:'COMPLETE',assessment_coverage:{status:'PASS'},competing_candidate:{status:'NONE'},uncertain_execution:{status:'NONE'},reason:'Selected controlled instruction is ready for the next verified step.'};return value;};
+  const posts:string[]=[],screens:string[]=[];let assessmentCount=0,providerSends=0;
+  await page.route('**/api/**',async route=>{const request=route.request(),path=new URL(request.url()).pathname;
+    if(path==='/api/operator/session')return route.fulfill({json:{authenticated:true,csrf_token:'MOCK-ONLY-CSRF',expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(path==='/api/wallet/balance/refresh')return route.fulfill({status:503,json:{code:'BALANCE_UNVERIFIED'}});
+    if(request.method()==='GET'&&path==='/api/obligations')return route.fulfill({json:{obligations:[genuine,{...obligation,obligation_id:controlledId,service_category:'Controlled Arc Testnet USD 1 instruction',amount:'1.00',due_date:'2026-10-17',assessed:Boolean(current.current_assessment),decision:current.current_assessment?.decision??null,source_group:'DEMO_ARC_TESTNET',financial_action_eligible:true}],assessed_count:1+Number(Boolean(current.current_assessment)),total_count:2,sole_pay_candidate_id:controlledId}});
+    if(request.method()==='GET'&&path===`/api/obligations/${controlledId}`)return route.fulfill({json:scoped()});
+    if(request.method()==='GET'&&path===`/api/obligations/${genuineId}`)return route.fulfill({json:{...adapt(detailFor(genuineId,'1.00','2026-10-17',genuineId)),financial_action_eligible:false,advisory_action_eligible:true,source_group:'GENUINE_COMPANY'}});
+    if(request.method()!=='POST')return route.fulfill({status:404,json:{code:'OFFLINE_FIXTURE_ROUTE_NOT_FOUND'}});
+    expect(request.headers()['x-tameion-csrf']).toBe('MOCK-ONLY-CSRF');posts.push(path);
+    if(path===`/api/obligations/${controlledId}/assess`){assessmentCount++;current=assessmentCount===1?adapt(liveWinnerForPreparation()):adapt(postProxyFreshPayWithAggregateRevoked());const assessment=current.current_assessment;return route.fulfill({json:{assessment_id:assessment.assessment_id,assessment_hash:assessment.assessment_hash,aggregate_version:assessment.aggregate_version,decision:{obligation_id:controlledId,decision:assessment.decision,reasons:assessment.reasons},race:assessment.race,provider_used:assessment.provider_used,provider_mode:assessment.provider_mode}});}
+    if(path==='/api/internal/demo/real-testnet-payment/preflight'){const next=adapt(detailWithProxy());next.current_assessment=null;next.aggregate.state='APPROVAL_PENDING';next.aggregate.pae_state='REVOKED';next.truth.tameion_control_truth.aggregate_state='APPROVAL_PENDING';next.truth.tameion_control_truth.assessment_state='NOT_CURRENT';next.truth.tameion_control_truth.pae_state='REVOKED';next.truth.tameion_control_truth.execution_release_authority='REVOKED';next.pae_sealed=false;next.execution=null;next.execution_packet=null;next.sealed_pae_instruction_hash=null;next.execution_gate='LOCKED_UNTIL_CURRENT_AUTHORIZATION';current=next;return route.fulfill({json:{code:'PREFLIGHT_READY'}});}
+    if(path===`/api/obligations/${controlledId}/approve`){current=adapt(proxyLifecycleDetail('AUTHORIZED'));return route.fulfill({json:{code:'AUTHORIZED',packet_sha256:current.execution_packet.packet_sha256,pae_instruction_hash:current.sealed_pae_instruction_hash}});}
+    if(path===`/api/obligations/${controlledId}/release`){current={...current,execution_gate:'PORTAL_APPROVED_EXACT_PACKET',payment_release_current:true,payment_release_approval:{approved_at:new Date().toISOString(),expires_at:new Date(Date.now()+300000).toISOString(),actor_id:'SYNTHETIC-UAT-APPROVER'}};return route.fulfill({json:{code:'PAYMENT_RELEASE_APPROVED'}});}
+    if(path===`/api/obligations/${controlledId}/execute`){providerSends++;current=adapt(proxyLifecycleDetail('SETTLED'));return route.fulfill({json:{code:'RECONCILED',execution:current.execution}});}
+    return route.fulfill({status:503,json:{code:'OFFLINE_FIXTURE_ACTION_FORBIDDEN'}});
+  });
+  await page.goto('/');await openReviewPayables(page);if(viewport.width<768)await openMobileQueue(page);await queueItem(page,controlledId).click();
+  screens.push('Obligation');await expect(page.getByRole('button',{name:'Run AI Assessment',exact:true})).toBeVisible();await page.getByRole('button',{name:'Run AI Assessment',exact:true}).click();
+  screens.push('Assessment');await expect(page.getByRole('button',{name:'Prepare testnet payment details',exact:true})).toBeVisible();await page.getByRole('button',{name:'Prepare testnet payment details',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Run AI Assessment',exact:true})).toBeVisible();await page.getByRole('button',{name:'Run AI Assessment',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Continue to Authorization',exact:true})).toBeVisible();await page.getByRole('button',{name:'Continue to Authorization',exact:true}).click();
+  screens.push('Authorization');await expect(page.getByRole('button',{name:'Authorize payment',exact:true})).toBeVisible();await page.getByRole('button',{name:'Authorize payment',exact:true}).click();
+  screens.push('Assurance');await expect(page.getByRole('button',{name:'Continue to Payment',exact:true})).toBeVisible();await page.getByRole('button',{name:'Continue to Payment',exact:true}).click();
+  screens.push('Payment');let confirmation=page.getByRole('checkbox',{name:/I have reviewed the exact testnet/});await confirmation.check();await page.getByRole('button',{name:'Approve payment release',exact:true}).click();
+  confirmation=page.getByRole('checkbox',{name:/I have reviewed the exact testnet/});await confirmation.check();await page.getByRole('button',{name:'Pay testnet USDC',exact:true}).click();
+  screens.push('Reconciliation');const receipt=page.getByRole('region',{name:'Reconciliation receipt'});await expect(receipt).toContainText('TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION');await expect(receipt).toContainText('remains outstanding');
+  expect(screens).toEqual(['Obligation','Assessment','Authorization','Assurance','Payment','Reconciliation']);expect(assessmentCount).toBe(2);expect(providerSends).toBe(1);expect(posts).toEqual([`/api/obligations/${controlledId}/assess`,'/api/internal/demo/real-testnet-payment/preflight',`/api/obligations/${controlledId}/assess`,`/api/obligations/${controlledId}/approve`,`/api/obligations/${controlledId}/release`,`/api/obligations/${controlledId}/execute`]);
+  await expect(queueItem(page,genuineId)).toContainText('1.00 USD');expect(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`six-stage-controlled-${viewport.label}.png`),fullPage:true});
+});
+
+test("stale consent and unavailable release never offer approval or payment", async ({ browser }) => {
+  for(const width of [390,1280])for(const gate of ['PORTAL_RELEASE_RENEWAL_REQUIRED','PORTAL_RELEASE_UNAVAILABLE']){
+    const page=await browser.newPage({viewport:{width,height:900}}),record=proxyLifecycleDetail('AUTHORIZED');
+    record.execution_gate=gate;record.payment_release_current=false;
+    record.payment_release_approval={approved_at:'2026-10-14T09:00:00.000Z',expires_at:'2026-10-14T09:01:00.000Z',actor_id:'SYNTHETIC-APPROVER'};
+    const writes=await openFixture(page,record);await expandLifecycleStages(page);
+    await page.getByRole('navigation',{name:'Payment lifecycle navigation'}).getByRole('button',{name:'Payment',exact:true}).click();await collapseLifecycleStages(page);
+    const card=page.getByRole('region',{name:'Payment status'});
+    await expect(card).toContainText(gate==='PORTAL_RELEASE_RENEWAL_REQUIRED'?'Release consent is no longer current':'Payment release is unavailable');
+    await expect(card).not.toContainText('Release approval recorded');
+    await expect(page.getByRole('button',{name:'Approve payment release'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Pay testnet USDC'})).toHaveCount(0);
+    expect(writes).toEqual([]);await page.close();
+  }
+});
+
+for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) test(`HOLD clarity and no-retry at ${width}, unresolved ${unresolved}`, async ({page}, info) => {
+  await page.setViewportSize({width,height:900});
+  const source=await actualSourcePayFixtures(page);
+  const held=structuredClone(source.payDetailById["OBL-J0C-003"]);
+  held.financial_action_eligible=false;held.advisory_action_eligible=true;
+  held.current_assessment.decision="HOLD";
+  held.current_assessment.reasons=["Source evidence is incomplete."];
+  held.current_assessment.race.result={decision:"HOLD",decision_summary:"Source evidence is incomplete.",validated_findings:[{code:"SOURCE_EVIDENCE_MISSING",severity:"HOLD",reason:"Source evidence is incomplete."}]};
+  held.current_assessment.race.remediation=[{finding_code:"SOURCE_EVIDENCE_MISSING",reason:"Source evidence is incomplete.",required_action:"Attach and validate the source evidence.",required_evidence:["Approved source invoice"],owner_role:"Accounts Payable",reassess_after_resolution:true}];
+  const mutations:string[]=[];
+  await page.route("**/api/**",route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(route.request().method()!=="GET")mutations.push(path);
+    if(path==="/api/operator/session")return route.fulfill({json:{authenticated:true,csrf_token:"MOCK-ONLY-CSRF",expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(path==="/api/wallet/balance/refresh")return route.fulfill({status:503,json:{code:"BALANCE_NOT_VERIFIED"}});
+    if(path==="/api/obligations")return route.fulfill({json:{obligations:source.queue.map(row=>({...row,decision:row.obligation_id==="OBL-J0C-003"?"HOLD":row.decision}))}});
+    if(path==="/api/obligations/OBL-J0C-003")return route.fulfill({json:held});
+    return route.fulfill({status:503,json:{code:"UNMOCKED_ACTION_FORBIDDEN"}});
+  });
+  if(unresolved)await page.addInitScript(()=>localStorage.setItem("tameion.assessment-request.OBL-J0C-003","MOCK-RETAINED-REQUEST"));
+  await page.goto("/");await openReviewPayables(page);
+  if(width<768)await openMobileQueue(page);
+  await queueItem(page,"OBL-J0C-003").click();
+  const reason=page.getByRole("region",{name:"Hold reason and next action"});
+  await expect(reason).toBeVisible();
+  const reasonBounds=await reason.boundingBox();
+  const sourceBounds=await page.getByRole("region",{name:"Selected source payable"}).boundingBox();
+  expect(reasonBounds!.width).toBeGreaterThanOrEqual(sourceBounds!.width * 0.95);
+  await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
+  await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
+  await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
+  const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh payable list":"View HOLD findings"});
+  await primary.focus();await page.keyboard.press("Enter");
+  if(!unresolved){
+    const business=page.getByTestId("assessment-supporting-detail");await expect(business).toHaveAttribute("open","");await expect(business.locator("summary")).toBeFocused();await expect(business).toContainText("Approved source invoice");
+  }
+  await expect(page.getByRole("button",{name:"Reassess after correction"})).toHaveCount(0);
+  expect(mutations.filter(path=>path!=="/api/wallet/balance/refresh")).toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
+  if(unresolved)expect(await page.evaluate(()=>localStorage.getItem("tameion.assessment-request.OBL-J0C-003"))).toBe("MOCK-RETAINED-REQUEST");
+  await page.locator("#hold-technical-details").evaluate((el:HTMLDetailsElement)=>{el.open=false;});
+  const path=info.outputPath(`hold-clarity-${width}-${unresolved?"unverified":"confirmed"}.png`);
+  await page.screenshot({path,fullPage:true});await info.attach("hold-clarity",{path,contentType:"image/png"});
+  const axe=await new AxeBuilder({page}).analyze();expect(axe.violations).toEqual([]);
+});
+
+for (const theme of ["light","dark"] as const) for (const width of [320,390]) {
+  test(`retained assessment list-check feedback is visible and keyboard usable at ${width}px in ${theme}`, async ({page},testInfo)=>{
+    await page.setViewportSize({width,height:844});
+    const listResponse=await syntheticSourceResponse("/api/obligations");
+    const list=await listResponse.json(); const id=list.obligations[0].obligation_id;
+    await page.addInitScript(({id,theme})=>{
+      localStorage.setItem(`tameion.assessment-request.${id}`,"SYNTHETIC-RETAINED-REQUEST");
+      localStorage.setItem("tameion-theme",theme);
+    },{id,theme});
+    let reads=0; let release!:()=>void;
+    const pending=new Promise<void>(resolve=>{release=resolve;});
+    const writes:string[]=[];
+    page.on("request",request=>{if(request.method()==="POST")writes.push(new URL(request.url()).pathname);});
+    await page.route("**/api/obligations",async route=>{
+      reads++; if(reads>1)await pending;
+      return route.fulfill({json:list});
+    });
+    await page.goto("/"); await openReviewPayables(page);
+    await openMobileQueue(page); await queueItem(page,id).click();
+    const action=page.getByRole("button",{name:"Refresh payable list",exact:true});
+    await expect(action).toBeEnabled(); await action.focus(); await page.keyboard.press("Enter");
+    const status=page.getByRole("status",{name:"Payable list check"});
+    await expect(status).toContainText("Checking payable list"); await expect(action).toBeDisabled();
+    await expect(status).toBeVisible();
+    const strip=page.getByRole("region",{name:"Current payable action"});
+    expect(await strip.locator('[aria-label="Payable list check"]').count()).toBe(1);
+    release(); await expect(status).toContainText("Payable list checked");
+    await expect(status).toContainText("Assessment outcome remains unverified"); await expect(action).toBeEnabled();
+    expect(reads).toBe(2); expect(writes).toEqual([]);
+    expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBe("SYNTHETIC-RETAINED-REQUEST");
+    await expect(page.getByRole("button",{name:"Run AI Assessment",exact:true})).toHaveCount(0);
+    const widths=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth}));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    const bounds=await status.boundingBox(); expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(844);
+    await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+    const content=await page.getByRole("region",{name:"Payable details",exact:true}).boundingBox();
+    const footer=await strip.boundingBox(); expect(content!.y+content!.height).toBeLessThanOrEqual(footer!.y);
+    const audit=await new AxeBuilder({page}).withTags(["wcag2a","wcag2aa","wcag21aa"]).analyze();
+    expect(audit.violations).toEqual([]);
+    await page.screenshot({path:testInfo.outputPath(`list-check-${width}-${theme}.png`),fullPage:true});
+    await action.focus(); await page.keyboard.press("Shift+Tab");
+    expect(await page.evaluate(()=>document.activeElement?.tagName)).not.toBe("BODY");
+  });
+}
+
+test("wallet exact display preserves a large canonical micro-unit balance at 320px without another request",async({page},testInfo)=>{
+  await page.setViewportSize({width:320,height:844});
+  let balanceReads=0;
+  const amount="999999999999999999.999999999999999999";
+  await page.route("**/api/wallet/balance/refresh",route=>{balanceReads++;return route.fulfill({json:{amount,asset:"USDC",network:"ARC-TESTNET",captured_at:"2026-10-16T00:00:00.000Z",verification:"READ_ONLY_BALANCE"}});});
+  await page.goto("/"); await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  await page.getByRole("button",{name:"Refresh wallet balance",exact:true}).click();
+  const wallet=page.getByRole("region",{name:"Read-only wallet balance"});
+  await expect(wallet).toContainText("1,000,000,000,000,000,000.00 USDC");
+  const exact=page.getByRole("button",{name:"Show exact",exact:true});
+  await exact.focus(); await page.keyboard.press("Enter");
+  await expect(wallet).toContainText(`${amount} USDC`);
+  await expect(page.getByRole("button",{name:"Show rounded",exact:true})).toBeFocused();
+  await page.keyboard.press("Enter"); await expect(wallet).toContainText("1,000,000,000,000,000,000.00 USDC");
+  expect(balanceReads).toBe(1);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
+  await page.screenshot({path:testInfo.outputPath("wallet-exact-320.png"),fullPage:true});
+});
+
+for (const width of [320,390]) for (const zoom of [1,2]) test(`storage-failure feedback keeps expanded payable details clear at ${width}px and ${zoom}x zoom`,async({page},testInfo)=>{
+  const cssWidth=Math.floor(width/zoom);
+  await page.setViewportSize({width:cssWidth,height:Math.floor(844/zoom)});
+  const source=await syntheticSourceResponse("/api/obligations");const list=await source.json();const id=list.obligations[0].obligation_id;
+  await page.addInitScript(id=>localStorage.setItem(`tameion.assessment-request.${id}`,"SYNTHETIC-RETAINED-REQUEST"),id);
+  let reads=0;let release!:()=>void;const pending=new Promise<void>(resolve=>{release=resolve;});
+  await page.route("**/api/obligations",async route=>{if(++reads>1)await pending;return route.fulfill({json:list});});
+  await page.goto("/");await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();
+  await page.getByRole("button",{name:"Refresh payable list",exact:true}).click();
+  await expect(page.getByRole("status",{name:"Payable list check"})).toContainText("Checking payable list");
+  await page.evaluate(()=>{
+    const original=Storage.prototype.getItem;
+    Storage.prototype.getItem=function(key){if(key.startsWith("tameion.assessment-request."))throw new Error("SYNTHETIC_STORAGE_UNAVAILABLE");return original.call(this,key);};
+  });
+  release();await expect(page.getByRole("status",{name:"Payable list check"})).toContainText("Request identity could not be read");
+  await page.getByText("Technical details",{exact:true}).click();
+  await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+  const body=await page.getByRole("region",{name:"Payable details",exact:true}).boundingBox();
+  const footer=await page.getByRole("region",{name:"Current payable action"}).boundingBox();
+  expect(body!.y+body!.height).toBeLessThanOrEqual(footer!.y);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(cssWidth);
+  await page.screenshot({path:testInfo.outputPath(`storage-failure-footer-${width}-${zoom}x.png`),fullPage:true});
+});
+
+for (const width of [320,195]) for (const sample of ["large","micro"]) test(`exact ${sample} payable amounts fit overview, list and selection at ${width}px`,async({page},testInfo)=>{
+  const {DemoState}=await import("../src/server/demo-state");
+  const {projectObligationListData,projectObligationDetail}=await import("../src/server/obligation-read-model");
+  const {syntheticSourceRecords}=await import("../tests/test-support/synthetic-source-records");
+  const records=syntheticSourceRecords();const record=records.find(r=>r.currency==="USD")!;
+  record.amount=sample === "large" ? `${"9".repeat(60)}.00` : "0.000001";
+  const state=new DemoState(undefined,undefined,undefined,undefined,{},records);
+  const list=projectObligationListData(state,"GENUINE_COMPANY");
+  const value=await (await projectObligationDetail(state,record.obligation_id,false,undefined,"GENUINE_COMPANY")).json();
+  const writes:string[]=[];
+  await page.route("**/api/obligations**",route=>{
+    if(route.request().method()!=="GET"){writes.push(route.request().method());return route.fulfill({status:503,json:{error:"Offline read-only fixture"}});}
+    return route.fulfill({json:new URL(route.request().url()).pathname==="/api/obligations"?list:value});
+  });
+  await page.setViewportSize({width,height:844});await page.goto("/");await page.getByRole("button",{name:"Open workspace",exact:true}).click();
+  const overview=page.getByRole("region",{name:"Payables overview"});
+  await expect(overview).toContainText(`${record.amount} USD`);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await page.getByRole("button",{name:"Review payables",exact:true}).click();await openMobileQueue(page);
+  await expect(queueItem(page,record.obligation_id)).toContainText(`${record.amount} USD`);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await queueItem(page,record.obligation_id).click();
+  const selected=page.getByRole("region",{name:"Selected source payable"});
+  await expect(selected).toContainText(`${record.amount} USD`);
+  await expect(selected).toContainText(record.obligation_id);
+  await expect(selected).toContainText("Supplier not recorded");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  expect(writes).toEqual([]);
+  await page.screenshot({path:testInfo.outputPath(`exact-payable-amount-${sample}-${width}.png`),fullPage:true});
+});
+
+for(const width of [1365,390])for(const outcome of ['COMPLETED_CURRENT','UNKNOWN','BECAME_UNKNOWN'])test(`exact original assessment recovery ${outcome} at ${width}px is read-only and identity bound`,async({page},testInfo)=>{
+  const id='OBL-EXACT-BROWSER',key='00000000-0000-4000-8000-000000000097';
+  const value={...detail,financial_action_eligible:false,advisory_action_eligible:true,source_group:'GENUINE_COMPANY',record:{...detail.record,obligation_id:id},current_assessment:{...detail.current_assessment,obligation_id:id,assessment_id:`ASM-${key}`}};
+  const complete={status:'COMPLETED_CURRENT',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:createHash('sha256').update(canonicalize(value.record)).digest('hex'),financial_action_eligible:false,receipt:{assessment_id:`ASM-${key}`,assessment_hash:value.current_assessment.assessment_hash,aggregate_version:'1'}};
+  const unknown={status:'UNKNOWN',obligation_id:id,idempotency_key:key,aggregate_version:'1',source_record_sha256:complete.source_record_sha256,financial_action_eligible:false};
+  const posts:string[]=[];let detailReads=0;
+  await page.setViewportSize({width,height:844});
+  await page.addInitScript(({id,key})=>localStorage.setItem(`tameion.assessment-request.${id}`,key),{id,key});
+  await page.route('**/api/obligations**',async route=>{
+    const req=route.request(),path=new URL(req.url()).pathname;
+    if(req.method()==='POST'){
+      posts.push(path);expect(path).toBe(`/api/obligations/${id}/advisory/status`);expect(req.postDataJSON()).toEqual({idempotency_key:key});expect(req.headers()['x-tameion-csrf']).toBe('MOCK-ONLY-CSRF');
+      return route.fulfill({json:outcome==='UNKNOWN'||outcome==='BECAME_UNKNOWN'&&posts.length===2?unknown:complete});
+    }
+    if(path==='/api/obligations')return route.fulfill({json:{obligations:[{...obligation,obligation_id:id,source_group:'GENUINE_COMPANY',financial_action_eligible:false}]}});
+    if(path===`/api/obligations/${id}`){detailReads++;return route.fulfill({json:value});}
+    return route.fulfill({status:503,json:{code:'FIXTURE_FORBIDDEN'}});
+  });
+  await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+  await page.getByRole('button',{name:'Check assessment request',exact:true}).click();
+  const banner=page.getByRole('status',{name:'Assessment request check'});
+  if(outcome==='COMPLETED_CURRENT'){
+    await expect(banner).toContainText('Assessment confirmed');await expect(page.getByRole('button',{name:'Review assessment',exact:true})).toBeVisible();
+    expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBeNull();expect(posts).toHaveLength(2);expect(detailReads).toBe(2);
+  }else{
+    await expect(banner).toContainText('outcome is unknown');await expect(banner).toContainText('workspace owner');expect(await page.evaluate(id=>localStorage.getItem(`tameion.assessment-request.${id}`),id)).toBe(key);
+    expect(posts).toHaveLength(outcome==='UNKNOWN'?1:2);expect(detailReads).toBe(outcome==='UNKNOWN'?1:2);await expect(page.getByRole('button',{name:'Review assessment',exact:true})).toHaveCount(0);
+  }
+  await expect(page.getByRole('button',{name:/Run AI Assessment|Create linked testnet instruction|Authorize payment|Submit payment/})).toHaveCount(0);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  const strip=page.getByRole('region',{name:'Current payable action'}),bounds=await strip.boundingBox();expect(bounds!.y).toBeGreaterThanOrEqual(0);expect(bounds!.y+bounds!.height).toBeLessThanOrEqual(845);
+  await page.screenshot({path:testInfo.outputPath(`exact-status-${outcome}-${width}.png`),fullPage:true});
+});
+
+for(const width of [1365,390,320])for(const finding of ['NORMALIZATION_REVIEW_REQUIRED','SOURCE_EVIDENCE_MISSING'])test(`current genuine HOLD business review ${finding} is visible and focused at ${width}px`,async({page},testInfo)=>{
+  await page.setViewportSize({width,height:844});await page.emulateMedia({reducedMotion:'reduce'});
+  const source=await actualSourcePayFixtures(page),id='OBL-J0C-003',held=structuredClone(source.payDetailById[id]);Object.assign(held,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});
+  const reason=finding==='NORMALIZATION_REVIEW_REQUIRED'?'A normalized payable field requires source review.':'Source evidence is incomplete.';
+  const evidence=finding==='NORMALIZATION_REVIEW_REQUIRED'?'Source evidence supporting the corrected normalized field':'Approved source invoice';
+  held.current_assessment.decision='HOLD';held.current_assessment.reasons=[reason];held.current_assessment.race.result={decision:'HOLD',decision_summary:reason,validated_findings:[{code:finding,severity:'HOLD',reason}]};
+  held.current_assessment.race.remediation=[{finding_code:finding,reason,required_action:'Compare the payable with the source and provide verified evidence.',required_evidence:[evidence],owner_role:'Finance Operations',reassess_after_resolution:true}];
+  const requests:string[]=[];await page.route('**/api/**',route=>{
+    const req=route.request(),path=new URL(req.url()).pathname;requests.push(req.method()+' '+path);
+    if(path==='/api/operator/session')return route.fulfill({json:{authenticated:true,csrf_token:'MOCK-ONLY-CSRF',expires_at:new Date(Date.now()+3600000).toISOString()}});
+    if(path==='/api/obligations')return route.fulfill({json:{obligations:source.queue.map(row=>({...row,source_group:'GENUINE_COMPANY',decision:row.obligation_id===id?'HOLD':row.decision}))}});
+    if(path===`/api/obligations/${id}`)return route.fulfill({json:held});return route.fulfill({status:503,json:{code:'UNEXPECTED_REQUEST'}});
+  });
+  await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+  const action=page.getByRole('button',{name:'View HOLD findings',exact:true});await expect(action).toBeVisible();const before=requests.length;
+  await action.click();const business=page.getByTestId('assessment-supporting-detail'),summary=business.locator('summary');
+  await expect(business).toHaveAttribute('open','');await expect(summary).toBeFocused();await expect(business).toContainText(reason);await expect(business).toContainText(evidence);await expect(business).toContainText('Finance Operations');await expect(business).toContainText('outside this screen');
+  await expect(page.getByText('Step 2 of 6 · Assessment',{exact:true})).toBeVisible();await expect(page.getByRole('status',{name:'HOLD findings review'})).toContainText('HOLD remains');
+  const strip=page.getByRole('region',{name:'Current payable action'});let bounds=await strip.boundingBox();
+  for(const target of [summary,business.getByRole('region',{name:'Recorded remediation'}).getByText(evidence,{exact:true}),business.getByRole('region',{name:'Recorded remediation'}).getByText('Responsible: Finance Operations',{exact:true})]){
+    const box=await target.boundingBox();expect(box!.y).toBeGreaterThanOrEqual(0);expect(box!.y+box!.height).toBeLessThanOrEqual(bounds!.y);
+  }
+  // The already-open review remains operable; closing it cannot strand the next tap.
+  await action.focus();await page.keyboard.press('Enter');await expect(summary).toBeFocused();
+  await summary.click();await expect(business).not.toHaveAttribute('open','');await action.click();await expect(business).toHaveAttribute('open','');await expect(summary).toBeFocused();
+  expect(requests).toHaveLength(before);expect(requests.filter(r=>r.startsWith('POST '))).toEqual([]);
+  await expect(page.getByRole('button',{name:/Run AI Assessment|Create linked testnet instruction|Authorize payment|Continue to Authorization|Pay testnet USDC/})).toHaveCount(0);
+  await expect(page.getByTestId('assessment-supporting-detail')).toHaveCount(1);await expect(page.getByRole('region',{name:'Selected source payable'}).getByTestId('hold-reason')).toHaveCount(1);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await page.screenshot({path:testInfo.outputPath(`hold-business-${finding}-${width}.png`),fullPage:true});
+  await page.screenshot({path:testInfo.outputPath(`hold-business-${finding}-${width}-viewport.png`)});
+  const axe=await new AxeBuilder({page}).analyze();expect(axe.violations).toEqual([]);
+  await page.reload();await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();await expect(page.getByRole('button',{name:'View HOLD findings'})).toBeVisible();await expect(page.getByRole('status',{name:'HOLD findings review'})).toHaveCount(0);
+  await page.route('**/api/operator/session',route=>route.fulfill({status:401,json:{code:'SESSION_REQUIRED'}}));await page.reload();
+  await expect(page.getByRole('heading',{name:'Sign in to Tameion'})).toBeVisible();await expect(page.getByRole('button',{name:'View HOLD findings'})).toHaveCount(0);
+});
+
+for(const width of [390,320])test(`missing HOLD review target reports the real limitation at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:844});
+  const id='OBL-HOLD-MISSING',held={...detail,source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true,record:{...detail.record,obligation_id:id},current_assessment:{...detail.current_assessment,obligation_id:id,decision:'HOLD',reasons:['Source review required.']}};
+  const requests:string[]=[];await page.route('**/api/obligations**',route=>{requests.push(route.request().method());return route.fulfill({json:new URL(route.request().url()).pathname==='/api/obligations'?{obligations:[{...obligation,obligation_id:id,decision:'HOLD'}]}:held});});
+  await page.goto('/');await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();await page.getByRole('button',{name:'View HOLD findings'}).click();
+  await page.getByTestId('assessment-supporting-detail').evaluate(el=>el.remove());const before=requests.length;await page.getByRole('button',{name:'View HOLD findings'}).click();await expect(page.getByRole('status',{name:'HOLD findings review'})).toContainText('HOLD — details unavailable');expect(requests).toHaveLength(before);
+});
+
+for(const width of [390,320])test(`long recorded HOLD evidence wraps without loss at ${width}px`,async({page})=>{
+  await page.setViewportSize({width,height:844});const source=await actualSourcePayFixtures(page),id='OBL-J0C-003',held=structuredClone(source.payDetailById[id]);
+  Object.assign(held,{source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true});const evidence='SOURCE-REFERENCE-'+ 'A'.repeat(500);held.current_assessment.decision='HOLD';held.current_assessment.reasons=['Source normalization requires review.'];
+  held.current_assessment.race.result={decision:'HOLD',decision_summary:held.current_assessment.reasons[0],validated_findings:[{code:'NORMALIZATION_REVIEW_REQUIRED',severity:'HOLD',reason:held.current_assessment.reasons[0]}]};
+  held.current_assessment.race.remediation=[{finding_code:'NORMALIZATION_REVIEW_REQUIRED',reason:held.current_assessment.reasons[0],required_action:'Verify the source reference.',required_evidence:[evidence],owner_role:'Finance Operations',reassess_after_resolution:true}];
+  await page.route('**/api/obligations**',route=>route.fulfill({json:new URL(route.request().url()).pathname==='/api/obligations'?{obligations:[{...obligation,obligation_id:id,decision:'HOLD'}]}:held}));
+  await page.goto('/');await openReviewPayables(page);await openMobileQueue(page);await queueItem(page,id).click();await page.getByRole('button',{name:'View HOLD findings'}).click();
+  const business=page.getByTestId('assessment-supporting-detail');await expect(business.getByRole('region',{name:'Recorded remediation'})).toContainText(evidence);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  const owner=business.getByText('Responsible: Finance Operations',{exact:true});await page.mouse.move(width/2,300);
+  for(let step=0;step<8;step++){
+    const box=await owner.boundingBox(),strip=await page.getByRole('region',{name:'Current payable action'}).boundingBox();
+    if(box!.y>=0&&box!.y+box!.height<=strip!.y)break;
+    await page.mouse.wheel(0,box!.y<0?-180:180);
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  }
+  const box=await owner.boundingBox(),strip=await page.getByRole('region',{name:'Current payable action'}).boundingBox();expect(box!.y).toBeGreaterThanOrEqual(0);expect(box!.y+box!.height).toBeLessThanOrEqual(strip!.y);
+});
+
+for(const width of [1365,390])for(const eligible of [false,true])test(`Stage 2 server UNKNOWN separates historical HOLD and deliberate successor ${eligible} at ${width}px`,async({page},testInfo)=>{
+ await page.setViewportSize({width,height:844});const id='OBL-STAGE2-OFFLINE';
+ const historical={...detail.current_assessment,obligation_id:id,decision:'HOLD',reasons:['Synthetic source normalization requires review.']};
+ const value:any={...detail,source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:false,record:{...detail.record,obligation_id:id},current_assessment:null,historical_assessment:historical,genuine_assessment:{status:'UNKNOWN',recovery_eligible:eligible,recovery_reason:eligible?'ELIGIBLE':'LEGACY_EVIDENCE_MISSING'}};
+ const posts:Array<{path:string;body:any;key:string|undefined}>=[];
+ await page.route('**/api/obligations**',async route=>{
+  const r=route.request(),path=new URL(r.url()).pathname;
+  if(r.method()==='POST'){posts.push({path,body:r.postDataJSON(),key:r.headers()['idempotency-key']});value.genuine_assessment={status:'UNKNOWN',recovery_eligible:false,recovery_reason:'ACTIVE_OR_SUCCESSOR'};return route.fulfill({status:409,json:{code:'ASM-UNKNOWN',status:'UNKNOWN'}});}
+  if(path==='/api/obligations')return route.fulfill({json:{obligations:[{...obligation,obligation_id:id,assessed:false,decision:null,source_group:'GENUINE_COMPANY'}]}});
+  return route.fulfill({json:value});
+ });
+ await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
+ await expect(page.getByRole('region',{name:'Hold reason and next action'}).getByText('Latest assessment UNKNOWN',{exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:/Run AI Assessment|View HOLD findings|Create linked testnet instruction|Authorize payment|Pay testnet USDC/})).toHaveCount(0);
+ await expandLifecycleStages(page);await page.getByRole('navigation',{name:'Payment lifecycle navigation'}).getByRole('button',{name:'Assessment',exact:true}).click();
+ await expect(page.getByText('Historical assessment · HOLD',{exact:true})).toBeVisible();expect(posts).toHaveLength(0);
+ if(eligible){await page.getByRole('button',{name:'Request one new assessment',exact:true}).click();await expect.poll(()=>posts.length).toBe(1);expect(posts[0]).toMatchObject({path:`/api/obligations/${id}/advisory`,body:{recovery:true,expected_version:1}});expect(posts[0].key).toMatch(/^[0-9a-f-]{36}$/);expect(posts[0].body.source_record_sha256).toBe(createHash('sha256').update(canonicalize(value.record)).digest('hex'));await expect(page.getByRole('button',{name:'Request one new assessment',exact:true})).toHaveCount(0);}
+ else await expect(page.getByRole('button',{name:'Request one new assessment',exact:true})).toHaveCount(0);
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+ await page.screenshot({path:testInfo.outputPath(`stage2-unknown-${eligible}-${width}.png`),fullPage:true});
+});

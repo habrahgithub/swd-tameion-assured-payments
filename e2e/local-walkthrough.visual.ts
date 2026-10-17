@@ -1,0 +1,183 @@
+import { expect, test } from "./network-fence";
+import AxeBuilder from "@axe-core/playwright";
+import type { Locator } from "@playwright/test";
+
+async function expectReadableSurface(target: Locator, label: string) {
+  const result = await target.evaluate((element: Element) => {
+    const style = getComputedStyle(element);
+    const rgb = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (value: string) => {
+      const [red, green, blue] = rgb(value).map(channel => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    };
+    const foreground = style.color;
+    const background = style.backgroundColor;
+    const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+    return { foreground, background, ratio: (lighter + 0.05) / (darker + 0.05) };
+  });
+  expect(result.ratio, `${label}: ${result.foreground} on ${result.background}`).toBeGreaterThanOrEqual(4.5);
+}
+
+test.beforeEach(async({page})=>{
+  page.on("request",request=>{
+    const url=new URL(request.url());
+    if(url.hostname!=="127.0.0.1"&&url.hostname!=="hosted.invalid")throw new Error("Unexpected external request: "+url.origin);
+    if(!["GET","HEAD"].includes(request.method()))throw new Error("Mock walkthrough must not issue HTTP mutations");
+  });
+});
+
+test("local interactive mock journey preserves identity, gates and recorded reconciliation", async ({page})=>{
+  const effects:string[]=[];
+  page.on("request",r=>{if(!["GET","HEAD"].includes(r.method())||new URL(r.url()).hostname!=="127.0.0.1")effects.push(r.method()+" "+r.url());});
+  await page.goto("/local-demo");
+  await expect(page.getByRole("heading",{name:"Local synthetic walkthrough"})).toBeVisible();
+  await expect(page.getByTestId("synthetic-notice")).toContainText("SIMULATED / NON-ECONOMIC / NOT_VENDOR_PAYMENT");
+  await expect(page.getByTestId("journey-stage")).toHaveText("OBLIGATION");
+  await page.getByRole("button",{name:"Assess mock case",exact:true}).click();
+  await expect(page.getByTestId("advisory")).toContainText("PAY");
+  await page.getByRole("button",{name:"Mock case B"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("OBLIGATION");
+  await page.getByRole("button",{name:"Mock case A"}).click();
+  await page.getByRole("button",{name:"Acknowledge exact mock intent"}).click();
+  await expect(page.getByTestId("mock-packet")).toContainText("MOCK_REVIEWER");
+  await expect(page.getByTestId("mock-packet")).toContainText("Unsigned");
+  await page.getByRole("button",{name:"Submit to fake adapter",exact:true}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("SUBMITTED_MOCK");
+  await expect(page.getByText("Fake submissions: 1",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Observe recorded fake outcome"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("RECONCILED_MOCK");
+  await expect(page.getByTestId("mock-audit")).toContainText("RECONCILED_MOCK");
+  await page.setViewportSize({width:320,height:640});
+  const strip=page.getByRole("region",{name:"Current mock next action"});
+  await expect(strip).toContainText("Complete");
+  await expect(strip.getByRole("button",{name:"Next: Assess mock case"})).toHaveCount(0);
+  for(const zoom of ["100%","200%"]){
+    await page.evaluate(value=>{document.documentElement.style.zoom=value;},zoom);
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+    await expect(strip.getByRole("button",{name:"Review receipt"})).toBeInViewport();
+    await strip.getByRole("button",{name:"Review receipt"}).click();
+    const audit=page.getByTestId("mock-audit");await expect(audit).toBeFocused();
+    const geometry=await audit.evaluate(element=>({audit:element.getBoundingClientRect().toJSON(),heading:element.querySelector('h2')!.getBoundingClientRect().toJSON(),outcome:element.querySelector('[data-testid="mock-receipt-outcome"]')!.getBoundingClientRect().toJSON(),strip:document.querySelector('[aria-label="Current mock next action"]')!.getBoundingClientRect().toJSON(),width:document.documentElement.scrollWidth,viewport:window.innerWidth}));
+    expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
+    expect(geometry.audit.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.heading.bottom).toBeLessThanOrEqual(geometry.strip.top);
+    expect(geometry.outcome.bottom).toBeLessThanOrEqual(geometry.strip.top);
+    expect(geometry.strip.top).toBeGreaterThanOrEqual(0);
+    await page.screenshot({path:test.info().outputPath(`terminal-receipt-320-${zoom}.png`)});
+    await strip.getByRole("button",{name:"Show actions"}).click();
+    await expect(strip.getByRole("button",{name:"Review receipt"})).toBeFocused();
+  }
+  await page.evaluate(()=>{document.documentElement.style.zoom="100%";});
+  await strip.getByRole("button",{name:"Choose another mock case"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("OBLIGATION");
+  await expect(page.getByText("Fake submissions: 0",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Mock case A"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("RECONCILED_MOCK");
+  await expect(page.getByText("Fake submissions: 1",{exact:true})).toBeVisible();
+  expect(effects).toEqual([]);
+});
+
+test("mock scenario interactions enforce holds, stale inputs, packet binding and UNKNOWN no retry",async({page})=>{
+  await page.goto("/local-demo");
+  for(const scenario of ["HOLD","ESCALATE","FUNDING_HOLD"]){
+    await page.getByLabel("Mock scenario").selectOption(scenario);
+    await page.getByRole("button",{name:"Assess mock case",exact:true}).click();
+    await expect(page.getByRole("button",{name:"Acknowledge exact mock intent"})).toBeDisabled();
+    await expect(page.getByText("Fake submissions: 0",{exact:true})).toBeVisible();
+  }
+  await page.getByLabel("Mock scenario").selectOption("PAY");
+  await page.getByRole("button",{name:"Assess mock case",exact:true}).click();
+  await page.getByRole("button",{name:"Change mock amount"}).click();
+  await expect(page.getByTestId("advisory")).toContainText("No current assessment");
+  for(const scenario of ["HISTORICAL_AUTHORITY","PACKET_MISMATCH","DESTINATION_CHANGED"]){
+    await page.getByLabel("Mock scenario").selectOption(scenario);
+    await page.getByRole("button",{name:"Assess mock case",exact:true}).click();
+    await page.getByRole("button",{name:"Acknowledge exact mock intent"}).click();
+    if(scenario==="DESTINATION_CHANGED")await page.getByRole("button",{name:"Change mock destination"}).click();
+    await page.getByRole("button",{name:"Submit to fake adapter",exact:true}).click();
+    await expect(page.locator("main").getByRole("alert")).toContainText("BLOCKED");
+    await expect(page.getByText("Fake submissions: 0",{exact:true})).toBeVisible();
+  }
+  await page.getByLabel("Mock scenario").selectOption("UNKNOWN");
+  await page.getByRole("button",{name:"Assess mock case",exact:true}).click();
+  await page.getByRole("button",{name:"Acknowledge exact mock intent"}).click();
+  await page.getByRole("button",{name:"Submit to fake adapter",exact:true}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("UNKNOWN");
+  await expect(page.getByTestId("next-action")).toContainText("OUTCOME_UNVERIFIED / NO RETRY");
+  await expect(page.getByRole("button",{name:"Submit to fake adapter",exact:true})).toBeDisabled();
+  await page.getByRole("button",{name:"Observe recorded fake outcome"}).click();
+  await expect(page.getByTestId("journey-stage")).toHaveText("UNKNOWN");
+  await expect(page.getByText("Fake submissions: 1",{exact:true})).toBeVisible();
+});
+
+for(const viewport of [{width:1365,height:951},{width:390,height:844},{width:320,height:640}]){
+  test(`local walkthrough accessibility and viewport ${viewport.width}`,async({page})=>{
+    await page.setViewportSize(viewport);await page.goto("/local-demo");
+    await expect(page.getByRole("button",{name:"Assess mock case",exact:true})).toBeVisible();
+    if(viewport.width===320)await page.evaluate(()=>{document.documentElement.style.fontSize="200%";});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+    expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);
+    await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));
+    await expect(page.getByRole("region",{name:"Current mock next action"})).toBeInViewport();
+    await page.evaluate(()=>window.scrollTo(0,0));
+    await page.screenshot({path:test.info().outputPath(`local-mock-${viewport.width}.png`),fullPage:true});
+  });
+}
+
+for (const theme of ["system-light", "system-dark", "explicit-dark"] as const) {
+  for (const viewport of [{ width: 1365, height: 951 }, { width: 320, height: 640 }]) {
+    test(`local walkthrough keeps controls and receipts readable in ${theme} at ${viewport.width}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme === "system-dark" ? "dark" : "light" });
+      if (theme === "explicit-dark") await page.addInitScript(() => { document.documentElement.dataset.theme = "dark"; });
+      await page.setViewportSize(viewport);
+      await page.goto("/local-demo");
+
+      await expectReadableSurface(page.getByTestId("synthetic-notice"), "synthetic notice");
+      await expectReadableSurface(page.getByRole("button", { name: "Mock case A" }), "case selector");
+      await expectReadableSurface(page.getByTestId("next-action"), "next-action card");
+      await expectReadableSurface(page.getByLabel("Mock scenario"), "scenario selector");
+
+      await page.getByRole("button", { name: "Assess mock case", exact: true }).click();
+      await page.getByRole("button", { name: "Acknowledge exact mock intent" }).click();
+      await page.getByRole("button", { name: "Submit to fake adapter", exact: true }).click();
+      await page.getByRole("button", { name: "Observe recorded fake outcome" }).click();
+
+      await expectReadableSurface(page.getByTestId("mock-audit"), "reconciled receipt");
+      await expectReadableSurface(page.getByRole("region", { name: "Current mock next action" }), "fixed action strip");
+      await expectReadableSurface(page.getByRole("button", { name: "Review receipt" }), "receipt action");
+      expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    });
+  }
+}
+
+test("hosted and embedded activation is rejected without a mock journey",async({page})=>{
+  await page.route("http://hosted.invalid/**",async route=>{
+    const url=new URL(route.request().url());
+    const response=await page.request.get(`http://127.0.0.1:3190${url.pathname}${url.search}`);
+    await route.fulfill({response});
+  });
+  await page.goto("http://hosted.invalid/local-demo");
+  await expect(page.locator("main").getByRole("alert")).toContainText("LOCAL_ONLY");
+  await expect(page.getByRole("button",{name:"Assess mock case",exact:true})).toHaveCount(0);
+  await page.goto("/");
+  await page.evaluate(()=>{const f=document.createElement("iframe");f.src="/local-demo";f.title="embedded demo";document.body.append(f);});
+  await expect(page.frameLocator('iframe[title="embedded demo"]').locator("main").getByRole("alert")).toContainText("LOCAL_ONLY");
+});
+
+
+test("adversarial request shape and genuine mutation denials remain isolated",async({request})=>{
+  const hostileHeaders:Record<string,string>[]=[{"x-forwarded-for":"203.0.113.4"},{"x-forwarded-host":"evil.test"},{origin:"https://evil.test"},{forwarded:"for=127.0.0.1"}];
+  for(const headers of hostileHeaders) {
+    const response=await request.get("/local-demo",{headers});expect(await response.text()).toContain("LOCAL_ONLY");
+    expect(await response.text()).not.toContain("Assess mock case</button>");
+  }
+  const list=await request.get("/api/obligations");expect(list.status()).toBe(503);expect(list.headers()["cache-control"]).toContain("no-store");expect(await list.json()).toMatchObject({code:"AUTH_UNAVAILABLE"});
+  for(const route of ["approve","kill-switch"]){
+    const response=await request.post(`/api/obligations/OBL-J0C-001/${route}`,{data:{actor_id:"MOCK_REVIEWER",action:"DEACTIVATE"}});
+    expect(response.status()).toBe(route === "approve" ? 503 : 403);
+    expect((await response.json()).code).toBe(route === "approve" ? "AUTH_UNAVAILABLE" : "REQUESTER_UNVERIFIED");
+  }
+});
