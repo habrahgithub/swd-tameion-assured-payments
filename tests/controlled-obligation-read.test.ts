@@ -13,6 +13,7 @@ import {loadFinancialRequesterBinding,loadFinancialSourceAdmission,loadOptionalF
 import {AccessError} from "../src/server/route-access-policy";
 import type {AuthContext} from "../src/server/operator-auth";
 import {syntheticSourceRecords} from "./test-support/synthetic-source-records";
+import {computeProductionConfigurationSha256} from "../src/server/production-config-identity";
 
 const now=Date.parse("2026-10-13T19:30:00.000Z");
 const futureChildNow=Date.parse("2040-01-01T00:30:00.000Z");
@@ -103,6 +104,26 @@ describe("git-sha Preview financial authority binding",()=>{
  it("rejects swapped source/requester packet binding",()=>{const f=fixture();const requester={...f.requester,git_commit_sha:"e".repeat(40)};const bytes=JSON.stringify(requester);writeFileSync(join(root!,".tameion/financial-requester.json"),bytes);vi.stubEnv("TAMEION_FINANCIAL_REQUESTER_SHA256",createHash("sha256").update(bytes).digest("hex"));expect(()=>loadFinancialRequesterBinding()).toThrow(/UNAVAILABLE/);});
  it("treats partial financial authority as invalid instead of silently hiding it",()=>{fixture();rmSync(join(root!,".tameion/financial-requester.json"));expect(()=>loadOptionalFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);});
  it("does not hide a wrong-deployment binding merely because the packet is expired",()=>{const f=fixture();vi.setSystemTime(Date.parse(f.source.expires_at));vi.stubEnv("VERCEL_GIT_COMMIT_SHA","e".repeat(40));expect(()=>loadOptionalFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);});
+});
+
+function productionFinancialFixture(){
+ const f=fixture(),sourceDocument='{"synthetic":"operator-source"}',prodOrigin="https://production.example.invalid",prodSha="f".repeat(40),prodProject="prj_PRODUCTION_SYNTHETIC";
+ const config={SUPABASE_SERVICE_ROLE_KEY:"synthetic-service-role",SUPABASE_URL:"https://db.example.invalid",TAMEION_ALLOWED_ORIGINS:JSON.stringify([prodOrigin]),TAMEION_INGRESS_MODE:"vercel-direct-v1",TAMEION_OPERATOR_KEY:"OPERATOR",TAMEION_OPERATOR_SOURCE_DOCUMENT:sourceDocument,TAMEION_OPERATOR_SOURCE_SHA256:createHash("sha256").update(sourceDocument).digest("hex"),TAMEION_THROTTLE_HMAC_KEY:"9".repeat(64)};
+ const configuration_sha256=computeProductionConfigurationSha256(config),ingress={approval_id:"PRODUCTION-INGRESS",binding:"git-sha-production-v1",project_id:prodProject,git_commit_sha:prodSha,environment:"production",direct_edge:true,trusted_proxy_override:false,origins:[prodOrigin],configuration_schema:"tameion-production-config-v1",configuration_sha256},ingressBytes=JSON.stringify(ingress);
+ const prodBinding={binding:"git-sha-production-v1",git_commit_sha:prodSha,project_id:prodProject,environment:"production",origin:prodOrigin,ingress_approval_id:ingress.approval_id,ingress_record_sha256:createHash("sha256").update(ingressBytes).digest("hex"),source_record_sha256:createHash("sha256").update(JSON.stringify(f.record)).digest("hex"),configuration_schema:"tameion-production-config-v1",configuration_sha256};
+ const {binding:sb,git_commit_sha:sg,project_id:sp,environment:se,origin:so,ingress_approval_id:sia,ingress_record_sha256:sir,source_record_sha256:ssr,...sourceCore}=f.source as typeof f.source&Record<string,unknown>;void sb;void sg;void sp;void se;void so;void sia;void sir;void ssr;
+ const source={...sourceCore,...prodBinding},sourceBytes=JSON.stringify(source),sourceHash=createHash("sha256").update(sourceBytes).digest("hex");
+ const {binding:rb,git_commit_sha:rg,project_id:rp,environment:re,origin:ro,ingress_approval_id:ria,ingress_record_sha256:rir,source_record_sha256:rsr,source_sha256:rsh,...requesterCore}=f.requester as typeof f.requester&Record<string,unknown>;void rb;void rg;void rp;void re;void ro;void ria;void rir;void rsr;void rsh;
+ const requester={...requesterCore,...prodBinding,source_sha256:sourceHash},requesterBytes=JSON.stringify(requester),requesterHash=createHash("sha256").update(requesterBytes).digest("hex");
+ writeFileSync(join(root!,".tameion/financial-source.json"),sourceBytes);writeFileSync(join(root!,".tameion/financial-requester.json"),requesterBytes);
+ const env={...config,TAMEION_FINANCIAL_SOURCE_SHA256:sourceHash,TAMEION_FINANCIAL_REQUESTER_SHA256:requesterHash,TAMEION_INGRESS_RECORD:ingressBytes,VERCEL:"1",VERCEL_ENV:"production",VERCEL_PROJECT_ID:prodProject,VERCEL_GIT_COMMIT_SHA:prodSha};for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);
+ return {source,requester,env,configuration_sha256};
+}
+
+describe("configuration-bound Production financial authority",()=>{
+ it("admits matching ingress, source and requester configuration identity",()=>{const f=productionFinancialFixture();expect(loadFinancialSourceAdmission()).toMatchObject({binding:"git-sha-production-v1",configuration_sha256:f.configuration_sha256});expect(loadFinancialRequesterBinding()).toMatchObject({binding:"git-sha-production-v1",configuration_sha256:f.configuration_sha256});});
+ it("rejects runtime configuration drift and packet parity gaps",()=>{const f=productionFinancialFixture();vi.stubEnv("SUPABASE_URL","https://other.example.invalid");expect(()=>loadFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);expect(()=>loadFinancialRequesterBinding()).toThrow(/UNAVAILABLE/);vi.stubEnv("SUPABASE_URL",f.env.SUPABASE_URL);const requester={...f.requester,configuration_sha256:"0".repeat(64)},bytes=JSON.stringify(requester);writeFileSync(join(root!,".tameion/financial-requester.json"),bytes);vi.stubEnv("TAMEION_FINANCIAL_REQUESTER_SHA256",createHash("sha256").update(bytes).digest("hex"));expect(()=>loadFinancialRequesterBinding()).toThrow(/UNAVAILABLE/);});
+ it("rejects self-supplied source document/hash swaps against the approved configuration",()=>{productionFinancialFixture();const changed='{"synthetic":"changed"}';vi.stubEnv("TAMEION_OPERATOR_SOURCE_DOCUMENT",changed);vi.stubEnv("TAMEION_OPERATOR_SOURCE_SHA256",createHash("sha256").update(changed).digest("hex"));expect(()=>loadFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);});
 });
 
 describe("server-only financial authority build input",()=>{

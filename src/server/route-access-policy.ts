@@ -2,6 +2,8 @@ import { createHash, createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
 import { canonicalApprovalOrigin, loadDeploymentApproval, type DeploymentApproval } from "./deployment-approval";
+import {assertProductionConfigurationIdentity} from "./production-config-identity";
+import {parseOperatorSource} from "./operator-source-records";
 
 export class AccessError extends Error {
   constructor(public readonly code: string, public readonly status = 403) { super(code);this.name="AccessError"; }
@@ -20,6 +22,10 @@ export function parseOperatorPolicy(env:Record<string,string|undefined> = proces
       ? env.VERCEL_DEPLOYMENT_ID===deployment.deployment_id
       : env.VERCEL_GIT_COMMIT_SHA===deployment.git_commit_sha;
     if(JSON.stringify([...origins].sort())!==JSON.stringify(deployment.origins.map(canonicalApprovalOrigin).sort())||env.VERCEL!=="1"||env.VERCEL_ENV!==deployment.environment||env.VERCEL_PROJECT_ID!==deployment.project_id||!runtimeIdentityMatches)throw new Error("mapping");
+    if("binding" in deployment&&deployment.binding==="git-sha-production-v1"){
+      assertProductionConfigurationIdentity(env,deployment.configuration_schema,deployment.configuration_sha256);
+      parseOperatorSource(Buffer.from(env.TAMEION_OPERATOR_SOURCE_DOCUMENT!,"utf8"),env.TAMEION_OPERATOR_SOURCE_SHA256!);
+    }
     if(!/^[0-9a-f]{64,128}$/.test(env.TAMEION_THROTTLE_HMAC_KEY??"")||(env.TAMEION_THROTTLE_HMAC_KEY!.length%2)!==0)throw new Error("key");
     return {origins,deployment,throttleKey:Buffer.from(env.TAMEION_THROTTLE_HMAC_KEY!,"hex")};
   } catch {throw new AccessError("AUTH_UNAVAILABLE",503);}

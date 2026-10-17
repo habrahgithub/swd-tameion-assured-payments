@@ -34,7 +34,15 @@ const gitShaPreviewApprovalSchema = z.object({
   git_commit_sha: z.string().regex(/^[0-9a-f]{40}$/),
   environment: z.literal("preview"),
 }).strict().superRefine(canonicalOrigins);
-export const deploymentApprovalSchema = z.union([reservedDeploymentApprovalSchema, gitShaPreviewApprovalSchema]);
+const gitShaProductionApprovalSchema = z.object({
+  ...approvalBase,
+  binding: z.literal("git-sha-production-v1"),
+  git_commit_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  environment: z.literal("production"),
+  configuration_schema: z.literal("tameion-production-config-v1"),
+  configuration_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict().superRefine(canonicalOrigins);
+export const deploymentApprovalSchema = z.union([reservedDeploymentApprovalSchema, gitShaPreviewApprovalSchema, gitShaProductionApprovalSchema]);
 export type DeploymentApproval = z.infer<typeof deploymentApprovalSchema>;
 export function parseDeploymentApproval(contents: string): DeploymentApproval {
   if (Buffer.byteLength(contents, "utf8") > MAX_APPROVAL_BYTES) throw new Error("Approval too large");
@@ -60,6 +68,10 @@ export function loadDeploymentApproval(env: Record<string, string | undefined>):
   const packaged = readPackagedApproval();
   const legacy = env.TAMEION_INGRESS_RECORD === undefined ? undefined : parseDeploymentApproval(env.TAMEION_INGRESS_RECORD);
   if (!packaged && !legacy) throw new Error("Approval absent");
+  const production = (record:DeploymentApproval|undefined)=>record!==undefined&&"binding" in record&&record.binding==="git-sha-production-v1";
+  // Production Git-SHA authority is environment-record-only. A packaged or
+  // mixed Production record is unsupported and must never become a fallback.
+  if (production(packaged)||(production(legacy)&&packaged!==undefined)) throw new Error("Unsupported approval source");
   // Schema parsing establishes stable key order; origin order is not authority.
   const fingerprint = (record: DeploymentApproval) => JSON.stringify({ ...record, origins: [...record.origins].sort() });
   if (packaged && legacy && fingerprint(packaged) !== fingerprint(legacy)) throw new Error("Conflicting approval sources");

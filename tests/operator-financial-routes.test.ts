@@ -25,6 +25,16 @@ import {SupabaseDemoStateRepository,DemoStateConflictError} from '../src/server/
 import type {AuthContext} from '../src/server/operator-auth';
 import {AccessError} from '../src/server/route-access-policy';
 import {sealTestAssessment,currentAssessmentReview} from './test-support/seal-assessment';
+import {computeProductionConfigurationSha256} from '../src/server/production-config-identity';
+function productionAuthorityFixture(){
+ const legacy=sourceFixture(),origin='https://production.example.invalid',gitSha='f'.repeat(40),projectId='prj_PRODUCTION_SYNTHETIC',sourceDocument='{"synthetic":"operator-source"}';
+ const config={SUPABASE_SERVICE_ROLE_KEY:'synthetic-service-role',SUPABASE_URL:'https://db.example.invalid',TAMEION_ALLOWED_ORIGINS:JSON.stringify([origin]),TAMEION_INGRESS_MODE:'vercel-direct-v1',TAMEION_OPERATOR_KEY:'SYNTHETIC-OWNER',TAMEION_OPERATOR_SOURCE_DOCUMENT:sourceDocument,TAMEION_OPERATOR_SOURCE_SHA256:createHash('sha256').update(sourceDocument).digest('hex'),TAMEION_THROTTLE_HMAC_KEY:'9'.repeat(64)};
+ const configuration_sha256=computeProductionConfigurationSha256(config),ingress={approval_id:'PRODUCTION-INGRESS',binding:'git-sha-production-v1',project_id:projectId,git_commit_sha:gitSha,environment:'production',direct_edge:true,trusted_proxy_override:false,origins:[origin],configuration_schema:'tameion-production-config-v1',configuration_sha256},ingressBytes=JSON.stringify(ingress);
+ const {deployment_id,...sourceCore}=legacy,sourceBinding={binding:'git-sha-production-v1',git_commit_sha:gitSha,project_id:projectId,environment:'production',origin,ingress_approval_id:ingress.approval_id,ingress_record_sha256:createHash('sha256').update(ingressBytes).digest('hex'),source_record_sha256:createHash('sha256').update(JSON.stringify(legacy.source)).digest('hex'),configuration_schema:'tameion-production-config-v1',configuration_sha256};void deployment_id;
+ const source={...sourceCore,...sourceBinding},sourceBytes=JSON.stringify(source),sourceHash=createHash('sha256').update(sourceBytes).digest('hex'),requester={purpose:'FINANCIAL_REQUESTER_ACTOR_BINDING',approval_id:'PRODUCTION-REQUESTER',organization_id:source.organization_id,...sourceBinding,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:'SYNTHETIC-OWNER',credential_version:1,actor_id:'SYNTHETIC-ACTOR',source_sha256:sourceHash,intent_id:source.intent_id},requesterBytes=JSON.stringify(requester),requesterHash=createHash('sha256').update(requesterBytes).digest('hex');
+ writeFileSync(join(directory!,'.tameion/financial-source.json'),sourceBytes);writeFileSync(join(directory!,'.tameion/financial-requester.json'),requesterBytes);
+ const env={...config,TAMEION_FINANCIAL_SOURCE_SHA256:sourceHash,TAMEION_FINANCIAL_REQUESTER_SHA256:requesterHash,TAMEION_INGRESS_RECORD:ingressBytes,VERCEL:'1',VERCEL_ENV:'production',VERCEL_PROJECT_ID:projectId,VERCEL_GIT_COMMIT_SHA:gitSha};for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);return {source,requester,env};
+}
 function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean,finalExpiryOffset?:number,linkedChangedOnFinalRead?:boolean,omitFinalLinkHook?:boolean,linkedDraft?:{instruction_id:string,source_obligation_id:string,instruction_content_sha256:string},verifyLink?:(source:ReturnType<typeof loadFinancialSourceAdmission>)=>Promise<void>}={}){
  const source=sourceFixture(Boolean(options.linkedChangedOnFinalRead||options.linkedDraft),options.linkedDraft);const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
  initial.trustedKeys.loadServerSigningKey(DEMO_SIGNING_KEY_ID);
@@ -55,6 +65,13 @@ function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:
  return {source,requester,handler,request,load,client,repo,auth,sealCurrent,snapshot:()=>snapshot,revision:()=>revision,revoke:()=>{revoked=true;}};
 }
 describe('guarded canonical controlled testnet financial lifecycle',()=>{
+ it('keeps state and provider work untouched when Production configuration parity is unavailable',async()=>{
+  const f=productionAuthorityFixture();vi.stubEnv('SUPABASE_URL','https://drift.example.invalid');
+  const source=vi.fn(()=>loadFinancialSourceAdmission()),requester=vi.fn(()=>loadFinancialRequesterBinding()),load=vi.fn(),providerBoundary=vi.fn();
+  const action=createFinancialHandlers({guard:async()=>({session:{operator_key:'SYNTHETIC-OWNER',credential_version:1}} as AuthContext),source,requester,load,providerBoundary});
+  const response=await action('preflight',new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({obligation_id:f.source.source.obligation_id,expected_version:1})}));
+  expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'FINANCIAL_AUTHORITY_UNAVAILABLE'});expect(source).toHaveBeenCalledOnce();expect(requester).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();expect(providerBoundary).not.toHaveBeenCalled();
+ });
  it('prepares exact1USDC/0.002fee/1.002total, authorizes canonical PAE and submits once then reconciles',async()=>{
   const h=controlledHarness();await h.sealCurrent();const id=h.source.source.obligation_id;
   const prepared=await h.handler('preflight',h.request({obligation_id:id,expected_version:1}));expect(prepared.status).toBe(200);const p=await prepared.json();expect(p).toMatchObject({amount:'1.000000',estimated_network_fee:'0.002000',max_total_debit:'1.002000',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'});expect(p.business_payment_instruction.commercial).toMatchObject({invoice_reference:null,invoice_date:null,effective_due_date:null});

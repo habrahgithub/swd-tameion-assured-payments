@@ -2,17 +2,19 @@ import {createHash} from 'node:crypto';
 import {closeSync,constants,fstatSync,openSync,readSync} from 'node:fs';
 import {join} from 'node:path';
 import {z} from 'zod';
-import {deploymentApprovalSchema} from './deployment-approval';
+import {deploymentApprovalSchema,loadDeploymentApproval} from './deployment-approval';
 import {operatorSourceRecordSchema} from './operator-source-records';
+import {assertProductionConfigurationIdentity} from './production-config-identity';
 
 const text=z.string().min(1).max(128),hash=z.string().regex(/^[a-f0-9]{64}$/),origin=z.string().url().max(512);
 const temporal={approval_id:text,organization_id:z.literal('ORG-DEMO-001'),namespace:text,valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3})};
 const legacyContext=z.object({...temporal,deployment_id:text}).strict();
 const gitShaPreviewContext=z.object({...temporal,binding:z.literal('git-sha-preview-v1'),git_commit_sha:z.string().regex(/^[a-f0-9]{40}$/),project_id:text,environment:z.literal('preview'),origin,ingress_approval_id:text,ingress_record_sha256:hash,source_record_sha256:hash}).strict();
+const gitShaProductionContext=z.object({...temporal,binding:z.literal('git-sha-production-v1'),git_commit_sha:z.string().regex(/^[a-f0-9]{40}$/),project_id:text,environment:z.literal('production'),origin,ingress_approval_id:text,ingress_record_sha256:hash,source_record_sha256:hash,configuration_schema:z.literal('tameion-production-config-v1'),configuration_sha256:hash}).strict();
 const sourceFields={linked_instruction:z.object({source_obligation_id:text,instruction_content_sha256:hash}).strict().optional(),purpose:z.literal('TESTNET_FINANCIAL_SOURCE'),intent_id:text,classification:z.literal('TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT'),principal:z.literal('1.000000'),estimated_fee_ceiling:z.literal('0.002000'),estimated_total_ceiling:z.literal('1.002000'),source:operatorSourceRecordSchema};
 const requesterFields={purpose:z.literal('FINANCIAL_REQUESTER_ACTOR_BINDING'),operator_key:text,credential_version:z.number().int().positive(),actor_id:text,source_sha256:hash,intent_id:text};
-const sourceSchema=z.union([legacyContext.extend(sourceFields),gitShaPreviewContext.extend(sourceFields)]);
-const requesterSchema=z.union([legacyContext.extend(requesterFields),gitShaPreviewContext.extend(requesterFields)]);
+const sourceSchema=z.union([legacyContext.extend(sourceFields),gitShaPreviewContext.extend(sourceFields),gitShaProductionContext.extend(sourceFields)]);
+const requesterSchema=z.union([legacyContext.extend(requesterFields),gitShaPreviewContext.extend(requesterFields),gitShaProductionContext.extend(requesterFields)]);
 export type FinancialSourceAdmission=z.infer<typeof sourceSchema>;
 export type FinancialRequesterBinding=z.infer<typeof requesterSchema>;
 
@@ -22,12 +24,17 @@ function approvedBytes(fd:number,expected:string|undefined):Uint8Array{
 }
 function parseCanonical(bytes:Uint8Array):unknown{const raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes);const value:unknown=JSON.parse(raw);if(JSON.stringify(value)!==raw)throw new Error();return value;}
 function allowedOrigins(env:Record<string,string|undefined>):string[]{const value:unknown=JSON.parse(env.TAMEION_ALLOWED_ORIGINS??'null');if(!Array.isArray(value)||value.some(item=>typeof item!=='string'))throw new Error();return value as string[];}
-function contextStatus(value:z.infer<typeof legacyContext>|z.infer<typeof gitShaPreviewContext>,env:Record<string,string|undefined>,now:number):'ACTIVE'|'INACTIVE'{
+function contextStatus(value:z.infer<typeof legacyContext>|z.infer<typeof gitShaPreviewContext>|z.infer<typeof gitShaProductionContext>,env:Record<string,string|undefined>,now:number):'ACTIVE'|'INACTIVE'{
  const start=Date.parse(value.valid_from),end=Date.parse(value.expires_at);if(!Number.isSafeInteger(now)||now<0||end<=start||end-start>60*60*1000)throw new Error();
  if('binding' in value){
   const raw=env.TAMEION_INGRESS_RECORD;if(!raw||JSON.stringify(JSON.parse(raw))!==raw||createHash('sha256').update(raw).digest('hex')!==value.ingress_record_sha256)throw new Error();
   const ingress=deploymentApprovalSchema.parse(JSON.parse(raw));
   if(!('binding' in ingress)||ingress.binding!==value.binding||ingress.approval_id!==value.ingress_approval_id||ingress.git_commit_sha!==value.git_commit_sha||ingress.project_id!==value.project_id||ingress.environment!==value.environment||ingress.origins.length!==1||ingress.origins[0]!==value.origin)throw new Error();
+  if(value.binding==='git-sha-production-v1'){
+   const activeIngress=loadDeploymentApproval(env);
+   if(!('binding' in activeIngress)||activeIngress.binding!=='git-sha-production-v1'||JSON.stringify(activeIngress)!==JSON.stringify(ingress)||ingress.binding!=='git-sha-production-v1'||ingress.configuration_schema!==value.configuration_schema||ingress.configuration_sha256!==value.configuration_sha256)throw new Error();
+   assertProductionConfigurationIdentity(env,value.configuration_schema,value.configuration_sha256);
+  }
   const origins=allowedOrigins(env);if(origins.length!==1||origins[0]!==value.origin||env.VERCEL!=='1'||env.VERCEL_GIT_COMMIT_SHA!==value.git_commit_sha||env.VERCEL_PROJECT_ID!==value.project_id||env.VERCEL_ENV!==value.environment)throw new Error();
  }else if(value.deployment_id!==env.VERCEL_DEPLOYMENT_ID||value.namespace!==env.TAMEION_STATE_NAMESPACE)throw new Error();
  return start<=now&&now<end?'ACTIVE':'INACTIVE';
@@ -52,6 +59,6 @@ export function loadOptionalFinancialSourceAdmission(env:Record<string,string|un
 }
 export function loadFinancialRequesterBinding(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{try{const parsed=readFinancialRequester(env,now);if(parsed.status!=='ACTIVE')throw new Error();return parsed.packet;}catch{throw new Error('FINANCIAL_REQUESTER_UNAVAILABLE');}}
 export function sameFinancialBinding(source:FinancialSourceAdmission,requester:FinancialRequesterBinding):boolean{
- const keys='binding' in source?['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256'] as const:['deployment_id'] as const;
+ const keys='binding' in source?(source.binding==='git-sha-production-v1'?['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256','configuration_schema','configuration_sha256'] as const:['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256'] as const):['deployment_id'] as const;
  return ('binding' in source)===('binding' in requester)&&keys.every(key=>(source as unknown as Record<string,unknown>)[key]===(requester as unknown as Record<string,unknown>)[key]);
 }
