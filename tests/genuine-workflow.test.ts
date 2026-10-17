@@ -132,6 +132,11 @@ describe('genuine advisory and separate linked instruction',()=>{
   await vi.advanceTimersByTimeAsync(20_001);expect(signal!.aborted).toBe(true);
   const result=await response;expect(result.status).toBe(409);expect(await result.json()).toMatchObject({status:'UNKNOWN',code:'ASM-UNKNOWN'});expect(h.snapshot().assessment_operations[0].status).toBe('UNKNOWN');expect(fetcher).toHaveBeenCalledOnce();
  });
+ it('uses one transport attempt for a retryable fresh-provider failure and preserves UNKNOWN on replay',async()=>{
+  vi.stubEnv('NVIDIA_API_KEY','OFFLINE-MOCK-ONLY');const fetcher=vi.fn(async()=>new Response('{}',{status:503}));vi.stubGlobal('fetch',fetcher);const h=harness(),id=h.records[0].obligation_id,key='c23a9d3a-39a1-4f36-9556-04f523969abb';
+  const first=await h.handler('assess',h.request({},key),id);expect(first.status).toBe(409);expect(await first.json()).toMatchObject({status:'UNKNOWN',code:'ASM-UNKNOWN'});expect(fetcher).toHaveBeenCalledOnce();expect(h.snapshot().assessment_operations).toMatchObject([{idempotency_key:key,status:'UNKNOWN'}]);
+  const replay=await h.handler('assess',h.request({},key),id);expect(replay.status).toBe(409);expect(await replay.json()).toMatchObject({status:'UNKNOWN',code:'ASM-UNKNOWN'});expect(fetcher).toHaveBeenCalledOnce();
+ });
  it('refuses another slow authority read once request budget is exhausted without a provider call',async()=>{
   const h=harness(),id=h.records[0].obligation_id,start=Date.now();let now=start;
   vi.spyOn(Date,'now').mockImplementation(()=>now);h.guard.mockImplementation(async()=>{now=start+45001;return {revalidate:async()=>{}} as AuthContext;});

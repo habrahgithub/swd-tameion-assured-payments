@@ -21,7 +21,7 @@ const DEFAULT_RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export interface AssessmentHandlerOptions {controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;providerSignal?:()=>AbortSignal}
+export interface AssessmentHandlerOptions {controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;maxTransportAttempts?:1;providerSignal?:()=>AbortSignal}
 export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {},options:AssessmentHandlerOptions={}) {
 const getDemoState = load;
 const MAX_PERSISTENCE_ATTEMPTS=options.maxPersistenceAttempts??DEFAULT_MAX_PERSISTENCE_ATTEMPTS;
@@ -284,7 +284,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
   }
   const record = state.getRecord(id)!;
   const isLiveNvidia = Boolean(process.env.NVIDIA_API_KEY);
-  const provider = isLiveNvidia ? new NvidiaProvider(options.controlledRecovery?{maxTransportAttempts:1}:{}) : new DeterministicFallbackProvider();
+  const provider = isLiveNvidia ? new NvidiaProvider(options.controlledRecovery||options.maxTransportAttempts===1?{maxTransportAttempts:1}:{}) : new DeterministicFallbackProvider();
   const aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
   const productTrustEvidence = hasCurrentProductTrustEvidence(aggregate);
   const destinationReady = productTrustEvidence && aggregate.destination_verification_status === "VERIFIED" &&
