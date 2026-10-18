@@ -16,6 +16,18 @@ The repository contains production-shaped control paths, a protected operator
 experience, and a clearly separated local synthetic walkthrough. It is a
 private prototype and does not claim production release or mainnet readiness.
 
+## Submission status (read this first)
+
+| Item | Status |
+| --- | --- |
+| Submitted candidate | [`e182e89`](https://github.com/habrahgithub/swd-tameion-assured-payments/tree/e182e89a0daffb3e4d864b791a62e4f4ef524f70), merged into `main` through [PR #76](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/76). |
+| Submitted demo video | [Tameion — Simulated prototype walkthrough](https://youtu.be/Gq4nZr4hFKk) (2:09). It shows a **simulated** flow. **No real payment occurred**, and it is not evidence of hosted or testnet execution. |
+| Production build | Vercel reports a `READY` Production-target build for exact commit `e182e89`. This is build evidence only. |
+| Live production domain | Promotion and runtime behavior at `https://tameion.starwealthdynamics.org` have **not been verified** for that build. See [Hosted deployment status](#hosted-deployment-status). |
+| Live Arc Testnet UAT | **Pending.** No live testnet walkthrough has been recorded or verified. |
+| Real supplier settlement | **Not demonstrated.** Testnet USDC is not a supplier payment. |
+| Usage and traction | Internal pilot only. There is no external traction, and this repository publishes no AI-accuracy or payment-volume metrics. |
+
 ## Product journey
 
 ```mermaid
@@ -57,9 +69,11 @@ obligation, amount, current state, responsible actor, and one legal next action.
 | Provider-backed financial journey | Production-shaped modules and network-denied tests exist. Complete hosted obligation-to-reconciliation acceptance remains held behind separate authority and provider gates. |
 | Mainnet or production release | Out of scope. |
 
-The current delivery work is tracked in
+The current delivery history is tracked in
 [Job #65](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/65)
-and [draft PR #70](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/70).
+and merged [PR #76](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/76).
+[PR #70](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/70)
+is closed historical work and is not the current delivery PR.
 Passing local tests, CI, or a Vercel build does not by itself establish hosted
 login, a verified wallet balance, payment authority, or release approval.
 
@@ -165,11 +179,29 @@ positions.
 | Execution worker | Final currentness checks, idempotent provider submission, durable outcome handling, and reconciliation. |
 | Supabase/Postgres | Durable application state, operator verifier, sessions, challenges, throttling, and audit history. |
 | Circle developer-controlled wallets | Arc Testnet wallet observation and separately gated payment-provider capability. |
-| Vercel Preview | Protected hosted acceptance environment with exact deployment and origin binding. |
+| Vercel Preview / Production | Protected hosted environments. Preview binds an exact deployment ID and origin; Production binds an exact Git commit SHA, origin and configuration digest. Vercel reports a `READY` Production-target build for `e182e89`; live custom-domain promotion and runtime UAT remain unverified. |
 
 The application uses server-derived authority and workflow facts. The browser
 does not recreate payment eligibility or infer release authority from visible
 state.
+
+### AI advisory versus deterministic execution
+
+| Advisory (can be wrong, cannot move money) | Deterministic (decides, independent of model output) |
+| --- | --- |
+| Finance Agent assessment: `PAY`, `HOLD`, `ESCALATE`, findings, supporting detail | Current authority and designated approver |
+| Optional live model assessment (`NVIDIA_API_KEY`); a deterministic fallback exists and is labelled | Exact-intent binding: amount, currency, destination, wallet, policy, expiry |
+| Presentation of recommendations in the command center | Signed Payment Authorization Envelope and signature verification |
+| | Safety Kernel release checks, replay protection, one submission per instruction |
+| | Provider checks, idempotent execution, `UNKNOWN` outcomes held for read-only reconciliation, never retried blindly |
+
+### Circle and Arc Testnet
+
+Arc Testnet USDC is observed through a server-pinned, read-only Circle
+developer-controlled-wallet capability and, when separately authorized, used by
+the execution worker. The wallet, network and token identity are chosen by the
+server, never by the browser. Testnet USDC is a test asset and is not a
+supplier payment.
 
 ## Authentication and access controls
 
@@ -340,11 +372,23 @@ The protected operator journey uses these configuration classes:
 
 | Purpose | Names |
 | --- | --- |
-| Durable application state | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
+| Durable application state | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TAMEION_STATE_NAMESPACE` (selects the existing state namespace) |
 | Operator identity and ingress | `TAMEION_OPERATOR_KEY`, `TAMEION_ALLOWED_ORIGINS`, `TAMEION_INGRESS_MODE`, `TAMEION_THROTTLE_HMAC_KEY` |
 | Read-only wallet observation | `TAMEION_BALANCE_PIN`, `CIRCLE_API_KEY` |
+| Approved operator source | `TAMEION_OPERATOR_SOURCE_DOCUMENT`, `TAMEION_OPERATOR_SOURCE_SHA256` |
+| Deployment approval record (sole source for Production; carries the configuration digest) | `TAMEION_INGRESS_RECORD` |
 | Optional live assessment | `NVIDIA_API_KEY` |
-| Payment signing/execution | PAE signing and entity-secret configuration, admitted separately from login and balance review |
+| Payment signing/execution | `CIRCLE_ENTITY_SECRET`, the PAE signing key variable `PAE_SIGNING_KEY_TAMEION_DEMO_PAE_KEY_1_PEM`, and the controlled financial source/requester settings (`TAMEION_FINANCIAL_SOURCE_DOCUMENT`/`_SHA256`, `TAMEION_FINANCIAL_REQUESTER_DOCUMENT`/`_SHA256`), admitted separately from login and balance review |
+
+All of the above are names only. This repository never contains their values,
+and setup must not place values in code, commands, logs or issue text.
+
+`.env.example` lists only a subset of these names. The protected operator journey
+also requires Vercel-provided deployment variables (`VERCEL`, `VERCEL_ENV`,
+`VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_ID` or `VERCEL_GIT_COMMIT_SHA`) and an
+approved deployment record, so it cannot be run locally. What is reproducible
+locally is `npm ci`, `npm run verify`, and the loopback `/local-demo` walkthrough
+described under Local development.
 
 Deployment approval is bound to an exact Vercel project, deployment,
 environment, and approved origin. It is packaged as a private server build
@@ -429,6 +473,38 @@ Tameion follows bounded, evidence-led delivery:
 Do not weaken a fail-closed control to make a demonstration pass. Do not infer
 live authority from mocks, screenshots, local tests, CI, or a READY deployment.
 
+## Hosted deployment status
+
+Status below separates build evidence from live-domain and UAT evidence. It is
+not a release claim.
+
+- **Observed 2026-10-18:** Vercel reports deployment
+  `dpl_CN7arwTEP9rw391pJqpEef9Rxg3S` as a `READY` Production-target build of
+  exact commit `e182e89`. This does not verify that the customer domain serves
+  that build or that its protected runtime works.
+- **Observed 2026-10-17T23:01Z:** an anonymous request to `https://tameion.starwealthdynamics.org/` returned
+  HTTP 200, and `/api/operator/session` returned HTTP 404 (responses were CDN cache hits).
+  That indicates the deployment serving that domain lacks this candidate's operator API,
+  so it is not `e182e89`.
+- **Not verified:** protected sign-in, dashboard, obligation views, wallet connectivity,
+  or any payment workflow on the production URL.
+- **Required before this section can change:** the exact approved commit deployed to
+  Production, the production configuration provisioned and independently reviewed, and
+  recorded evidence of the checks above. Deployment alone does not establish a successful
+  testnet execution or reconciliation, and neither establishes real supplier settlement.
+
+### Live testnet UAT (pending)
+
+| Evidence | Status |
+| --- | --- |
+| Production-target build of the approved commit | `READY` for `e182e89`; build evidence only |
+| Promotion of that build to the live customer domain | Not verified |
+| Protected sign-in and dashboard on the production URL | Pending |
+| Wallet balance refresh (Arc Testnet USDC) | Pending |
+| Owner-operated testnet transaction and its outcome | Pending; no testnet transaction is recorded for this candidate |
+| Reconciliation evidence for that transaction | Pending |
+| New live-testnet demo video | Pending; the simulated video above stays the submitted video until a replacement is verified |
+
 ## Scope
 
 Tameion currently targets a tightly controlled accounts-payable prototype. It
@@ -480,6 +556,7 @@ proof that these fields have been provisioned.
 
 Local fixtures and browser checks verify presentation and failure handling.
 They do not establish hosted wallet access, provider reconciliation or a
-completed financial E2E. The temporary Preview wallet diagnostic requires a
-separately reviewed cleanup before submission. Merge and deployment remain
+completed financial E2E. The temporary Preview wallet configuration diagnostic
+route has been removed from this candidate, and a regression test asserts its
+absence. PR #76 is merged; live-domain promotion and Arc Testnet UAT remain
 separate release decisions.
