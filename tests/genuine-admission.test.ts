@@ -199,3 +199,25 @@ describe('Stage 2 bootstrap persistence immutability',()=>{
   for(const mutate of mutations){const bad=structuredClone(h.snapshot());mutate(bad.assessment_operations[0]);expect(()=>parseDemoStateSnapshot(bad)).toThrow();}
  });
 });
+
+describe('Stage 2 refused bootstrap never mutates another operation',()=>{
+ const expiredKey='55555555-5555-4555-8555-555555555555';
+ function seedExpired(h:H,version:number){
+  h.snapshot().assessment_operations.push({idempotency_key:expiredKey,obligation_id:h.records[0].obligation_id,aggregate_version:version,status:'RESERVED',reserved_at:Date.now()-500_000,recovery:{generation:0,source_record_sha256:hash(h.records[0]),binding_sha256:hash(h.source().state_binding)}});
+  expect(()=>parseDemoStateSnapshot(h.snapshot())).not.toThrow();
+ }
+ it.each([['guard-disabled',1],['guard-disabled',2],['foreign-reference',1],['foreign-reference',2],['unresolved',1],['unresolved',2],['financial',1],['financial',2]] as const)('denies %s (older reservation at version %i) with unchanged bytes, no CAS and no provider',async(variant,version)=>{
+  const h=harness(),fetcher=mockProvider(h);if(variant!=='guard-disabled')attest();seedLegacy(h,4);seedExpired(h,version);
+  let ref=REF;if(variant==='foreign-reference'){h.snapshot().assessment_operations.push({idempotency_key:REF,obligation_id:h.records[1].obligation_id,aggregate_version:1,status:'STALE'});}
+  if(variant==='financial')h.snapshot().execution_ledger.push({obligation_id:h.records[0].obligation_id,idempotency_key:'FICTIONAL-FIN',status:'UNKNOWN',atomic_amount:'1',destination_address:'0x'+'1'.repeat(40),provider_ref:null} as any);
+  const before=JSON.stringify(h.snapshot());h.repository.compareAndSet.mockClear();
+  const r=await bootstrap(h,NEW_KEY,ref);expect(r.status).toBeGreaterThanOrEqual(400);
+  expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+ });
+ it('still permits own-bound replay and a normal eligible bootstrap',async()=>{
+  const h=harness(),fetcher=mockProvider(h);attest();seedLegacy(h,4);expect((await bootstrap(h)).status).toBe(200);expect(fetcher).toHaveBeenCalledOnce();
+  expect((await bootstrap(h)).status).toBe(200);expect(fetcher).toHaveBeenCalledOnce();
+  expect((await bootstrap(h,NEW_KEY,OTHER_KEY)).status).toBe(409);
+  expect((await bootstrap(h,legacyKey(0),REF)).status).toBe(409);expect(fetcher).toHaveBeenCalledOnce();
+ });
+});

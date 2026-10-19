@@ -82,7 +82,16 @@ export function createGenuineWorkflowHandlers(deps:Dependencies){return async(ki
   if((recoveryRequest||bootstrapRequest)&&('source_record_sha256' in input&&input.source_record_sha256!==contentHash(source)))throw new AccessError('SOURCE_BINDING_CHANGED',409);
   if(bootstrapRequest){const parsedKey=z.string().regex(keyPattern).safeParse(request.headers.get('Idempotency-Key'));if(!parsedKey.success)throw new AccessError('BODY_REJECTED',400);}
   if(kind==='assess')return await createAssessmentHandler(async()=>{const {stored,snapshot}=await load();if((recoveryRequest||bootstrapRequest)&&'expected_version' in input&&AuthorityStore.fromSnapshot(snapshot.authority).get(org,id).aggregate_version!==input.expected_version)throw new AccessError('SOURCE_BINDING_CHANGED',409);
-   if(bootstrapRequest){const existing=snapshot.assessment_operations.find(o=>o.idempotency_key===request.headers.get('Idempotency-Key'));if(existing&&(existing.bootstrap?.unmatched_reference_key!==bootstrapReference||existing.obligation_id!==id))throw new AccessError('GENUINE_BOOTSTRAP_IDENTITY_MISMATCH',409);}
+   if(bootstrapRequest){
+    // Decide a new bootstrap before the shared route can touch (e.g. expire) any other operation.
+    const bootstrapKey=request.headers.get('Idempotency-Key'),existing=snapshot.assessment_operations.find(o=>o.idempotency_key===bootstrapKey);
+    if(existing){if(existing.bootstrap?.unmatched_reference_key!==bootstrapReference||existing.obligation_id!==id)throw new AccessError('GENUINE_BOOTSTRAP_IDENTITY_MISMATCH',409);}
+    else{
+     if(!bootstrapProtectionAttested())throw new AccessError('GENUINE_BOOTSTRAP_PROTECTION_UNCONFIRMED',409);
+     if(!classifyGenuineAdmission(snapshot,id).can_bootstrap)throw new AccessError('GENUINE_BOOTSTRAP_NOT_ELIGIBLE',409);
+     if(!bootstrapReference||bootstrapReference===bootstrapKey||!bootstrapReferenceAbsent(snapshot,bootstrapReference))throw new AccessError('GENUINE_BOOTSTRAP_REFERENCE_CONFLICT',409);
+    }
+   }
    return new GenuineAssessmentState(snapshot,view,stored.revision,repository,revalidate,()=>{saving=true;},mode,bootstrapReference);},revalidate,{controlledRecovery:recoveryRequest,recheckReservationBeforeProvider:true,requireHistoricalBasis:true,reservationTimeoutMs:45_000,maxPersistenceAttempts:2,maxTransportAttempts:1,providerSignal:()=>{
    const remaining=deadline-Date.now()-15_000;if(remaining<=0)throw new AccessError('GENUINE_ASSESSMENT_TIME_BUDGET',503);return AbortSignal.timeout(Math.min(GENUINE_PROVIDER_BUDGET_MS,remaining));
   }})(request,{params:Promise.resolve({id})});

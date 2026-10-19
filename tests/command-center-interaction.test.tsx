@@ -3759,7 +3759,7 @@ describe('Stage 2 admission browser flow',()=>{
   expect(panel.textContent).toContain('not a claim that this payable was paid or cancelled');
   expect(screen.queryByRole('button',{name:/Run AI Assessment|Request one assessment|Request one new assessment|Authorize payment|Pay testnet/})).toBeNull();
   expect(screen.getByRole('main').textContent).not.toMatch(/run a fresh assessment|This obligation was cancelled/i);
-  expect(within(panel).getByRole('button',{name:'Review assessment history'})).toBeTruthy();expect(posts(mock)).toHaveLength(0);
+  expect(within(panel).getByRole('button',{name:'View assessment status'})).toBeTruthy();expect(posts(mock)).toHaveLength(0);
  });
  it('does not carry a prior payable\'s bootstrap action or request identity across selection',async()=>{
   const {mock}=mount({[idA]:bootstrapAdmission});
@@ -3768,5 +3768,48 @@ describe('Stage 2 admission browser flow',()=>{
   expect(screen.queryByRole('button',{name:'Request one assessment for the current source'})).toBeNull();expect(posts(mock)).toHaveLength(1);
   fireEvent.click(obligationRow(idA));await screen.findByRole('button',{name:'Check assessment request'});
   expect(screen.queryByRole('button',{name:'Request one assessment for the current source'})).toBeNull(); // must re-observe; stale NOT_FOUND is not carried
+ });
+ it('lets a real bootstrap UNKNOWN admit exactly one explicit successor after grace, preserving bootstrap and earlier references',async()=>{
+  const third='00000000-0000-4000-8000-000000000403',uuids=[newKey,third,'00000000-0000-4000-8000-000000000404'];
+  localStorage.clear();localStorage.setItem(requestStorage,earlierKey);vi.stubGlobal('crypto',{randomUUID:()=>uuids.shift()!,subtle:webcrypto.subtle});
+  let visibility:Record<string,unknown>={status:'COMPLETED',recovery_eligible:false,recovery_reason:'NO_UNKNOWN',admission:bootstrapAdmission};
+  const mock=vi.fn<typeof fetch>((input,init)=>{
+   const url=String(input);
+   if(url===`/api/obligations/${idA}/advisory/status`&&init?.method==='POST')return Promise.resolve(response({status:'NOT_FOUND',obligation_id:idA,idempotency_key:JSON.parse(init.body as string).idempotency_key,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));
+   if(url===`/api/obligations/${idA}/advisory`&&init?.method==='POST')return Promise.resolve(response({status:'IN_PROGRESS'},202));
+   if(init?.method==='POST')throw new Error('Forbidden extra POST '+url);
+   if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(idA),source_group:'GENUINE_COMPANY'},{...obligation(idB),source_group:'GENUINE_COMPANY'}]}));
+   return Promise.resolve(response(url.endsWith(idB)?genuine(idB,reviewOnly,true):{...genuine(idA,bootstrapAdmission),genuine_assessment:visibility}));
+  });vi.stubGlobal('fetch',mock);
+  const advisory=()=>posts(mock).filter(([url])=>String(url).endsWith('/advisory'));
+  renderWithExplicitFirstSelection('FICTIONAL-CSRF');
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Request one assessment for the current source'}));
+  await waitFor(()=>expect(localStorage.getItem(successorStorage)).toBe(newKey));
+  // server now records the bootstrap as a real UNKNOWN, still inside grace
+  visibility={status:'UNKNOWN',recovery_eligible:false,recovery_reason:'GRACE',admission:{...bootstrapAdmission,can_assess:false,reason:'UNRESOLVED_OPERATION',can_bootstrap:false}};
+  cleanup();renderWithExplicitFirstSelection('FICTIONAL-CSRF');
+  await screen.findByRole('button',{name:'Check assessment request'});expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();expect(advisory()).toHaveLength(1);
+  // grace elapsed; reload and switch away/back
+  visibility={...visibility,recovery_eligible:true,recovery_reason:'ELIGIBLE'};
+  cleanup();renderWithExplicitFirstSelection('FICTIONAL-CSRF');
+  fireEvent.click(await screen.findByRole('button',{name:'Request one new assessment'}).then(b=>b));
+  await waitFor(()=>expect(advisory()).toHaveLength(2));
+  const [,init]=advisory()[1];expect(JSON.parse(init!.body as string)).toMatchObject({recovery:true,expected_version:1});expect(JSON.parse(init!.body as string).unmatched_reference_key).toBeUndefined();
+  expect((init!.headers as Record<string,string>)['Idempotency-Key']).toBe(third);
+  expect(localStorage.getItem(successorStorage)).toBe(third);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);expect(localStorage.getItem(`tameion.assessment-bootstrap-ref.${idA}`)).toBe(`${earlierKey}:${newKey}`);
+  // a successor UNKNOWN (even a server wrongly saying eligible) never admits a second one
+  cleanup();renderWithExplicitFirstSelection('FICTIONAL-CSRF');
+  await screen.findByRole('button',{name:'Check assessment request'});expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();
+  fireEvent.click(obligationRow(idB));await screen.findByRole('status',{name:'Review-only payable'});fireEvent.click(obligationRow(idA));
+  await screen.findByRole('button',{name:'Check assessment request'});expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();expect(advisory()).toHaveLength(2);
+ });
+ it('labels the review-only navigation truthfully and lands on the promised content',async()=>{
+  const {mock}=mount({});localStorage.clear();await waitFor(()=>obligationRow(idB));fireEvent.click(obligationRow(idB));
+  const panel=await screen.findByRole('status',{name:'Review-only payable'});
+  expect(screen.queryByRole('button',{name:/history/i})).toBeNull();
+  fireEvent.click(within(panel).getByRole('button',{name:'View assessment status'}));
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Assessment result'}).textContent).toContain('not a claim that this payable was paid or cancelled'));
+  expect(screen.queryByRole('button',{name:/Run AI Assessment|Request one|Authorize payment|Pay testnet/})).toBeNull();expect(posts(mock)).toHaveLength(0);
  });
 });

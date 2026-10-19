@@ -2532,7 +2532,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     // Contain the callback as well as its affordance, including stale handlers
     // and requests retained across reload or A -> B -> A navigation.
     if(acknowledgedSuccessorKey(obligationId)!==null)return;
-    if(successorLike&&(detailLifetimeEpoch!==exactAssessmentLifetime.current.epoch||retainedSuccessorRequestKey(obligationId)!==null||!csrfToken||activeRunCount.current>0||!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch))return;
+    // A bootstrap's own UUID (generation 0) is preserved in its marker; a real UNKNOWN of it may admit one explicit successor.
+    const bootstrapPredecessor = recovery ? bootstrapEarlierReference(obligationId, retainedSuccessorRequestKey(obligationId)) !== null ? retainedSuccessorRequestKey(obligationId) : null : null;
+    if(successorLike&&(detailLifetimeEpoch!==exactAssessmentLifetime.current.epoch||(retainedSuccessorRequestKey(obligationId)!==null&&bootstrapPredecessor===null)||!csrfToken||activeRunCount.current>0||!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch))return;
     if(recovery&&(detail.source_group!=="GENUINE_COMPANY"||detail.genuine_assessment?.status!=="UNKNOWN"||detail.genuine_assessment.recovery_eligible!==true||detail.pae_sealed))return;
     // The earlier reference is the browser's retained, unmatched request. It is preserved, never reused or relabeled.
     const earlierReference = bootstrap ? retainedAssessmentRequestKey(obligationId) : null;
@@ -2558,7 +2560,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if(successorLike&&!sourceHash)return {ok:false,status:503,data:{code:"SOURCE_IDENTITY_UNAVAILABLE"}};
       if(selectedRef.current!==obligationId||generation!==selectionGeneration.current||successorLike&&(!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch||assessmentCallbackDetailGeneration!==detailGeneration.current))return {ok:false,status:0,data:{code:"SELECTION_CHANGED"}};
       try {
-        if (successorLike && localStorage.getItem(storageKey) !== null) return {ok:false,status:409,data:{code:"SUCCESSOR_ALREADY_RETAINED"}};
+        if (successorLike && localStorage.getItem(storageKey) !== null && localStorage.getItem(storageKey) !== bootstrapPredecessor) return {ok:false,status:409,data:{code:"SUCCESSOR_ALREADY_RETAINED"}};
+        if (bootstrapPredecessor !== null && requestIdentity === bootstrapPredecessor) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
         if (successorLike && (!assessmentRequestUuid.test(requestIdentity) || requestIdentity === localStorage.getItem(`tameion.assessment-request.${obligationId}`))) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
         if (bootstrap) {
           if (localStorage.getItem(`tameion.assessment-request.${obligationId}`) !== earlierReference) return {ok:false,status:409,data:{code:"EARLIER_REFERENCE_CHANGED"}};
@@ -3337,7 +3340,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (serverAssessmentUnresolved && !detail?.execution) {
-    workspaceAction=retainedSuccessorRequestKey(selectedId)!==null
+    const heldKey=retainedSuccessorRequestKey(selectedId);
+    const bootstrapUnknownEligible=heldKey!==null&&bootstrapEarlierReference(selectedId,heldKey)!==null&&detail?.genuine_assessment?.status==="UNKNOWN"&&detail.genuine_assessment.recovery_eligible===true&&acknowledgedSuccessorKey(selectedId)===null;
+    workspaceAction=heldKey!==null&&!bootstrapUnknownEligible
       ?{label:"Check assessment request",actor:"User · successor request status",run:()=>{void checkAssessmentRequest();}}
       :detail?.genuine_assessment?.recovery_eligible===true&&acknowledgedSuccessorKey(selectedId)===null
       ?{label:"Request one new assessment",actor:"User · deliberate assessment",run:()=>{void runAssessment(true);}}
@@ -3791,7 +3796,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             <section role="status" aria-label="Review-only payable" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only payable</p>
               <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">{reviewOnlyReason(detail)}</p>
-              {detail.source_group === "GENUINE_COMPANY" && <button type="button" onClick={() => showStage("Assessment")} className="mt-2 min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold">Review assessment history</button>}
+              {detail.source_group === "GENUINE_COMPANY" && <button type="button" onClick={() => showStage("Assessment")} className="mt-2 min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold">View assessment status</button>}
             </section>
           )}
 
