@@ -32,7 +32,7 @@ export function assertAssessmentLineage(operations:readonly AssessmentOperation[
   if(!Number.isSafeInteger(o.reserved_at)||o.reserved_at!<0||r.unknown_at!==undefined&&(o.status!=='UNKNOWN'||r.unknown_at<o.reserved_at!))throw new Error('ASSESSMENT_TIMING_INVALID');
   if(o.status==='UNKNOWN'&&r.unknown_at===undefined)throw new Error('ASSESSMENT_UNKNOWN_TIMING_MISSING');
   if(r.generation===1){const p=operations.find(p=>p.idempotency_key===r.predecessor_key);
-   if(!p||p.status!=='UNKNOWN'||p.recovery?.generation!==0||p.recovery.unknown_at===undefined||
+   if(!p||p.legacy_disposition!==undefined||p.status!=='UNKNOWN'||p.recovery?.generation!==0||p.recovery.unknown_at===undefined||
     p.obligation_id!==o.obligation_id||p.aggregate_version!==o.aggregate_version||p.recovery.source_record_sha256!==r.source_record_sha256||p.recovery.binding_sha256!==r.binding_sha256||
     contentHash(p)!==r.predecessor_sha256||o.reserved_at!<Math.max(p.recovery.unknown_at,p.reserved_at!+45_000)+RECOVERY_GRACE_MS||
     operations.filter(c=>c.recovery?.predecessor_key===p.idempotency_key).length!==1)throw new Error('ASSESSMENT_LINEAGE_INVALID');
@@ -43,7 +43,7 @@ export function assertAssessmentLineage(operations:readonly AssessmentOperation[
 export interface DispositionVisibility {
  state:'NONE'|'AVAILABLE'|'USED'|'UNAVAILABLE';reason?:DispositionDenial|'NO_UNBOUND_UNKNOWN';
  /** No request identifiers are projected: readers must never learn an unresolved request's key. */
- approval_id?:string;expires_at?:string;
+ approval_id?:string;expires_at?:string;predecessor_sha256?:string;
  /** Public assessment hash of the child's seal (never an operation key) and whether that receipt is current for the source/version/binding. */
  child_status?:AssessmentOperation['status'];child_seal_hash?:string;child_current?:boolean;prior_binding_status?:'UNVERIFIED';
 }
@@ -83,5 +83,5 @@ function dispositionVisibility(snapshot:DemoStateSnapshot,view:OperatorSourceVie
  const candidates=ops.filter(o=>o.obligation_id===id&&isUnboundLegacyUnknown(o));
  if(candidates.length!==1)return {state:'NONE',reason:'NO_UNBOUND_UNKNOWN'};
  const evaluation=evaluateDispositionAdmission(snapshot,view,id,version,now);
- return evaluation.ok?{state:'AVAILABLE',approval_id:evaluation.admission.approval_id,expires_at:evaluation.admission.expires_at}:{state:'UNAVAILABLE',reason:evaluation.reason};
+ return evaluation.ok?{state:'AVAILABLE',approval_id:evaluation.admission.approval_id,expires_at:evaluation.admission.expires_at,predecessor_sha256:evaluation.admission.predecessor_sha256}:{state:'UNAVAILABLE',reason:evaluation.reason};
 }

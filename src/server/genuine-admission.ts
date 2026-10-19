@@ -2,7 +2,7 @@ import type {AssessmentOperation,DemoStateSnapshot} from './demo-state';
 import {contentHash} from '../domain/linked-instruction';
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
 import {admissionWindow,dispositionChildren,isSupersededOperation,isUnboundLegacyUnknown,type OwnerAdmission} from './genuine-disposition';
-import {historicalBasisValid} from '../agent/assessment-context';
+import {deterministicHistoricalContextValid} from '../agent/context-builder';
 import type {OperatorSourceView} from './operator-source-records';
 const ORG='ORG-DEMO-001';
 export const MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION=4;
@@ -107,7 +107,7 @@ export function evaluateDispositionAdmission(snapshot:Snapshot,view:OperatorSour
  if(a.aggregate_version!==version)return deny('VERSION_MISMATCH');
  if(request.approval_id!==undefined&&request.approval_id!==a.approval_id||request.predecessor_key!==undefined&&request.predecessor_key!==a.predecessor_key||request.predecessor_sha256!==undefined&&request.predecessor_sha256!==a.predecessor_sha256)return deny('ADMISSION_MISMATCH');
  // Existing deterministic timing-basis contract; never a current-clock or historical-date substitute.
- if(!record.assessment_basis||!historicalBasisValid(record,new Date(now).toISOString().slice(0,10)))return deny('TIMING_BASIS_INVALID');
+ if(!record.assessment_basis||!deterministicHistoricalContextValid(record))return deny('TIMING_BASIS_INVALID');
  const ops=snapshot.assessment_operations.filter(o=>o.obligation_id===id);
  if(dispositionChildren(snapshot.assessment_operations,id).length)return deny('ALREADY_USED');
  if(genuineHasFinancialHistory(snapshot as DemoStateSnapshot,id))return deny('FINANCIAL_HISTORY');

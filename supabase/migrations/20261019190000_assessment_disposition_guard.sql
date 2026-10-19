@@ -200,11 +200,47 @@ begin
        or v_now->'legacy_disposition'->'admission'->>'binding_sha256' is distinct from v_now->'recovery'->>'binding_sha256'
        or v_pred_key = v_now->>'idempotency_key'
        or v_now ? 'bootstrap'
+       or jsonb_typeof(v_now->'recovery') is distinct from 'object'
+       or v_now->'recovery'->'generation' is distinct from '0'::jsonb
+       or (v_now->'recovery') ? 'predecessor_sha256'
        or (v_now->'recovery') ? 'predecessor_key'
        or (select count(*) from jsonb_array_elements(v_new) e
             where jsonb_typeof(e) = 'object' and e ? 'legacy_disposition' and e->>'obligation_id' = v_now->>'obligation_id') <> 1 then
       return false;
     end if;
+    -- Exact cardinality and typed binding/window evidence, including the first admission.
+    if (select count(*) from jsonb_array_elements(v_new) e where e->>'idempotency_key'=v_now->>'idempotency_key') <> 1
+       or (select count(*) from jsonb_array_elements(v_new) e where e->>'idempotency_key'=v_pred_key) <> 1
+       or (select count(*) from jsonb_array_elements(v_old) e where e->>'idempotency_key'=v_pred_key) <> 1
+       or coalesce(v_now->>'idempotency_key','') !~ v_uuid
+       or jsonb_typeof(v_now->'aggregate_version') is distinct from 'number'
+       or coalesce(v_now->>'aggregate_version','') !~ '^[1-9][0-9]*$'
+       or (v_now->>'aggregate_version')::numeric > 9007199254740991
+       or jsonb_typeof(v_now->'reserved_at') is distinct from 'number'
+       or coalesce(v_now->>'reserved_at','') !~ '^[0-9]+$'
+       or (v_now->>'reserved_at')::numeric > 9007199254740991
+       or jsonb_typeof(v_now->'obligation_id') is distinct from 'string'
+       or length(v_now->>'obligation_id') not between 1 and 128
+       or jsonb_typeof(v_now #> '{legacy_disposition,admission,approval_id}') is distinct from 'string'
+       or length(v_now #>> '{legacy_disposition,admission,approval_id}') not between 1 and 128
+       or jsonb_typeof(v_now #> '{legacy_disposition,admission,source_record_sha256}') is distinct from 'string'
+       or jsonb_typeof(v_now #> '{legacy_disposition,admission,binding_sha256}') is distinct from 'string'
+       or jsonb_typeof(v_now #> '{legacy_disposition,admission,valid_from}') is distinct from 'string'
+       or jsonb_typeof(v_now #> '{legacy_disposition,admission,expires_at}') is distinct from 'string'
+       or coalesce(v_now #>> '{recovery,source_record_sha256}','') !~ v_hash
+       or coalesce(v_now #>> '{recovery,binding_sha256}','') !~ v_hash
+       or jsonb_typeof(v_now #> '{recovery,source_record_sha256}') is distinct from 'string'
+       or jsonb_typeof(v_now #> '{recovery,binding_sha256}') is distinct from 'string'
+       or exists (select 1 from jsonb_object_keys(v_now->'recovery') k where k not in ('generation','source_record_sha256','binding_sha256','unknown_at'))
+       or coalesce(v_now #>> '{legacy_disposition,admission,valid_from}','') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+       or coalesce(v_now #>> '{legacy_disposition,admission,expires_at}','') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' then return false; end if;
+    if (v_now #>> '{legacy_disposition,admission,expires_at}')::timestamptz <= (v_now #>> '{legacy_disposition,admission,valid_from}')::timestamptz
+       or (v_now #>> '{legacy_disposition,admission,expires_at}')::timestamptz - (v_now #>> '{legacy_disposition,admission,valid_from}')::timestamptz > interval '1 hour'
+       or (v_now->>'reserved_at')::numeric < extract(epoch from (v_now #>> '{legacy_disposition,admission,valid_from}')::timestamptz)*1000
+       or (v_now->>'reserved_at')::numeric >= extract(epoch from (v_now #>> '{legacy_disposition,admission,expires_at}')::timestamptz)*1000 then return false; end if;
+    -- This prohibition survives every source/version change and status progression.
+    if exists (select 1 from jsonb_array_elements(v_new) e
+       where e #>> '{recovery,predecessor_key}' in (v_pred_key,v_now->>'idempotency_key')) then return false; end if;
     -- The predecessor must be an unbound legacy UNKNOWN that is byte-identical before and after.
     select e into v_pred_new from jsonb_array_elements(v_new) e
       where jsonb_typeof(e) = 'object' and e->>'idempotency_key' = v_pred_key;
@@ -212,6 +248,9 @@ begin
       where jsonb_typeof(e) = 'object' and e->>'idempotency_key' = v_pred_key;
     if v_pred_new is null or v_pred_old is null or v_pred_new is distinct from v_pred_old
        or v_pred_new->>'obligation_id' is distinct from v_now->>'obligation_id'
+       or jsonb_typeof(v_pred_new->'aggregate_version') is distinct from 'number'
+       or coalesce(v_pred_new->>'aggregate_version','') !~ '^[1-9][0-9]*$'
+       or (v_pred_new->>'aggregate_version')::numeric > (v_now->>'aggregate_version')::numeric
        or v_pred_new->>'status' is distinct from 'UNKNOWN'
        or v_pred_new ? 'recovery' or v_pred_new ? 'bootstrap' or v_pred_new ? 'legacy_disposition'
        or v_pred_new ? 'provider_result' or v_pred_new ? 'assessment_hash' then
@@ -232,6 +271,8 @@ begin
     end if;
   end loop;
   return true;
+exception when others then
+  return false;
 end;
 $$;
 revoke all on function tameion_private.assessment_disposition_guard(jsonb, jsonb) from public, anon, authenticated;

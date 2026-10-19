@@ -73,10 +73,19 @@ const scenarios=():Scenario[]=>{
   ['other unresolved operation at creation',[p,{...plain,idempotency_key:OTHER,status:'UNKNOWN',assessment_hash:undefined}],[p,{...plain,idempotency_key:OTHER,status:'UNKNOWN',assessment_hash:undefined},c],[],false],
   ['bootstrap marker grafted on child',[p],[p,mut(o=>{o.bootstrap={kind:'CURRENT_SOURCE_BOOTSTRAP'};})],[],false],
   ['child recovery generation 1',[p],[p,mut(o=>{o.recovery={...o.recovery,generation:1,predecessor_key:LEGACY,predecessor_sha256:'a'.repeat(64)};})],[],false],
+  ['duplicate predecessor at creation',[p],[p,p,c],[],false],
+  ['duplicate child key at creation',[p],[p,c,{...plain,idempotency_key:CHILD}],[],false],
+  ['predecessor version ahead of child',[{...p,aggregate_version:2}],[{...p,aggregate_version:2},c],[],false],
+  ['extra recovery predecessor hash',[p],[p,mut(o=>{o.recovery.predecessor_sha256='f'.repeat(64);})],[],false],
+  ['malformed binding hashes',[p],[p,mut(o=>{o.recovery.binding_sha256='malformed';o.legacy_disposition.admission.binding_sha256='malformed';})],[],false],
+  ['reservation outside admitted window',[p],[p,mut(o=>{o.reserved_at=Date.parse('2026-10-19T12:30:00.000Z');})],[],false],
+  ['malformed admission timestamp',[p],[p,mut(o=>{o.legacy_disposition.admission.valid_from='2026-10-19';})],[],false],
+  ['ordinary successor claiming existing UNKNOWN child',[p,{...c,status:'UNKNOWN',recovery:{...c.recovery,unknown_at:c.reserved_at+1}}],[p,{...c,status:'UNKNOWN',recovery:{...c.recovery,unknown_at:c.reserved_at+1}},{...plain,idempotency_key:OTHER,status:'RESERVED',reserved_at:c.reserved_at+120000,recovery:{generation:1,source_record_sha256:'a'.repeat(64),binding_sha256:'b'.repeat(64),predecessor_key:CHILD,predecessor_sha256:'f'.repeat(64)}}],[],false],
+  ['successor claiming child across source/version changes',[p,{...c,status:'UNKNOWN',recovery:{...c.recovery,unknown_at:c.reserved_at+1}}],[p,{...c,status:'UNKNOWN',recovery:{...c.recovery,unknown_at:c.reserved_at+1}},{...plain,idempotency_key:OTHER,aggregate_version:2,status:'RESERVED',reserved_at:c.reserved_at+120000,recovery:{generation:1,source_record_sha256:'c'.repeat(64),binding_sha256:'d'.repeat(64),predecessor_key:CHILD,predecessor_sha256:'f'.repeat(64)}}],[],false],
   ['admission bound to another source',[p],[p,mut(o=>{o.legacy_disposition.admission.source_record_sha256='c'.repeat(64);})],[],false],
  ];
 };
-/** Application-side verdict: the preservation mirror plus the structural lineage proof (the only part SQL cannot do is the canonical sha256 and window-vs-reservation arithmetic). */
+/** Application-side verdict: the preservation mirror plus the structural lineage proof (SQL cannot verify the canonical sha256; it checks window-vs-reservation arithmetic directly). */
 const tsVerdict=(o:any[],n:any[],s:string[])=>{try{assertDispositionPreservation(o,n,s);assertDispositionLineage(n,s);return true;}catch{return false;}};
 describe('assessment disposition guard — TypeScript mirror (always runs)',()=>{
  it.each(scenarios().map(s=>[s[0],s] as const))('mirror verdict: %s',(_name,[name,o,n,s,expected])=>{expect(tsVerdict(o,n,s),name).toBe(expected);});

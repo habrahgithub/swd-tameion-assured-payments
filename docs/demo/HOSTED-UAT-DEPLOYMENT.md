@@ -1,5 +1,10 @@
 # Hosted UAT deployment approval transport — Job 65
 
+For issue 77 / PR 78, the [six-stage readiness amendment](SIX-STAGE-READINESS.md)
+defines the additional source, SQL, disposition and expiry-only recovery gates.
+It grants no deployment or provider authority. Earlier transport instructions below
+remain historical and do not authorize the current candidate.
+
 This runbook prepares a separately approved **Preview** deployment of the exact accepted candidate. Offline tests and local Next traces do not establish a deployed runtime. No production promotion, SQL, credential provisioning, payment execution, or retry of original 003 is admitted by this document.
 
 ## Portal payment release candidate

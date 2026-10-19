@@ -58,10 +58,16 @@ obligation, amount, current state, responsible actor, and one legal next action.
 | Mainnet or production release | Out of scope. |
 
 The current delivery work is tracked in
-[Job #65](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/65)
-and [draft PR #70](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/70).
+[Job #77](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/77)
+and [draft PR #78](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/78).
 Passing local tests, CI, or a Vercel build does not by itself establish hosted
 login, a verified wallet balance, payment authority, or release approval.
+
+The [six-stage readiness runbook](docs/demo/SIX-STAGE-READINESS.md) covers
+owner-admitted current-source assessment disposition, supplier/timing prerequisites,
+linked controlled instructions and exact execution recovery after authority expiry.
+A genuine payable remains `OUTSTANDING` after its non-economic testnet child is
+reconciled. This candidate provides no live rollout, live AI or payment proof.
 
 ## Core safety principles
 

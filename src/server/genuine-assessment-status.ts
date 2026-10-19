@@ -71,11 +71,13 @@ export function createGenuineAssessmentStatusHandler(deps:Dependencies){
    const result:GenuineAssessmentStatus={status:'NOT_FOUND',obligation_id:id,idempotency_key:key,aggregate_version:String(aggregate.aggregate_version),source_record_sha256:sourceHash,financial_action_eligible:false};
    const operation=snapshot.assessment_operations.find(item=>item.idempotency_key===key&&item.obligation_id===id);
    if(operation){
-    if(operation.aggregate_version!==aggregate.aggregate_version||operation.status==='STALE')result.status='STALE';
+    const relation=resolveDisposition(snapshot.assessment_operations,id);
+    if(relation?.predecessor.idempotency_key===key){result.status='UNKNOWN';result.historically_superseded=true;}
+    else if(operation.aggregate_version!==aggregate.aggregate_version||operation.status==='STALE')result.status='STALE';
     else if(operation.status==='COMPLETED'){
      const current=store.getCurrentAssessment(organization,id);
      // One shared relation helper: a superseded historical predecessor never hides or blocks its child's receipt; any separate unknown still does.
-     const otherUnresolved=unresolvedAssessmentOperations(snapshot.assessment_operations,id).some(item=>item.idempotency_key!==key&&item.aggregate_version===aggregate.aggregate_version);
+     const otherUnresolved=unresolvedAssessmentOperations(snapshot.assessment_operations,id).some(item=>item.idempotency_key!==key);
      const bindingCurrent=operation.legacy_disposition===undefined||operation.recovery?.binding_sha256===contentHash(view.state_binding)&&operation.recovery.source_record_sha256===sourceHash;
      if(!otherUnresolved&&bindingCurrent&&current&&dispositionReceiptCurrent(snapshot.assessment_operations,id,current,sourceHash,contentHash(view.state_binding),aggregate.aggregate_version)&&current.hash===operation.assessment_hash&&current.record.assessment_id===`ASM-${key}`&&current.record.organization_id===organization&&current.record.obligation_id===id&&current.record.aggregate_version===String(aggregate.aggregate_version)&&current.record.source_record_sha256===sourceHash){
       result.status='COMPLETED_CURRENT';
@@ -83,9 +85,6 @@ export function createGenuineAssessmentStatusHandler(deps:Dependencies){
      }else result.status='STALE';
     }else if(operation.status==='PROVIDER_RESULT_DURABLE'&&operation.provider_result?.source_record_sha256!==sourceHash)result.status='STALE';
     else result.status=operation.status;
-    // The old request keeps reporting its own recorded status; only an annotation says a separate admitted attempt exists.
-    const relation=resolveDisposition(snapshot.assessment_operations,id);
-    if(relation?.predecessor.idempotency_key===key)result.historically_superseded=true;
    }
    return privateJson(result);
   }catch(error){

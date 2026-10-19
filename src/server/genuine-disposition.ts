@@ -33,11 +33,12 @@ export function validateDispositionChild(child:AssessmentOperation,ops:Ops):Asse
  if(a.obligation_id!==child.obligation_id||a.aggregate_version!==child.aggregate_version||a.source_record_sha256!==r.source_record_sha256||a.binding_sha256!==r.binding_sha256)return fail();
  // valid_from <= reserved_at < expires_at, proven from the persisted evidence rather than the current clock.
  if(child.reserved_at!<Date.parse(a.valid_from)||child.reserved_at!>=Date.parse(a.expires_at))return fail();
+ if(ops.filter(o=>o.idempotency_key===child.idempotency_key).length!==1)return fail();
  const pred=ops.filter(o=>o.idempotency_key===d.predecessor_key);
  if(pred.length!==1||d.predecessor_key===child.idempotency_key)return fail();
  const p=pred[0];
  if(!isUnboundLegacyUnknown(p)||p.obligation_id!==child.obligation_id||p.aggregate_version>child.aggregate_version||contentHash(p)!==d.predecessor_sha256)return fail();
- if(dispositionChildren(ops,child.obligation_id).length!==1||ops.filter(o=>o.recovery?.predecessor_key===p.idempotency_key).length)return fail();
+ if(dispositionChildren(ops,child.obligation_id).length!==1||ops.some(o=>o.recovery?.predecessor_key===p.idempotency_key||o.recovery?.predecessor_key===child.idempotency_key))return fail();
  return p;
 }
 /** Validates every disposition (predecessor, evidence, one-per-obligation) and that no receipt was ever sealed under a predecessor identity. */
@@ -96,6 +97,7 @@ export function assertDispositionPreservation(previous:Ops,next:Ops,nextSealedId
   if(!before||!after||!same(before,after))fail();
   if(next.filter(o=>o.legacy_disposition&&o.obligation_id===now.obligation_id).length!==1)fail();
   if(nextSealedIds.includes(`ASM-${predecessorKey}`))fail();
+  if(next.some(o=>o.recovery?.predecessor_key===now.idempotency_key||o.recovery?.predecessor_key===predecessorKey))fail();
   if(!old&&next.some(o=>o.obligation_id===now.obligation_id&&o.idempotency_key!==predecessorKey&&o.idempotency_key!==now.idempotency_key&&(UNRESOLVED_STATUSES.includes(o.status)||(o.status as string)==='PENDING')))fail();
  }
 }

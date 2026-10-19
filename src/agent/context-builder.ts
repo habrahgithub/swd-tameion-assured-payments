@@ -159,3 +159,10 @@ export function hasCurrentControlledInstruction(context:FinanceAgentContext):boo
  return JSON.stringify(proof)===JSON.stringify(expected)&&context.obligation_id===current.source.obligation_id&&context.amount===current.source.amount&&context.currency===current.source.currency&&context.business_purpose_confirmed===false&&context.issue_date==null&&context.due_date===null&&context.effective_due_date==null&&context.effective_due_date_basis==null&&context.evidence_ids.join("\0")===current.source.source_evidence.map(e=>e.evidence_id).join("\0")&&context.due_date_position==="CONTROLLED_WINDOW_OPEN";
  }catch{return false;}
 }
+
+/** Admission reuses the complete deterministic production normalization, before spending a provider attempt.
+ * INVALID is rejected; overdue/future/missing commercial evidence can still yield legitimate advisory HOLD. */
+export function deterministicHistoricalContextValid(record:LiveUsageObligationRecord):boolean {
+ const context=buildFinanceAgentContext(record,1,undefined,undefined,true);
+ return context.historical_basis_verified===true&&context.due_date_position!=='INVALID';
+}

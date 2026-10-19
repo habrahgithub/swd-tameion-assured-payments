@@ -2409,6 +2409,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if (financialBinding) financialResults.current.set(targetId, result);
       if (stillCurrent() || (financialBinding && selectedRef.current === targetId)) setLastResult(result);
     };
+    const reconciliationIdentity=label==="reconcile"?{obligationId:targetId,key:detail.execution?.idempotency_key,hash:detail.sealed_pae_instruction_hash}:null;
     const priorPosition = authoritativeLifecyclePosition(targetId, detailState, detail);
     const assessmentEpoch=exactAssessmentLifetime.current.epoch;
     const generation = selectionGeneration.current;
@@ -2526,7 +2527,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                 : label === "execute" && refreshed.execution
                   ? "An execution record is available. Continue with read-only reconciliation for this same instruction."
                 : label === "reconcile" && refreshed.execution
-                  ? refreshed.execution.status === "SETTLED"
+                  ? reconciliationIdentity?.key&&reconciliationIdentity.hash&&refreshed.record.obligation_id===reconciliationIdentity.obligationId&&refreshed.execution.obligation_id===reconciliationIdentity.obligationId&&refreshed.execution.idempotency_key===reconciliationIdentity.key&&refreshed.sealed_pae_instruction_hash===reconciliationIdentity.hash&&refreshed.aggregate.state==="RECONCILED"&&classifySettledEvidence(refreshed).state==="verified"
                     ? "Durable readback confirms this same instruction is reconciled. The source payable remains outstanding."
                     : "Durable readback shows the settlement outcome is still not confirmed. Reconcile this same instruction again later; do not resubmit."
                   : null;
@@ -2543,8 +2544,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const assessmentCallbackGeneration = selectionGeneration.current;
   const assessmentCallbackDetailGeneration = detailGeneration.current;
   const assessmentCallbackEpoch=exactAssessmentLifetime.current.epoch;
-  const runAssessment = (recovery = false, bootstrap = false) => {
-    const successorLike = recovery || bootstrap;
+  const runAssessment = (recovery = false, bootstrap = false, disposition = false) => {
+    const successorLike = recovery || bootstrap || disposition;
     const obligationId = selectedId;
     if (assessmentCallbackGeneration !== selectionGeneration.current || assessmentCallbackDetailGeneration !== detailGeneration.current || selectedRef.current !== obligationId ||
         !obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
@@ -2556,7 +2557,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     if(successorLike&&(detailLifetimeEpoch!==exactAssessmentLifetime.current.epoch||(retainedSuccessorRequestKey(obligationId)!==null&&bootstrapPredecessor===null)||!csrfToken||activeRunCount.current>0||!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch))return;
     if(recovery&&(detail.source_group!=="GENUINE_COMPANY"||detail.genuine_assessment?.status!=="UNKNOWN"||detail.genuine_assessment.recovery_eligible!==true||detail.pae_sealed))return;
     // The earlier reference is the browser's retained, unmatched request. It is preserved, never reused or relabeled.
-    const earlierReference = bootstrap ? retainedAssessmentRequestKey(obligationId) : null;
+    const earlierReference = bootstrap || disposition ? retainedAssessmentRequestKey(obligationId) : null;
+    const dispositionAdmission=disposition?detail.genuine_assessment?.disposition:undefined;
+    if(disposition&&(detail.source_group!=="GENUINE_COMPANY"||dispositionAdmission?.state!=="AVAILABLE"||!dispositionAdmission.approval_id||!dispositionAdmission.predecessor_sha256||!earlierReference||!assessmentRequestUuid.test(earlierReference)||detail.pae_sealed))return;
     if(bootstrap&&(detail.source_group!=="GENUINE_COMPANY"||detail.genuine_assessment?.admission?.can_bootstrap!==true||detail.pae_sealed||!earlierReference||!assessmentRequestUuid.test(earlierReference)||
       assessmentFeedback?.obligationId!==obligationId||assessmentFeedback.statusCode!=="ASM_STATUS_NOT_FOUND"))return;
     if (detail.execution || requiresSubmissionReconciliation(financialResults.current.get(obligationId) ?? null) || !successorLike&&(retainedAssessmentRequestKey(obligationId) || assessmentRequestUnresolved ||
@@ -2582,11 +2585,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         if (successorLike && localStorage.getItem(storageKey) !== null && localStorage.getItem(storageKey) !== bootstrapPredecessor) return {ok:false,status:409,data:{code:"SUCCESSOR_ALREADY_RETAINED"}};
         if (bootstrapPredecessor !== null && requestIdentity === bootstrapPredecessor) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
         if (successorLike && (!assessmentRequestUuid.test(requestIdentity) || requestIdentity === localStorage.getItem(`tameion.assessment-request.${obligationId}`))) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
-        if (bootstrap) {
+        if (bootstrap || disposition) {
           if (localStorage.getItem(`tameion.assessment-request.${obligationId}`) !== earlierReference) return {ok:false,status:409,data:{code:"EARLIER_REFERENCE_CHANGED"}};
-          const marker = `tameion.assessment-bootstrap-ref.${obligationId}`;
-          localStorage.setItem(marker, `${earlierReference}:${requestIdentity}`);
-          if (localStorage.getItem(marker) !== `${earlierReference}:${requestIdentity}`) throw new Error("Request storage unverified");
+          if(bootstrap){
+            const marker = `tameion.assessment-bootstrap-ref.${obligationId}`;
+            localStorage.setItem(marker, `${earlierReference}:${requestIdentity}`);
+            if (localStorage.getItem(marker) !== `${earlierReference}:${requestIdentity}`) throw new Error("Request storage unverified");
+          }
         }
         localStorage.setItem(storageKey, requestIdentity);
         if (localStorage.getItem(storageKey) !== requestIdentity) throw new Error("Request storage unverified");
@@ -2594,7 +2599,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       } catch {
         return {ok:false, status:503, data:{code:"REQUEST_IDENTITY_UNAVAILABLE", error:"Assessment was not sent because its request identity could not be stored."}};
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/${successorLike||detail.advisory_action_eligible===true?"advisory":"assess"}`, recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${disposition?"advisory/disposition":successorLike||detail.advisory_action_eligible===true?"advisory":"assess"}`, disposition?{disposition:"CURRENT_SOURCE_REASSESSMENT",expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,approval_id:dispositionAdmission!.approval_id,predecessor_key:earlierReference,predecessor_sha256:dispositionAdmission!.predecessor_sha256}:recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
         "Idempotency-Key": requestIdentity,
       });
       // No refusal code proves non-submission. Keep the attempted identity;
@@ -3046,17 +3051,21 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const assessmentFeedbackIsCurrent = feedbackMatchesKnownSelection && durableFeedbackMatchesCurrentAssessment;
   const selectedRequestKey = retainedAssessmentRequestKey(selectedId);
   const exactCheckRenderGeneration=selectionGeneration.current,exactCheckRenderDetail=detailGeneration.current,exactCheckRenderEpoch=exactAssessmentLifetime.current.epoch;
-  const checkAssessmentRequest=async()=>{
+  const checkAssessmentRequest=async(confirmDisposition=false)=>{
     if(!selectedId||selectedRef.current!==selectedId||selectionGeneration.current!==exactCheckRenderGeneration||detailGeneration.current!==exactCheckRenderDetail||exactAssessmentLifetime.current.epoch!==exactCheckRenderEpoch||!exactAssessmentLifetime.current.mounted||activeExactAssessmentCheck.current!==null||busy||!detail||detailIsStale||detail.source_group!=="GENUINE_COMPANY")return;
-    const key=retainedAssessmentRequestKey(selectedId),version=String(detail.aggregate.aggregate_version);
+    const originalKey=retainedAssessmentRequestKey(selectedId),version=String(detail.aggregate.aggregate_version);
+    const disposition=detail.genuine_assessment?.disposition;
+    const childKey=detail.current_assessment?.assessment_id?.slice(4);
+    if(confirmDisposition&&(!originalKey||!assessmentRequestUuid.test(originalKey)||retainedSuccessorRequestKey(selectedId)!==null||disposition?.state!=="USED"||disposition.child_current!==true||disposition.child_status!=="COMPLETED"||disposition.child_seal_hash!==detail.current_assessment?.assessment_hash||!detail.current_assessment?.assessment_id.startsWith("ASM-")||!childKey||!assessmentRequestUuid.test(childKey)||childKey===originalKey))return;
+    const key=confirmDisposition?childKey!:originalKey;
     const successorKey=retainedSuccessorRequestKey(selectedId);
     const successor=successorKey!==null&&successorKey!=="Request identity unavailable";
     const bootstrapReference=successor?bootstrapEarlierReference(selectedId,key):null;
-    const requestName=bootstrapReference?"current-source":successor?"successor":"original";
+    const requestName=confirmDisposition?"current disposition":bootstrapReference?"current-source":successor?"successor":"original";
     const requestStorageKey=successor?`tameion.assessment-successor.${selectedId}`:`tameion.assessment-request.${selectedId}`;
     const sourceFingerprint=canonicalize(detail.record);
     const canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
-    if(key!==selectedRequestKey&&key!=="Request identity unavailable")return;
+    if(!confirmDisposition&&key!==selectedRequestKey&&key!=="Request identity unavailable")return;
     const token=++exactAssessmentSequence.current,generation=exactCheckRenderGeneration,epoch=exactCheckRenderEpoch;
     let expectedDetail=exactCheckRenderDetail;
     const bound={obligationId:selectedId,key:key??"",generation,epoch,token,detailRequest:expectedDetail};
@@ -3073,7 +3082,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     const identityCurrent=()=>{
       if(!currentContext())return false;
       const live=retainedAssessmentRequestKey(selectedId);
-      if(live!==key){
+      if(live!==(confirmDisposition?originalKey:key)){
         setAssessmentConflict(null);
         if(live==="Request identity unavailable")setExactAssessmentCheck({...bound,key:live,detailRequest:expectedDetail,status:"identity-unavailable",message:`Request storage is unavailable. Restore browser storage and ask the workspace owner to review the ${requestName} request.`});
         else setExactAssessmentCheck(null);
@@ -3105,20 +3114,26 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     const timer=setTimeout(()=>{expired=true;rejectWait(new Error("Status wait timed out"));},15_000);
     const waitForStatus=<T,>(pending:Promise<T>)=>Promise.race([pending,interrupted]);
     try{
+      if(confirmDisposition){
+        const oldResponse=await waitForStatus(postCommand(`/api/obligations/${selectedId}/advisory/status`,{idempotency_key:originalKey}));
+        if(!identityCurrent())return;
+        const old=oldResponse.ok?exactAssessmentStatus(oldResponse.data,selectedId,originalKey!,version):null;
+        if(old?.status!=="UNKNOWN"||old.historically_superseded!==true){unresolved("STALE");return;}
+      }
       const firstResponse=await waitForStatus(postCommand(`/api/obligations/${selectedId}/advisory/status`,{idempotency_key:key}));
       if(!identityCurrent())return;
       if(firstResponse.status===401||firstResponse.status===403)setAssessmentConflict(null);
       const first=firstResponse.ok&&firstResponse.status===200?exactAssessmentStatus(firstResponse.data,selectedId,key,version):null;
       if(!first){unresolved("FAILED");return;}
       if(first.status!=="COMPLETED_CURRENT"){unresolved(first.status);return;}
-      const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===key);
+      const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===(confirmDisposition?originalKey:key));
       expectedDetail=detailGeneration.current;
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the recorded assessment…"});
       const refreshed=await waitForStatus(pendingDetail);
       if(!identityCurrent())return;
       const matches=await waitForStatus(assessmentStatusMatchesDetail(first,refreshed));
       if(!identityCurrent())return;
-      if(!matches || successor && canonicalize(refreshed?.record)!==sourceFingerprint){unresolved("STALE");return;}
+      if(!matches || (successor||confirmDisposition) && canonicalize(refreshed?.record)!==sourceFingerprint || confirmDisposition&&(refreshed?.genuine_assessment?.disposition?.child_current!==true||refreshed.genuine_assessment.disposition.child_seal_hash!==first.receipt?.assessment_hash)){unresolved("STALE");return;}
       // A second bounded observation closes the status-to-detail gap; it is
       // confirmation only, never polling, timeout recovery or an AI retry.
       const finalResponse=await waitForStatus(postCommand(`/api/obligations/${selectedId}/advisory/status`,{idempotency_key:key}));
@@ -3129,8 +3144,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if(final.status!=="COMPLETED_CURRENT"){unresolved(final.status);return;}
       if(final.source_record_sha256!==first.source_record_sha256||final.receipt?.assessment_id!==first.receipt?.assessment_id||final.receipt?.assessment_hash!==first.receipt?.assessment_hash){unresolved("STALE");return;}
       if(!identityCurrent())return;
-      if(successor){
-        const confirmingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===key);
+      if(successor||confirmDisposition){
+        const confirmingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===(confirmDisposition?originalKey:key));
         expectedDetail=detailGeneration.current;
         const confirmedDetail=await waitForStatus(confirmingDetail);
         if(!identityCurrent())return;
@@ -3139,22 +3154,22 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         if(!confirmed||canonicalize(confirmedDetail?.record)!==sourceFingerprint){unresolved("STALE");return;}
       }
       const storageKey=requestStorageKey;
-      if(localStorage.getItem(storageKey)!==key)return;
+      if(localStorage.getItem(storageKey)!==(confirmDisposition?originalKey:key))return;
       if(bootstrapReference){
         // Keep the unmatched earlier reference as history only; it never becomes this request's receipt.
         const acknowledgementKey=`tameion.assessment-bootstrap-ack.${selectedId}`;
         localStorage.setItem(acknowledgementKey,bootstrapReference);
         if(localStorage.getItem(acknowledgementKey)!==bootstrapReference)throw new Error("Acknowledgement storage unverified");
         localStorage.removeItem(`tameion.assessment-bootstrap-ref.${selectedId}`);
-      }else if(successor){
+      }else if(successor||confirmDisposition){
         // Retain only a bounded acknowledgement, so preserved K2 cannot become
         // the active request again or admit another successor after reload.
         const acknowledgementKey=`tameion.assessment-successor-ack.${selectedId}`;
         localStorage.setItem(acknowledgementKey,key);
         if(localStorage.getItem(acknowledgementKey)!==key)throw new Error("Acknowledgement storage unverified");
       }
-      localStorage.removeItem(storageKey);
-      if(localStorage.getItem(storageKey)!==null)throw new Error("Request storage update unverified");
+      if(!confirmDisposition)localStorage.removeItem(storageKey);
+      if(!confirmDisposition&&localStorage.getItem(storageKey)!==null)throw new Error("Request storage update unverified");
       if(assessmentRequestKey.current?.obligationId===selectedId&&assessmentRequestKey.current.key===key)assessmentRequestKey.current=null;
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"confirmed",message:"Assessment confirmed. Review the recorded result.",receipt:final.receipt});
       setAssessmentFeedback({obligationId:selectedId,expectedVersion:version,selectionGeneration:generation,kind:"durable",title:"Assessment confirmed",message:`The ${requestName} request matches the current recorded assessment.`,durability:"Confirmed by exact-request status and independent payable details.",nextStep:"Review the advisory result. Payment approval remains separate.",owner:"User · assessment review",assessmentId:final.receipt!.assessment_id,assessmentHash:final.receipt!.assessment_hash});
@@ -3167,7 +3182,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     }
   };
   const currentExactAssessmentCheck=exactAssessmentCheck?.obligationId===selectedId&&exactAssessmentCheck.generation===selectionGeneration.current&&exactAssessmentCheck.epoch===exactAssessmentLifetime.current.epoch&&exactAssessmentCheck.detailRequest===detailGeneration.current&&(
-    exactAssessmentCheck.key===selectedRequestKey||exactAssessmentCheck.status==="confirmed"&&selectedRequestKey===null&&detailState==="loaded"&&currentAssessment?.assessment_id===exactAssessmentCheck.receipt?.assessment_id&&currentAssessment?.assessment_hash===exactAssessmentCheck.receipt?.assessment_hash
+    exactAssessmentCheck.key===selectedRequestKey||detail?.genuine_assessment?.disposition?.child_current===true&&detail.current_assessment?.assessment_id===`ASM-${exactAssessmentCheck.key}`||exactAssessmentCheck.status==="confirmed"&&selectedRequestKey===null&&detailState==="loaded"&&currentAssessment?.assessment_id===exactAssessmentCheck.receipt?.assessment_id&&currentAssessment?.assessment_hash===exactAssessmentCheck.receipt?.assessment_hash
   )?exactAssessmentCheck:null;
   const checkingExactAssessment=currentExactAssessmentCheck?.status==="checking";
   // Bind the callback to this render's selection, including A → B → A.
@@ -3371,6 +3386,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     workspaceAction = {label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: reconcileExistingExecution};
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
+  } else if (detailState==="loaded"&&!detailIsStale&&!busy&&csrfToken&&!detail?.execution&&!detail?.pae_sealed&&detail?.source_group==="GENUINE_COMPANY"&&detail.genuine_assessment?.disposition?.state==="AVAILABLE"&&selectedRequestKey&&assessmentRequestUuid.test(selectedRequestKey)&&retainedSuccessorRequestKey(selectedId)===null) {
+    workspaceAction={label:"Request admitted current-source disposition",actor:"User · separate advisory attempt; original UNKNOWN retained",run:()=>{void runAssessment(false,false,true);}};
+  } else if (detailState==="loaded"&&!detailIsStale&&!busy&&csrfToken&&!detail?.execution&&!detail?.pae_sealed&&detail?.source_group==="GENUINE_COMPANY"&&detail.genuine_assessment?.disposition?.state==="USED"&&detail.genuine_assessment.disposition.child_current===true&&selectedRequestKey&&retainedSuccessorRequestKey(selectedId)===null) {
+    workspaceAction={label:"Confirm current disposition assessment",actor:"User · exact child confirmation; original UNKNOWN retained",run:()=>{void checkAssessmentRequest(true);}};
   } else if (serverAssessmentUnresolved && !detail?.execution) {
     const heldKey=retainedSuccessorRequestKey(selectedId);
     const bootstrapUnknownEligible=heldKey!==null&&bootstrapEarlierReference(selectedId,heldKey)!==null&&detail?.genuine_assessment?.status==="UNKNOWN"&&detail.genuine_assessment.recovery_eligible===true&&acknowledgedSuccessorKey(selectedId)===null;
