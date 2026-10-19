@@ -94,6 +94,30 @@ selection results cannot show success. The genuine parent remains outstanding.
 
 ## Limits and publication
 
+### Assessment recovery review
+
+The exact genuine-advisory `409 / GENUINE_ASSESSMENT_HISTORY_LIMIT` response
+rejects a new attempt before reservation/provider dispatch. The UI keeps its
+request reference and history, and offers recorded assessment status for review
+with the workspace owner. This observation never admits another attempt or
+resolves a separately recorded UNKNOWN. Timeouts, arbitrary denials and exact
+status NOT_FOUND remain unverified; NOT_FOUND alone is no safe-retry permission.
+Existing explicit server-admitted bootstrap/disposition rules remain separate.
+
+Review-only payables, including records with a legacy proxy or revoked controls,
+offer read-only status/findings review. They do not recommend a forbidden fresh
+assessment or restore financial authority. A separately approved controlled
+instruction remains a prerequisite for financial actions.
+
+Sidebar observations retained through selection changes are labelled **Last
+checked** and bound to the exact list record and current browser component
+lifetime. They never supply action eligibility or turn retained detail into a
+fresh verification. A changed record/request or invalidated lifetime cannot
+inherit an exact rejection. A reload conservatively requires fresh observations.
+Stale detail remains blocked and reports only observed HTTP status and known
+public typed codes; a transport failure with no safe code has an unknown cause.
+Raw server/provider/error bodies are not diagnostic evidence shown in that view.
+
 The four-operation budget and one-disposition-per-obligation limit survive
 source/version changes. The old UUID stays UNKNOWN and late `ASM-<old UUID>`
 sealing is refused. An UNKNOWN disposition child admits no ordinary generation-1

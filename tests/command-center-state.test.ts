@@ -40,8 +40,8 @@ describe("Command Center fetch error presentation", () => {
     expect(obligationsFetchErrorMessage(500, null)).toBe("Obligations unavailable (HTTP 500).");
   });
 
-  it("surfaces a server-supplied error string when the body is valid JSON", () => {
-    expect(obligationsFetchErrorMessage(400, { error: "Malformed request." })).toBe("Malformed request.");
+  it("keeps raw error bodies private and reports only observed HTTP status", () => {
+    expect(obligationsFetchErrorMessage(400, { error: "PRIVATE_ERROR_BODY" })).toBe("Obligations unavailable (HTTP 400).");
   });
 });
 
@@ -544,7 +544,7 @@ describe("payable blocker classification uses recorded facts", () => {
     const base = {obligationId:"OBL-CLARITY",expectedVersion:"1",selectionGeneration:1,message:"",durability:"",nextStep:"",owner:""};
     expect(classify(detail,{feedback:{...base,kind:"pending"},requestKey:"retained"})[0].kind).toBe("assessment-pending");
     expect(classify(detail,{feedback:{...base,kind:"unconfirmed"},requestKey:"retained"})[0].kind).toBe("assessment-unverified");
-    expect(classify(detail,{requestKey:"retained"})[0].responsible).toContain("Unassigned");
+    expect(classify(detail,{requestKey:"retained"})[0].responsible).toContain("Workspace owner");
     expect(classify(detail,{feedback:{...base,kind:"unconfirmed",statusCode:"AUTH_UNAVAILABLE"},requestKey:"retained"})[0].kind).toBe("system-unavailable");
   });
   it("distinguishes missing authority from a confirmed assessment recommendation", () => {
