@@ -3,7 +3,8 @@ import {contentHash} from '../domain/linked-instruction';
 import type {AssessmentOperation,DemoStateSnapshot} from './demo-state';
 import type {OperatorSourceView} from './operator-source-records';
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
-import {classifyGenuineAdmission,MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION,type GenuineAdmission} from './genuine-admission';
+import {classifyGenuineAdmission,evaluateDispositionAdmission,MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION,type DispositionDenial,type GenuineAdmission} from './genuine-admission';
+import {assertDispositionLineage,dispositionReceiptCurrent,isUnboundLegacyUnknown,resolveDisposition,unresolvedAssessmentOperations} from './genuine-disposition';
 export const RECOVERY_GRACE_MS=60_000;
 const keyPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Durable provenance for one explicit current-source bootstrap. The reference is preserved, unverified and never relabeled. */
@@ -38,13 +39,27 @@ export function assertAssessmentLineage(operations:readonly AssessmentOperation[
   }
  }
 }
-export interface GenuineAssessmentVisibility {admission?:GenuineAdmission;status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string}
+/** Read-only projection of the separate current-source disposition. The predecessor stays historical; its UUID keeps reporting UNKNOWN. */
+export interface DispositionVisibility {
+ state:'NONE'|'AVAILABLE'|'USED'|'UNAVAILABLE';reason?:DispositionDenial|'NO_UNBOUND_UNKNOWN';
+ /** No request identifiers are projected: readers must never learn an unresolved request's key. */
+ approval_id?:string;expires_at?:string;
+ /** Public assessment hash of the child's seal (never an operation key) and whether that receipt is current for the source/version/binding. */
+ child_status?:AssessmentOperation['status'];child_seal_hash?:string;child_current?:boolean;prior_binding_status?:'UNVERIFIED';
+}
+export interface GenuineAssessmentVisibility {admission?:GenuineAdmission;status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'DISPOSITION_CLOSED'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string;disposition?:DispositionVisibility;/** Annotation only: the earlier UNKNOWN is historical and superseded; no operation identifier is projected. */historical_unresolved?:{status:'UNKNOWN';superseded:true}}
 export function genuineAssessmentVisibility(snapshot:DemoStateSnapshot,view:OperatorSourceView,id:string,version:number,now=Date.now()):GenuineAssessmentVisibility {
  assertAssessmentLineage(snapshot.assessment_operations);
+ assertDispositionLineage(snapshot.assessment_operations,snapshot.authority.assessments.map(a=>a.record.assessment_id));
  const ops=snapshot.assessment_operations.filter(o=>o.obligation_id===id);
- const unresolved=ops.filter(o=>['UNKNOWN','RESERVED','PROVIDER_RESULT_DURABLE'].includes(o.status)&&!ops.some(c=>c.recovery?.predecessor_key===o.idempotency_key));
+ const relation=resolveDisposition(snapshot.assessment_operations,id);
+ const unresolved=unresolvedAssessmentOperations(snapshot.assessment_operations,id);
  const status=unresolved.some(o=>o.status==='UNKNOWN')?'UNKNOWN':unresolved.length?'IN_PROGRESS':ops.some(o=>o.status==='COMPLETED')?'COMPLETED':'NONE';
- const deny=(recovery_reason:GenuineAssessmentVisibility['recovery_reason'],eligible_at?:string):GenuineAssessmentVisibility=>({status,recovery_eligible:false,recovery_reason,...(eligible_at?{eligible_at}:{})});
+ const disposition=dispositionVisibility(snapshot,view,id,version,now,relation);
+ const historical=relation?{historical_unresolved:{status:'UNKNOWN' as const,superseded:true as const}}:{};
+ const deny=(recovery_reason:GenuineAssessmentVisibility['recovery_reason'],eligible_at?:string):GenuineAssessmentVisibility=>({status,recovery_eligible:false,recovery_reason,...(eligible_at?{eligible_at}:{}),disposition,...historical});
+ // A disposition child never opens generation-1 recovery or another disposition, whatever its status.
+ if(relation)return deny('DISPOSITION_CLOSED');
  const roots=ops.filter(o=>o.status==='UNKNOWN'&&o.recovery?.generation!==1);
  if(roots.length!==1)return deny(roots.length?'ACTIVE_OR_SUCCESSOR':'NO_UNKNOWN');
  const p=roots[0],r=p.recovery;
@@ -56,5 +71,17 @@ export function genuineAssessmentVisibility(snapshot:DemoStateSnapshot,view:Oper
  if(classifyGenuineAdmission(snapshot,id).counted_history>=MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION)return deny('HISTORY_LIMIT');
  const eligibleAt=Math.max(r.unknown_at,p.reserved_at+45_000)+RECOVERY_GRACE_MS;
  if(!Number.isSafeInteger(now)||now<r.unknown_at||now<eligibleAt)return deny('GRACE',new Date(eligibleAt).toISOString());
- return {status,recovery_eligible:true,recovery_reason:'ELIGIBLE',eligible_at:new Date(eligibleAt).toISOString()};
+ return {status,recovery_eligible:true,recovery_reason:'ELIGIBLE',eligible_at:new Date(eligibleAt).toISOString(),disposition};
+}
+function dispositionVisibility(snapshot:DemoStateSnapshot,view:OperatorSourceView,id:string,version:number,now:number,relation:ReturnType<typeof resolveDisposition>):DispositionVisibility{
+ const ops=snapshot.assessment_operations;
+ if(relation){
+  const {child}=relation,source=view.records.find(s=>s.obligation_id===id),sealed=snapshot.authority.assessments.find(a=>a.hash===child.assessment_hash);
+  const current=Boolean(source&&child.status==='COMPLETED'&&sealed&&child.aggregate_version===version&&dispositionReceiptCurrent(ops,id,sealed,contentHash(source),contentHash(view.state_binding),version));
+  return {state:'USED',child_status:child.status,...(child.assessment_hash?{child_seal_hash:child.assessment_hash}:{}),child_current:current,prior_binding_status:'UNVERIFIED'};
+ }
+ const candidates=ops.filter(o=>o.obligation_id===id&&isUnboundLegacyUnknown(o));
+ if(candidates.length!==1)return {state:'NONE',reason:'NO_UNBOUND_UNKNOWN'};
+ const evaluation=evaluateDispositionAdmission(snapshot,view,id,version,now);
+ return evaluation.ok?{state:'AVAILABLE',approval_id:evaluation.admission.approval_id,expires_at:evaluation.admission.expires_at}:{state:'UNAVAILABLE',reason:evaluation.reason};
 }

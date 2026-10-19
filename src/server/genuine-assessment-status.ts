@@ -2,6 +2,7 @@ import {z} from 'zod';
 import {AuthorityStore} from '../authority/aggregate';
 import {contentHash} from '../domain/linked-instruction';
 import {parseDemoStateSnapshot} from './demo-state';
+import {dispositionReceiptCurrent,resolveDisposition,unresolvedAssessmentOperations} from './genuine-disposition';
 import {validateOperatorBinding} from './load-existing-demo-state';
 import {loadOperatorSourceRecords,type OperatorSourceView} from './operator-source-records';
 import {operatorHandlers,privateJson,accessFailure,type AuthContext} from './operator-auth';
@@ -18,6 +19,8 @@ export interface GenuineAssessmentStatus {
  source_record_sha256:string;
  financial_action_eligible:false;
  receipt?:{assessment_id:string;assessment_hash:string;aggregate_version:string};
+ /** Present only on a historical unbound UNKNOWN that a separate admitted current-source attempt now accompanies. */
+ historically_superseded?:true;
 }
 interface Dependencies {
  guard:(request:Request,post:boolean)=>Promise<AuthContext>;
@@ -71,13 +74,18 @@ export function createGenuineAssessmentStatusHandler(deps:Dependencies){
     if(operation.aggregate_version!==aggregate.aggregate_version||operation.status==='STALE')result.status='STALE';
     else if(operation.status==='COMPLETED'){
      const current=store.getCurrentAssessment(organization,id);
-     const otherUnresolved=snapshot.assessment_operations.some(item=>item.idempotency_key!==key&&!snapshot.assessment_operations.some(child=>child.recovery?.predecessor_key===item.idempotency_key)&&item.obligation_id===id&&item.aggregate_version===aggregate.aggregate_version&&['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN'].includes(item.status));
-     if(!otherUnresolved&&current&&current.hash===operation.assessment_hash&&current.record.assessment_id===`ASM-${key}`&&current.record.organization_id===organization&&current.record.obligation_id===id&&current.record.aggregate_version===String(aggregate.aggregate_version)&&current.record.source_record_sha256===sourceHash){
+     // One shared relation helper: a superseded historical predecessor never hides or blocks its child's receipt; any separate unknown still does.
+     const otherUnresolved=unresolvedAssessmentOperations(snapshot.assessment_operations,id).some(item=>item.idempotency_key!==key&&item.aggregate_version===aggregate.aggregate_version);
+     const bindingCurrent=operation.legacy_disposition===undefined||operation.recovery?.binding_sha256===contentHash(view.state_binding)&&operation.recovery.source_record_sha256===sourceHash;
+     if(!otherUnresolved&&bindingCurrent&&current&&dispositionReceiptCurrent(snapshot.assessment_operations,id,current,sourceHash,contentHash(view.state_binding),aggregate.aggregate_version)&&current.hash===operation.assessment_hash&&current.record.assessment_id===`ASM-${key}`&&current.record.organization_id===organization&&current.record.obligation_id===id&&current.record.aggregate_version===String(aggregate.aggregate_version)&&current.record.source_record_sha256===sourceHash){
       result.status='COMPLETED_CURRENT';
       result.receipt={assessment_id:current.record.assessment_id,assessment_hash:current.hash,aggregate_version:current.record.aggregate_version};
      }else result.status='STALE';
     }else if(operation.status==='PROVIDER_RESULT_DURABLE'&&operation.provider_result?.source_record_sha256!==sourceHash)result.status='STALE';
     else result.status=operation.status;
+    // The old request keeps reporting its own recorded status; only an annotation says a separate admitted attempt exists.
+    const relation=resolveDisposition(snapshot.assessment_operations,id);
+    if(relation?.predecessor.idempotency_key===key)result.historically_superseded=true;
    }
    return privateJson(result);
   }catch(error){

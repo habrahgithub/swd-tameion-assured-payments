@@ -8,6 +8,9 @@ import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 export interface LiveUsageObligationRecord {
   assessment_basis?: HistoricalAssessmentBasis;
   obligation_id: string;
+  /** Source-backed supplier identity; absent for legacy records. Never part of the model context. */
+  beneficiary_name?: string;
+  beneficiary_provenance?: { provenance_class: "SOURCE_EVIDENCE"; evidence_id: string };
   service_category: string;
   recurrence: "MONTHLY" | "YEARLY" | "ONE_TIME";
   issue_date?: string | null;

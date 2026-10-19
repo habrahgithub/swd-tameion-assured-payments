@@ -6,6 +6,7 @@ import {loadOperatorSourceRecords,type OperatorSourceView} from './operator-sour
 import {validateOperatorBinding} from './load-existing-demo-state';
 import {SupabaseDemoStateRepository} from './supabase-demo-state-repository';
 import {AccessError} from './route-access-policy';
+import {dispositionReceiptCurrent,unresolvedAssessmentOperations} from './genuine-disposition';
 /** Linked drafts never activate themselves. This is an additional rejection gate
  * after the existing exact source/requester admission has passed. */
 export function validateLinkedActivation(source:FinancialSourceAdmission,view:OperatorSourceView,snapshot:DemoStateSnapshot,revision:number){
@@ -17,6 +18,13 @@ export function validateLinkedActivation(source:FinancialSourceAdmission,view:Op
  if(!record||!draft||draft.instruction_content_sha256!==ref.instruction_content_sha256||draft.source_record_sha256!==contentHash(record)||draft.source_obligation_id!==record.obligation_id||draft.source_amount!==record.amount||draft.source_currency!==record.currency||source.source.amount!==record.amount||source.source.currency!==record.currency)throw new AccessError('LINK_SOURCE_UNVERIFIED',403);
  const store=AuthorityStore.fromSnapshot(snapshot.authority),aggregate=store.get(source.organization_id,record.obligation_id),assessment=store.getCurrentAssessment(source.organization_id,record.obligation_id);
  if(aggregate.aggregate_version!==draft.source_aggregate_version||!assessment||assessment.hash!==draft.assessment_hash||assessment.record.assessment_id!==draft.assessment_id||assessment.record.source_record_sha256!==draft.source_record_sha256)throw new AccessError('LINK_SOURCE_STALE',409);
+ // Parity with draft creation: the same relation helper, so activation can never rely on a receipt that a separate unresolved operation
+ // or a stale disposition binding would have refused at draft time.
+ const operations=snapshot.assessment_operations??[];
+ try{
+  if(unresolvedAssessmentOperations(operations,record.obligation_id).length)throw new AccessError('LINK_SOURCE_STALE',409);
+  if(!dispositionReceiptCurrent(operations,record.obligation_id,assessment,contentHash(record),contentHash(view.state_binding),aggregate.aggregate_version))throw new AccessError('LINK_SOURCE_STALE',409);
+ }catch(error){if(error instanceof AccessError)throw error;throw new AccessError('LINK_SOURCE_UNVERIFIED',403);}
 }
 export async function verifyLinkedActivation(source:FinancialSourceAdmission){
  if(!source.linked_instruction)return;

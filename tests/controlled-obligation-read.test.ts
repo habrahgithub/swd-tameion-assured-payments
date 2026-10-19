@@ -88,7 +88,8 @@ describe("controlled obligation read isolation",()=>{
   expect(historicalDetail.status).toBe(200);expect(await historicalDetail.json()).toMatchObject({financial_action_eligible:false});
   expect((await readers.detail(new Request("https://operator.example.invalid"),f.record.obligation_id)).status).toBe(404);
   expect(()=>loadFinancialSourceAdmission()).toThrow(/UNAVAILABLE/);
-  expect(load.mock.calls.every(call=>call[2]===undefined)).toBe(true);
+  // The expired instruction has no recorded execution to recover, so nothing of it is exposed (the controlled namespace is only consulted, read-only, to decide that).
+  expect(load.mock.calls.every(call=>call[2]===undefined||call[2]===f.source.namespace)).toBe(true);
  });
 });
 

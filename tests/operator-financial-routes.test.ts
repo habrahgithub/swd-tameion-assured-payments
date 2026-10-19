@@ -433,7 +433,8 @@ describe('Job65 production existing-state restoration',()=>{
   const list=await reader.list(new Request('https://synthetic.invalid/api/obligations'));
   expect(await list.json()).toMatchObject({obligations:[],total_count:0});
   expect((await reader.detail(new Request('https://synthetic.invalid/api/obligations/'+p.id),p.id)).status).toBe(404);
-  expect(rpc.call).not.toHaveBeenCalled();expect(h.snapshot()).toEqual(snapshot);expect(h.client.createTransaction).not.toHaveBeenCalled();
+  // The expired instruction has no recorded execution to recover: it is only consulted (read-only) and never exposed.
+  expect(rpc.call.mock.calls.every(call=>(call as unknown[])[0]==='tameion_state_load_existing')).toBe(true);expect(h.snapshot()).toEqual(snapshot);expect(h.client.createTransaction).not.toHaveBeenCalled();
  });
  it('production route callback refuses provider-send without the required release context',async()=>{
   const h=controlledHarness(),p=await preparedApproval(h,false);

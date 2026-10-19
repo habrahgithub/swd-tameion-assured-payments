@@ -27,6 +27,7 @@ interface ObligationSummary {
   due_date: string | null;
   commercial_terms: string;
   beneficiary_name?: string | null;
+  beneficiary_provenance?: { provenance_class: "SOURCE_EVIDENCE"; evidence_id: string } | null;
   assessed: boolean;
   decision: string | null;
   provider_mode: "LIVE_AI" | "NOT_LIVE_AI" | "BLOCKED_EXTERNAL" | null;
@@ -241,6 +242,14 @@ function sourceText(record: Record<string, unknown>, field: string): string {
   return typeof value === "string" && value.trim() ? value : "Not captured";
 }
 
+/** Explicit supplier provenance from the approved source record; absent data stays an honest "not recorded". */
+function supplierProvenance(record: Record<string, unknown>): string {
+  const provenance = record.beneficiary_provenance;
+  if (!provenance || typeof provenance !== "object") return "Not recorded";
+  const { provenance_class: kind, evidence_id: evidence } = provenance as Record<string, unknown>;
+  return kind === "SOURCE_EVIDENCE" && typeof evidence === "string" && evidence ? `Source evidence ${evidence}` : "Not recorded";
+}
+
 function businessTitle(value: string): string {
   const words = value.replaceAll("_", " ").toLowerCase().replace(/\b(ai|api|usdc)\b/g, word => word.toUpperCase());
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -341,8 +350,14 @@ export function SourceObligationLineage({
         <Field label="Source obligation" value={record.obligation_id === selectedObligationId ? record.obligation_id : "Source identity reference unavailable / not established"} />
         <Field label="Original amount · payable status" value={`${record.amount} ${record.currency} · ${payableState}`} />
         <Field label="Privacy-safe source counterparty reference" value={sourceText(record, "counterparty_id") === "Not captured" ? "Source identity reference unavailable / not established" : sourceText(record, "counterparty_id")} />
+        {sourceText(record, "beneficiary_name") !== "Not captured" && <>
+          <Field label="Supplier named in source" value={sourceText(record, "beneficiary_name")} />
+          <Field label="Supplier provenance" value={supplierProvenance(record)} />
+        </>}
       </dl>
-      <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">Supplier name is not included in this public demo record; the recorded counterparty ID is used. This does not verify legal name or ownership.</p>
+      {sourceText(record, "beneficiary_name") !== "Not captured"
+        ? <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">The supplier name is taken from the approved source record and its cited evidence. It does not verify legal name or ownership.</p>
+        : <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">Supplier name is not included in this public demo record; the recorded counterparty ID is used. This does not verify legal name or ownership.</p>}
       {terms !== "Not captured" && <p className="text-[12px] leading-5 text-[var(--color-ink-muted)]">Source particulars: {terms}</p>}
       {evidence.length ? (
         <ul aria-label="Original source evidence references" className="space-y-1 text-[12px] text-[var(--color-ink-muted)]">
@@ -2510,6 +2525,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   ? "Payment release approval is recorded. Review and choose Pay testnet USDC to submit once."
                 : label === "execute" && refreshed.execution
                   ? "An execution record is available. Continue with read-only reconciliation for this same instruction."
+                : label === "reconcile" && refreshed.execution
+                  ? refreshed.execution.status === "SETTLED"
+                    ? "Durable readback confirms this same instruction is reconciled. The source payable remains outstanding."
+                    : "Durable readback shows the settlement outcome is still not confirmed. Reconcile this same instruction again later; do not resubmit."
                   : null;
           if (receiptMessage) setStageCompletionReceipt({ obligationId: targetId, message: receiptMessage });
         }
@@ -3328,6 +3347,19 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     detail.genuine_assessment?.admission?.can_bootstrap === true && !detail.pae_sealed && !detail.execution && !serverAssessmentUnresolved &&
     retainedSuccessorRequestKey(selectedId) === null && selectedRequestKey !== null && assessmentRequestUuid.test(selectedRequestKey) &&
     currentFeedback?.statusCode === "ASM_STATUS_NOT_FOUND" && currentExactAssessmentCheck?.key === selectedRequestKey && !busy && csrfToken);
+  // Reconciliation POSTs the exact recorded execution identity (captured now, from the loaded detail) to the authenticated route;
+  // the result is shown only after `run` re-reads durable detail for the still-current selection generation. Without a complete
+  // controlled identity it stays an honest read-only refresh and never claims reconciliation.
+  const reconcileExistingExecution = () => {
+    if (!selectedId || selectedRef.current !== selectedId || detailState !== "loaded" || !detail || detail.record.obligation_id !== selectedId) return;
+    const executionKey = detail.execution?.idempotency_key, paeHash = detail.sealed_pae_instruction_hash;
+    showStage("Reconciliation");
+    if (detail.source_group !== "DEMO_ARC_TESTNET" || !executionKey || !paeHash || !csrfToken || (detail.execution?.obligation_id !== undefined && detail.execution.obligation_id !== selectedId)) {
+      void refreshDetail(selectedId, true);
+      return;
+    }
+    void run("reconcile", () => postCommand(`/api/obligations/${selectedId}/reconcile`, { idempotency_key: executionKey, pae_instruction_hash: paeHash }));
+  };
   let workspaceAction: WorkspaceAction | null = null;
   if (!selectedId && listPresentation === "ready" && obligations.length > 0) {
     workspaceAction = { label: "Choose a payable", actor: "You", run: () => setMobileQueueOpen(true) };
@@ -3336,7 +3368,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } else if (selectedId && (detailState === "stale" || detailState === "failed")) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (detailState === "loaded" && ["UNKNOWN", "SUBMITTING", "SUBMITTED"].includes(detail?.execution?.status ?? "")) {
-    workspaceAction = {label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); }};
+    workspaceAction = {label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: reconcileExistingExecution};
   } else if (unresolvedSubmission && !detail?.execution) {
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if (serverAssessmentUnresolved && !detail?.execution) {
@@ -3362,7 +3394,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   } else if (viewedStage === "Obligation" && currentLifecycleStage !== "Obligation" && !(currentLifecycleStage === "Assessment" && !hasCurrentAssessment)) {
     workspaceAction = { label: `View current stage · ${currentLifecycleStage}`, actor: "You · read-only navigation", run: () => showStage(currentLifecycleStage) };
   } else if ((viewedStage === "Payment" || viewedStage === "Reconciliation") && detailState === "loaded" && detail?.settlement_proxy && ["UNKNOWN", "SUBMITTING", "SUBMITTED"].includes(detail.execution?.status ?? "")) {
-    workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: () => { showStage("Reconciliation"); void refreshDetail(selectedId, true); } };
+    workspaceAction = { label: "Reconcile this same intent", actor: "Unassigned · read-only reconciliation", run: reconcileExistingExecution };
   } else if (viewedStage !== "Reconciliation" && detailState === "loaded" && detail?.execution?.status === "SETTLED") {
     workspaceAction = { label: "View reconciliation receipt", actor: "Reconciliation record", run: () => showStage("Reconciliation") };
   } else if (viewedStage === "Payment" && currentPacketNeedsRelease && detail?.financial_action_eligible === true) {
@@ -4334,6 +4366,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   <Field label="Source amount" value={`${detail.record.amount} ${detail.record.currency}`} />
                   <Field label="Source record / reference" value={String(detail.truth.source_truth.source.record_id || "Not captured")} />
                   <Field label="Beneficiary captured in source" value={sourceText(detail.record, "beneficiary_name")} />
+                  <Field label="Supplier provenance" value={supplierProvenance(detail.record)} />
                   <Field label="Source reference / invoice" value={sourceText(detail.record, "invoice_reference")} />
                   <Field label="Particulars / service period" value={sourceText(detail.record, "particulars")} />
                   <Field label="Source issue/invoice date" value={sourceText(detail.record, "issue_date")} />
