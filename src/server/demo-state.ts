@@ -1,4 +1,5 @@
-import {assessmentRecoverySchema,assertAssessmentLineage,type AssessmentRecovery} from "./genuine-assessment-recovery";
+import {assessmentBootstrapSchema,assessmentRecoverySchema,assertAssessmentLineage,type AssessmentBootstrap,type AssessmentRecovery} from "./genuine-assessment-recovery";
+import {assessmentDispositionSchema,assertDispositionLineage,type AssessmentDisposition} from "./genuine-disposition";
 import {AssessmentState} from './assessment-state';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
@@ -69,6 +70,8 @@ export interface DemoObligationSummary {
   recurrence: string;
   due_date: string | null;
   commercial_terms: string;
+  beneficiary_name?: string;
+  beneficiary_provenance?: { provenance_class: "SOURCE_EVIDENCE"; evidence_id: string };
 }
 
 export interface DemoAuthorizationArtifacts {
@@ -103,6 +106,8 @@ export interface StoredSettlementProxy {
 
 export interface AssessmentOperation {
   recovery?: AssessmentRecovery;
+  bootstrap?: AssessmentBootstrap;
+  legacy_disposition?: AssessmentDisposition;
   idempotency_key: string;
   obligation_id: string;
   aggregate_version: number;
@@ -260,6 +265,7 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   if (!Array.isArray(rawAssessmentOperations)) throw new Error("Malformed persisted assessment operations.");
   const assessmentOperations = rawAssessmentOperations.map(parseAssessmentOperation);
   assertAssessmentLineage(assessmentOperations);
+  assertDispositionLineage(assessmentOperations, [...assessmentsByHash.values()].map((assessment) => assessment.assessment_id));
   if (new Set(assessmentOperations.map((operation) => operation.idempotency_key)).size !== assessmentOperations.length) {
     throw new Error("Persisted assessment operations contain duplicate idempotency keys.");
   }
@@ -350,7 +356,13 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
     throw new Error("Reserved assessment operation is missing its reservation time.");
   }
   const recovery=operation.recovery===undefined?undefined:assessmentRecoverySchema.parse(operation.recovery);
-  return { ...operation, status, ...(recovery?{recovery}:{}), ...(providerResult?{provider_result:providerResult}:{}) } as unknown as AssessmentOperation;
+  const bootstrap=operation.bootstrap===undefined?undefined:assessmentBootstrapSchema.parse(operation.bootstrap);
+  if(bootstrap&&(!recovery||recovery.generation!==0||recovery.source_record_sha256!==bootstrap.source_record_sha256||recovery.binding_sha256!==bootstrap.binding_sha256||
+    bootstrap.aggregate_version!==operation.aggregate_version||bootstrap.unmatched_reference_key===operation.idempotency_key||
+    status==="COMPLETED"&&!Number.isSafeInteger(operation.reserved_at)))throw new Error("Malformed assessment bootstrap metadata.");
+  const disposition=operation.legacy_disposition===undefined?undefined:assessmentDispositionSchema.parse(operation.legacy_disposition);
+  if(disposition&&(!recovery||recovery.generation!==0||bootstrap))throw new Error("Malformed assessment disposition metadata.");
+  return { ...operation, status, ...(recovery?{recovery}:{}), ...(bootstrap?{bootstrap}:{}), ...(disposition?{legacy_disposition:disposition}:{}), ...(providerResult?{provider_result:providerResult}:{}) } as unknown as AssessmentOperation;
 }
 
 function parseExecutionRecord(value: unknown): ExecutionRecord {
@@ -509,6 +521,7 @@ export class DemoState extends AssessmentState {
       recurrence: r.recurrence,
       due_date: r.due_date,
       commercial_terms: r.commercial_terms,
+      ...(r.beneficiary_name !== undefined ? { beneficiary_name: r.beneficiary_name, beneficiary_provenance: r.beneficiary_provenance } : {}),
     }));
   }
 

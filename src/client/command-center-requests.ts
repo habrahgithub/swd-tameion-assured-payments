@@ -14,6 +14,23 @@ export interface PostInterpretation {
   message: string;
 }
 
+/** Presentation evidence only. GenuineAssessmentState emits this exact response
+ * before creating a NEW reservation; existing keys are resolved first. No other
+ * denial, timeout or status-not-found establishes non-submission. */
+export function isAssessmentHistoryLimitRejection(result:{status:number;data:unknown}):boolean {
+  return result.status===409&&result.data!==null&&typeof result.data==='object'&&!Array.isArray(result.data)&&
+    Object.keys(result.data).length===1&&(result.data as {code?:unknown}).code==='GENUINE_ASSESSMENT_HISTORY_LIMIT';
+}
+
+/** Do not surface raw error/provider bodies. These are existing public typed
+ * read failures; an unknown code or a transport failure establishes no cause. */
+export function observedReadFailure(status:number,body:unknown):string {
+  const code=body&&typeof body==='object'&&!Array.isArray(body)?(body as {code?:unknown}).code:undefined;
+  const safe=typeof code==='string'&&['AUTH_UNAVAILABLE','SESSION_REQUIRED','SOURCE_BINDING_CHANGED','STATE_UNAVAILABLE',
+    'OPERATOR_SOURCE_UNAVAILABLE','FINANCIAL_AUTHORITY_UNAVAILABLE','ORIGIN_REJECTED','INGRESS_UNVERIFIED','SRC-001'].includes(code)?code:null;
+  return `Obligations unavailable (HTTP ${status}${safe?`; ${safe}`:''}).`;
+}
+
 import { assessmentReviewSnapshot, type AssessmentReviewSnapshot } from "./assessment-review-snapshot";
 
 export function interpretPostResponse(status: number, text: string): PostInterpretation {

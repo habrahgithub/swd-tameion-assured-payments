@@ -216,7 +216,10 @@ export function projectObligationListData(state: ExistingState, sourceGroup: Obl
     // approve() itself enforces (AUT-009); a stale assessment must not be
     // shown as "assessed" here either.
     const unresolvedAssessment=["UNKNOWN","IN_PROGRESS"].includes(state.getGenuineAssessmentVisibility?.(o.obligation_id).status??"");
-    const isCurrent = !unresolvedAssessment && sealed?.record.aggregate_version === String(current.aggregate_version) && (!bindAdvisorySource||sealed?.record.source_record_sha256===contentHash(state.getRecord(o.obligation_id)));
+    // A disposition child's receipt is current only for its own seal and the matching current source/version/binding.
+    const disposition = state.getGenuineAssessmentVisibility?.(o.obligation_id).disposition;
+    const dispositionReceiptStale = disposition?.state === "USED" && sealed !== undefined && sealed.hash === disposition.child_seal_hash && !disposition.child_current;
+    const isCurrent = !unresolvedAssessment && !dispositionReceiptStale && sealed?.record.aggregate_version === String(current.aggregate_version) && (!bindAdvisorySource||sealed?.record.source_record_sha256===contentHash(state.getRecord(o.obligation_id)));
     return {
       ...o,
       source_group: sourceGroup,

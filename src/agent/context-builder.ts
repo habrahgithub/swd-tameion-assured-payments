@@ -8,6 +8,9 @@ import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 export interface LiveUsageObligationRecord {
   assessment_basis?: HistoricalAssessmentBasis;
   obligation_id: string;
+  /** Source-backed supplier identity; absent for legacy records. Never part of the model context. */
+  beneficiary_name?: string;
+  beneficiary_provenance?: { provenance_class: "SOURCE_EVIDENCE"; evidence_id: string };
   service_category: string;
   recurrence: "MONTHLY" | "YEARLY" | "ONE_TIME";
   issue_date?: string | null;
@@ -155,4 +158,11 @@ export function hasCurrentControlledInstruction(context:FinanceAgentContext):boo
  try{const proof=context.controlled_instruction;if(!proof||Date.parse(proof.observed_at)>Date.now())return false;const current=loadFinancialSourceAdmission();const expected=controlledInstructionFor(current.source,context.aggregate_version,proof.observed_at);
  return JSON.stringify(proof)===JSON.stringify(expected)&&context.obligation_id===current.source.obligation_id&&context.amount===current.source.amount&&context.currency===current.source.currency&&context.business_purpose_confirmed===false&&context.issue_date==null&&context.due_date===null&&context.effective_due_date==null&&context.effective_due_date_basis==null&&context.evidence_ids.join("\0")===current.source.source_evidence.map(e=>e.evidence_id).join("\0")&&context.due_date_position==="CONTROLLED_WINDOW_OPEN";
  }catch{return false;}
+}
+
+/** Admission reuses the complete deterministic production normalization, before spending a provider attempt.
+ * INVALID is rejected; overdue/future/missing commercial evidence can still yield legitimate advisory HOLD. */
+export function deterministicHistoricalContextValid(record:LiveUsageObligationRecord):boolean {
+ const context=buildFinanceAgentContext(record,1,undefined,undefined,true);
+ return context.historical_basis_verified===true&&context.due_date_position!=='INVALID';
 }

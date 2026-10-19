@@ -21,7 +21,11 @@ const DEFAULT_RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export interface AssessmentHandlerOptions {controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;maxTransportAttempts?:1;providerSignal?:()=>AbortSignal}
+/** `admittedDisposition`: the caller's state class has already proven one expressly admitted new attempt, so the shared unresolved
+ * refusal is skipped for a FRESH key only. Unlike controlledRecovery, existing keys keep the ordinary replay/seal behavior
+ * (a durable provider result is sealed without a second dispatch). `beforeProviderDispatch` runs after the reservation is
+ * durable and re-read, immediately before the first provider call; throwing refuses dispatch and keeps the consumed attempt. */
+export interface AssessmentHandlerOptions {admittedDisposition?:boolean;beforeProviderDispatch?:(state:AssessmentState)=>void;controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;maxTransportAttempts?:1;providerSignal?:()=>AbortSignal}
 export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {},options:AssessmentHandlerOptions={}) {
 const getDemoState = load;
 const MAX_PERSISTENCE_ATTEMPTS=options.maxPersistenceAttempts??DEFAULT_MAX_PERSISTENCE_ATTEMPTS;
@@ -235,7 +239,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     const expiredReservation = !options.controlledRecovery && state.findUnresolvedAssessmentOperations(id).find(reservationExpired);
     if (expiredReservation) return markUnknownAndReply(state, expiredReservation.idempotency_key);
     const unresolved = state.findUnresolvedAssessmentOperation(id, aggregateVersion);
-    if (unresolved && !options.controlledRecovery) {
+    if (unresolved && !options.controlledRecovery && !options.admittedDisposition) {
       if (reservationExpired(unresolved)) return markUnknownAndReply(state, unresolved.idempotency_key);
       return NextResponse.json(
         { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status, idempotency_key: unresolved.idempotency_key },
@@ -301,6 +305,8 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
   };
   await revalidate();
   const providerSignal=options.providerSignal?.();
+  // This is deliberately after the final await. A window may close while authentication/source revalidation waits.
+  options.beforeProviderDispatch?.(state);
   let decision:Awaited<ReturnType<typeof assessObligation>>;
   try{decision=await assessWithinBudget(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay,options.requireHistoricalBasis),provider,providerSignal);}
   catch(error){if(providerSignal?.aborted)return markUnknownAndReply(state,idempotencyKey);throw error;}

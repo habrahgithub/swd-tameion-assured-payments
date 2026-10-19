@@ -193,3 +193,18 @@ describe('R1 contradictory complete receipts',()=>{
   expect(assessmentReceiptSnapshot(data)).toBeNull();
  });
 });
+
+
+describe('bounded assessment admission rejection and safe read failures',()=>{
+ it('recognizes only the exact pre-reservation history-limit response, never uncertainty or generic denial',async()=>{
+  const {isAssessmentHistoryLimitRejection}=await import('../src/client/command-center-requests');
+  expect(isAssessmentHistoryLimitRejection({status:409,data:{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT'}})).toBe(true);
+  for(const status of [0,200,202,400,403,500,503])expect(isAssessmentHistoryLimitRejection({status,data:{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT'}})).toBe(false);
+  for(const data of [null,[],{code:'ASM_STATUS_NOT_FOUND'},{code:'ASM-UNKNOWN'},{code:'ASM-001'},{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT',status:'UNKNOWN'},{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT',attempt_consumed:true}])expect(isAssessmentHistoryLimitRejection({status:409,data})).toBe(false);
+ });
+ it('shows only a known typed read code, never unknown codes or raw error values',async()=>{
+  const {observedReadFailure}=await import('../src/client/command-center-requests');
+  expect(observedReadFailure(409,{code:'SOURCE_BINDING_CHANGED',error:'PRIVATE'})).toBe('Obligations unavailable (HTTP 409; SOURCE_BINDING_CHANGED).');
+  for(const body of [null,'PRIVATE',{error:'PRIVATE'},{code:'PRIVATE'},{code:'SOURCE_BINDING_CHANGED PRIVATE'},{code:['SOURCE_BINDING_CHANGED']}])expect(observedReadFailure(503,body)).toBe('Obligations unavailable (HTTP 503).');
+ });
+});

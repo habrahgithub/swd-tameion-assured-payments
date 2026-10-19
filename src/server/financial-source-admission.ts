@@ -24,7 +24,11 @@ function approvedBytes(fd:number,expected:string|undefined):Uint8Array{
 }
 function parseCanonical(bytes:Uint8Array):unknown{const raw=new TextDecoder('utf-8',{fatal:true}).decode(bytes);const value:unknown=JSON.parse(raw);if(JSON.stringify(value)!==raw)throw new Error();return value;}
 function allowedOrigins(env:Record<string,string|undefined>):string[]{const value:unknown=JSON.parse(env.TAMEION_ALLOWED_ORIGINS??'null');if(!Array.isArray(value)||value.some(item=>typeof item!=='string'))throw new Error();return value as string[];}
-function contextStatus(value:z.infer<typeof legacyContext>|z.infer<typeof gitShaPreviewContext>|z.infer<typeof gitShaProductionContext>,env:Record<string,string|undefined>,now:number):'ACTIVE'|'INACTIVE'{
+/** ACTIVE is the only window that authorizes anything new. EXPIRED (now >= expires_at) permits read projection and status-only
+ * reconciliation of an already recorded execution; FUTURE (now < valid_from) is denied everywhere. */
+export type AuthorityWindow='ACTIVE'|'EXPIRED'|'FUTURE';
+export type FinancialSourceAdmissionRead=FinancialSourceAdmission&{authority_window?:'EXPIRED'};
+function contextStatus(value:z.infer<typeof legacyContext>|z.infer<typeof gitShaPreviewContext>|z.infer<typeof gitShaProductionContext>,env:Record<string,string|undefined>,now:number):AuthorityWindow{
  const start=Date.parse(value.valid_from),end=Date.parse(value.expires_at);if(!Number.isSafeInteger(now)||now<0||end<=start||end-start>60*60*1000)throw new Error();
  if('binding' in value){
   const raw=env.TAMEION_INGRESS_RECORD;if(!raw||JSON.stringify(JSON.parse(raw))!==raw||createHash('sha256').update(raw).digest('hex')!==value.ingress_record_sha256)throw new Error();
@@ -37,7 +41,7 @@ function contextStatus(value:z.infer<typeof legacyContext>|z.infer<typeof gitSha
   }
   const origins=allowedOrigins(env);if(origins.length!==1||origins[0]!==value.origin||env.VERCEL!=='1'||env.VERCEL_GIT_COMMIT_SHA!==value.git_commit_sha||env.VERCEL_PROJECT_ID!==value.project_id||env.VERCEL_ENV!==value.environment)throw new Error();
  }else if(value.deployment_id!==env.VERCEL_DEPLOYMENT_ID||value.namespace!==env.TAMEION_STATE_NAMESPACE)throw new Error();
- return start<=now&&now<end?'ACTIVE':'INACTIVE';
+ return now<start?'FUTURE':now<end?'ACTIVE':'EXPIRED';
 }
 function openApproved(name:string,expected:string|undefined):Uint8Array{return approvedBytes(openSync(join(process.cwd(),'.tameion',name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK),expected);}
 function parseFinancialSourceWithStatus(bytes:Uint8Array,expected:string,env:Record<string,string|undefined>,now:number){
@@ -53,10 +57,24 @@ export function parseFinancialRequester(bytes:Uint8Array,expected:string,env:Rec
 function readFinancialSource(env:Record<string,string|undefined>,now:number){const expected=env.TAMEION_FINANCIAL_SOURCE_SHA256??'';return parseFinancialSourceWithStatus(openApproved('financial-source.json',expected),expected,env,now);}
 function readFinancialRequester(env:Record<string,string|undefined>,now:number){const expected=env.TAMEION_FINANCIAL_REQUESTER_SHA256??'',parsed=parseFinancialRequesterWithStatus(openApproved('financial-requester.json',expected),expected,env,now);if(parsed.packet.source_sha256!==env.TAMEION_FINANCIAL_SOURCE_SHA256)throw new Error();return parsed;}
 export function loadFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission{try{const parsed=readFinancialSource(env,now);if(parsed.status!=='ACTIVE')throw new Error();return parsed.packet;}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}}
-export function loadOptionalFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission|undefined{
+export function loadOptionalFinancialSourceAdmission(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmissionRead|undefined{
  const exists=(name:string)=>{try{const fd=openSync(join(process.cwd(),'.tameion',name),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);closeSync(fd);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}};
- try{const sourceFile=exists('financial-source.json'),requesterFile=exists('financial-requester.json'),sourceConfigured=env.TAMEION_FINANCIAL_SOURCE_SHA256!==undefined,requesterConfigured=env.TAMEION_FINANCIAL_REQUESTER_SHA256!==undefined;if(!sourceFile&&!requesterFile&&!sourceConfigured&&!requesterConfigured)return undefined;if(!sourceFile||!requesterFile||!sourceConfigured||!requesterConfigured)throw new Error();const source=readFinancialSource(env,now),requester=readFinancialRequester(env,now);if(source.packet.organization_id!==requester.packet.organization_id||source.packet.namespace!==requester.packet.namespace||source.packet.intent_id!==requester.packet.intent_id||source.packet.valid_from!==requester.packet.valid_from||source.packet.expires_at!==requester.packet.expires_at||source.status!==requester.status||!sameFinancialBinding(source.packet,requester.packet))throw new Error();return source.status==='ACTIVE'?source.packet:undefined;}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}
+ try{const sourceFile=exists('financial-source.json'),requesterFile=exists('financial-requester.json'),sourceConfigured=env.TAMEION_FINANCIAL_SOURCE_SHA256!==undefined,requesterConfigured=env.TAMEION_FINANCIAL_REQUESTER_SHA256!==undefined;if(!sourceFile&&!requesterFile&&!sourceConfigured&&!requesterConfigured)return undefined;if(!sourceFile||!requesterFile||!sourceConfigured||!requesterConfigured)throw new Error();const source=readFinancialSource(env,now),requester=readFinancialRequester(env,now);if(source.packet.organization_id!==requester.packet.organization_id||source.packet.namespace!==requester.packet.namespace||source.packet.intent_id!==requester.packet.intent_id||source.packet.valid_from!==requester.packet.valid_from||source.packet.expires_at!==requester.packet.expires_at||source.status!==requester.status||!sameFinancialBinding(source.packet,requester.packet))throw new Error();
+  // Read projection only: an ACTUALLY expired instruction stays visible (flagged, never action-eligible) so its existing execution can be recovered. Future packets stay hidden.
+  return source.status==='ACTIVE'?source.packet:source.status==='EXPIRED'?{...source.packet,authority_window:'EXPIRED' as const}:undefined;}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}
 }
+/** Reconciliation-only provenance: the controlled-instruction proof recorded in the assessment must name this exact admitted packet
+ * (approval, intent, source digest, window, evidence). Unlike the new-payment predicate it does not require the window to be open. */
+export function controlledProvenanceMatchesAdmission(proof:{approval_id?:string;intent_id?:string;obligation_id?:string;organization_id?:string;source_sha256?:string;principal?:string;valid_from?:string;expires_at?:string;source_evidence_sha256?:string}|undefined,packet:FinancialSourceAdmission,env:Record<string,string|undefined>=process.env):boolean{
+ return Boolean(proof&&proof.approval_id===packet.approval_id&&proof.intent_id===packet.intent_id&&proof.obligation_id===packet.source.obligation_id&&proof.organization_id===packet.organization_id&&
+  proof.source_sha256===env.TAMEION_FINANCIAL_SOURCE_SHA256&&proof.principal===packet.principal&&proof.valid_from===packet.valid_from&&proof.expires_at===packet.expires_at&&
+  proof.source_evidence_sha256===createHash('sha256').update(JSON.stringify(packet.source.source_evidence)).digest('hex'));
+}
+/** Trusted reconciliation-only context: same exact deployment/config/ingress/namespace/packet bindings as the ACTIVE loaders,
+ * but an ACTUALLY expired window is accepted. No flag, environment switch or caller choice can select this; only the reconcile
+ * action uses it, and every new-payment path keeps the ACTIVE-only loaders. */
+export function loadFinancialSourceAdmissionForReconcile(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialSourceAdmission{try{const parsed=readFinancialSource(env,now);if(parsed.status==='FUTURE')throw new Error();return parsed.packet;}catch{throw new Error('FINANCIAL_AUTHORITY_UNAVAILABLE');}}
+export function loadFinancialRequesterBindingForReconcile(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{try{const parsed=readFinancialRequester(env,now);if(parsed.status==='FUTURE')throw new Error();return parsed.packet;}catch{throw new Error('FINANCIAL_REQUESTER_UNAVAILABLE');}}
 export function loadFinancialRequesterBinding(env:Record<string,string|undefined>=process.env,now=Date.now()):FinancialRequesterBinding{try{const parsed=readFinancialRequester(env,now);if(parsed.status!=='ACTIVE')throw new Error();return parsed.packet;}catch{throw new Error('FINANCIAL_REQUESTER_UNAVAILABLE');}}
 export function sameFinancialBinding(source:FinancialSourceAdmission,requester:FinancialRequesterBinding):boolean{
  const keys='binding' in source?(source.binding==='git-sha-production-v1'?['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256','configuration_schema','configuration_sha256'] as const:['binding','git_commit_sha','project_id','environment','origin','ingress_approval_id','ingress_record_sha256','source_record_sha256'] as const):['deployment_id'] as const;
