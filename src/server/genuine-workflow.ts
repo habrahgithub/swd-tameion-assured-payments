@@ -85,7 +85,12 @@ export function createGenuineWorkflowHandlers(deps:Dependencies){return async(ki
    if(bootstrapRequest){
     // Decide a new bootstrap before the shared route can touch (e.g. expire) any other operation.
     const bootstrapKey=request.headers.get('Idempotency-Key'),existing=snapshot.assessment_operations.find(o=>o.idempotency_key===bootstrapKey);
-    if(existing){if(existing.bootstrap?.unmatched_reference_key!==bootstrapReference||existing.obligation_id!==id)throw new AccessError('GENUINE_BOOTSTRAP_IDENTITY_MISMATCH',409);}
+    if(existing){
+     // Replay is allowed only while the stored proof still equals the current approved view and this request.
+     const current=AuthorityStore.fromSnapshot(snapshot.authority).get(org,id).aggregate_version,sourceHash=contentHash(source),bindingHash=contentHash(view.state_binding),b=existing.bootstrap,r=existing.recovery;
+     if(!b||!r||b.unmatched_reference_key!==bootstrapReference||existing.obligation_id!==id||r.generation!==0)throw new AccessError('GENUINE_BOOTSTRAP_IDENTITY_MISMATCH',409);
+     if(existing.aggregate_version!==current||b.aggregate_version!==current||!('expected_version' in input)||input.expected_version!==current||b.source_record_sha256!==sourceHash||r.source_record_sha256!==sourceHash||b.binding_sha256!==bindingHash||r.binding_sha256!==bindingHash)throw new AccessError('SOURCE_BINDING_CHANGED',409);
+    }
     else{
      if(!bootstrapProtectionAttested())throw new AccessError('GENUINE_BOOTSTRAP_PROTECTION_UNCONFIRMED',409);
      if(!classifyGenuineAdmission(snapshot,id).can_bootstrap)throw new AccessError('GENUINE_BOOTSTRAP_NOT_ELIGIBLE',409);

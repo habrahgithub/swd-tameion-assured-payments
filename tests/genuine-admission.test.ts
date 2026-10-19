@@ -214,6 +214,16 @@ describe('Stage 2 refused bootstrap never mutates another operation',()=>{
   const r=await bootstrap(h,NEW_KEY,ref);expect(r.status).toBeGreaterThanOrEqual(400);
   expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
  });
+ it.each([['source','RESERVED'],['binding','RESERVED'],['version','RESERVED'],['source','COMPLETED'],['binding','COMPLETED']] as const)('refuses replay of a stored bootstrap whose %s proof is obsolete (%s): bytes unchanged, CAS 0, provider 0',async(field,status)=>{
+  const h=harness(),fetcher=mockProvider(h);attest();seedLegacy(h,4);
+  const src=field==='source'?'1'.repeat(64):hash(h.records[0]),bind=field==='binding'?'2'.repeat(64):hash(h.source().state_binding),version=field==='version'?2:1;
+  let sealedHash='';
+  if(status==='COMPLETED'){const s=new DemoState(h.snapshot(),undefined,undefined,undefined,{},h.records);sealedHash=sealTestAssessment(s.store,'ORG-DEMO-001',h.records[0].obligation_id,1,{assessment_id:`ASM-${NEW_KEY}`,source_record_sha256:src}).assessment_hash;h.snapshot().authority=s.store.exportSnapshot();}
+  h.snapshot().assessment_operations.push({idempotency_key:NEW_KEY,obligation_id:h.records[0].obligation_id,aggregate_version:version,status,reserved_at:status==='RESERVED'?Date.now()-500_000:1,...(status==='COMPLETED'?{assessment_hash:sealedHash}:{}),recovery:{generation:0,source_record_sha256:src,binding_sha256:bind},bootstrap:{kind:'CURRENT_SOURCE_BOOTSTRAP',source_record_sha256:src,binding_sha256:bind,aggregate_version:version,unmatched_reference_key:REF,unmatched_reference_status:'UNVERIFIED_ABSENT_FROM_RECORDED_OPERATIONS'}} as any);
+  expect(()=>parseDemoStateSnapshot(h.snapshot())).not.toThrow();
+  const before=JSON.stringify(h.snapshot());h.repository.compareAndSet.mockClear();
+  const r=await bootstrap(h);expect(r.status).toBe(409);expect(JSON.stringify(h.snapshot())).toBe(before);expect(h.repository.compareAndSet).not.toHaveBeenCalled();expect(fetcher).not.toHaveBeenCalled();
+ });
  it('still permits own-bound replay and a normal eligible bootstrap',async()=>{
   const h=harness(),fetcher=mockProvider(h);attest();seedLegacy(h,4);expect((await bootstrap(h)).status).toBe(200);expect(fetcher).toHaveBeenCalledOnce();
   expect((await bootstrap(h)).status).toBe(200);expect(fetcher).toHaveBeenCalledOnce();
