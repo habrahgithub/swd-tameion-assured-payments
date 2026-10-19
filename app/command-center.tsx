@@ -1629,9 +1629,29 @@ function retainedAssessmentRequestKey(id: string): string | null {
     if(successor!==null)return successor;
     const acknowledged=acknowledgedSuccessorKey(id);
     if(acknowledged!==null)return assessmentRequestUuid.test(acknowledged)?null:"Request identity unavailable";
-    return localStorage.getItem(`tameion.assessment-request.${id}`);
+    const original=localStorage.getItem(`tameion.assessment-request.${id}`);
+    // A confirmed bootstrap keeps its unmatched earlier reference as history; it is no longer an active request.
+    return original!==null&&original===localStorage.getItem(`tameion.assessment-bootstrap-ack.${id}`)?null:original;
   }
   catch { return "Request identity unavailable"; }
+}
+
+/** The preserved earlier reference of the retained bootstrap request, only while that exact request is active. */
+function bootstrapEarlierReference(id: string, requestKey: string | null): string | null {
+  if (!id || !requestKey || typeof window === "undefined") return null;
+  try {
+    const [reference, request] = (localStorage.getItem(`tameion.assessment-bootstrap-ref.${id}`) ?? "").split(":");
+    return request === requestKey && assessmentRequestUuid.test(reference ?? "") ? reference : null;
+  } catch { return null; }
+}
+
+function reviewOnlyReason(detail: ObligationDetail): string {
+  switch (detail.genuine_assessment?.admission?.reason) {
+    case "FINANCIAL_HISTORY": return "Payment-control history already exists for this payable, such as a prior Arc Testnet instruction or its cancellation. It is kept for review. A new assessment is not available. A testnet record is not a claim that this payable was paid or cancelled.";
+    case "HISTORY_LIMIT": return "The assessment history limit for this payable has been reached. Earlier assessments are kept for review and no further assessment can be requested.";
+    case "UNRESOLVED_OPERATION": return "An earlier assessment request is unresolved. It is kept unchanged, and a new assessment is not available until it is resolved.";
+    default: return "This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.";
+  }
 }
 
 /** Presentation only. This never supplies action eligibility or releases an intent. */
@@ -2504,16 +2524,21 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const assessmentCallbackGeneration = selectionGeneration.current;
   const assessmentCallbackDetailGeneration = detailGeneration.current;
   const assessmentCallbackEpoch=exactAssessmentLifetime.current.epoch;
-  const runAssessment = (recovery = false) => {
+  const runAssessment = (recovery = false, bootstrap = false) => {
+    const successorLike = recovery || bootstrap;
     const obligationId = selectedId;
     if (assessmentCallbackGeneration !== selectionGeneration.current || assessmentCallbackDetailGeneration !== detailGeneration.current || selectedRef.current !== obligationId ||
         !obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
     // Contain the callback as well as its affordance, including stale handlers
     // and requests retained across reload or A -> B -> A navigation.
     if(acknowledgedSuccessorKey(obligationId)!==null)return;
-    if(recovery&&(detailLifetimeEpoch!==exactAssessmentLifetime.current.epoch||retainedSuccessorRequestKey(obligationId)!==null||!csrfToken||activeRunCount.current>0||!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch))return;
+    if(successorLike&&(detailLifetimeEpoch!==exactAssessmentLifetime.current.epoch||retainedSuccessorRequestKey(obligationId)!==null||!csrfToken||activeRunCount.current>0||!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch))return;
     if(recovery&&(detail.source_group!=="GENUINE_COMPANY"||detail.genuine_assessment?.status!=="UNKNOWN"||detail.genuine_assessment.recovery_eligible!==true||detail.pae_sealed))return;
-    if (detail.execution || requiresSubmissionReconciliation(financialResults.current.get(obligationId) ?? null) || !recovery&&(retainedAssessmentRequestKey(obligationId) || assessmentRequestUnresolved ||
+    // The earlier reference is the browser's retained, unmatched request. It is preserved, never reused or relabeled.
+    const earlierReference = bootstrap ? retainedAssessmentRequestKey(obligationId) : null;
+    if(bootstrap&&(detail.source_group!=="GENUINE_COMPANY"||detail.genuine_assessment?.admission?.can_bootstrap!==true||detail.pae_sealed||!earlierReference||!assessmentRequestUuid.test(earlierReference)||
+      assessmentFeedback?.obligationId!==obligationId||assessmentFeedback.statusCode!=="ASM_STATUS_NOT_FOUND"))return;
+    if (detail.execution || requiresSubmissionReconciliation(financialResults.current.get(obligationId) ?? null) || !successorLike&&(retainedAssessmentRequestKey(obligationId) || assessmentRequestUnresolved ||
         (assessmentAction !== "assess" && !optionalReassessmentAvailable))) return;
     const generation = selectionGeneration.current;
     const expectedVersion = String(detail.aggregate.aggregate_version);
@@ -2526,22 +2551,28 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       nextStep: "Wait for this request to resolve; the result remains advisory.",
       owner: "Finance Agent · waiting for assessment response",
     });
-    const storageKey = recovery ? `tameion.assessment-successor.${obligationId}` : `tameion.assessment-request.${obligationId}`;
+    const storageKey = successorLike ? `tameion.assessment-successor.${obligationId}` : `tameion.assessment-request.${obligationId}`;
     const requestIdentity = crypto.randomUUID();
     return run("assess", async () => {
-      const sourceHash=recovery?await hashHistoricalSourceRecord(detail.record):null;
-      if(recovery&&!sourceHash)return {ok:false,status:503,data:{code:"SOURCE_IDENTITY_UNAVAILABLE"}};
-      if(selectedRef.current!==obligationId||generation!==selectionGeneration.current||recovery&&(!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch||assessmentCallbackDetailGeneration!==detailGeneration.current))return {ok:false,status:0,data:{code:"SELECTION_CHANGED"}};
+      const sourceHash=successorLike?await hashHistoricalSourceRecord(detail.record):null;
+      if(successorLike&&!sourceHash)return {ok:false,status:503,data:{code:"SOURCE_IDENTITY_UNAVAILABLE"}};
+      if(selectedRef.current!==obligationId||generation!==selectionGeneration.current||successorLike&&(!exactAssessmentLifetime.current.mounted||assessmentCallbackEpoch!==exactAssessmentLifetime.current.epoch||assessmentCallbackDetailGeneration!==detailGeneration.current))return {ok:false,status:0,data:{code:"SELECTION_CHANGED"}};
       try {
-        if (recovery && localStorage.getItem(storageKey) !== null) return {ok:false,status:409,data:{code:"SUCCESSOR_ALREADY_RETAINED"}};
-        if (recovery && (!assessmentRequestUuid.test(requestIdentity) || requestIdentity === localStorage.getItem(`tameion.assessment-request.${obligationId}`))) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
+        if (successorLike && localStorage.getItem(storageKey) !== null) return {ok:false,status:409,data:{code:"SUCCESSOR_ALREADY_RETAINED"}};
+        if (successorLike && (!assessmentRequestUuid.test(requestIdentity) || requestIdentity === localStorage.getItem(`tameion.assessment-request.${obligationId}`))) return {ok:false,status:503,data:{code:"REQUEST_IDENTITY_UNAVAILABLE"}};
+        if (bootstrap) {
+          if (localStorage.getItem(`tameion.assessment-request.${obligationId}`) !== earlierReference) return {ok:false,status:409,data:{code:"EARLIER_REFERENCE_CHANGED"}};
+          const marker = `tameion.assessment-bootstrap-ref.${obligationId}`;
+          localStorage.setItem(marker, `${earlierReference}:${requestIdentity}`);
+          if (localStorage.getItem(marker) !== `${earlierReference}:${requestIdentity}`) throw new Error("Request storage unverified");
+        }
         localStorage.setItem(storageKey, requestIdentity);
         if (localStorage.getItem(storageKey) !== requestIdentity) throw new Error("Request storage unverified");
         assessmentRequestKey.current = {obligationId, key: requestIdentity};
       } catch {
         return {ok:false, status:503, data:{code:"REQUEST_IDENTITY_UNAVAILABLE", error:"Assessment was not sent because its request identity could not be stored."}};
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/${recovery||detail.advisory_action_eligible===true?"advisory":"assess"}`, recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:{}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${successorLike||detail.advisory_action_eligible===true?"advisory":"assess"}`, recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
         "Idempotency-Key": requestIdentity,
       });
       // No refusal code proves non-submission. Keep the attempted identity;
@@ -2580,7 +2611,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         });
       }
       return result;
-    }, expectedVersion, requestIdentity, recovery);
+    }, expectedVersion, requestIdentity, successorLike);
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
@@ -2660,6 +2691,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   // Remediation says when reassessment may become possible, not that the
   // correction has occurred. The current read model has no such eligibility.
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
+  // Guidance may only point at an assessment/reassessment the server capability actually allows.
+  const assessmentCapabilityAvailable = detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true;
+  const reviewOnlyAssessment = Boolean(detailState === "loaded" && detail?.source_group === "GENUINE_COMPANY" && !assessmentCapabilityAvailable && !hasCurrentAssessment && !detail.pae_sealed && !detail.execution);
   const selectedFinancialScope = selectedFinancialScopeReadiness(
     detailState === "loaded" ? detail : null,
     selectedId,
@@ -2750,6 +2784,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         if (detail.settlement_proxy && detail.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution) return "Approval recorded; payment controls incomplete; no payment can be released";
         if (["PORTAL_RELEASE_RENEWAL_REQUIRED", "PORTAL_RELEASE_UNAVAILABLE"].includes(detail.execution_gate ?? "")) return paymentStageStatus(detail, false, detailState);
         if (detail.settlement_proxy && detail.pae_sealed) return "Arc Testnet instruction prepared; final payment approval is pending";
+        if (reviewOnlyAssessment && detail.settlement_proxy) return "Prior Arc Testnet instruction on record; review only. A new assessment is not available for this payable";
         if (detail.settlement_proxy && (!hasCurrentAssessment || !currentAssessment)) return "Arc Testnet proxy prepared; fresh assessment required before authorization";
         if (detail.settlement_proxy) return "Arc Testnet proxy prepared; final assessment and human authorization required";
         if (detail.execution && detail.truth.settlement_truth.runtime === "SIMULATED") {
@@ -2832,7 +2867,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     : lifecycleStatus(currentLifecycleStage);
 
   const currentWorkspaceGuidance = detailState === "loaded" && detail?.aggregate.state === "CANCELLED"
-    ? "This obligation was cancelled. No authorization or execution action is available."
+    ? detail.source_group === "GENUINE_COMPANY"
+      ? "A prior Arc Testnet instruction for this payable was cancelled. It is a test record and does not mean the real payable was paid or cancelled. No authorization or execution action is available."
+      : "This obligation was cancelled. No authorization or execution action is available."
     : !selectedId
     ? listPresentation === "loading"
       ? "Loading payables. Selection is not available yet."
@@ -2869,6 +2906,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         ? paymentStageStatus(detail, false, detailState)
       : noCurrentExactExecutionPacket
         ? "The current payment release record is unavailable. Payment authority must be renewed before submission."
+      : reviewOnlyAssessment
+        ? `${reviewOnlyReason(detail!)} You can review the recorded history.`
       : detail?.settlement_proxy && currentAssessment && !hasCurrentAssessment
         ? "The previous assessment is stale for this version. Run a fresh assessment for the prepared Arc Testnet proxy before authorization review."
       : detail?.aggregate.state === "AUTHORIZED" && !detail.pae_sealed && !detail.execution
@@ -2990,14 +3029,16 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     const key=retainedAssessmentRequestKey(selectedId),version=String(detail.aggregate.aggregate_version);
     const successorKey=retainedSuccessorRequestKey(selectedId);
     const successor=successorKey!==null&&successorKey!=="Request identity unavailable";
-    const requestName=successor?"successor":"original";
+    const bootstrapReference=successor?bootstrapEarlierReference(selectedId,key):null;
+    const requestName=bootstrapReference?"current-source":successor?"successor":"original";
     const requestStorageKey=successor?`tameion.assessment-successor.${selectedId}`:`tameion.assessment-request.${selectedId}`;
     const sourceFingerprint=canonicalize(detail.record);
+    const canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
     if(key!==selectedRequestKey&&key!=="Request identity unavailable")return;
     const token=++exactAssessmentSequence.current,generation=exactCheckRenderGeneration,epoch=exactCheckRenderEpoch;
     let expectedDetail=exactCheckRenderDetail;
     const bound={obligationId:selectedId,key:key??"",generation,epoch,token,detailRequest:expectedDetail};
-    const feedback=(kind:AssessmentFeedback["kind"],message:string,code:string)=>setAssessmentFeedback({obligationId:selectedId,expectedVersion:version,selectionGeneration:generation,kind,title:"Assessment request status",message,durability:"Read-only observation; no assessment was resubmitted.",nextStep:`Ask the workspace owner to review the ${requestName} request. Do not submit another assessment.`,owner:"Workspace owner · request review",statusCode:`ASM_STATUS_${code}`});
+    const feedback=(kind:AssessmentFeedback["kind"],message:string,code:string,nextStep=`Ask the workspace owner to review the ${requestName} request. Do not submit another assessment.`)=>setAssessmentFeedback({obligationId:selectedId,expectedVersion:version,selectionGeneration:generation,kind,title:"Assessment request status",message,durability:"Read-only observation; no assessment was resubmitted.",nextStep,owner:"Workspace owner · request review",statusCode:`ASM_STATUS_${code}`});
     if(!key||!assessmentRequestUuid.test(key)){
       setExactAssessmentCheck({...bound,status:key==="Request identity unavailable"?"identity-unavailable":"unknown",message:`The ${requestName} request reference could not be verified. Restore browser storage or ask the workspace owner to investigate.`});
       feedback("unconfirmed",`The ${requestName} request reference could not be verified.`,"IDENTITY_UNAVAILABLE");return;
@@ -3024,10 +3065,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         :status==="PROVIDER_RESULT_DURABLE"?"An assessment result is saved but has not been confirmed."
         :status==="UNKNOWN"?`The ${requestName} assessment outcome is unknown.`
         :status==="STALE"?"This request does not confirm a current result for this payable."
+        :status==="NOT_FOUND"&&canOfferBootstrap?"Your earlier request could not be matched in the current source state. Its reference is preserved, and its earlier outcome remains unverified."
         :status==="NOT_FOUND"?`The ${requestName} request could not be verified. This does not mean it was never sent.`
         :status==="TIMEOUT"?"Assessment status check timed out. The outcome remains unverified; no assessment was resubmitted.":"Assessment status could not be checked. No assessment was resubmitted.";
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":status==="FAILED"||status==="TIMEOUT"?"failed":"unknown",message});
-      feedback(status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":"unconfirmed",message,status);
+      feedback(status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":"unconfirmed",message,status,
+        status==="NOT_FOUND"&&canOfferBootstrap?"You can explicitly request one assessment for the current source. The earlier reference stays as history.":undefined);
     };
     setDisplayedAssessment(null);
     setExactAssessmentCheck({...bound,status:"checking",message:`Checking the ${requestName} assessment request…`});
@@ -3075,7 +3118,13 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       }
       const storageKey=requestStorageKey;
       if(localStorage.getItem(storageKey)!==key)return;
-      if(successor){
+      if(bootstrapReference){
+        // Keep the unmatched earlier reference as history only; it never becomes this request's receipt.
+        const acknowledgementKey=`tameion.assessment-bootstrap-ack.${selectedId}`;
+        localStorage.setItem(acknowledgementKey,bootstrapReference);
+        if(localStorage.getItem(acknowledgementKey)!==bootstrapReference)throw new Error("Acknowledgement storage unverified");
+        localStorage.removeItem(`tameion.assessment-bootstrap-ref.${selectedId}`);
+      }else if(successor){
         // Retain only a bounded acknowledgement, so preserved K2 cannot become
         // the active request again or admit another successor after reload.
         const acknowledgementKey=`tameion.assessment-successor-ack.${selectedId}`;
@@ -3271,6 +3320,11 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     detailLifetimeEpoch === exactAssessmentLifetime.current.epoch &&
     selectedRef.current === selectedId,
   );
+  // Offered only after an exact status read found the retained earlier reference absent, and only where the server's own capability allows it.
+  const bootstrapOfferable = Boolean(detailState === "loaded" && !detailIsStale && detail?.source_group === "GENUINE_COMPANY" &&
+    detail.genuine_assessment?.admission?.can_bootstrap === true && !detail.pae_sealed && !detail.execution && !serverAssessmentUnresolved &&
+    retainedSuccessorRequestKey(selectedId) === null && selectedRequestKey !== null && assessmentRequestUuid.test(selectedRequestKey) &&
+    currentFeedback?.statusCode === "ASM_STATUS_NOT_FOUND" && currentExactAssessmentCheck?.key === selectedRequestKey && !busy && csrfToken);
   let workspaceAction: WorkspaceAction | null = null;
   if (!selectedId && listPresentation === "ready" && obligations.length > 0) {
     workspaceAction = { label: "Choose a payable", actor: "You", run: () => setMobileQueueOpen(true) };
@@ -3288,6 +3342,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       :detail?.genuine_assessment?.recovery_eligible===true&&acknowledgedSuccessorKey(selectedId)===null
       ?{label:"Request one new assessment",actor:"User · deliberate assessment",run:()=>{void runAssessment(true);}}
       :{label:"Refresh current status",actor:"User · read-only status",run:()=>{void refreshDetail(selectedId,true);}};
+  } else if (bootstrapOfferable) {
+    workspaceAction = {label: "Request one assessment for the current source", actor: "User · deliberate assessment", run: () => { void runAssessment(false, true); }};
   } else if (assessmentRequestUnresolved && !detail?.execution) {
     workspaceAction = detail?.source_group==="GENUINE_COMPANY"&&selectedRequestKey
       ?{label:"Check assessment request",actor:"User · original request status",run:()=>{void checkAssessmentRequest();}}
@@ -3734,7 +3790,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && detail.advisory_action_eligible !== true && !serverAssessmentUnresolved && (
             <section role="status" aria-label="Review-only payable" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only payable</p>
-              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">This record can be reviewed, but it cannot be assessed, authorized or submitted for payment. Financial actions require a separately approved controlled test obligation.</p>
+              <p className="mt-1 text-[12px] leading-5 text-[var(--color-ink-muted)]">{reviewOnlyReason(detail)}</p>
+              {detail.source_group === "GENUINE_COMPANY" && <button type="button" onClick={() => showStage("Assessment")} className="mt-2 min-h-11 rounded border border-[var(--color-border-strong)] px-3 text-sm font-semibold">Review assessment history</button>}
             </section>
           )}
 
@@ -3874,7 +3931,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   <section aria-label="Assessment result" className="max-w-xl space-y-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] p-2 sm:p-4">
                     <h3 className="text-[16px] font-semibold text-[var(--color-ink)]">Assessment</h3>
                     <p role="status" className="text-[13px] leading-5 text-[var(--color-ink-muted)]">
-                      {serverAssessmentUnresolved ? "Latest assessment is unresolved. Historical advice does not establish a current decision." : assessmentAction === "assess"
+                      {serverAssessmentUnresolved ? "Latest assessment is unresolved. Historical advice does not establish a current decision." : reviewOnlyAssessment ? reviewOnlyReason(detail!) : assessmentAction === "assess"
                         ? "Run AI Assessment from the permanent action strip. The result is advisory and cannot authorize or execute payment."
                         : assessmentActionStatus}
                     </p>
@@ -4364,7 +4421,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {" "}Assessment outcome remains unverified.
         </p>}
         {currentHoldReview&&viewedStage==="Assessment"&&<p role="status" aria-label="HOLD findings review" aria-live="polite" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentHoldReview.status==="opened"?"HOLD findings opened. Review the required evidence and responsible owner. HOLD remains.":currentHoldReview.status==="unavailable"?"HOLD — details unavailable. Ask the workspace owner to review the recorded findings. Authorization and payment remain blocked.":"Opening HOLD findings…"}</p>}
-        {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
+        {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?bootstrapOfferable?" You can explicitly request one assessment for the current source. The earlier reference stays as history.":" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
       </section>}
     </main>
   );

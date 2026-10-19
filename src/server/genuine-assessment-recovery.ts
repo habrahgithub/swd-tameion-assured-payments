@@ -3,7 +3,17 @@ import {contentHash} from '../domain/linked-instruction';
 import type {AssessmentOperation,DemoStateSnapshot} from './demo-state';
 import type {OperatorSourceView} from './operator-source-records';
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
+import {classifyGenuineAdmission,MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION,type GenuineAdmission} from './genuine-admission';
 export const RECOVERY_GRACE_MS=60_000;
+const keyPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Durable provenance for one explicit current-source bootstrap. The reference is preserved, unverified and never relabeled. */
+export const assessmentBootstrapSchema=z.object({
+ kind:z.literal('CURRENT_SOURCE_BOOTSTRAP'),
+ source_record_sha256:z.string().regex(/^[a-f0-9]{64}$/),binding_sha256:z.string().regex(/^[a-f0-9]{64}$/),
+ aggregate_version:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+ unmatched_reference_key:z.string().regex(keyPattern),unmatched_reference_status:z.literal('UNVERIFIED_ABSENT_FROM_RECORDED_OPERATIONS'),
+}).strict();
+export type AssessmentBootstrap=z.infer<typeof assessmentBootstrapSchema>;
 export const assessmentRecoverySchema=z.object({
  generation:z.union([z.literal(0),z.literal(1)]),source_record_sha256:z.string().regex(/^[a-f0-9]{64}$/),
  binding_sha256:z.string().regex(/^[a-f0-9]{64}$/),unknown_at:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
@@ -12,8 +22,12 @@ export const assessmentRecoverySchema=z.object({
 export type AssessmentRecovery=z.infer<typeof assessmentRecoverySchema>;
 export function assertAssessmentLineage(operations:readonly AssessmentOperation[]){
  for(const o of operations){
+  if(o.bootstrap&&!o.recovery)throw new Error('ASSESSMENT_BOOTSTRAP_INVALID');
   if(!o.recovery)continue;
   const r=assessmentRecoverySchema.parse(o.recovery);
+  if(o.bootstrap&&(r.generation!==0||o.bootstrap.source_record_sha256!==r.source_record_sha256||o.bootstrap.binding_sha256!==r.binding_sha256||o.bootstrap.aggregate_version!==o.aggregate_version||
+   o.bootstrap.unmatched_reference_key===o.idempotency_key||operations.some(c=>c.idempotency_key===o.bootstrap!.unmatched_reference_key)||
+   operations.filter(c=>c.bootstrap&&c.obligation_id===o.obligation_id).length!==1))throw new Error('ASSESSMENT_BOOTSTRAP_INVALID');
   if(!Number.isSafeInteger(o.reserved_at)||o.reserved_at!<0||r.unknown_at!==undefined&&(o.status!=='UNKNOWN'||r.unknown_at<o.reserved_at!))throw new Error('ASSESSMENT_TIMING_INVALID');
   if(o.status==='UNKNOWN'&&r.unknown_at===undefined)throw new Error('ASSESSMENT_UNKNOWN_TIMING_MISSING');
   if(r.generation===1){const p=operations.find(p=>p.idempotency_key===r.predecessor_key);
@@ -24,7 +38,7 @@ export function assertAssessmentLineage(operations:readonly AssessmentOperation[
   }
  }
 }
-export interface GenuineAssessmentVisibility {status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string}
+export interface GenuineAssessmentVisibility {admission?:GenuineAdmission;status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string}
 export function genuineAssessmentVisibility(snapshot:DemoStateSnapshot,view:OperatorSourceView,id:string,version:number,now=Date.now()):GenuineAssessmentVisibility {
  assertAssessmentLineage(snapshot.assessment_operations);
  const ops=snapshot.assessment_operations.filter(o=>o.obligation_id===id);
@@ -39,7 +53,7 @@ export function genuineAssessmentVisibility(snapshot:DemoStateSnapshot,view:Oper
  if(!source||p.aggregate_version!==version||r.source_record_sha256!==contentHash(source)||r.binding_sha256!==contentHash(view.state_binding))return deny('SOURCE_CHANGED');
  if(genuineHasFinancialHistory(snapshot,id))return deny('FINANCIAL_HISTORY');
  if(ops.some(o=>o!==p&&['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN'].includes(o.status))||ops.some(o=>o.recovery?.generation===1))return deny('ACTIVE_OR_SUCCESSOR');
- if(ops.length>=4||snapshot.authority.assessments.filter(a=>a.record.obligation_id===id).length>=4)return deny('HISTORY_LIMIT');
+ if(classifyGenuineAdmission(snapshot,id).counted_history>=MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION)return deny('HISTORY_LIMIT');
  const eligibleAt=Math.max(r.unknown_at,p.reserved_at+45_000)+RECOVERY_GRACE_MS;
  if(!Number.isSafeInteger(now)||now<r.unknown_at||now<eligibleAt)return deny('GRACE',new Date(eligibleAt).toISOString());
  return {status,recovery_eligible:true,recovery_reason:'ELIGIBLE',eligible_at:new Date(eligibleAt).toISOString()};

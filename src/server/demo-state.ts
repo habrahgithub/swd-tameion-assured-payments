@@ -1,4 +1,4 @@
-import {assessmentRecoverySchema,assertAssessmentLineage,type AssessmentRecovery} from "./genuine-assessment-recovery";
+import {assessmentBootstrapSchema,assessmentRecoverySchema,assertAssessmentLineage,type AssessmentBootstrap,type AssessmentRecovery} from "./genuine-assessment-recovery";
 import {AssessmentState} from './assessment-state';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
@@ -103,6 +103,7 @@ export interface StoredSettlementProxy {
 
 export interface AssessmentOperation {
   recovery?: AssessmentRecovery;
+  bootstrap?: AssessmentBootstrap;
   idempotency_key: string;
   obligation_id: string;
   aggregate_version: number;
@@ -350,7 +351,11 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
     throw new Error("Reserved assessment operation is missing its reservation time.");
   }
   const recovery=operation.recovery===undefined?undefined:assessmentRecoverySchema.parse(operation.recovery);
-  return { ...operation, status, ...(recovery?{recovery}:{}), ...(providerResult?{provider_result:providerResult}:{}) } as unknown as AssessmentOperation;
+  const bootstrap=operation.bootstrap===undefined?undefined:assessmentBootstrapSchema.parse(operation.bootstrap);
+  if(bootstrap&&(!recovery||recovery.generation!==0||recovery.source_record_sha256!==bootstrap.source_record_sha256||recovery.binding_sha256!==bootstrap.binding_sha256||
+    bootstrap.aggregate_version!==operation.aggregate_version||bootstrap.unmatched_reference_key===operation.idempotency_key||
+    status==="COMPLETED"&&!Number.isSafeInteger(operation.reserved_at)))throw new Error("Malformed assessment bootstrap metadata.");
+  return { ...operation, status, ...(recovery?{recovery}:{}), ...(bootstrap?{bootstrap}:{}), ...(providerResult?{provider_result:providerResult}:{}) } as unknown as AssessmentOperation;
 }
 
 function parseExecutionRecord(value: unknown): ExecutionRecord {

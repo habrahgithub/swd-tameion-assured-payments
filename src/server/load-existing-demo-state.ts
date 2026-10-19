@@ -1,6 +1,7 @@
 import {parseDemoStateSnapshot} from "./demo-state";
 import {genuineAssessmentVisibility,type GenuineAssessmentVisibility} from "./genuine-assessment-recovery";
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
+import {classifyGenuineAdmission,bootstrapProtectionAttested} from './genuine-admission';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {ActorAuthorityRegistry} from '../authority/actor-authority';
@@ -40,11 +41,10 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     const assessmentSnapshot=binding?.workflow_base_sha256?parseDemoStateSnapshot(s):undefined;
+    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>{const admission=classifyGenuineAdmission(snapshot,id);return {...admission,can_bootstrap:admission.can_bootstrap&&bootstrapProtectionAttested()};};
     return {store,trustedKeys,
-      getGenuineAssessmentVisibility:assessmentSnapshot?id=>genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version):undefined,
-      canAssessGenuine:id=>!genuineHasFinancialHistory(s,id)&&(!assessmentSnapshot||
-        !assessmentSnapshot.assessment_operations.some(operation=>operation.obligation_id===id&&operation.recovery?.generation===1)&&
-        !["UNKNOWN","IN_PROGRESS"].includes(genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version).status)),
+      getGenuineAssessmentVisibility:assessmentSnapshot?id=>({...genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version),admission:genuineAdmission(assessmentSnapshot,id)}):undefined,
+      canAssessGenuine:id=>assessmentSnapshot?genuineAdmission(assessmentSnapshot,id).can_assess:!genuineHasFinancialHistory(s,id),
       getLinkedInstructions:id=>linkedInstructions.filter(r=>r.source_obligation_id===id),
       resolveDesignatedApprover:(organizationId=DEMO_ORGANIZATION_ID,now=new Date())=>actorAuthorities.resolveDesignatedApprover(organizationId,now),
       getPaymentReleaseApproval:id=>releases.find(a=>a.record.namespace===namespace&&a.record.pae_instruction_hash===sealed.get(id)?.instruction_hash),
