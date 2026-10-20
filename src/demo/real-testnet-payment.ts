@@ -633,7 +633,7 @@ export function buildJ2aExecutionPacket(input: {
     max_total_debit: preflight.max_total_debit,
     preflight_captured_at: preflight.captured_at,
     preflight_evidence_sha256: preflight.evidence_sha256,
-    review_decision: input.reviewDecision ?? null,
+    ...(input.reviewDecision ? {review_decision:input.reviewDecision} : {}),
     assessment: assessment ? {
       assessment_id: assessment.assessment_id,
       assessment_hash: assessmentHash,

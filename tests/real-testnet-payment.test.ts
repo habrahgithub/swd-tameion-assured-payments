@@ -510,6 +510,8 @@ describe("J2A real Arc Testnet demo preflight", () => {
       asset: "USDC",
       network: "ARC_TESTNET",
     });
+    // S-02: original f4118048 constructor omits inapplicable HUMAN property.
+    expect(packet.packet).not.toHaveProperty('review_decision');
     expect(packet.packet_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(hashJ2aPreflightEvidence(preflight as unknown as Record<string, unknown>)).toBe(preflight.evidence_sha256);
 

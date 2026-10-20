@@ -55,3 +55,34 @@ it('retires a proven no-dispatch child despite stale parent advice, but grants n
  const retired=await h.handler('renew',manualRequest(h,{expected_version:p.a.aggregate.aggregate_version,predecessor_key:p.identity.idempotency_key,reason:'Retire original proven no-send; parent review needs renewal'}),p.id);expect(retired.status).toBe(201);expect(h.snapshot().recovery_events).toHaveLength(1);
  const nextReview=await h.handler('review',manualRequest(h,{expected_version:p.a.aggregate.aggregate_version+1,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Stale link cannot grant new payment authority',evidence_ids:['CONTROLLED-TESTNET-001'],finding_dispositions:[]}),p.id);expect(nextReview.status).toBeGreaterThanOrEqual(400);expect(h.client.createTransaction).not.toHaveBeenCalled();
 });
+
+
+// C2 S-01 negatives derived from SENTINEL exact-C1 evidence; corruption must
+// reject, rather than preserving its C1 diagnostic acceptance observation.
+it.each(['missing_proof','changed_proof','missing_execution','key','amount','destination','digest','transaction','proof_amount','proof_destination','proof_status','false_identity'] as const)('C2 decoder rejects posted settlement with %s inconsistency',async mutation=>{
+ const {parseDemoStateSnapshot}=await import('../src/server/demo-state');
+ const h=controlledHarness(),p=await preparedHumanApproval(h);expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(200);
+ const next=structuredClone(h.snapshot()),row=next.execution_ledger[0],posting=next.authority.settlement_postings![0];expect(()=>parseDemoStateSnapshot(next)).not.toThrow();
+ if(mutation==='missing_proof')delete row.provider_evidence;
+ if(mutation==='changed_proof')row.provider_evidence!.tx_hash='0x'+'b'.repeat(64);
+ if(mutation==='missing_execution')next.execution_ledger=[];
+ if(mutation==='key')posting.idempotency_key='SYNTHETIC-OTHER-KEY';
+ if(mutation==='amount')posting.atomic_amount='2000000';
+ if(mutation==='destination')posting.destination_address='0x'+'8'.repeat(40);
+ if(mutation==='digest')posting.evidence_sha256='b'.repeat(64);
+ if(mutation==='transaction'){row.provider_evidence!.transaction_id='SYNTHETIC-OTHER-TX';const {contentHash}=await import('../src/domain/linked-instruction');posting.evidence_sha256=contentHash(row.provider_evidence);}
+ if(['proof_amount','proof_destination','proof_status','false_identity'].includes(mutation)){if(mutation==='proof_amount')row.provider_evidence!.atomic_amount='2000000';if(mutation==='proof_destination')row.provider_evidence!.destination_address='0x'+'8'.repeat(40);if(mutation==='proof_status')row.provider_evidence!.status='PENDING';if(mutation==='false_identity')row.provider_evidence!.identity_verified=false;const {contentHash}=await import('../src/domain/linked-instruction');posting.evidence_sha256=contentHash(row.provider_evidence);}
+ expect(()=>parseDemoStateSnapshot(next)).toThrow(/settlement/i);
+});
+it('C2 legacy SETTLED snapshots without R1 postings remain readable without invented receipts',async()=>{
+ const {parseDemoStateSnapshot}=await import('../src/server/demo-state');const h=controlledHarness(),p=await preparedHumanApproval(h);await h.handler('execute',h.request(p.body),p.id);
+ const legacy=structuredClone(h.snapshot());delete legacy.authority.settlement_postings;delete legacy.execution_ledger[0].provider_evidence;
+ expect(parseDemoStateSnapshot(legacy).authority.settlement_postings).toBeUndefined();
+});
+it('C2 validates every retired predecessor after a newer successor has acquired authority',async()=>{
+ const {parseDemoStateSnapshot}=await import('../src/server/demo-state');const h=controlledHarness(),p=await preparedHumanApproval(h);vi.mocked(h.client.getWalletTokenBalance).mockRejectedValueOnce(new Error('Synthetic proven no dispatch'));
+ await h.handler('execute',h.request(p.body),p.id);const original=h.snapshot().execution_ledger[0];expect(original.status).toBe('BLOCKED');
+ expect((await h.handler('renew',manualRequest(h,{expected_version:p.a.aggregate.aggregate_version,predecessor_key:original.idempotency_key,reason:'C2 safe original retirement'}),p.id)).status).toBe(201);
+ await h.load(loadFinancialSourceAdmission(),async()=>{});await preparedHumanApproval(h);
+ const next=structuredClone(h.snapshot());expect(()=>parseDemoStateSnapshot(next)).not.toThrow();next.execution_ledger[0].provider_ref='SYNTHETIC-REF-AFTER-RETIREMENT';expect(()=>parseDemoStateSnapshot(next)).toThrow();
+});

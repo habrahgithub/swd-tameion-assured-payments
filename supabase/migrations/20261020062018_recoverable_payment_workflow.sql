@@ -60,6 +60,15 @@ begin
  end loop;
  for prior in select value from jsonb_array_elements(coalesce(p_old->'execution_ledger','[]'::jsonb)) loop
   select value into current_row from jsonb_array_elements(coalesce(p_new->'execution_ledger','[]'::jsonb)) where value->>'idempotency_key'=prior->>'idempotency_key';
+  -- A posting must keep the actual established proof, not only its digest.
+  -- Legacy SETTLED rows without proof may still acquire their first evidence.
+  if prior->>'status'='SETTLED' and jsonb_typeof(prior->'provider_evidence')='object'
+    and prior->'provider_evidence' is distinct from current_row->'provider_evidence' then return false; end if;
+  -- Include newly admitted retirement events: the CAS which retires an
+  -- existing predecessor cannot also rewrite it. No null-ref exception.
+  if exists (select 1 from jsonb_array_elements(coalesce(p_new->'recovery_events','[]'::jsonb)) event
+    where event->>'predecessor_key'=prior->>'idempotency_key' and event->>'obligation_id'=prior->>'obligation_id')
+    and prior is distinct from current_row then return false; end if;
   if prior ? 'dispatch_evidence' and prior->'dispatch_evidence' is distinct from current_row->'dispatch_evidence' then return false; end if;
   old_rows:=coalesce(prior->'provider_observations','[]'::jsonb);new_rows:=coalesce(current_row->'provider_observations','[]'::jsonb);
   if jsonb_typeof(new_rows) is distinct from 'array' then return false; end if;

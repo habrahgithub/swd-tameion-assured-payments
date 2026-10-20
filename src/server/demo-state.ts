@@ -1,3 +1,4 @@
+import {sameEvmAddressIdentity} from "../execution/evm-address";
 import {z} from 'zod';
 import {parseSourceRevisions,type SourceRevision} from '../domain/source-revision';
 import {assessmentBootstrapSchema,assessmentRecoverySchema,assertAssessmentLineage,type AssessmentBootstrap,type AssessmentRecovery} from "./genuine-assessment-recovery";
@@ -265,6 +266,22 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   const executionLedger = snapshot.execution_ledger.map((value) => parseExecutionRecord(value));
   const executionKeys = executionLedger.map((entry) => entry.idempotency_key);
   if (new Set(executionKeys).size !== executionKeys.length) throw new Error("Persisted execution ledger contains duplicate idempotency keys.");
+  // Every archived predecessor is immutable, even after a newer authority
+  // becomes current and the latest-authorization pointer no longer visits it.
+  for(const event of parseRecoveryEvents(snapshot.recovery_events??[])){
+    const predecessor=executionLedger.find(row=>row.idempotency_key===event.predecessor_key&&row.obligation_id===event.obligation_id);
+    if(!predecessor||sha256Hex(canonicalBytes(predecessor))!==event.predecessor_sha256||event.predecessor_pae.payload.idempotency_key!==event.predecessor_key||event.predecessor_pae.payload.obligation_ids.length!==1||event.predecessor_pae.payload.obligation_ids[0]!==event.obligation_id)throw new Error('Persisted retired predecessor does not match recovery evidence.');
+  }
+  // Receipt presence opts into R1 consistency. Legacy snapshots which never
+  // had postings remain readable; no inferred proof or new receipt is created.
+  if(authority.settlement_postings!==undefined){
+    const postings=z.array(z.object({idempotency_key:z.string().min(1),obligation_id:z.string().min(1),atomic_amount:z.string().regex(/^\d+$/),destination_address:z.string().min(1),evidence_sha256:z.string().regex(/^[a-f0-9]{64}$/),posted_at:z.iso.datetime()}).strict()).parse(authority.settlement_postings);
+    if(new Set(postings.map(p=>p.idempotency_key)).size!==postings.length)throw new Error('Duplicate persisted settlement posting.');
+    for(const posting of postings){
+      const row=executionLedger.find(r=>r.idempotency_key===posting.idempotency_key),proof=row?.provider_evidence;
+      if(!row||row.status!=='SETTLED'||row.obligation_id!==posting.obligation_id||row.atomic_amount!==posting.atomic_amount||!sameEvmAddressIdentity(row.destination_address,posting.destination_address)||!proof||proof.status!=='CONFIRMED'||proof.identity_verified===false||proof.outcome==='SETTLEMENT_MISMATCH'||(proof.atomic_amount??proof.atomicAmount)!==row.atomic_amount||!sameEvmAddressIdentity(proof.destination_address??proof.destinationAddress,row.destination_address)||proof.transaction_id!==undefined&&proof.transaction_id!==row.provider_ref||sha256Hex(canonicalBytes(proof))!==posting.evidence_sha256)throw new Error('Persisted settlement posting does not match execution proof.');
+    }
+  }
   const aggregateIdentities = (authority.aggregates as Array<Record<string, unknown>>).map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
         typeof entry.organization_id !== "string" || typeof entry.obligation_id !== "string" ||

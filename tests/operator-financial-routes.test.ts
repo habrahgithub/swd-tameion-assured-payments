@@ -605,3 +605,19 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'FINANCIAL_AUTHORITY_UNAVAILABLE'});expect(statusReads(h)).toBe(reads);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
 });
+
+
+it('C2 AI-only original packet shape continues the exact release once without rewriting old approvals',async()=>{
+ const {getCurrentSettlementProxyPacket}=await import('../src/server/settlement-proxy-packet');const {sealPaymentRelease}=await import('../src/domain/payment-release-approval');const {contentHash}=await import('../src/domain/linked-instruction');
+ const h=controlledHarness(),p=await preparedApproval(h),state=await h.load(loadFinancialSourceAdmission(),async()=>{}),packet=getCurrentSettlementProxyPacket(state,p.id)!;
+ // Original f4118048 constructor has no HUMAN property. Full independent
+ // baseline constructor equality is replayed separately in isolated SQL.
+ const originalShape={...packet.packet} as Record<string,unknown>;delete originalShape.review_decision;const originalHash=contentHash(originalShape);
+ h.snapshot().payment_release_approvals![0]=sealPaymentRelease({...h.snapshot().payment_release_approvals![0].record,packet_sha256:originalHash});const before=structuredClone(h.snapshot());
+ vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',originalHash);
+ expect((await h.handler('execute',h.request({...p.body,packet_sha256:'0'.repeat(64)}),p.id)).status).toBe(403);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ expect((await h.handler('release',h.request({...p.body,packet_sha256:originalHash,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id)).status).toBe(200);
+ expect((await h.handler('execute',h.request({...p.body,packet_sha256:originalHash}),p.id)).status).toBe(200);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ expect(h.snapshot().payment_release_approvals).toEqual(before.payment_release_approvals);expect(h.snapshot().authorization_history).toEqual(before.authorization_history);expect(h.snapshot().authority.assessments).toEqual(before.authority.assessments);expect(h.snapshot().authority.settlement_postings).toHaveLength(1);
+ expect(packet.packet).not.toHaveProperty('review_decision');expect(packet.packet_sha256).toBe(originalHash);
+});
