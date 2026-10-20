@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import {webcrypto} from 'node:crypto';
-import {preparedHumanApproval} from './test-support/manual-payment-fixture';
+import {manualRequest,preparedHumanApproval} from './test-support/manual-payment-fixture';
 import {POST as reviewPOST} from '../app/api/obligations/[id]/review/route';
 import {POST as executePOST} from '../app/api/obligations/[id]/execute/route';
 import {afterEach,expect,it,vi} from 'vitest';
@@ -207,4 +207,59 @@ it('C1 a retained review draft cannot replace the current source edit fields',as
  render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-C1-SOURCE-DRAFT" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>);
  fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 unsent manual input'}});fireEvent.click(screen.getByText('Edit payable / Save correction'));
  expect((screen.getByLabelText('Supplier name') as HTMLInputElement).value).toBe(invoice.supplier_name);expect((screen.getByLabelText('Exact amount') as HTMLInputElement).value).toBe(invoice.amount);expect(fetch).not.toHaveBeenCalled();
+});
+
+const s06PreflightPath='/api/internal/demo/real-testnet-payment/preflight';
+const s06FundsReason='The current balance does not cover the approved payment total and network fee.';
+const s06FeeReason='The current network fee quote exceeds the approved fee cap.';
+function s06View(id='SYNTHETIC-S06-CHILD'){return {...c1View(id),allowed_actions:['REFRESH_READINESS']};}
+it.each([['INSUFFICIENT_BALANCE','initial'],['INSUFFICIENT_BALANCE','repeated'],['FEE_CAP_EXCEEDED','initial'],['FEE_CAP_EXCEEDED','repeated']] as const)('S06-F01 shows canonical %s cause and safe remedy for %s check',async(blocker,shape)=>{
+ const h=controlledHarness(),id=h.source.source.obligation_id;
+ const review=await h.handler('review',manualRequest(h,{expected_version:1,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Synthetic S06 source reviewed',evidence_ids:h.source.source.source_evidence.map(e=>e.evidence_id),finding_dispositions:[]}),id);expect(review.status).toBe(201);
+ const balance=vi.mocked(h.client.getWalletTokenBalance),fee=vi.mocked(h.client.estimateTransferFee);
+ const originalBalance=balance.getMockImplementation()!;
+ if(blocker==='INSUFFICIENT_BALANCE')balance.mockResolvedValue({data:{tokenBalances:[{amount:'1.001999',token:{id:'TEST-NATIVE-USDC',symbol:'USDC',blockchain:'ARC-TESTNET',decimals:6,isNative:true}}],pagination:{nextPageAfter:null}}});
+ else fee.mockResolvedValue({data:{medium:{networkFee:'0.002001'}}});
+ const first=await h.handler('preflight',h.request({obligation_id:id,expected_version:1}));expect(first.status).toBe(409);const initial=await first.json();expect(initial).toMatchObject({readiness:'BLOCKED',blocker});expect(initial.code).toBeUndefined();
+ balance.mockImplementation(originalBalance);fee.mockResolvedValue({data:{medium:{networkFee:h.source.estimated_fee_ceiling}}});
+ expect((await h.handler('preflight',h.request({obligation_id:id,expected_version:1}))).status).toBe(200);
+ if(blocker==='INSUFFICIENT_BALANCE')balance.mockResolvedValue({data:{tokenBalances:[{amount:'1.001999',token:{id:'TEST-NATIVE-USDC',symbol:'USDC',blockchain:'ARC-TESTNET',decimals:6,isNative:true}}],pagination:{nextPageAfter:null}}});
+ else fee.mockResolvedValue({data:{medium:{networkFee:'0.002001'}}});
+ const repeatedResponse=await h.handler('preflight',h.request({obligation_id:id,expected_version:2}));expect(repeatedResponse.status).toBe(409);const repeated=await repeatedResponse.json();expect(repeated).toMatchObject({readiness:'BLOCKED',blocker,code:'READINESS_REFRESHED',authority_preserved:true});
+ const changed=vi.fn(),sent:{key:string|null;body:string}[]=[];let responseBody=shape==='initial'?initial:repeated;
+ const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{expect(String(url)).toBe(s06PreflightPath);sent.push({key:new Headers(init?.headers).get('Idempotency-Key'),body:String(init?.body)});return Response.json(responseBody,{status:409});});vi.stubGlobal('fetch',fetcher);
+ const detail={...s06View(id),aggregate:{aggregate_version:2}},mount=()=>render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-S06-SESSION" onChanged={changed} readModel={{detail,createAllowed:false}}/>),mounted=mount();
+ const reason=blocker==='INSUFFICIENT_BALANCE'?s06FundsReason:s06FeeReason;
+ fireEvent.click(await screen.findByText('Refresh payment readiness'));await screen.findByText(new RegExp(reason.replace('.','\\.')));
+ const message=screen.getByText(new RegExp(reason.replace('.','\\.'))).textContent!;expect(message).toContain(blocker);expect(message).toContain(blocker==='INSUFFICIENT_BALANCE'?'Use the approved funding process':'Obtain a compliant current quote or renewed approved terms');expect(message).toContain('refresh current payment readiness');
+ expect(message).not.toContain('COMMAND_UNVERIFIED');expect(changed).not.toHaveBeenCalled();expect(fetcher).toHaveBeenCalledOnce();
+ const retained=sessionStorage.getItem(sessionStorage.key(0)!)!;responseBody=repeated;
+ fireEvent.click(screen.getByText('Recover original pending command'));await waitFor(()=>expect(sent).toHaveLength(2));await screen.findByText(new RegExp(reason.replace('.','\\.')));expect(sent[1]).toEqual(sent[0]);expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe(retained);
+ mounted.unmount();mount();expect(fetcher).toHaveBeenCalledTimes(2);fireEvent.click(await screen.findByText('Recover original pending command'));await waitFor(()=>expect(sent).toHaveLength(3));await screen.findByText(new RegExp(reason.replace('.','\\.')));expect(sent[2]).toEqual(sent[0]);expect(changed).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.snapshot().execution_ledger).toEqual([]);expect(h.snapshot().authority.settlement_postings??[]).toEqual([]);
+});
+const s06Blocked={readiness:'BLOCKED',blocker:'INSUFFICIENT_BALANCE',captured_at:'2026-10-20T12:00:00.000Z'};
+it.each([
+ ['explicit outcome',409,{...s06Blocked,code:'OUTCOME_UNVERIFIED'}],['other code',409,{...s06Blocked,code:'SESSION_REQUIRED'}],['null code',409,{...s06Blocked,code:null}],
+ ['retry forbidden',409,{...s06Blocked,retry_submission:false}],['retry hint',409,{...s06Blocked,retry_submission:true}],['execution gate',409,{...s06Blocked,execution_gate:'RECONCILE_ORIGINAL_INTENT'}],['null execution gate',409,{...s06Blocked,execution_gate:null}],
+ ['execution',409,{...s06Blocked,execution:{status:'UNKNOWN'}}],['null execution',409,{...s06Blocked,execution:null}],['outcome',409,{...s06Blocked,outcome:'UNKNOWN'}],['status field',409,{...s06Blocked,status:'SUBMITTING'}],['extra field',409,{...s06Blocked,unknown:true}],
+ ['wrong readiness',409,{...s06Blocked,readiness:'READY'}],['unknown blocker',409,{...s06Blocked,blocker:'PROVIDER_QUERY_FAILED'}],['missing blocker',409,{readiness:'BLOCKED'}],['wrong blocker type',409,{...s06Blocked,blocker:['INSUFFICIENT_BALANCE']}],
+ ['wrong status',503,s06Blocked],['wrong success status',200,s06Blocked],['array',409,[s06Blocked]],['null',409,null],['primitive',409,'INSUFFICIENT_BALANCE'],
+ ['bad timestamp',409,{...s06Blocked,captured_at:false}],['bad version',409,{...s06Blocked,aggregate_version:'2'}],['contradictory preservation',409,{...s06Blocked,code:'READINESS_REFRESHED',authority_preserved:false}],
+ ['arbitrary backend remedy',409,{...s06Blocked,remedy:'SYNTHETIC untrusted automatic send instruction'}],['transport',0,s06Blocked],
+] as const)('S06-F01 remains conservative for %s',async(_name,status,payload)=>{
+ const fetcher=vi.fn(async()=>{if(status===0)throw Error('Synthetic lost response');return Response.json(payload,{status});});vi.stubGlobal('fetch',fetcher);const changed=vi.fn(),detail=s06View();
+ render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-S06-NEGATIVE" onChanged={changed} readModel={{detail,createAllowed:false}}/>);fireEvent.click(await screen.findByText('Refresh payment readiness'));
+ await waitFor(()=>expect((screen.getByText('Refresh payment readiness') as HTMLButtonElement).disabled).toBe(false));expect(screen.queryByText(new RegExp(s06FundsReason))).toBeNull();expect(screen.queryByText(new RegExp(s06FeeReason))).toBeNull();expect(fetcher).toHaveBeenCalledOnce();
+ if(status!==200){expect(changed).not.toHaveBeenCalled();expect(screen.getByText('Recover original pending command')).toBeTruthy();expect(sessionStorage.length).toBe(1);}
+ if(payload&&typeof payload==='object'&&!Array.isArray(payload)&&'code' in payload&&typeof payload.code==='string')expect(screen.getByText(new RegExp(payload.code))).toBeTruthy();
+});
+it('S06-F01 known funding-shaped data on another command path never receives readiness guidance',async()=>{
+ const detail={...c1View(),allowed_actions:['PREPARE_SUCCESSOR'],execution:{idempotency_key:'SYNTHETIC-ORIGINAL'}},fetcher=vi.fn(async()=>Response.json(s06Blocked,{status:409}));vi.stubGlobal('fetch',fetcher);
+ render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-S06-PATH" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>);fireEvent.change(await screen.findByLabelText('Recovery rationale'),{target:{value:'Explicit evidence only'}});fireEvent.click(screen.getByText('Prepare evidence-supported successor'));await screen.findByText(/COMMAND_UNVERIFIED/);expect(screen.queryByText(new RegExp(s06FundsReason))).toBeNull();expect(fetcher).toHaveBeenCalledOnce();
+});
+it.each(['selection','session'] as const)('S06-F01 late preflight refusal cannot mutate a new %s context',async(boundary)=>{
+ let finish!:(r:Response)=>void;const fetcher=vi.fn(async()=>new Promise<Response>(resolve=>finish=resolve));vi.stubGlobal('fetch',fetcher);const changed=vi.fn(),detail=s06View();
+ const props={selectedId:detail.record.obligation_id,csrfToken:'SYNTHETIC-S06-A',onChanged:changed,readModel:{detail,createAllowed:false}},mounted=render(<SourceWorkflowPanel {...props}/>);fireEvent.click(await screen.findByText('Refresh payment readiness'));
+ const next=boundary==='session'?{...props,csrfToken:'SYNTHETIC-S06-B'}:{...props,selectedId:'SYNTHETIC-S06-OTHER',readModel:{detail:s06View('SYNTHETIC-S06-OTHER'),createAllowed:false}};mounted.rerender(<SourceWorkflowPanel {...next}/>);await act(async()=>finish(Response.json(s06Blocked,{status:409})));
+ expect(screen.queryByText(new RegExp(s06FundsReason))).toBeNull();expect(screen.queryByText('Recover original pending command')).toBeNull();expect((screen.getByText('Refresh payment readiness') as HTMLButtonElement).disabled).toBe(false);expect(changed).not.toHaveBeenCalled();expect(fetcher).toHaveBeenCalledOnce();
 });

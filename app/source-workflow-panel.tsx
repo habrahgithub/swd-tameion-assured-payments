@@ -27,6 +27,19 @@ function retainedPanel(scope:string,target:string,serialized?:string):RetainedPa
   return saved;
  }catch{return null;}
 }
+function preflightRefusalMessage(path:string,status:number,data:unknown):string|null {
+ if(path!=='/api/internal/demo/real-testnet-payment/preflight'||status!==409||!data||typeof data!=='object'||Array.isArray(data))return null;
+ const result=data as Record<string,unknown>;
+ // Only canonical read-only refusals receive guidance. Extra execution/outcome
+ // fields, retry hints and other codes keep the existing conservative response.
+ if(Object.keys(result).some(key=>!['readiness','blocker','captured_at','code','aggregate_version','authority_preserved','error'].includes(key))||result.readiness!=='BLOCKED'||
+  'code' in result&&result.code!=='READINESS_REFRESHED'||'authority_preserved' in result&&result.authority_preserved!==true||
+  'aggregate_version' in result&&(!Number.isSafeInteger(result.aggregate_version)||(result.aggregate_version as number)<1)||
+  'captured_at' in result&&(typeof result.captured_at!=='string'||!Number.isFinite(Date.parse(result.captured_at)))||'error' in result&&typeof result.error!=='string')return null;
+ if(result.blocker==='INSUFFICIENT_BALANCE')return 'INSUFFICIENT_BALANCE. The current balance does not cover the approved payment total and network fee. Use the approved funding process, then refresh current payment readiness before proceeding. This read-only check did not submit a payment.';
+ if(result.blocker==='FEE_CAP_EXCEEDED')return 'FEE_CAP_EXCEEDED. The current network fee quote exceeds the approved fee cap. Obtain a compliant current quote or renewed approved terms, then refresh current payment readiness and review the exact payment details before proceeding. This check does not increase the fee cap or submit payment.';
+ return null;
+}
 /** Same authenticated commands as direct API clients. Capabilities come from the
  * server; form presence never establishes financial readiness or wallet control. */
 export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{selectedId:string;csrfToken:string;onChanged:()=>void;readModel?:{detail:SourceWorkflowView|null;createAllowed:boolean}}){
@@ -68,7 +81,7 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   const key=request.current.key;setPending(request.current);if(!persist()){setMessage('Pending command could not be retained. Enable tab storage before submitting.');return;}setBusy(true);setMessage('Saving; awaiting committed readback.');
   try{const response=await fetch(path,{method,headers:{'Content-Type':'application/json','X-Tameion-CSRF':csrfToken,'Idempotency-Key':key},body:JSON.stringify(body)}),data=await response.json();
    if(!lifetime.current||owned!==generation.current)return;
-   if(!response.ok){setMessage(`${data.code??'COMMAND_UNVERIFIED'}. ${data.remedy??'Read current status before trying another action.'}`);return;}
+   if(!response.ok){setMessage(preflightRefusalMessage(path,response.status,data)??`${data.code??'COMMAND_UNVERIFIED'}. ${data.remedy??'Read current status before trying another action.'}`);return;}
    setMessage(data.replayed?'Original review receipt recovered (historical only; no current authorization restored).':data.committed?'Source revision saved and read back.':'Command recorded. Refreshing committed status.');setEditing(false);request.current=null;setPending(null);try{sessionStorage.removeItem(storageKey);}catch{/* No new browser authority. */}onChanged();
    if(selectedId&&!readModel){const read=await fetch(`/api/obligations/${encodeURIComponent(selectedId)}`,{cache:'no-store'});const current=await read.json();if(read.ok&&owned===generation.current)setView(current);}
   }catch{if(owned===generation.current)setMessage('Acknowledgement unavailable. Refresh committed status; the original request identity is retained.');}
