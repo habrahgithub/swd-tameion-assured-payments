@@ -7,6 +7,7 @@ import {DemoStateConflictError} from '../src/server/supabase-demo-state-reposito
 import type {AuthContext} from '../src/server/operator-auth';
 import type {OperatorSourceView} from '../src/server/operator-source-records';
 
+import {sourceFieldsSchema,sourceIdentity} from '../src/domain/source-revision';
 import {sourceHarness,invoice} from './test-support/source-workflow-fixture';
 describe('server-owned source creation and correction',()=>{
  it('commits complete invoice, reads back and corrects its original lineage without AI/provider access',async()=>{
@@ -173,4 +174,63 @@ it.each(['permission','actor','credential','session','late_session','ingress','b
  if(gate==='binding')h.source.state_binding.namespace='SYNTHETIC-WRONG-NAMESPACE';
  const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length,response=await h.handler('review',h.request(body,key),id);
  expect(response.status).toBe(gate==='session'||gate==='late_session'?401:gate==='binding'?409:403);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.snapshot()).toEqual(before);
+});
+
+
+describe('S02-F01 nonthrowing exact amount validation',()=>{
+ const invalidAmounts=[
+  {name:'scientific',amount:'1e0'},{name:'upper scientific',amount:'1E2'},
+  {name:'alphabetic',amount:'abc'},{name:'comma separator',amount:'1,00'},
+  {name:'multiple separators',amount:'1.2.3'},{name:'hexadecimal',amount:'0x10'},
+  {name:'empty',amount:''},{name:'negative',amount:'-1.00'},{name:'zero',amount:'0.00'},
+  {name:'integer text',amount:'1'},{name:'one decimal',amount:'1.0'},{name:'three decimals',amount:'1.000'},
+  {name:'leading zero',amount:'01.00'},{name:'leading space',amount:' 1.00'},{name:'trailing space',amount:'1.00 '},
+  {name:'oversize',amount:'1000000000000.00'},{name:'long bounded text',amount:'9'.repeat(100)+'.00'},
+  {name:'null',amount:null},{name:'number',amount:1},{name:'boolean',amount:true},
+  {name:'object',amount:{}},{name:'array',amount:[]},{name:'missing',amount:undefined},
+ ];
+ it.each(invalidAmounts)('safeParse reports the $name amount issue without throwing',({amount})=>{
+  let result:ReturnType<typeof sourceFieldsSchema.safeParse>|undefined;
+  expect(()=>{result=sourceFieldsSchema.safeParse({...invoice,amount});}).not.toThrow();
+  expect(result?.success).toBe(false);
+  if(result&&!result.success)expect(result.error.issues.some(issue=>issue.path.join('.')==='amount')).toBe(true);
+ });
+ for(const operation of ['create','correction'] as const){
+  it.each(invalidAmounts)(`${operation} returns typed400 for $name without CAS, state change or send`,async({amount})=>{
+   const h=sourceHarness(),network=vi.fn(()=>{throw new Error('S02-F01 external network forbidden');});vi.stubGlobal('fetch',network);
+   let id:string|undefined;
+   if(operation==='correction'){
+    const made=await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Valid synthetic source before malformed correction'}));expect(made.status).toBe(201);id=(await made.json()).obligation.obligation_id;
+    const reviewed=await h.handler('review',h.request({expected_version:1,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Current synthetic source reviewed before invalid edit',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]}),id);expect(reviewed.status).toBe(201);const review=await reviewed.json();
+    expect((await h.handler('draft',h.request({expected_version:1,review_decision_id:review.review_decision.decision_id,review_decision_hash:review.review_decision_hash}),id)).status).toBe(201);
+   }
+   const before=structuredClone(await h.repository.loadExisting()),writes=h.repository.compareAndSet.mock.calls.length;
+   const body={expected_revision:id?1:0,...(id?{expected_version:1}:{}),fields:{...invoice,amount},reason:'Reject malformed amount as an actionable source field error'};
+   const keyed=h.request(body),request=new Request('https://synthetic.invalid/api/obligations'+(id?'/'+id:''),{method:id?'PATCH':'POST',headers:keyed.headers,body:JSON.stringify(body)});
+   const response=await h.handler('save',request,id),reply=await response.json();
+   expect(await h.repository.loadExisting()).toEqual(before);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(network).not.toHaveBeenCalled();
+   expect(response.status).toBe(400);expect(reply).toMatchObject({code:'SOURCE_FIELDS_INVALID'});expect(reply.fields).toEqual(expect.arrayContaining([expect.objectContaining({field:'fields.amount'})]));
+  });
+ }
+ for(const currency of ['USD','AED'] as const)for(const kind of ['INVOICE','PREPAID_RECHARGE'] as const){
+  it.each(['0.01','1.00','12.34','999999999999.99'])(`preserves exact positive %s ${currency} ${kind}`,async amount=>{
+   const {invoice_number,invoice_issue_date,payment_terms,due_date,...common}=invoice;
+   const fields=kind==='INVOICE'?{...invoice,amount,currency}:{...common,kind,amount,currency,service_reference:'SYNTHETIC-S02-SERVICE',purpose:'Legitimate synthetic prepaid facts',service_date:'2026-10-20'};
+   const parsed=sourceFieldsSchema.safeParse(fields);expect(parsed.success).toBe(true);if(parsed.success){expect(parsed.data.amount).toBe(amount);expect(parsed.data.currency).toBe(currency);}
+   const h=sourceHarness(),saved=await h.handler('save',h.request({expected_revision:0,fields,reason:'Supported exact amount must remain valid'}));expect(saved.status).toBe(201);const data=await saved.json();expect(data.source_revision.fields).toEqual(fields);expect(data.source_revision.identity_sha256).toBe(sourceIdentity(sourceFieldsSchema.parse(fields)));expect(h.snapshot().execution_ledger).toEqual([]);
+  });
+ }
+ it('recovers after scientific correction rejection with a new valid source, fresh review and new draft',async()=>{
+  const h=sourceHarness(),made=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic source recovery'}))).json(),id=made.obligation.obligation_id;
+  const reviewBody={expected_version:1,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Review synthetic source',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]};
+  const original=await(await h.handler('review',h.request(reviewBody),id)).json();await h.handler('draft',h.request({expected_version:1,review_decision_id:original.review_decision.decision_id,review_decision_hash:original.review_decision_hash}),id);
+  const before=structuredClone(await h.repository.loadExisting()),writes=h.repository.compareAndSet.mock.calls.length;
+  const denied=await h.handler('save',h.request({expected_revision:1,expected_version:1,fields:{...invoice,amount:'1e0'},reason:'Malformed correction'}),id);
+  expect(await h.repository.loadExisting()).toEqual(before);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(denied.status).toBe(400);expect((await denied.json()).code).toBe('SOURCE_FIELDS_INVALID');
+  const fixed=await h.handler('save',h.request({expected_revision:1,expected_version:1,fields:{...invoice,description:'Corrected actual synthetic service facts'},reason:'Replace invalid edit with valid exact source facts'}),id);expect(fixed.status).toBe(201);
+  const current=await(await h.handler('detail',new Request('https://synthetic.invalid'),id)).json();expect(current.current_review_decision).toBeNull();
+  const fresh=await(await h.handler('review',h.request({...reviewBody,expected_version:2,rationale:'Fresh corrected source reviewed'}),id)).json();expect(fresh.review_decision_hash).not.toBe(original.review_decision_hash);
+  expect((await h.handler('draft',h.request({expected_version:2,review_decision_id:fresh.review_decision.decision_id,review_decision_hash:fresh.review_decision_hash}),id)).status).toBe(201);
+  expect(h.snapshot().source_revisions).toHaveLength(2);expect(h.snapshot().authority.review_decisions).toHaveLength(2);expect(h.snapshot().linked_settlement_instructions).toHaveLength(2);expect(h.snapshot().execution_ledger).toEqual([]);expect(h.snapshot().authority.settlement_postings??[]).toEqual([]);
+ });
 });

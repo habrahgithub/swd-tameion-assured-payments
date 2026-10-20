@@ -5,7 +5,7 @@ import {convertSourceToSettlement} from './currency-conversion';
 
 const text=(max=128)=>z.string().trim().min(1).max(max);
 const evidence=z.object({evidence_id:text().regex(/^[\x20-\x7E]+$/,'Evidence identifiers must be printable ASCII'),content_sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
-const common={supplier_name:text(256),description:text(2048),amount:z.string().regex(/^(0|[1-9][0-9]{0,11})\.[0-9]{2}$/).refine(v=>BigInt(v.replace('.',''))>0n),currency:z.enum(['USD','AED']),payer_circle_wallet_id:text(),evidence:z.array(evidence).min(1).max(16)};
+const common={supplier_name:text(256),description:text(2048),amount:z.string().regex(/^(0|[1-9][0-9]{0,11})\.[0-9]{2}$/).pipe(z.string().refine(v=>BigInt(v.replace('.',''))>0n)),currency:z.enum(['USD','AED']),payer_circle_wallet_id:text(),evidence:z.array(evidence).min(1).max(16)};
 export const sourceFieldsSchema=z.discriminatedUnion('kind',[
   z.object({...common,kind:z.literal('INVOICE'),invoice_number:text(),invoice_issue_date:z.iso.date(),payment_terms:text(256),due_date:z.iso.date()}).strict(),
   z.object({...common,kind:z.literal('PREPAID_RECHARGE'),service_reference:text(),purpose:text(1024),service_date:z.iso.date()}).strict(),
