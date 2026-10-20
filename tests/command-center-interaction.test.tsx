@@ -1773,6 +1773,9 @@ describe("Command Center mounted Operational Report", () => {
     ["unrecognised-refusal", 409, '{"code":"UNRECOGNISED","blocker":"INSUFFICIENT_BALANCE"}'],
     ["mixed-known-refusal", 403, '{"code":"CSRF_REJECTED","outcome":"UNKNOWN"}'],
     ["mixed-unknown", 503, '{"code":"OUTCOME_UNVERIFIED","blocker":"INSUFFICIENT_BALANCE","error":"Retry"}'],
+    ["wallet-extra-outcome",503,'{"code":"BALANCE_NOT_VERIFIED","outcome":"UNKNOWN"}'],
+    ["wallet-extra-retry",503,'{"code":"BALANCE_NOT_VERIFIED","retry_submission":false}'],
+    ["wallet-wrong-status",409,'{"code":"BALANCE_NOT_VERIFIED"}'],
   ] as const)("retains no-retry after %s execute response and unchanged or lost readback", async (_case,status,body) => {
     const id="TESTNET-CONTROLLED-TRANSPORT-UNCERTAIN", authorized=proxyPrepared(sealedDetail(id));
     Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
@@ -1796,6 +1799,41 @@ describe("Command Center mounted Operational Report", () => {
     await waitFor(()=>expect(fetchMock.mock.calls.filter(([url,init])=>String(url).endsWith(id)&&init?.method!=="POST").length).toBeGreaterThanOrEqual(3));
     expect(screen.getByRole("alert").textContent).toMatch(/do not retry or resubmit/i);
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+  });
+
+  it('S05-F01 permits deliberate same-body confirmation after exact wallet refusal without automatic submission',async()=>{
+    const id='TESTNET-CONTROLLED-S05-REFUSAL',authorized=proxyPrepared(sealedDetail(id));
+    Object.assign(authorized.aggregate,{destination_verification_status:'VERIFIED',destination_operational_status:'ACTIVE',source_wallet_status:'ACTIVE',product_trust_provenance:'CURRENT_PRODUCT_EVIDENCE'});
+    const key='SYNTHETIC-S05-ORIGINAL-KEY',hash='d'.repeat(64);
+    authorized.execution_packet={packet_sha256:'c'.repeat(64),packet:{obligation_id:id,pae:{instruction_hash:hash,idempotency_key:key}}};authorized.sealed_pae_instruction_hash=hash;authorized.execution_gate='PORTAL_APPROVED_EXACT_PACKET';
+    const bodies:string[]=[];
+    fetchMock.mockImplementation((input,init)=>{
+      if(init?.method==='POST'){
+        expect(String(input)).toBe(`/api/obligations/${id}/execute`);bodies.push(String(init.body));
+        if(bodies.length===1)return Promise.resolve(response({code:'BALANCE_NOT_VERIFIED'},503));
+        return Promise.resolve(response({code:'RECONCILIATION_ONLY',execution:{obligation_id:id,idempotency_key:key,status:'UNKNOWN'}},202));
+      }
+      return Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[obligation(id,true)]}:authorized));
+    });
+    renderWithExplicitFirstSelection('SYNTHETIC-S05-CSRF');await screen.findByRole('region',{name:'Genuine obligation workspace'});navigateStage('Payment');
+    fireEvent.click(screen.getByRole('checkbox',{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole('button',{name:'Pay testnet USDC'}));
+    expect(await screen.findByText(/The request did not succeed \(BALANCE_NOT_VERIFIED\)/)).toBeTruthy();
+    expect(screen.queryByText(/Payment may have been submitted/)).toBeNull();
+    const pay=await screen.findByRole('button',{name:'Pay testnet USDC'});expect(bodies).toHaveLength(1);
+    const confirm=screen.getByRole('checkbox',{name:/I have reviewed the exact testnet/}) as HTMLInputElement;if(confirm.checked)fireEvent.click(confirm);expect((pay as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(confirm);fireEvent.click(pay);
+    await screen.findByText(/An execution attempt is recorded/);expect(bodies).toHaveLength(2);expect(bodies[1]).toBe(bodies[0]);expect(JSON.parse(bodies[1])).toMatchObject({packet_sha256:'c'.repeat(64),pae_instruction_hash:hash});
+    expect(screen.queryByRole('button',{name:'Pay testnet USDC'})).toBeNull();
+  });
+
+  it('S05-F01 late known refusal never grants a different selection or stale read payment authority',async()=>{
+    const id='TESTNET-CONTROLLED-S05-LATE',other='SYNTHETIC-S05-OTHER',authorized=proxyPrepared(sealedDetail(id)),pending=deferred<Response>();let failOriginal=false;
+    Object.assign(authorized.aggregate,{destination_verification_status:'VERIFIED',destination_operational_status:'ACTIVE',source_wallet_status:'ACTIVE',product_trust_provenance:'CURRENT_PRODUCT_EVIDENCE'});
+    authorized.execution_packet={packet_sha256:'c'.repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash='d'.repeat(64);authorized.execution_gate='PORTAL_APPROVED_EXACT_PACKET';
+    fetchMock.mockImplementation((input,init)=>init?.method==='POST'?pending.promise:Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[obligation(id,true),obligation(other)]}:String(input).endsWith(other)?detail(other):failOriginal?{code:'STATE_UNAVAILABLE'}:authorized,failOriginal&&String(input).endsWith(id)?503:200)));
+    renderWithExplicitFirstSelection();await screen.findByRole('region',{name:'Genuine obligation workspace'});navigateStage('Payment');fireEvent.click(screen.getByRole('checkbox',{name:/I have reviewed the exact testnet/}));fireEvent.click(screen.getByRole('button',{name:'Pay testnet USDC'}));
+    fireEvent.click(obligationRow(other));await screen.findByRole('button',{name:'Run AI Assessment'});await act(async()=>pending.resolve(response({code:'BALANCE_NOT_VERIFIED'},503)));
+    expect(screen.queryByRole('button',{name:'Pay testnet USDC'})).toBeNull();failOriginal=true;fireEvent.click(obligationRow(id));await screen.findByText(/Payable details are unavailable/);expect(screen.queryByRole('button',{name:'Pay testnet USDC'})).toBeNull();expect(fetchMock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1);
   });
 
   it("preserves definitive pre-effect CSRF refusal recovery without claiming an uncertain submission",async()=>{

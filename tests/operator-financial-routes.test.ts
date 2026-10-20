@@ -1,4 +1,5 @@
 import {sourceFixture,productionAuthorityFixture,controlledHarness,preparedApproval,directory,cleanupSyntheticFinancialFixture} from './test-support/financial-fixture';
+import {executionResponseNeedsReconciliation} from '../src/client/command-center-requests';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
@@ -9,6 +10,34 @@ import {isCurrentSourceEligible,loadPublicSourceRecords} from '../src/server/sou
 vi.unmock('../src/server/source-records');
 
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();cleanupSyntheticFinancialFixture();});
+describe('S05-F01 exact no-effect wallet response provenance',()=>{
+ async function humanPayment(){
+  const h=controlledHarness(),id=h.source.source.obligation_id;
+  const review=async(version:number,key:string)=>{
+   const req=h.request({expected_version:version,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Explicit synthetic HUMAN review;AI OFF',evidence_ids:h.source.source.source_evidence.map(e=>e.evidence_id),finding_dispositions:[]});req.headers.set('Idempotency-Key',key);
+   const result=await h.handler('review',req,id);expect(result.status).toBe(201);return result.json();
+  };
+  await review(1,'00000000-0000-4000-8000-000000000901');expect((await h.handler('preflight',h.request({obligation_id:id,expected_version:1}))).status).toBe(200);
+  const current=await review(2,'00000000-0000-4000-8000-000000000902');
+  const approved=await h.handler('approve',h.request({expected_version:2,reviewed_decision_id:current.review_decision.decision_id,reviewed_decision_hash:current.review_decision_hash,reason_text:'Exact HUMAN-approved synthetic payment'}),id);expect(approved.status).toBe(200);const a=await approved.json();
+  const body={expected_version:a.aggregate.aggregate_version,packet_sha256:a.packet_sha256,pae_instruction_hash:a.pae_instruction_hash,confirmation:'SUBMIT EXACT TESTNET SETTLEMENT PROXY'};
+  expect((await h.handler('release',h.request({...body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),id)).status).toBe(200);return {h,id,body};
+ }
+ it('S05-F01 exact canonical wallet503 precedes every execution effect and remains the original request',async()=>{
+  const {h,id,body}=await humanPayment(),before=structuredClone(h.snapshot()),revision=h.revision(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async revalidate=>{await revalidate();throw new AccessError('BALANCE_NOT_VERIFIED',503);}});
+  const result=await action('execute',h.request(body),id),data=await result.json();expect({status:result.status,data}).toEqual({status:503,data:{code:'BALANCE_NOT_VERIFIED'}});
+  expect(h.snapshot()).toEqual(before);expect(h.revision()).toBe(revision);expect(vi.mocked(h.repo.compareAndSet)).toHaveBeenCalledTimes(writes);expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.snapshot().execution_ledger).toEqual([]);
+  expect(executionResponseNeedsReconciliation({status:result.status,data})).toBe(false);
+ });
+ it('S05-F01 contains same-named AccessError after effectsStarted as no-retry uncertainty',async()=>{
+  const {h,id,body}=await humanPayment(),before=structuredClone(h.snapshot()),revision=h.revision(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const load:FinancialDependencies['load']=async(...args)=>{const state=await h.load(...args);vi.spyOn(state.worker,'execute').mockRejectedValue(new AccessError('BALANCE_NOT_VERIFIED',503));return state;};
+  const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,providerBoundary:async revalidate=>{await revalidate();}});
+  const result=await action('execute',h.request(body),id),data=await result.json();expect({status:result.status,data}).toEqual({status:503,data:{code:'OUTCOME_UNVERIFIED',execution_gate:'RECONCILIATION_ONLY',retry_submission:false}});
+  expect(executionResponseNeedsReconciliation({status:result.status,data})).toBe(true);expect(h.snapshot()).toEqual(before);expect(h.revision()).toBe(revision);expect(vi.mocked(h.repo.compareAndSet)).toHaveBeenCalledTimes(writes);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
 describe('independent controlled testnet source admission',()=>{
  it('admits exactly the independently approved fresh source without restoring public data',()=>{const p=sourceFixture();expect(isCurrentSourceEligible(p.organization_id,p.source.obligation_id)).toBe(true);expect(loadPublicSourceRecords()).toEqual([]);expect(isCurrentSourceEligible(p.organization_id,'OBL-J0C-003')).toBe(false);});
 });

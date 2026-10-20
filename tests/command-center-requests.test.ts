@@ -147,6 +147,26 @@ describe("recovery key release requires the complete receipt validator used for 
 });
 
 describe("execute production response contract", () => {
+  it('S05-F01 recognises the exact pre-effect wallet refusal only',()=>{
+    expect(executionResponseNeedsReconciliation({status:503,data:{code:'BALANCE_NOT_VERIFIED'}})).toBe(false);
+  });
+  it.each([0,200,202,400,401,403,409,500,502,504])('S05-F01 keeps wallet code uncertain at status %s',status=>{
+    expect(executionResponseNeedsReconciliation({status,data:{code:'BALANCE_NOT_VERIFIED'}})).toBe(true);
+  });
+  it.each([
+    null,[],['BALANCE_NOT_VERIFIED'],'BALANCE_NOT_VERIFIED',{},
+    Object.assign(Object.create({code:'BALANCE_NOT_VERIFIED'}),{other:true}),
+    {code:'PROVIDER_BALANCE_NOT_VERIFIED'},{code:'OUTCOME_UNVERIFIED'},
+    {code:'BALANCE_NOT_VERIFIED',outcome:'UNKNOWN'},
+    {code:'BALANCE_NOT_VERIFIED',retry_submission:false},
+    {code:'BALANCE_NOT_VERIFIED',retry_submission:true},
+    {code:'BALANCE_NOT_VERIFIED',execution:{status:'UNKNOWN'}},
+    {code:'BALANCE_NOT_VERIFIED',execution_gate:'RECONCILIATION_ONLY'},
+    {code:'BALANCE_NOT_VERIFIED',error:'Retry'},
+    {code:'NO_RECORDED_EXECUTION'},
+  ])('S05-F01 preserves uncertainty for non-exact wallet response %j',data=>{
+    expect(executionResponseNeedsReconciliation({status:503,data})).toBe(true);
+  });
   it.each([
     [400,"BODY_REJECTED"], [408,"BODY_REJECTED"], [413,"BODY_REJECTED"],
     [415,"CONTENT_TYPE_REJECTED"], [405,"METHOD_NOT_ALLOWED"],

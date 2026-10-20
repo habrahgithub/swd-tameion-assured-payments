@@ -56,12 +56,15 @@ export function interpretPostResponse(status: number, text: string): PostInterpr
  * session/requester/worker failures are deliberately excluded: they can occur
  * during later revalidation. This is presentation containment, not authority. */
 export function executionResponseNeedsReconciliation(result: { status: number; data: unknown }): boolean {
-  if (result.status < 400 || result.status >= 500 || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return true;
+  if (result.status < 400 || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return true;
   const reply = result.data as Record<string, unknown>;
   // Production pre-effect refusals are exactly {code}. Extra fields cannot
   // contradict or masquerade as that contract and release an uncertainty lock.
   if (Object.keys(reply).length !== 1) return true;
   switch (reply.code) {
+    // The read-only wallet boundary precedes effectsStarted; later failures are
+    // wrapped as OUTCOME_UNVERIFIED. This never grants financial authority.
+    case "BALANCE_NOT_VERIFIED": return result.status !== 503 || !Object.hasOwn(reply, "code");
     case "BODY_REJECTED": return ![400, 408, 413].includes(result.status);
     case "CONTENT_TYPE_REJECTED": return result.status !== 415;
     case "METHOD_NOT_ALLOWED": return result.status !== 405;
