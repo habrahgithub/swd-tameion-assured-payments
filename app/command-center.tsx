@@ -1547,7 +1547,7 @@ function PrimaryButton({
   );
 }
 
-type FinancialReceiptBinding = { instructionHash: string; packetHash: string; aggregateVersion: number };
+type FinancialReceiptBinding = { instructionHash: string; packetHash: string; aggregateVersion: number; idempotencyKey?: string };
 type ActionResult = { label: string; data: unknown; ok: boolean; status: number; obligationId: string | null; financialBinding?: FinancialReceiptBinding; readConfirmed?: boolean; aggregateVersion?: number };
 
 function requiresSubmissionReconciliation(result: ActionResult | null): boolean {
@@ -1565,12 +1565,20 @@ function confirmedFinancialReceipt(result: ActionResult, detail: ObligationDetai
       expected.aggregateVersion === detail.aggregate.aggregate_version) {
     return "Refreshed status confirms release approval for this same instruction. Review the exact details before choosing Pay testnet USDC; no payment is submitted automatically.";
   }
-  // Historical packet validation binds the recorded execution to its sealed PAE.
+  // Either canonical packet binding can acknowledge the original execution.
+  // This is readback confirmation, never new release or settlement authority.
   // UNKNOWN and SUBMITTING remain unresolved even when durably recorded.
+  const binding = detail.settlement_evidence_binding;
+  const packet = binding?.packet?.packet;
+  const pae = packet?.pae as Record<string, unknown> | undefined;
   if (result.label === "execute" && detail.execution?.obligation_id === result.obligationId &&
       ["SETTLED", "FAILED", "BLOCKED", "SUBMITTED"].includes(detail.execution.status) &&
-      detail.settlement_evidence_binding?.state === "AVAILABLE_HISTORICAL" &&
-      detail.settlement_evidence_binding.packet?.packet_sha256 === expected.packetHash) {
+      (binding?.state === "AVAILABLE_CURRENT_BINDING" || binding?.state === "AVAILABLE_HISTORICAL") &&
+      binding.packet?.packet_sha256 === expected.packetHash &&
+      detail.aggregate.aggregate_version === expected.aggregateVersion &&
+      packet?.obligation_id === result.obligationId && pae?.instruction_hash === expected.instructionHash &&
+      expected.idempotencyKey && pae?.idempotency_key === expected.idempotencyKey &&
+      detail.execution.idempotency_key === expected.idempotencyKey) {
     return "Refreshed status confirms an execution record for this same instruction. Review its reconciliation evidence; do not retry or resubmit. This receipt alone does not establish successful settlement.";
   }
   return null;
@@ -2434,8 +2442,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string, assessmentRecovery = false) => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
+    const packetPae = detail.execution_packet?.packet?.pae as Record<string, unknown> | undefined;
     const financialBinding = ["release", "execute"].includes(label) && detail.sealed_pae_instruction_hash && detail.execution_packet?.packet_sha256
-      ? {instructionHash: detail.sealed_pae_instruction_hash, packetHash: detail.execution_packet.packet_sha256, aggregateVersion: detail.aggregate.aggregate_version}
+      ? {instructionHash: detail.sealed_pae_instruction_hash, packetHash: detail.execution_packet.packet_sha256, aggregateVersion: detail.aggregate.aggregate_version,
+        ...(typeof packetPae?.idempotency_key === "string" ? {idempotencyKey: packetPae.idempotency_key} : {})}
       : undefined;
     const saveResult = (result: ActionResult) => {
       result = {...result, aggregateVersion: detail.aggregate.aggregate_version};

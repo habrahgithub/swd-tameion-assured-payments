@@ -1842,16 +1842,16 @@ describe("Command Center mounted Operational Report", () => {
   it.each(["matching","wrong-instruction","wrong-packet","unknown","missing-binding"])("retains execute uncertainty unless exact durable execution proves resolution: %s",async evidence=>{
     const id="TESTNET-CONTROLLED-EXECUTE-RECEIPT",authorized=proxyPrepared(sealedDetail(id));
     Object.assign(authorized.aggregate,{destination_verification_status:"VERIFIED",destination_operational_status:"ACTIVE",source_wallet_status:"ACTIVE",product_trust_provenance:"CURRENT_PRODUCT_EVIDENCE"});
-    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
+    authorized.execution_packet={packet_sha256:"c".repeat(64),packet:{obligation_id:id,pae:{instruction_hash:"d".repeat(64),idempotency_key:"SYNTHETIC-EXECUTE-RECEIPT-KEY"}}};authorized.sealed_pae_instruction_hash="d".repeat(64);authorized.execution_gate="PORTAL_APPROVED_EXACT_PACKET";
     let posted=false;
     fetchMock.mockImplementation((input,init)=>{
       if(init?.method==="POST"){posted=true;return Promise.resolve(response({code:"OUTCOME_UNVERIFIED",retry_submission:false},503));}
       if(String(input)==="/api/obligations")return Promise.resolve(response({obligations:[obligation(id,true)]}));
       const read=structuredClone(authorized);
       if(posted){
-        read.execution={obligation_id:id,status:evidence==="unknown"?"UNKNOWN":"SETTLED",provider_ref:"SYNTHETIC-CONFIRMED-RECEIPT"};
+        read.execution={obligation_id:id,idempotency_key:"SYNTHETIC-EXECUTE-RECEIPT-KEY",status:evidence==="unknown"?"UNKNOWN":"SETTLED",provider_ref:"SYNTHETIC-CONFIRMED-RECEIPT"};
         read.execution_gate="EXECUTION_ALREADY_RECORDED";
-        read.settlement_evidence_binding={state:evidence==="missing-binding"?"UNAVAILABLE":"AVAILABLE_HISTORICAL",packet:{packet_sha256:evidence==="wrong-packet"?"e".repeat(64):"c".repeat(64)}};
+        read.settlement_evidence_binding={state:evidence==="missing-binding"?"UNAVAILABLE":"AVAILABLE_HISTORICAL",packet:{packet_sha256:evidence==="wrong-packet"?"e".repeat(64):"c".repeat(64),packet:structuredClone(authorized.execution_packet.packet)}};
         if(evidence==="wrong-instruction")read.sealed_pae_instruction_hash="e".repeat(64);
       }
       return Promise.resolve(response(read));
@@ -3812,4 +3812,145 @@ describe('Stage 2 admission browser flow',()=>{
   await waitFor(()=>expect(screen.getByRole('region',{name:'Assessment result'}).textContent).toContain('not a claim that this payable was paid or cancelled'));
   expect(screen.queryByRole('button',{name:/Run AI Assessment|Request one|Authorize payment|Pay testnet/})).toBeNull();expect(posts(mock)).toHaveLength(0);
  });
+});
+
+
+describe("S01-F01 exact terminal readback after UNKNOWN", () => {
+  const id = "TESTNET-CONTROLLED-S01-RECEIPT";
+  const key = "SYNTHETIC-S01-ORIGINAL-KEY";
+  const instructionHash = "d".repeat(64), packetHash = "c".repeat(64);
+  const fetchMock = vi.fn<typeof fetch>();
+  beforeEach(() => { localStorage.clear(); fetchMock.mockReset(); vi.stubGlobal("fetch", fetchMock); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
+
+  function readback(bindingState: string, status: string) {
+    const value = proxyPrepared(sealedDetail(id));
+    value.source_group = "DEMO_ARC_TESTNET";
+    Object.assign(value.aggregate, { destination_verification_status: "VERIFIED", destination_operational_status: "ACTIVE", source_wallet_status: "ACTIVE", product_trust_provenance: "CURRENT_PRODUCT_EVIDENCE" });
+    const packet = {
+      organization_id: "ORG-DEMO-001", obligation_id: id, aggregate_version: 1,
+      settlement_amount: value.aggregate.amount, asset: "USDC", network: "ARC_TESTNET",
+      pae: { instruction_hash: instructionHash, idempotency_key: key },
+      provider_token: { decimals: 6 },
+      circle_arc_execution_instruction: { amount: value.aggregate.amount, decimals: 6, destination_address: value.settlement_proxy.preflight.destination_wallet.address },
+    };
+    value.execution_packet = { packet_sha256: packetHash, packet };
+    value.sealed_pae_instruction_hash = instructionHash;
+    value.execution_gate = status === "NONE" ? "PORTAL_APPROVED_EXACT_PACKET" : "EXECUTION_ALREADY_RECORDED";
+    value.truth.settlement_truth.runtime = "LIVE"; // Synthetic transport; exercise the real evidence classifier.
+    if (status !== "NONE") {
+      value.execution = { obligation_id: id, idempotency_key: key, status, provider_ref: "SYNTHETIC-S01-PROVIDER", provider_evidence: { status: status === "SETTLED" ? "CONFIRMED" : "PENDING", atomic_amount: "125000000", destination_address: value.settlement_proxy.preflight.destination_wallet.address } };
+      value.aggregate.state = status === "SETTLED" ? "RECONCILED" : "EXECUTING";
+      value.aggregate.execution_state = status;
+      value.truth.tameion_control_truth.aggregate_state = value.aggregate.state;
+      value.truth.tameion_control_truth.execution_state = status;
+      value.settlement_evidence_binding = { state: bindingState, packet: { packet_sha256: packetHash, packet } };
+      if (bindingState === "AVAILABLE_HISTORICAL") value.execution_packet = null;
+    }
+    return value;
+  }
+
+  async function journey(bindingState: string, variant = "matching") {
+    let phase = "initial";
+    const lateRead = deferred<Response>();
+    const original = readback(bindingState, "NONE"), pending = readback(bindingState, "UNKNOWN");
+    const final = readback(bindingState, variant === "unknown" ? "UNKNOWN" : variant === "submitting" ? "SUBMITTING" : variant === "failed" ? "FAILED" : variant === "blocked" ? "BLOCKED" : "SETTLED");
+    if (variant === "wrong-obligation") final.execution.obligation_id = "SYNTHETIC-OTHER";
+    if (variant === "wrong-instruction") final.sealed_pae_instruction_hash = "e".repeat(64);
+    if (variant === "wrong-packet") final.settlement_evidence_binding.packet.packet_sha256 = "e".repeat(64);
+    if (variant === "wrong-key") final.execution.idempotency_key = "SYNTHETIC-OTHER-KEY";
+    if (variant === "wrong-packet-key") final.settlement_evidence_binding.packet.packet.pae.idempotency_key = "SYNTHETIC-OTHER-KEY";
+    if (variant === "changed-key-in-both") { final.execution.idempotency_key = "SYNTHETIC-OTHER-KEY"; final.settlement_evidence_binding.packet.packet.pae.idempotency_key = "SYNTHETIC-OTHER-KEY"; }
+    if (variant === "wrong-version") final.aggregate.aggregate_version++;
+    if (variant === "missing-key") delete final.execution.idempotency_key;
+    if (variant === "missing-binding") delete final.settlement_evidence_binding;
+    if (variant === "invalid-binding") final.settlement_evidence_binding.state = "INVALID";
+    if (variant === "missing-packet") delete final.settlement_evidence_binding.packet;
+    fetchMock.mockImplementation((input, init) => {
+      if (init?.method === "POST") {
+        if (String(input).endsWith("/execute")) { phase = "unknown"; return Promise.resolve(response({ code: "OUTCOME_UNVERIFIED", execution: pending.execution, retry_submission: false }, 202)); }
+        expect(String(input)).toBe(`/api/obligations/${id}/reconcile`);
+        expect(JSON.parse(String(init.body))).toEqual({ idempotency_key: key, pae_instruction_hash: instructionHash });
+        phase = "final"; return Promise.resolve(response({ code: "RECONCILED", execution: final.execution }));
+      }
+      if (String(input) === "/api/obligations") return Promise.resolve(response({ obligations: [obligation(id, true), ...(variant === "selection" ? [obligation("SYNTHETIC-S01-OTHER")] : [])] }));
+      if (String(input).endsWith("SYNTHETIC-S01-OTHER")) return Promise.resolve(response(detail("SYNTHETIC-S01-OTHER")));
+      if (phase === "final" && ["selection", "session", "loading"].includes(variant)) return lateRead.promise;
+      if (phase === "final" && variant === "failed-refresh") return Promise.resolve(response({ code: "STATE_UNAVAILABLE" }, 503));
+      return Promise.resolve(response(phase === "initial" ? original : phase === "unknown" ? pending : final));
+    });
+    const mounted = renderWithExplicitFirstSelection("SYNTHETIC-S01-CSRF");
+    await screen.findByRole("region", { name: "Genuine obligation workspace" }); navigateStage("Payment");
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have reviewed the exact testnet/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Pay testnet USDC" }));
+    await screen.findByRole("heading", { name: "Payment outcome unverified" });
+    await screen.findByText(/An execution record is available. Continue with read-only reconciliation/);
+    const reconcile = await screen.findByRole("button", { name: "Reconcile this same intent" });
+    await waitFor(() => expect((reconcile as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(reconcile);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2));
+    return { mounted, lateRead, final };
+  }
+
+  it.each(["AVAILABLE_CURRENT_BINDING", "AVAILABLE_HISTORICAL"])("clears contradictory UNKNOWN feedback after exact SETTLED %s", async binding => {
+    await journey(binding);
+    await screen.findByRole("heading", { name: "Testnet reconciliation receipt" });
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Payment outcome unverified" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("region", { name: "Current control status" }).textContent).not.toContain("Outcome unverified");
+    expect(screen.getByRole("region", { name: "Reconciliation receipt" }).textContent).toContain("confirmed");
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
+    expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/execute"))).toHaveLength(1);
+  });
+
+  for (const binding of ["AVAILABLE_CURRENT_BINDING", "AVAILABLE_HISTORICAL"]) {
+    it.each(["wrong-obligation", "wrong-instruction", "wrong-packet", "wrong-key", "wrong-packet-key", "changed-key-in-both", "wrong-version", "missing-key", "missing-binding", "invalid-binding", "missing-packet", "unknown", "submitting", "failed-refresh"])(`retains uncertainty for ${binding} with %s`, async variant => {
+      await journey(binding, variant);
+      if (variant === "failed-refresh") await screen.findAllByText(/Selected payable status is stale/);
+      else await screen.findByText(/Durable readback (confirms|shows)/);
+      expect(screen.getByRole("heading", { name: "Payment outcome unverified" })).toBeTruthy();
+      expect(screen.getByRole("alert").textContent).toMatch(/do not retry|do not resubmit/i);
+      expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Approve payment release" })).toBeNull();
+      expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/execute"))).toHaveLength(1);
+    });
+  }
+
+  for (const binding of ["AVAILABLE_CURRENT_BINDING", "AVAILABLE_HISTORICAL"]) {
+    it.each(["loading", "selection", "session"])(`contains delayed ${binding} terminal read across %s`, async boundary => {
+      const h = await journey(binding, boundary);
+      if (boundary === "loading") {
+        expect(screen.getByRole("heading", { name: "Payment outcome unverified" })).toBeTruthy();
+        expect(screen.getByRole("alert").textContent).toMatch(/do not retry|do not resubmit/i);
+      } else if (boundary === "selection") {
+        fireEvent.click(obligationRow("SYNTHETIC-S01-OTHER"));
+        await screen.findByRole("button", { name: "Run AI Assessment" });
+      } else {
+        h.mounted.unmount();
+        rtlRender(<CommandCenter csrfToken="SYNTHETIC-S01-NEW-SESSION" />);
+        await waitFor(() => expect(obligationRow(id)).toBeTruthy());
+      }
+      await act(async () => h.lateRead.resolve(response(h.final)));
+      if (boundary === "loading") {
+        await waitFor(() => expect(screen.queryByRole("heading", { name: "Payment outcome unverified" })).toBeNull());
+      } else {
+        expect(screen.queryByRole("heading", { name: "Testnet reconciliation receipt" })).toBeNull();
+        expect(screen.queryByText(/Refreshed status confirms an execution record for this same instruction/)).toBeNull();
+        if (boundary === "selection") expect(obligationRow("SYNTHETIC-S01-OTHER").getAttribute("aria-current")).toBe("true");
+        else expect(obligationRow(id).getAttribute("aria-current")).not.toBe("true");
+      }
+      expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Approve payment release" })).toBeNull();
+      expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && String(url).endsWith("/execute"))).toHaveLength(1);
+    });
+  }
+
+  it.each(["failed", "blocked"])("acknowledges exact current %s disposition without claiming successful settlement", async status => {
+    await journey("AVAILABLE_CURRENT_BINDING", status);
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Payment outcome unverified" })).toBeNull());
+    expect(screen.getByRole("region", { name: "Reconciliation receipt" }).textContent).toContain(status === "failed" ? "Settlement attempt failed · successful reconciliation is not recorded" : "Payment release is blocked · the external settlement outcome is not confirmed");
+    expect(screen.queryByText("TESTNET EXECUTION RECONCILED TO SOURCE OBLIGATION")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay testnet USDC" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Current control status" }).textContent).not.toContain("Outcome unverified");
+  });
 });
