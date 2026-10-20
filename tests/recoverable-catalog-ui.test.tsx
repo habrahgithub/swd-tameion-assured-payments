@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import {webcrypto} from 'node:crypto';
 import {preparedHumanApproval} from './test-support/manual-payment-fixture';
+import {POST as reviewPOST} from '../app/api/obligations/[id]/review/route';
 import {POST as executePOST} from '../app/api/obligations/[id]/execute/route';
 import {afterEach,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor,act} from '@testing-library/react';
@@ -110,4 +111,100 @@ it('adds and removes evidence only through explicit edits while retaining source
  await waitFor(()=>expect(h.snapshot().source_revisions).toHaveLength(2));await screen.findByText(/Revision 2 ·/);expect(h.snapshot().source_revisions![1].fields.evidence).toHaveLength(2);expect(h.snapshot().authority.aggregates[0].evidence_hashes).toEqual(['a'.repeat(64),'b'.repeat(64)]);
  fireEvent.click(screen.getByText('Edit payable / Save correction'));fireEvent.click(screen.getByText('Remove evidence reference 2'));fireEvent.change(screen.getByLabelText('Correction or entry reason'),{target:{value:'Explicitly remove superseded evidence reference'}});fireEvent.click(screen.getByText('Save correction'));
  await waitFor(()=>expect(h.snapshot().source_revisions).toHaveLength(3));expect(h.snapshot().source_revisions![1].fields.evidence).toHaveLength(2);expect(h.snapshot().source_revisions![2].fields.evidence).toHaveLength(1);expect(h.snapshot().authority.aggregates[0].evidence_hashes).toEqual(['a'.repeat(64)]);
+});
+
+
+it.each([false,true])('C1 retains exact pending review through full reload (commit before lost ack: %s)',async(commit)=>{
+ const h=sourceHarness();runtime.source=h.handler;
+ const saved=await(await sourcePOST(h.request({expected_revision:0,fields:invoice,reason:'C1 source'}))).json(),id=saved.obligation.obligation_id;
+ runtime.readers=createObligationReaders(h.guard,async()=>{throw new Error('Financial path fenced');},()=>h.source,()=>undefined,h.handler);
+ const submissions:{body:string;key:string|null}[]=[];let lose=true;
+ vi.stubGlobal('fetch',vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{
+  expect(String(url).startsWith('/api/')).toBe(true);const req=new Request('https://synthetic.invalid'+String(url),init);
+  if(init?.method==='POST'){
+   expect(String(url)).toBe(`/api/obligations/${id}/review`);submissions.push({body:String(init.body),key:req.headers.get('Idempotency-Key')});
+   if(lose){lose=false;if(commit)expect((await reviewPOST(req,{params:Promise.resolve({id})})).status).toBe(201);throw new Error('Synthetic lost acknowledgement');}
+   return reviewPOST(req,{params:Promise.resolve({id})});
+  }
+  return String(url)==='/api/obligations'?listGET(req):detailGET(req,{params:Promise.resolve({id})});
+ }));
+ const mount=()=>render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-C1-SESSION" onChanged={()=>{}}/>);
+ const first=mount();fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 original manual facts reviewed'}});fireEvent.change(screen.getByLabelText('Review mode'),{target:{value:'AI_EXCEPTION_REVIEW'}});fireEvent.click(screen.getByText('Request correction'));
+ await screen.findByText(/Acknowledgement unavailable/);first.unmount();mount();
+ expect((await screen.findByLabelText('Review rationale') as HTMLTextAreaElement).value).toBe('C1 original manual facts reviewed');expect((screen.getByLabelText('Review mode') as HTMLSelectElement).value).toBe('AI_EXCEPTION_REVIEW');
+ fireEvent.click(screen.getByText('Request correction'));await screen.findByText(/Command recorded|Original review receipt recovered/);
+ expect(submissions).toHaveLength(2);expect(submissions[1]).toEqual(submissions[0]);expect(h.snapshot().authority.review_decisions).toHaveLength(1);
+});
+
+it('C1 recovers a committed ACCEPT receipt with explicit historical status when new-review capability disappeared',async()=>{
+ const h=sourceHarness();runtime.source=h.handler;const made=await(await sourcePOST(h.request({expected_revision:0,fields:invoice,reason:'C1 accepted source'}))).json(),id=made.obligation.obligation_id;
+ runtime.readers=createObligationReaders(h.guard,async()=>{throw new Error('Financial path fenced');},()=>h.source,()=>undefined,h.handler);
+ let lose=true;const sent:{body:string;key:string|null}[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{
+  expect(String(url).startsWith('/api/')).toBe(true);const req=new Request('https://synthetic.invalid'+String(url),init);
+  if(init?.method==='POST'){expect(String(url)).toBe(`/api/obligations/${id}/review`);sent.push({body:String(init.body),key:req.headers.get('Idempotency-Key')});const r=await reviewPOST(req,{params:Promise.resolve({id})});if(lose){lose=false;throw new Error('C1 commit then lost ack');}return r;}
+  return String(url)==='/api/obligations'?listGET(req):detailGET(req,{params:Promise.resolve({id})});
+ }));
+ const mount=()=>render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-C1-ACCEPT" onChanged={()=>{}}/>),first=mount();
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 exact accepted facts'}});fireEvent.click(screen.getByText('Continue with manual review'));await screen.findByText(/Acknowledgement unavailable/);
+ const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length;first.unmount();mount();
+ expect(screen.queryByText('Continue with manual review')).toBeNull();fireEvent.click(await screen.findByText('Recover original pending command'));
+ await screen.findByText('Original review receipt recovered (historical only; no current authorization restored).');expect(sent[1]).toEqual(sent[0]);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.snapshot()).toEqual(before);
+});
+function c1View(id='SYNTHETIC-C1-REVIEW'){
+ return {record:{obligation_id:id,source_evidence:[{evidence_id:'SYNTHETIC-EVIDENCE'}]},aggregate:{aggregate_version:1},allowed_actions:['MANUAL_REVIEW']};
+}
+it('C1 restores escalation, mode and advisory dispositions; changed input receives a different key',async()=>{
+ const detail={...c1View(),review_findings:[{code:'OTHER_REQUIRES_HUMAN_REVIEW',reason:'Synthetic advisory',advisory:true}]},sent:{body:string;key:string|null}[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{expect(String(url)).toBe('/api/obligations/SYNTHETIC-C1-REVIEW/review');sent.push({body:String(init?.body),key:new Headers(init?.headers).get('Idempotency-Key')});throw new Error('C1 pre-commit uncertainty');}));
+ const mount=()=>render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-C1-INPUTS" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>),first=mount();
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 retained review rationale'}});fireEvent.change(screen.getByLabelText('Review mode'),{target:{value:'AI_EXCEPTION_REVIEW'}});fireEvent.change(screen.getByLabelText(/Escalation owner/),{target:{value:'SYNTHETIC-C1-ASSIGNEE'}});fireEvent.click(screen.getByLabelText(/Accept this advisory/));fireEvent.click(screen.getByText('Assign escalation'));await screen.findByText(/Acknowledgement unavailable/);first.unmount();mount();
+ expect((await screen.findByLabelText(/Escalation owner/) as HTMLInputElement).value).toBe('SYNTHETIC-C1-ASSIGNEE');expect((screen.getByLabelText(/Accept this advisory/) as HTMLInputElement).checked).toBe(true);
+ fireEvent.click(screen.getByText('Assign escalation'));await screen.findByText(/Acknowledgement unavailable/);expect(sent[1]).toEqual(sent[0]);
+ fireEvent.change(screen.getByLabelText('Review rationale'),{target:{value:'C1 deliberately changed rationale'}});fireEvent.click(screen.getByText('Assign escalation'));await screen.findByText(/Acknowledgement unavailable/);
+ expect(sent).toHaveLength(3);expect(sent[2].key).not.toBe(sent[0].key);expect(JSON.parse(sent[2].body).rationale).toBe('C1 deliberately changed rationale');
+});
+it.each(['successor','reconcile'] as const)('C1 restores original %s transport outside edit mode after version advances',async(action)=>{
+ const detail={...c1View('SYNTHETIC-C1-CHILD'),allowed_actions:[action==='successor'?'PREPARE_SUCCESSOR':'RECOVER_EXISTING_PAYMENT'],execution:{idempotency_key:'SYNTHETIC-C1-ORIGINAL'},sealed_pae_instruction_hash:'a'.repeat(64)};
+ const sent:{body:string;key:string|null}[]=[];vi.stubGlobal('fetch',vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{expect(String(url)).toBe(`/api/obligations/${detail.record.obligation_id}/${action}`);sent.push({body:String(init?.body),key:new Headers(init?.headers).get('Idempotency-Key')});throw new Error('C1 pre-commit uncertainty');}));
+ const mount=()=>render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-C1-RECOVERY" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>),first=mount();
+ if(action==='successor')fireEvent.change(await screen.findByLabelText('Recovery rationale'),{target:{value:'C1 exact no-dispatch evidence'}});
+ fireEvent.click(await screen.findByText(action==='successor'?'Prepare evidence-supported successor':'Recover existing payment'));await screen.findByText(/Acknowledgement unavailable/);first.unmount();detail.aggregate.aggregate_version=2;mount();
+ if(action==='successor')expect((await screen.findByLabelText('Recovery rationale') as HTMLTextAreaElement).value).toBe('C1 exact no-dispatch evidence');
+ fireEvent.click(await screen.findByText('Recover original pending command'));await screen.findByText(/Acknowledgement unavailable/);expect(sent[1]).toEqual(sent[0]);
+});
+it.each(['selection','session'] as const)('C1 %s boundary clears input, refuses old identity and ignores late ACK',async(boundary)=>{
+ const changed=vi.fn();let finish!:(r:Response)=>void;const sent:{key:string|null;body:string}[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(_url:RequestInfo|URL,init?:RequestInit)=>{sent.push({key:new Headers(init?.headers).get('Idempotency-Key'),body:String(init?.body)});return new Promise<Response>(r=>finish=r);}));
+ const props={selectedId:'SYNTHETIC-C1-FIRST',csrfToken:'SYNTHETIC-SAME-PREFIX-SESSION-A',onChanged:changed,readModel:{detail:c1View('SYNTHETIC-C1-FIRST'),createAllowed:false}},mounted=render(<SourceWorkflowPanel {...props}/>);
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 first session draft'}});fireEvent.click(screen.getByText('Request correction'));
+ const next={...props,...(boundary==='session'?{csrfToken:'SYNTHETIC-SAME-PREFIX-SESSION-B'}:{selectedId:'SYNTHETIC-C1-SECOND',readModel:{detail:c1View('SYNTHETIC-C1-SECOND'),createAllowed:false}})};mounted.rerender(<SourceWorkflowPanel {...next}/>);
+ expect((await screen.findByLabelText('Review rationale') as HTMLTextAreaElement).value).toBe('');expect(screen.queryByText('Recover original pending command')).toBeNull();
+ await act(async()=>finish(Response.json({committed:true})));expect(changed).not.toHaveBeenCalled();expect(screen.queryByText(/Command recorded/)).toBeNull();
+ fireEvent.change(screen.getByLabelText('Review rationale'),{target:{value:'C1 second session draft'}});fireEvent.click(screen.getByText('Request correction'));expect(sent[1].key).not.toBe(sent[0].key);await act(async()=>finish(Response.json({committed:true})));expect(changed).toHaveBeenCalledOnce();
+});
+it.each(['invalid_json','wrong_scope','wrong_path','invalid_key','oversize','missing_input'] as const)('C1 rejects malformed retained storage: %s',async(fault)=>{
+ const detail=c1View();vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('C1 network fenced');}));
+ const mount=()=>render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-C1-STORAGE" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>),first=mount();
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 storage origin'}});fireEvent.click(screen.getByText('Request correction'));await screen.findByText(/Acknowledgement unavailable/);first.unmount();
+ const key=sessionStorage.key(0)!,saved=JSON.parse(sessionStorage.getItem(key)!);
+ if(fault==='wrong_scope')saved.scope='OTHER';if(fault==='wrong_path'){const t=JSON.parse(saved.request.signature);t.path='https://forbidden.invalid/payment';saved.request.signature=JSON.stringify(t);}if(fault==='invalid_key')saved.request.key='not-a-request-id';if(fault==='missing_input')delete saved.rationale;
+ sessionStorage.setItem(key,fault==='invalid_json'?'{':fault==='oversize'?'x'.repeat(100001):JSON.stringify(saved));mount();
+ expect((await screen.findByLabelText('Review rationale') as HTMLTextAreaElement).value).toBe('');expect(screen.queryByText('Recover original pending command')).toBeNull();expect(fetch).toHaveBeenCalledOnce();
+});
+it('C1 retained state cannot enable a command after server capabilities are withdrawn',async()=>{
+ const detail=c1View();vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('C1 network fenced');}));const mount=()=>render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-C1-CAP" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>),first=mount();
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 pending review'}});fireEvent.click(screen.getByText('Request correction'));await screen.findByText(/Acknowledgement unavailable/);first.unmount();detail.allowed_actions=[];mount();expect(screen.queryByText('Recover original pending command')).toBeNull();expect(screen.queryByText('Request correction')).toBeNull();expect(fetch).toHaveBeenCalledOnce();
+});
+it('C1 storage failure blocks dispatch rather than claiming reload continuity',async()=>{
+ const detail=c1View();vi.stubGlobal('fetch',vi.fn(async()=>{throw new Error('C1 network fenced');}));vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new Error('Synthetic unavailable tab storage');});
+ render(<SourceWorkflowPanel selectedId={detail.record.obligation_id} csrfToken="SYNTHETIC-C1-NOSTORAGE" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>);
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 unsaved review'}});fireEvent.click(screen.getByText('Request correction'));await screen.findByText('Pending command could not be retained. Enable tab storage before submitting.');expect(fetch).not.toHaveBeenCalled();
+});
+it('C1 a retained review draft cannot replace the current source edit fields',async()=>{
+ const h=sourceHarness(),saved=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'C1 source edit boundary'}))).json(),id=saved.obligation.obligation_id;
+ const detail=await(await h.handler('detail',new Request('https://synthetic.invalid'),id)).json();vi.stubGlobal('fetch',vi.fn(()=>{throw new Error('C1 network fenced');}));
+ render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-C1-SOURCE-DRAFT" onChanged={()=>{}} readModel={{detail,createAllowed:false}}/>);
+ fireEvent.change(await screen.findByLabelText('Review rationale'),{target:{value:'C1 unsent manual input'}});fireEvent.click(screen.getByText('Edit payable / Save correction'));
+ expect((screen.getByLabelText('Supplier name') as HTMLInputElement).value).toBe(invoice.supplier_name);expect((screen.getByLabelText('Exact amount') as HTMLInputElement).value).toBe(invoice.amount);expect(fetch).not.toHaveBeenCalled();
 });

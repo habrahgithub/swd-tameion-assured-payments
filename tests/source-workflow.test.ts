@@ -1,5 +1,6 @@
 import {describe,it,expect,vi} from 'vitest';
 import {createSourceWorkflowHandlers} from '../src/server/source-workflow';
+import {AuthorityStore} from '../src/authority/aggregate';
 import {DemoState,parseDemoStateSnapshot} from '../src/server/demo-state';
 import {contentHash} from '../src/domain/linked-instruction';
 import {DemoStateConflictError} from '../src/server/supabase-demo-state-repository';
@@ -120,4 +121,56 @@ it('history cap does not exhaust or reset the independent human decision path',a
  for(let n=0;n<4;n++)h.snapshot().assessment_operations.push({idempotency_key:`aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12,'0')}`,obligation_id:id,aggregate_version:1,status:'STALE'});
  const original=structuredClone(h.snapshot().assessment_operations),network=vi.fn(()=>{throw new Error('No AI after cap');});vi.stubGlobal('fetch',network);expect((await h.handler('assess',h.request({}),id)).status).toBe(409);
  expect((await h.handler('review',h.request({expected_version:1,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Explicit current facts reviewed after cap',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]}),id)).status).toBe(201);expect(h.snapshot().assessment_operations).toEqual(original);expect(network).not.toHaveBeenCalled();
+});
+
+
+describe('C1 immutable review receipt recovery',()=>{
+ it('reads the exact original receipt after correction, replacement and a financial claim without CAS or restoring authority',async()=>{
+  const h=sourceHarness();vi.stubGlobal('fetch',vi.fn(()=>{throw new Error('C1 network fenced');}));
+  const made=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'C1 synthetic source'}))).json(),id=made.obligation.obligation_id;
+  const body={expected_version:1,mode:'MANUAL_REVIEW',decision:'NEEDS_CORRECTION',rationale:'Correct original synthetic amount',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]},key='00000000-0000-4000-8000-000000000901';
+  const original=await(await h.handler('review',h.request(body,key),id)).json();
+  expect((await h.handler('save',h.request({expected_revision:1,expected_version:1,fields:{...invoice,amount:'2.00'},reason:'C1 correction'}),id)).status).toBe(201);
+  const replacement=await(await h.handler('review',h.request({...body,expected_version:2,decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Corrected facts reviewed'}),id)).json();
+  h.snapshot().execution_ledger.push({obligation_id:id,idempotency_key:'SYNTHETIC-C1-UNKNOWN',provider_ref:null,status:'UNKNOWN',atomic_amount:'1000000',destination_address:'0x'+'9'.repeat(40)});
+  const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length;
+  const replay=await h.handler('review',h.request(body,key),id);expect(replay.status).toBe(200);
+  expect(await replay.json()).toMatchObject({...original,replayed:true,historical:true,receipt_only:true,current_authorization:false});
+  expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.snapshot()).toEqual(before);
+  expect(AuthorityStore.fromSnapshot(h.snapshot().authority).getCurrentReviewDecision('ORG-DEMO-001',id)?.hash).toBe(replacement.review_decision_hash);
+  const store=AuthorityStore.fromSnapshot(h.snapshot().authority);expect(store.recordReviewDecision(original.review_decision).hash).toBe(original.review_decision_hash);expect(store.exportSnapshot()).toEqual(h.snapshot().authority);
+ });
+});
+
+it('C1 rejects changed-key/body stale commands and cross-payable receipt lookup without any write',async()=>{
+ const h=sourceHarness();const made=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'C1 identity source'}))).json(),id=made.obligation.obligation_id;
+ const body={expected_version:1,mode:'MANUAL_REVIEW',decision:'NEEDS_CORRECTION',rationale:'C1 original rationale',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]},key='00000000-0000-4000-8000-000000000902';
+ const original=await(await h.handler('review',h.request(body,key),id)).json();
+ await h.handler('save',h.request({expected_revision:1,expected_version:1,fields:{...invoice,amount:'2.00'},reason:'C1 corrected amount'}),id);
+ const second=await(await h.handler('save',h.request({expected_revision:0,fields:{...invoice,invoice_number:'SYNTHETIC-C1-OTHER'},reason:'C1 other payable'}))).json(),other=second.obligation.obligation_id;
+ const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length;
+ const conflict=await h.handler('review',h.request({...body,rationale:'Different body'},key),id);expect(conflict.status).toBe(409);expect(await conflict.json()).toMatchObject({code:'REV-002'});
+ const stale=await h.handler('review',h.request(body),id);expect(stale.status).toBe(409);expect(await stale.json()).toMatchObject({code:'STALE_STATE'});
+ expect((await h.handler('review',h.request(body,key),other)).status).toBe(409);
+ expect((await h.handler('review',h.request(body,key),'SYNTHETIC-NONEXISTENT')).status).toBe(404);
+ const store=AuthorityStore.fromSnapshot(before.authority);
+ expect(()=>store.recordReviewDecision({...original.review_decision,request_id:'00000000-0000-4000-8000-000000000903'})).toThrow();
+ expect(()=>store.recordReviewDecision({...original.review_decision,request_sha256:'0'.repeat(64)})).toThrow('Review request conflict');
+ expect(()=>store.getReviewDecisionReceipt('SYNTHETIC-WRONG-TENANT',id,key,original.review_decision.request_sha256)).toThrow();
+ expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.snapshot()).toEqual(before);expect(store.exportSnapshot()).toEqual(before.authority);
+});
+it.each(['permission','actor','credential','session','late_session','ingress','binding'] as const)('C1 historical replay retains current %s access gate',async gate=>{
+ const {AccessError}=await import('../src/server/route-access-policy');
+ const h=sourceHarness(),made=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'C1 access source'}))).json(),id=made.obligation.obligation_id;
+ const body={expected_version:1,mode:'MANUAL_REVIEW',decision:'NEEDS_CORRECTION',rationale:'C1 access reviewed',evidence_ids:['SYNTHETIC-EVIDENCE'],finding_dispositions:[]},key='00000000-0000-4000-8000-000000000904';
+ expect((await h.handler('review',h.request(body,key),id)).status).toBe(201);
+ if(gate==='permission')h.source.source_ingress!.permissions=[];
+ if(gate==='actor')h.snapshot().actor_authorities[0].status='REVOKED';
+ if(gate==='credential')h.source.source_ingress!.credential_version=2;
+ if(gate==='session')h.guard.mockRejectedValue(new AccessError('SESSION_REQUIRED',401));
+ if(gate==='late_session'){const auth=await h.guard();let checks=0;auth.revalidate=async()=>{if(++checks>=2)throw new AccessError('SESSION_REQUIRED',401);};h.guard.mockResolvedValue(auth);}
+ if(gate==='ingress')h.source.source_ingress!.expires_at=new Date(Date.now()-1).toISOString();
+ if(gate==='binding')h.source.state_binding.namespace='SYNTHETIC-WRONG-NAMESPACE';
+ const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length,response=await h.handler('review',h.request(body,key),id);
+ expect(response.status).toBe(gate==='session'||gate==='late_session'?401:gate==='binding'?409:403);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(h.snapshot()).toEqual(before);
 });

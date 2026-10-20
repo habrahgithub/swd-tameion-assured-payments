@@ -130,6 +130,10 @@ export function createSourceWorkflowHandlers(deps:Dependencies){
    requirePermission('REVIEW_SOURCE');if(!record||!id)throw new AccessError('SOURCE_NOT_FOUND',404);
    if(kind==='review'){
     const input=reviewInputSchema.safeParse(body);if(!input.success)throw new AccessError('BODY_REJECTED',400);
+    // Access/ownership/permission checks above still apply. Receipt recovery
+    // precedes new-command currentness and performs no CAS or authority change.
+    const receipt=store.getReviewDecisionReceipt(org,id,requestId.data,requestHash);
+    if(receipt){await revalidate();return privateJson({review_decision:receipt.record,review_decision_hash:receipt.hash,replayed:true,historical:true,receipt_only:true,current_authorization:false},200);}
     const aggregate=store.get(org,id),sourceHash=contentHash(record);
     if(input.data.mode==='AI_ASSISTED_REVIEW'&&store.getCurrentAssessment(org,id)?.record.provider_mode!=='LIVE_AI')throw new AccessError('AI_ADVICE_UNAVAILABLE',409);
     if(financialClaim(id))throw new AccessError('EXISTING_FINANCIAL_CLAIM',409);

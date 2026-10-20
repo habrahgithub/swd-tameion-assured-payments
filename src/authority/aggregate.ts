@@ -316,11 +316,20 @@ export class AuthorityStore {
       .find((assessment) => assessment.record.aggregate_version === String(current.aggregate_version));
   }
 
+  /** Immutable transport receipt only; callers must separately check current
+   * access. Finding a receipt never makes it current authorization. */
+  getReviewDecisionReceipt(org:string,id:string,requestId:string,requestHash:string):SealedReviewDecision|undefined {
+    this.get(org,id);
+    const previous=this.reviewDecisions.find(r=>r.record.request_id===requestId);
+    if(previous&&(previous.record.organization_id!==org||previous.record.obligation_id!==id||previous.record.request_sha256!==requestHash))throw new AuthorityError('Review request conflict','REV-002');
+    return previous?structuredClone(previous):undefined;
+  }
+
   recordReviewDecision(record:ReviewDecision):SealedReviewDecision {
     const aggregate=this.get(record.organization_id,record.obligation_id);
+    const previous=this.getReviewDecisionReceipt(record.organization_id,record.obligation_id,record.request_id,record.request_sha256);
+    if(previous)return previous;
     this.requireVersion(aggregate,record.aggregate_version);
-    const previous=this.reviewDecisions.find(r=>r.record.request_id===record.request_id);
-    if(previous){if(previous.record.request_sha256!==record.request_sha256||previous.record.obligation_id!==record.obligation_id)throw new AuthorityError('Review request conflict','REV-002');return structuredClone(previous);}
     const previousReview=this.getCurrentReviewDecision(record.organization_id,record.obligation_id);
     if((previousReview&&record.supersedes_review_hash!==previousReview.hash)||aggregate.execution_state!=='NONE'||aggregate.state==='AUTHORIZED')throw new AuthorityError('Review changed; refresh current authority','REV-003');
     const sealed=sealReviewDecision(record);this.reviewDecisions.push(sealed);return structuredClone(sealed);
