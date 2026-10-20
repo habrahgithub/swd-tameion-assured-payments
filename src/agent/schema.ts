@@ -58,6 +58,8 @@ export const controlledInstructionSchema=z.object({
 }).strict().superRefine((p,c)=>{const start=Date.parse(p.valid_from),end=Date.parse(p.expires_at),observed=Date.parse(p.observed_at);if(start>observed||observed>=end||end<=start||end-start>3600000)c.addIssue({code:"custom",message:"Controlled half-open instruction window invalid"});});
 export type ControlledInstruction=z.infer<typeof controlledInstructionSchema>;
 
+export const currentSourceBasisSchema=z.object({kind:z.enum(['INVOICE','PREPAID_RECHARGE']),revision:z.number().int().positive(),business_date:z.iso.date(),source_revision_sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+
 export const raceAssessmentSchema = z.object({
   result: z.object({
     decision: z.enum(["PAY", "HOLD", "ESCALATE"]),
@@ -80,7 +82,8 @@ export const raceAssessmentSchema = z.object({
   evidence: z.object({
     evidence_ids: z.array(z.string().min(1)),
     authoritative_facts: z.object({
-      assessment_basis:historicalAssessmentBasisSchema.optional(),
+      current_source_basis:currentSourceBasisSchema.optional(),
+    assessment_basis:historicalAssessmentBasisSchema.optional(),
       historical_basis_verified:z.boolean().optional(),
       obligation_id: z.string().min(1),
       aggregate_version: z.string().regex(/^(0|[1-9][0-9]*)$/),
@@ -174,7 +177,7 @@ export const raceAssessmentSchema = z.object({
             ? "DUE_TODAY"
             : "FUTURE";
   const b=facts.assessment_basis;
-  const expectedDuePosition=facts.historical_basis_verified===false?"INVALID":b
+  const expectedDuePosition=facts.current_source_basis?(facts.current_source_basis.business_date<facts.as_of_date?"OVERDUE":facts.current_source_basis.business_date===facts.as_of_date?"DUE_TODAY":"FUTURE"):facts.historical_basis_verified===false?"INVALID":b
     ? !facts.historical_basis_verified ? "INVALID" : b.transaction_type==='INVOICE' ? invoiceExpectedDuePosition
       : !rawDueDateConsistent ? "INVALID" : historicalDatePosition(b)
     : invoiceExpectedDuePosition;
@@ -225,6 +228,7 @@ export type FinanceAgentModelRecommendation = z.infer<typeof financeAgentModelRe
 /** The minimal, allowlisted, read-only context handed to the AI provider. No PII, no secrets. */
 export const financeAgentContextSchema = z
   .object({
+    current_source_basis:currentSourceBasisSchema.optional(),
     assessment_basis:historicalAssessmentBasisSchema.optional(),
     historical_basis_verified:z.boolean().optional(),
     obligation_id: z.string(),

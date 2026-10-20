@@ -76,14 +76,17 @@ export function approveAndSealPae(
     // checking assessment availability for an obsolete version.
     store.approve(input.organizationId, input.obligationId, input.expectedVersion, input.reviewedAssessmentId, input.reviewedAssessmentHash);
   }
+  const humanReview=store.getCurrentReviewDecision(input.organizationId,input.obligationId);
   const assessment = store.getCurrentAssessment(input.organizationId, input.obligationId);
-  if (!assessment || assessment.record.aggregate_version !== String(input.expectedVersion)) {
+  const reviewIdentity=humanReview?{review_decision_id:humanReview.record.decision_id,review_decision_hash:humanReview.hash}:{assessment_id:assessment?.record.assessment_id,assessment_hash:assessment?.hash};
+  if (!humanReview && (!assessment || assessment.record.aggregate_version !== String(input.expectedVersion))) {
     throw new AuthorityError("Cannot authorize without a current assessment bound to the reviewed aggregate version", "AUT-009");
   }
-  if (assessment.record.assessment_id !== input.reviewedAssessmentId || assessment.hash !== input.reviewedAssessmentHash) {
+  if ((humanReview?.record.decision_id??assessment?.record.assessment_id) !== input.reviewedAssessmentId || (humanReview?.hash??assessment?.hash) !== input.reviewedAssessmentHash) {
     throw new AuthorityError("Cannot authorize: reviewed assessment is no longer current; refresh and review the latest assessment", "AUT-013");
   }
 
+  if(humanReview&&(humanReview.record.actor_id!==input.actorId||humanReview.record.actor_role!==input.actorRole||humanReview.record.authority_version!==(input.authorityVersion??'1')))throw new AuthorityError('Human review authority has changed','REV-006');
   const { privateKey } = loadServerSigningKey(signingKeyId, trustedKeys);
 
   // No await or external effect occurs within this operation. Restore only
@@ -108,8 +111,7 @@ export function approveAndSealPae(
       new_state: "AUTHORIZED",
       approved_at: isoNow,
       reason_hash: reasonHash,
-      assessment_id: assessment.record.assessment_id,
-      assessment_hash: assessment.hash,
+      ...reviewIdentity,
     });
 
     const safetyResult = runSafetyKernel(aggregate, store);
@@ -133,7 +135,7 @@ export function approveAndSealPae(
       control_results: safetyResult.controlResults,
     });
 
-    const expiry = new Date(now().getTime() + 30 * 60 * 1000).toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
+    const expiry = new Date(Math.min(now().getTime() + 30 * 60 * 1000,humanReview?Date.parse(humanReview.record.expires_at):Infinity)).toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z");
 
     const unsignedPayload: PaeUnsignedPayload = {
       signing_key_id: signingKeyId,
@@ -172,8 +174,7 @@ export function approveAndSealPae(
           approved_at: isoNow,
           policy_version: input.policyVersion,
           approval_record_hash,
-          assessment_id: assessment.record.assessment_id,
-          assessment_hash: assessment.hash,
+          ...reviewIdentity,
         },
       ],
       assurance_hash,

@@ -29,6 +29,11 @@ export class SupabaseDemoStateRepository {
     this.baseUrl = url.replace(/\/+$/, "");
   }
 
+  async assertRecoveryWorkflowCapability():Promise<void> {
+    const result=asRecord(await this.rpc('tameion_recovery_capabilities',{}));
+    if(result.schema_version!==1||result.human_authorization_history!==true||result.shared_wallet_namespace_lock!==true||result.parent_child_retirement_lock!==true||result.immutable_recovery_receipts!==true)throw new DemoStatePersistenceError('Recovery workflow migration capability unavailable.');
+  }
+
   async loadOrSeed(namespace: string, initialSnapshot: Record<string, unknown>): Promise<DemoStateRevision> {
     const result = await this.rpc("tameion_state_load_or_seed", {
       p_namespace: namespace,

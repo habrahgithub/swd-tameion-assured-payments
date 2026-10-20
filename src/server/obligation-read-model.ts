@@ -1,3 +1,4 @@
+import {HUMAN_ADVISORY_CODES} from '../domain/review-findings';
 import {contentHash} from '../domain/linked-instruction';
 import {matchesPaymentRelease,type PaymentReleaseBinding} from '../domain/payment-release-approval';
 import { NextResponse } from "next/server";
@@ -120,9 +121,10 @@ export function projectSelectedFinancialScope(
       if (executionByKey.has(record.idempotency_key)) ledgerIntegrity = false;
       executionByKey.set(record.idempotency_key, record);
       const owner = aggregateById.get(record.obligation_id);
-      const sealedPae = owner ? state.getSealedPae(owner.obligation_id) : undefined;
+      const predecessor=state.getRecoveryEvents?.().some(e=>e.predecessor_key===record.idempotency_key&&e.obligation_id===record.obligation_id)&&["FAILED","BLOCKED"].includes(record.status);
+      const sealedPae = owner ? (predecessor?state.getSealedPaeForOperation?.(record.idempotency_key):state.getSealedPae(owner.obligation_id)) : undefined;
       if (
-        !owner || owner.execution_idempotency_key !== record.idempotency_key ||
+        !owner || (!predecessor&&owner.execution_idempotency_key !== record.idempotency_key) ||
         !sealedPae || sealedPae.payload.organization_id !== DEMO_ORGANIZATION_ID ||
         sealedPae.payload.obligation_ids.length !== 1 || sealedPae.payload.obligation_ids[0] !== record.obligation_id ||
         sealedPae.payload.idempotency_key !== record.idempotency_key ||
@@ -146,8 +148,11 @@ export function projectSelectedFinancialScope(
       return unavailable("Complete controlled payment history could not be verified.");
     }
 
-    const coverageBlocker = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    const competingId = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, id);
+    const authorization=state.getAuthorizationArtifacts(id);
+    const human=state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,id)??state.store.exportSnapshot().review_decisions?.find(r=>r.hash===authorization?.approval_record.review_decision_hash&&r.record.decision_id===authorization?.approval_record.review_decision_id&&getCurrentSettlementProxyPacket(state,id)!==null);
+    const explicitReviewedIntent=Boolean(human&&human.record.organization_id===DEMO_ORGANIZATION_ID&&human.record.obligation_id===id&&human.record.source_record_sha256===contentHash(state.getRecord(id))&&human.record.decision==='ACCEPT_FOR_AUTHORIZATION');
+    const coverageBlocker = explicitReviewedIntent?undefined:state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
+    const competingId = explicitReviewedIntent?null:state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, id);
     const assessmentCoverage = coverageBlocker
       ? { status: "BLOCKED" as const }
       : { status: "PASS" as const };
@@ -157,7 +162,7 @@ export function projectSelectedFinancialScope(
     const uncertainExecution = uncertainExecutionPresent
       ? { status: "PRESENT" as const }
       : { status: "NONE" as const };
-    const membership = aggregates.length === 1 && !unclassifiedOrganizationPresent && ledgerIntegrity
+    const membership = (explicitReviewedIntent?selected.length===1:aggregates.length===1) && !unclassifiedOrganizationPresent && ledgerIntegrity
       ? "COMPLETE" as const
       : "UNAVAILABLE" as const;
 
@@ -223,6 +228,7 @@ export function projectObligationListData(state: ExistingState, sourceGroup: Obl
     return {
       ...o,
       source_group: sourceGroup,
+      ...(state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,o.obligation_id)?{current_review_decision:state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,o.obligation_id)}:{}),
       assessed: isCurrent,
       decision: isCurrent ? sealed?.record.decision : null,
       provider_mode: isCurrent ? sealed?.record.provider_mode : null,
@@ -243,7 +249,7 @@ export function projectObligationList(state: ExistingState) {
   return NextResponse.json(projectObligationListData(state));
 }
 
-export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED", advisorySourceHash?:string, selectedFinancialScopeBinding?:SelectedFinancialScopeBinding) {
+export function projectObligationDetail(state: ExistingState, id: string, financialActionEligible = true, releaseContext?: {namespace:string;operator_key:string;credential_version:number} & Partial<PaymentReleaseBinding>, sourceGroup: ObligationSourceGroup = "UNVERIFIED", advisorySourceHash?:string, selectedFinancialScopeBinding?:SelectedFinancialScopeBinding,recoveryAuthorityReady=false) {
   try {
     let aggregate = state.store.get(DEMO_ORGANIZATION_ID, id);
     let record = state.getRecord(id);
@@ -324,7 +330,28 @@ export function projectObligationDetail(state: ExistingState, id: string, financ
       trustedKeys: state.trustedKeys.export(),
       now: new Date(),
     });
+    const currentHuman=state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,id);
+    const archivedHuman=state.store.exportSnapshot().review_decisions?.find(r=>r.hash===state.getAuthorizationArtifacts(id)?.approval_record.review_decision_hash);
+    const human=currentHuman??archivedHuman??null;
+    const mutationCapable=financialActionEligible&&releaseContextReady;
+    const allowedActions:string[]=[];
+    if(mutationCapable&&!execution&&!sealed){
+      if(!currentHuman||['ESCALATE','NEEDS_CORRECTION'].includes(currentHuman.record.decision))allowedActions.push('MANUAL_REVIEW');
+      if(currentHuman?.record.decision==='ACCEPT_FOR_AUTHORIZATION')allowedActions.push(state.getSettlementProxy(id)?'AUTHORIZE_PAYMENT':'REFRESH_READINESS');
+    }
+    if(mutationCapable&&!execution&&state.getSettlementProxy(id)&&!allowedActions.includes('REFRESH_READINESS'))allowedActions.push('REFRESH_READINESS');
+    if(execution)allowedActions.push('OBSERVE_EXISTING_PAYMENT');
+    if((mutationCapable||recoveryAuthorityReady&&releaseContextReady)&&execution&&['UNKNOWN','SUBMITTING','FAILED'].includes(execution.status))allowedActions.push('RECOVER_EXISTING_PAYMENT');
+    if(mutationCapable&&!execution&&sealed&&aggregate.execution_state==='NONE'&&Date.parse(sealed.payload.expiry)<=Date.now())allowedActions.push('PREPARE_SUCCESSOR');
+    if(mutationCapable&&execution&&(execution.status==='BLOCKED'&&execution.dispatch_evidence==='PROVEN_NOT_DISPATCHED'||execution.status==='FAILED'&&typeof execution.provider_evidence?.network_fee==='string'&&/^\d+(?:\.\d{1,18})?$/.test(execution.provider_evidence.network_fee)))allowedActions.push('PREPARE_SUCCESSOR');
     return NextResponse.json({
+      sealed_pae_idempotency_key:sealed?.payload.idempotency_key??null,
+      allowed_actions:allowedActions,
+      review_findings:(currentAssessment?.record.race?.result.validated_findings??[]).map(f=>({...f,advisory:HUMAN_ADVISORY_CODES.has(f.code)})),
+      review_decision_history:state.store.exportSnapshot().review_decisions?.filter(r=>r.record.obligation_id===id)??[],
+      current_review_decision:human,
+      readiness_observation:state.getReadinessObservations?.().findLast(r=>r.obligation_id===id)??null,
+      blockers:execution&&['UNKNOWN','SUBMITTING'].includes(execution.status)?[{code:execution.provider_evidence?.outcome??'OUTCOME_UNKNOWN',scope:id,stage:'RECONCILIATION',owner:'Treasury Operations',remedy:'Reconcile the recorded payment identity.',resume_predicate:'Matched authoritative provider observation',observed_at:execution.provider_evidence?.reconciled_at??null}]:[],
       financial_action_eligible: financialActionEligible,
       source_group: sourceGroup,
       selected_financial_scope: financialActionEligible && sourceGroup === "DEMO_ARC_TESTNET"

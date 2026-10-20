@@ -81,7 +81,7 @@ describe('controlled authority negative and fault sensitivity',()=>{
 });
 it('keeps execution locked without final exact packet approval and rejects identity substitutions',async()=>{const h=controlledHarness(),p=await preparedApproval(h,false);vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',p.a.packet_sha256);expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(403);vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',p.a.packet_sha256);for(const patch of [{packet_sha256:'0'.repeat(64)},{pae_instruction_hash:'0'.repeat(64)},{expected_version:p.body.expected_version+1}])expect((await h.handler('execute',h.request({...p.body,...patch}),p.id)).status).toBe(403);expect(h.client.createTransaction).not.toHaveBeenCalled();});
 it('bounded existing-state RPC rejects redirects/oversize without seed or credential disclosure',async()=>{const fetcher=vi.fn(async(_input:RequestInfo|URL,_init?:RequestInit)=>new Response('x'.repeat(2_097_153)));const repo=new SupabaseDemoStateRepository('https://synthetic.invalid','SYNTHETIC_NOT_SECRET',fetcher);await expect(repo.loadExisting('SYNTHETIC')).rejects.toThrow(/bound/);expect(fetcher).toHaveBeenCalledOnce();expect(fetcher.mock.calls[0]?.[1]).toMatchObject({redirect:'error',cache:'no-store'});});
-it('provider-completeness boundary refuses hosted-style preflight before state/provider construction',async()=>{const h=controlledHarness();const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async()=>{throw new AccessError('PROVIDER_BALANCE_NOT_VERIFIED',503);}});const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'PROVIDER_BALANCE_NOT_VERIFIED'});expect(h.load).not.toHaveBeenCalled();expect(h.client.getWallet).not.toHaveBeenCalled();});
+it('provider-completeness refusal permits capability/state read but blocks wallet preflight and every write',async()=>{const h=controlledHarness();const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async()=>{throw new AccessError('PROVIDER_BALANCE_NOT_VERIFIED',503);}});const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'PROVIDER_BALANCE_NOT_VERIFIED'});expect(h.load).toHaveBeenCalledOnce();expect(h.repo.compareAndSet).not.toHaveBeenCalled();expect(h.client.getWallet).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();});
 it('passes authenticated revalidation into an admitted provider-completeness boundary before preflight',async()=>{
  const h=controlledHarness();await h.sealCurrent();
  const providerBoundary=vi.fn(async(revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{await revalidate();});
@@ -368,7 +368,7 @@ describe('Job65 production existing-state restoration',()=>{
   if(fault==='tampered'){expect(result.status).toBe(503);}else{
    expect(result.status).toBe(200);const data=await result.json();
    expect(data.payment_release_current).toBe(fault==='matching');
-   expect(data.execution_gate).toBe(fault==='matching'?'PORTAL_APPROVED_EXACT_PACKET':fault==='runtime'?'PORTAL_RELEASE_UNAVAILABLE':fault==='namespace'?'PORTAL_RELEASE_APPROVAL_REQUIRED':'PORTAL_RELEASE_RENEWAL_REQUIRED');
+   expect(data.execution_gate).toBe(fault==='matching'?'PORTAL_APPROVED_EXACT_PACKET':['runtime','operator','credential'].includes(fault)?'PORTAL_RELEASE_UNAVAILABLE':fault==='namespace'?'PORTAL_RELEASE_APPROVAL_REQUIRED':'PORTAL_RELEASE_RENEWAL_REQUIRED');
    if(fault==='namespace')expect(data.payment_release_approval).toBeNull();
    else expect(Object.keys(data.payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);
   }
@@ -511,13 +511,13 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   expect(h.load.mock.calls.length).toBeGreaterThan(loads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();
   expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');
  });
- it.each(['unavailable','wrong token'])('retains UNKNOWN when native token identity is %s without resending',async fault=>{
+ it.each(['unavailable','wrong token'])('recovers from stored identity when the current balance service reports %s',async fault=>{
   const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance();
   if(fault==='unavailable')vi.mocked(h.client.getWalletTokenBalance).mockRejectedValue(new Error('Synthetic token identity unavailable'));
   else{const balances:any=structuredClone(await h.client.getWalletTokenBalance({id:J2A_DEMO_SOURCE.id}));balances.data.tokenBalances[0].token.id='SYNTHETIC-WRONG-TOKEN';vi.mocked(h.client.getWalletTokenBalance).mockResolvedValue(balances);}
   const reads=statusReads(h),result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
-  expect(result.status).toBe(202);expect(await result.json()).toMatchObject({code:'RECONCILIATION_ONLY',execution:{status:'UNKNOWN'}});
-  expect(statusReads(h)).toBeGreaterThan(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({code:'RECONCILED',execution:{status:'SETTLED'}});
+  expect(statusReads(h)).toBeGreaterThan(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');
  });
  it.each(['obligation','amount','destination','malformed destination'])('rejects a cold-restored %s mismatch before status or persistence',async fault=>{
   const {h,p,identity}=await recordedUnknown(),boundary=admittedBalance(),record=h.snapshot().execution_ledger[0]!;
@@ -580,11 +580,11 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   const result=await guarded(h,boundary)('reconcile',h.request({idempotency_key:key,pae_instruction_hash:p.a.pae_instruction_hash}),p.id);
   expect(result.status).toBe(202);expect(await result.json()).toMatchObject({execution:{status:'UNKNOWN',idempotency_key:key}});expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
  });
- it.each(['SETTLED','FAILED','BLOCKED'] as const)('retains the fresh operator gate for an already-terminal %s record',async status=>{
+ it.each(['SETTLED','FAILED','BLOCKED'] as const)('does not require new funding for an already-terminal %s record',async status=>{
   const {h,p,identity}=await recordedUnknown();h.snapshot().execution_ledger[0]!.status=status;
   const before=structuredClone(h.snapshot()),boundary=rejectedBalance(),reads=statusReads(h),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
   const result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
-  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'BALANCE_NOT_VERIFIED'});expect(boundary).toHaveBeenCalledOnce();expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({execution:{status}});expect(boundary).not.toHaveBeenCalled();if(status==='FAILED'){expect(statusReads(h)).toBeGreaterThan(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes+1);expect(h.snapshot().execution_ledger[0].idempotency_key).toBe(before.execution_ledger[0].idempotency_key);}else{expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);}expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
  it.each(['preflight','execute'] as const)('still requires current operator balance before new %s effects',async kind=>{
   const h=controlledHarness(),p=await preparedApproval(h),before=structuredClone(h.snapshot()),boundary=rejectedBalance(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;

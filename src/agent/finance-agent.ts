@@ -1,3 +1,4 @@
+import {AiProviderError,type AiOperationalOutcome} from './ai-provider';
 import {hasCurrentControlledInstruction} from "./context-builder";
 import type { AiProvider } from "./ai-provider";
 import { FINDING_CATALOG, remediationFor, type FindingCode } from "./finding-catalog";
@@ -15,6 +16,7 @@ import { isSettleableCurrency } from "../domain/currency-conversion";
 export const PROVIDER_CALL_FAILURE_REASON_PREFIX = "AI provider call failed:";
 
 export interface FinanceAgentDecision {
+  provider_outcome?:AiOperationalOutcome;
   obligation_id: string;
   decision: "PAY" | "HOLD" | "ESCALATE";
   /** Application-owned summaries derived from validated finding codes. */
@@ -54,22 +56,22 @@ export async function assessObligation(
   let rawOutput: unknown;
   try {
     rawOutput = await provider.assess(context, options);
-  } catch {
+  } catch (error) {
     if (options.signal?.aborted) throw new Error("Assessment cancelled");
-    return normalizeFailure(context, "PROVIDER_UNAVAILABLE", provider);
+    return {...normalizeFailure(context, "PROVIDER_UNAVAILABLE", provider),provider_outcome:error instanceof AiProviderError?error.outcome:"TRANSPORT_UNCERTAIN"};
   }
 
   const parsed = financeAgentModelRecommendationSchema.safeParse(rawOutput);
   if (!parsed.success || parsed.data.obligation_id !== context.obligation_id) {
-    return normalizeFailure(context, "MODEL_OUTPUT_INVALID", provider);
+    return {...normalizeFailure(context, "MODEL_OUTPUT_INVALID", provider),provider_outcome:"INVALID_OUTPUT"};
   }
 
   const suppliedEvidenceIds = new Set(context.evidence_ids);
   if (parsed.data.evidence_ids.some((id) => !suppliedEvidenceIds.has(id))) {
-    return normalizeFailure(context, "EVIDENCE_INTEGRITY_FAILED", provider);
+    return {...normalizeFailure(context,"MODEL_OUTPUT_INVALID",provider),provider_outcome:"INVALID_OUTPUT"};
   }
   if (parsed.data.decision === "PAY" && parsed.data.evidence_ids.length === 0) {
-    return normalizeFailure(context, "SOURCE_EVIDENCE_MISSING", provider);
+    return {...normalizeFailure(context,"MODEL_OUTPUT_INVALID",provider),provider_outcome:"INVALID_OUTPUT"};
   }
 
   const codes = deterministicFindings(context);
@@ -188,6 +190,7 @@ function normalize(
         due_date_position: context.due_date_position,
         as_of_date: context.as_of_date,
         ...(context.assessment_basis?{assessment_basis:context.assessment_basis}:{}),
+        ...(context.current_source_basis?{current_source_basis:context.current_source_basis}:{}),
         ...(context.historical_basis_verified!==undefined?{historical_basis_verified:context.historical_basis_verified}:{}),
         state_at_event_baseline: context.state_at_event_baseline,
         business_purpose_confirmed: context.business_purpose_confirmed,

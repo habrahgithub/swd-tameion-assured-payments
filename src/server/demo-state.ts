@@ -1,6 +1,8 @@
+import {z} from 'zod';
+import {parseSourceRevisions,type SourceRevision} from '../domain/source-revision';
 import {assessmentBootstrapSchema,assessmentRecoverySchema,assertAssessmentLineage,type AssessmentBootstrap,type AssessmentRecovery} from "./genuine-assessment-recovery";
 import {assessmentDispositionSchema,assertDispositionLineage,type AssessmentDisposition} from "./genuine-disposition";
-import {AssessmentState} from './assessment-state';
+import {AssessmentState,type LateAssessmentResult} from './assessment-state';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {loadFinancialSourceAdmission} from "./financial-source-admission";
@@ -83,7 +85,14 @@ export interface DemoAuthorizationArtifacts {
 }
 
 export interface DemoStateSnapshot {
+  linked_retirement_checks?:Array<{request_id:string;instruction_id:string;namespace:string;revision:number}>;
+  linked_activation_receipts?:Array<{instruction_id:string;source_obligation_id:string;namespace:string;source_sha256:string;activated_at:string}>;
+  source_revisions?:SourceRevision[];
+  source_ingress_anchor?:string;
+  readiness_observations?:Array<{obligation_id:string;aggregate_version:number;observed_at:string;result:J2aPreflightResult}>;
+  recovery_events?:Array<{request_id:string;request_sha256:string;obligation_id:string;predecessor_key:string;predecessor_sha256:string;actor_id:string;reason:string;created_at:string;predecessor_pae:SealedPae;predecessor_preflight:StoredSettlementProxy}>;
   schema_version: 2;
+  late_assessment_results?:LateAssessmentResult[];
   linked_settlement_instructions?: LinkedInstruction[];
   authority: ReturnType<AuthorityStore["exportSnapshot"]>;
   assessment_operations: AssessmentOperation[];
@@ -146,6 +155,7 @@ const authorizationArtifactsParser = (value: unknown): DemoAuthorizationArtifact
     approval.organization_id !== artifacts.sealed_pae.payload.organization_id ||
     approval.obligation_id !== artifacts.sealed_pae.payload.obligation_ids[0] ||
     approval.assessment_id !== evidence.assessment_id || approval.assessment_hash !== evidence.assessment_hash ||
+    approval.review_decision_id !== evidence.review_decision_id || approval.review_decision_hash !== evidence.review_decision_hash ||
     approval.approval_id !== evidence.approval_id || artifacts.approval_record_hash !== evidence.approval_record_hash ||
     approval.actor_id !== evidence.actor_id || approval.actor_role !== evidence.actor_role ||
     approval.policy_version !== evidence.policy_version ||
@@ -215,8 +225,15 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
       aggregate_version: String(record.aggregate_version),
     });
   }
+  const reviewStore=AuthorityStore.fromSnapshot(snapshot.authority as DemoStateSnapshot["authority"]);
   for (const authorization of authorizationHistory) {
-    const assessment = assessmentsByHash.get(authorization.approval_record.assessment_hash);
+    const approval=authorization.approval_record;
+    if(approval.review_decision_id){
+      const review=reviewStore.exportSnapshot().review_decisions?.find(r=>r.record.decision_id===approval.review_decision_id&&r.hash===approval.review_decision_hash);
+      if(!review||review.record.organization_id!==approval.organization_id||review.record.obligation_id!==approval.obligation_id||String(review.record.aggregate_version)!==approval.reviewed_aggregate_version||review.record.decision!=="ACCEPT_FOR_AUTHORIZATION")throw new Error("Authorization references invalid human review");
+      continue;
+    }
+    const assessment = assessmentsByHash.get(authorization.approval_record.assessment_hash!);
     if (
       !assessment ||
       assessment.assessment_id !== authorization.approval_record.assessment_id ||
@@ -240,7 +257,8 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   }
   for (const [obligationId, authorization] of latestAuthorizationByObligation) {
     const currentPae = sealedPaes.find(([id]) => id === obligationId)?.[1];
-    if (!currentPae || currentPae.instruction_hash !== authorization.sealed_pae.instruction_hash) {
+    const retired=parseRecoveryEvents(snapshot.recovery_events??[]).some(e=>e.obligation_id===obligationId&&e.predecessor_pae.instruction_hash===authorization.sealed_pae.instruction_hash&&e.predecessor_pae.signature===authorization.sealed_pae.signature&&(snapshot.execution_ledger as unknown[]).some(value=>{const r=parseExecutionRecord(value);return r.idempotency_key===e.predecessor_key&&sha256Hex(canonicalBytes(r))===e.predecessor_sha256&&((r.status==='BLOCKED'&&r.dispatch_evidence==='PROVEN_NOT_DISPATCHED'&&r.provider_ref===null)||(r.status==='FAILED'&&r.provider_evidence?.status==='FAILED'&&typeof r.provider_evidence.network_fee==='string'));}));
+    if ((!currentPae || currentPae.instruction_hash !== authorization.sealed_pae.instruction_hash)&&!retired) {
       throw new Error("Persisted authorization is missing its current sealed PAE pointer.");
     }
   }
@@ -301,6 +319,13 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
   }
   return {
     schema_version: 2,
+    ...(snapshot.linked_retirement_checks!==undefined?{linked_retirement_checks:z.array(z.object({request_id:z.uuid(),instruction_id:z.string().min(1),namespace:z.string().min(1),revision:z.number().int().positive()}).strict()).max(1000).parse(snapshot.linked_retirement_checks)}:{}),
+    ...(snapshot.linked_activation_receipts!==undefined?{linked_activation_receipts:z.array(z.object({instruction_id:z.string().min(1),source_obligation_id:z.string().min(1),namespace:z.string().min(1),source_sha256:z.string().regex(/^[a-f0-9]{64}$/),activated_at:z.iso.datetime()}).strict()).max(1000).parse(snapshot.linked_activation_receipts)}:{}),
+    ...(snapshot.late_assessment_results!==undefined?{late_assessment_results:parseLateAssessmentResults(snapshot.late_assessment_results,assessmentOperations)}:{}),
+    ...(snapshot.readiness_observations!==undefined?{readiness_observations:parseReadinessObservations(snapshot.readiness_observations)}:{}),
+    ...(snapshot.recovery_events!==undefined?{recovery_events:parseRecoveryEvents(snapshot.recovery_events)}:{}),
+    ...(snapshot.source_ingress_anchor!==undefined?{source_ingress_anchor:parseSha256(snapshot.source_ingress_anchor)}:{}),
+    ...(snapshot.source_revisions!==undefined?{source_revisions:parseSourceRevisions(snapshot.source_revisions)}:{}),
     ...(snapshot.linked_settlement_instructions !== undefined ? {linked_settlement_instructions:parseLinkedInstructions(snapshot.linked_settlement_instructions)} : {}),
     authority: snapshot.authority as DemoStateSnapshot["authority"],
     assessment_operations: assessmentOperations,
@@ -314,6 +339,24 @@ export function parseDemoStateSnapshot(value: unknown): DemoStateSnapshot {
     settlement_proxies: settlementProxies,
     payment_release_approvals: parsePaymentReleases(snapshot.payment_release_approvals, authorizationHistory.map(a=>a.sealed_pae)),
   };
+}
+
+function parseLateAssessmentResults(value:unknown,operations:AssessmentOperation[]):LateAssessmentResult[]{
+ if(!Array.isArray(value)||value.length>1000)throw new Error('Late result history invalid');
+ const keys=new Set<string>();
+ return value.map(v=>{const record=durableAssessmentRecordSchema.parse(v.record),hash=sha256Hex(canonicalBytes(record));const op=operations.find(o=>o.idempotency_key===v.idempotency_key);if(!op||record.assessment_id!==`ASM-${op.idempotency_key}`||record.obligation_id!==op.obligation_id||record.aggregate_version!==String(op.aggregate_version)||v.assessment_hash!==hash||keys.has(v.idempotency_key))throw new Error('Late result identity invalid');keys.add(v.idempotency_key);return {idempotency_key:v.idempotency_key,record,assessment_hash:hash};});
+}
+
+function parseReadinessObservations(value:unknown):NonNullable<DemoStateSnapshot['readiness_observations']>{
+  if(!Array.isArray(value)||value.length>1000)throw new Error('Readiness history invalid');
+  return value.map(v=>{if(!v||typeof v!=='object'||typeof v.obligation_id!=='string'||!Number.isSafeInteger(v.aggregate_version)||typeof v.observed_at!=='string')throw new Error('Readiness observation invalid');return {...v,result:j2aPreflightResultSchema.parse(v.result)};});
+}
+
+function parseRecoveryEvents(value:unknown):NonNullable<DemoStateSnapshot['recovery_events']>{
+  if(!Array.isArray(value)||value.length>1000)throw new Error('Recovery history invalid');
+  const requests=new Set<string>();
+  for(const event of value){if(!event||typeof event!=='object'||typeof event.request_id!=='string'||requests.has(event.request_id)||!event.predecessor_pae||!event.predecessor_preflight||!/^[a-f0-9]{64}$/.test(event.predecessor_sha256))throw new Error('Recovery history invalid');sealedPaeSchema.parse(event.predecessor_pae);j2aPreflightResultSchema.parse(event.predecessor_preflight.preflight);requests.add(event.request_id);}
+  return structuredClone(value);
 }
 
 function parseAssessmentOperation(value: unknown): AssessmentOperation {
@@ -368,6 +411,7 @@ function parseAssessmentOperation(value: unknown): AssessmentOperation {
 function parseExecutionRecord(value: unknown): ExecutionRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Malformed persisted execution record.");
   const record = value as Record<string, unknown>;
+  if(record.provider_observations!==undefined){if(!Array.isArray(record.provider_observations)||record.provider_observations.length>1000)throw new Error('Provider observation history malformed');for(const evidence of record.provider_observations)parseExecutionRecord({...record,provider_observations:undefined,provider_evidence:evidence});}
   const providerEvidence = record.provider_evidence;
   if (providerEvidence !== undefined && providerEvidence !== null) {
     if (!providerEvidence || typeof providerEvidence !== "object" || Array.isArray(providerEvidence)) {
@@ -408,6 +452,12 @@ export class DemoState extends AssessmentState {
   readonly trustedKeys = new TrustedKeyRegistry();
   readonly actorAuthorities: ActorAuthorityRegistry;
   private actorAuthorityRegistryInitialized: boolean;
+  private readonly linkedRetirementChecks:DemoStateSnapshot['linked_retirement_checks'];
+  private readonly linkedActivationReceipts:DemoStateSnapshot['linked_activation_receipts'];
+  private readonly sourceRevisions:SourceRevision[];
+  private readonly sourceIngressAnchor?:string;
+  private readonly readinessObservations:NonNullable<DemoStateSnapshot["readiness_observations"]>;
+  private readonly recoveryEvents:NonNullable<DemoStateSnapshot["recovery_events"]>;
   readonly worker: ExecutionWorker;
   readonly adapter: FakeProviderAdapter;
   readonly providerAdapter: ProviderAdapter;
@@ -427,8 +477,14 @@ export class DemoState extends AssessmentState {
     workerOptions: ExecutionWorkerOptions = {},
     sourceRecords: readonly LiveUsageObligationRecord[] = loadPublicSourceRecords(),
   ) {
-    super(snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore(), new Map((snapshot?.assessment_operations ?? []).map(operation=>[operation.idempotency_key,structuredClone(operation)])));
+    super(snapshot ? AuthorityStore.fromSnapshot(snapshot.authority) : new AuthorityStore(), new Map((snapshot?.assessment_operations ?? []).map(operation=>[operation.idempotency_key,structuredClone(operation)])),snapshot?.late_assessment_results??[]);
     this.linkedInstructions = snapshot?.linked_settlement_instructions===undefined?undefined:parseLinkedInstructions(snapshot.linked_settlement_instructions);
+    this.linkedRetirementChecks=snapshot?.linked_retirement_checks;
+    this.linkedActivationReceipts=snapshot?.linked_activation_receipts;
+    this.sourceRevisions=parseSourceRevisions(snapshot?.source_revisions);
+    this.sourceIngressAnchor=snapshot?.source_ingress_anchor;
+    this.recoveryEvents=parseRecoveryEvents(snapshot?.recovery_events??[]);
+    this.readinessObservations=parseReadinessObservations(snapshot?.readiness_observations??[]);
     this.liveUsageRecords = structuredClone([...sourceRecords]);
     this.repository = repository;
     this.revision = revision;
@@ -443,6 +499,7 @@ export class DemoState extends AssessmentState {
     this.providerAdapter = adapter ?? this.adapter;
     this.worker = new ExecutionWorker(this.store, this.providerAdapter, () => this.flush(), this.trustedKeys, {
       ...workerOptions,
+      walletBudgetForIntent:workerOptions.walletBudgetForIntent??(id=>{const observed=this.readinessObservations.findLast(o=>o.obligation_id===id)?.result;const p=observed?.readiness==='READY'?observed:this.getSettlementProxy(id)?.preflight;return p?{balance:p.source_balance,total:p.max_total_debit,observed_at:p.captured_at}:undefined;}),
       loadAuthorizationArtifacts: workerOptions.loadAuthorizationArtifacts ?? ((organizationId, obligationId) =>
         organizationId === DEMO_ORGANIZATION_ID ? this.getAuthorizationArtifacts(obligationId) : undefined),
       resolveActorAuthority: workerOptions.resolveActorAuthority ?? ((actorId, organizationId) => this.actorAuthorities.resolve(organizationId, actorId)),
@@ -558,6 +615,7 @@ export class DemoState extends AssessmentState {
       throw new Error("Source amount or settlement conversion is stale; refresh the selected obligation before proxy preflight.");
     }
     return {
+      resolved_outbound_proofs:this.worker.exportSnapshot().flatMap(record=>{const e=record.provider_evidence;return e&&record.provider_ref&&e.ref_id&&e.transaction_id===record.provider_ref&&typeof e.network_fee==='string'&&['COMPLETE','FAILED','DENIED','CANCELLED'].includes(e.transaction_state??'')&&((record.status==='SETTLED'&&e.status==='CONFIRMED')||(record.status==='FAILED'&&e.status==='FAILED'))?[{ref_id:e.ref_id,transaction_id:e.transaction_id,transaction_state:e.transaction_state!,network_fee:e.network_fee}]:[];}),
       organization_id: DEMO_ORGANIZATION_ID,
       obligation_id: obligationId,
       source_amount: record.amount,
@@ -580,7 +638,7 @@ export class DemoState extends AssessmentState {
 
   getSettlementProxyByIdempotencyKey(idempotencyKey: string): StoredSettlementProxy | undefined {
     for (const sealed of this.sealedPaeByObligation.values()) {
-      if (sealed.payload.idempotency_key === idempotencyKey) return this.getSettlementProxy(sealed.payload.obligation_ids[0]);
+      if (sealed.payload.idempotency_key === idempotencyKey){const proxy=this.getSettlementProxy(sealed.payload.obligation_ids[0]);return proxy&&sealed.payload.evidence_hashes.includes(proxy.preflight.evidence_sha256)&&hashJ2aPreflightEvidence(proxy.preflight as unknown as Record<string,unknown>)===proxy.preflight.evidence_sha256&&proxy.preflight.source_wallet.id===sealed.payload.source_wallet_ref&&proxy.preflight.amount===sealed.payload.amount&&proxy.preflight.destination_wallet.address.toLowerCase()===sealed.payload.destination_address.toLowerCase()?proxy:undefined;}
     }
     return undefined;
   }
@@ -607,17 +665,18 @@ export class DemoState extends AssessmentState {
     if (this.settlementProxies.has(preflight.obligation_id) || this.hasLivePaeAuthority(preflight.obligation_id)) {
       throw new Error("A proxy intent or authorization already exists for this source obligation; refresh and reconcile its current state.");
     }
+    const humanAccepted=this.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,preflight.obligation_id)?.record.decision==="ACCEPT_FOR_AUTHORIZATION";
     const assessment = this.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, preflight.obligation_id);
-    if (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
+    if (!humanAccepted && (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
         assessment.record.missing_evidence.length !== 0 || !assessment.record.race ||
         assessment.record.race.result.decision !== "PAY" || assessment.record.race.result.validated_findings.length !== 0 ||
-        assessment.record.race.remediation.length !== 0) {
+        assessment.record.race.remediation.length !== 0)) {
       throw new Error("Only a current LIVE_AI PAY assessment with no findings or missing evidence can prepare an Arc Testnet proxy.");
     }
     const unassessed = this.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    if (unassessed) throw new Error(`Assess every frozen genuine obligation before preparing a proxy (${unassessed} is not current).`);
+    if (!humanAccepted && unassessed) throw new Error(`Assess every frozen genuine obligation before preparing a proxy (${unassessed} is not current).`);
     const otherCandidate = this.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, preflight.obligation_id);
-    if (otherCandidate) throw new Error(`Another genuine obligation already has a committed proxy or live PAE (${otherCandidate}).`);
+    if (!humanAccepted && otherCandidate) throw new Error(`Another genuine obligation already has a committed proxy or live PAE (${otherCandidate}).`);
     const versioned = this.store.applyMaterialChange(DEMO_ORGANIZATION_ID, preflight.obligation_id, expectedVersion, {
       counterparty_id: preflight.beneficiary_id,
       counterparty_version: current.counterparty_version + 1,
@@ -651,8 +710,9 @@ export class DemoState extends AssessmentState {
   hasLivePaeAuthority(obligationId: string): boolean {
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, obligationId);
     const hasSealedPae = Boolean(this.getSealedPae(obligationId));
-    const hasAuthorizationHistory = Boolean(this.getAuthorizationArtifacts(obligationId));
-    const executionRecords = this.worker.exportSnapshot().filter((record) => record.obligation_id === obligationId);
+    const retiredKeys=new Set(this.recoveryEvents.filter(e=>e.obligation_id===obligationId).map(e=>e.predecessor_key));
+    const hasAuthorizationHistory = this.authorizationHistory.some(a=>a.approval_record.obligation_id===obligationId&&!retiredKeys.has(a.sealed_pae.payload.idempotency_key));
+    const executionRecords = this.worker.exportSnapshot().filter((record) => record.obligation_id === obligationId&&!retiredKeys.has(record.idempotency_key));
     const hasExecutionAuthority = aggregate.execution_state !== "NONE" || aggregate.execution_idempotency_key !== null || executionRecords.length > 0;
     if (aggregate.state === "AUTHORIZED" || hasSealedPae || hasAuthorizationHistory || hasExecutionAuthority) return true;
 
@@ -668,7 +728,7 @@ export class DemoState extends AssessmentState {
       proxy?.preflight.obligation_id === obligationId &&
       proxy.mapped_aggregate_version === aggregate.aggregate_version &&
       aggregate.execution_state === "NONE" && aggregate.execution_idempotency_key === null;
-    if (preauthorizationMaterialChange) return false;
+    if (preauthorizationMaterialChange||retiredKeys.size>0&&aggregate.state==="APPROVAL_PENDING"&&aggregate.execution_state==="NONE"&&aggregate.execution_idempotency_key===null) return false;
 
     return aggregate.pae_state !== "UNUSED";
   }
@@ -730,9 +790,16 @@ export class DemoState extends AssessmentState {
   exportSnapshot(): DemoStateSnapshot {
     return {
       schema_version: 2,
+      ...(this.readinessObservations.length?{readiness_observations:structuredClone(this.readinessObservations)}:{}),
+      ...(this.recoveryEvents.length?{recovery_events:structuredClone(this.recoveryEvents)}:{}),
+      ...(this.sourceIngressAnchor?{source_ingress_anchor:this.sourceIngressAnchor}:{}),
+      ...(this.linkedRetirementChecks?{linked_retirement_checks:structuredClone(this.linkedRetirementChecks)}:{}),
+      ...(this.linkedActivationReceipts?{linked_activation_receipts:structuredClone(this.linkedActivationReceipts)}:{}),
+      ...(this.sourceRevisions.length?{source_revisions:structuredClone(this.sourceRevisions)}:{}),
       ...(this.linkedInstructions!==undefined ? {linked_settlement_instructions:structuredClone(this.linkedInstructions)} : {}),
       authority: this.store.exportSnapshot(),
       assessment_operations: [...this.assessmentOperations.values()].map((operation) => ({ ...operation })),
+      ...(this.lateAssessmentResults.length?{late_assessment_results:this.getLateAssessmentResults()}:{}),
       sealed_paes: [...this.sealedPaeByObligation.entries()].map(([id, pae]) => [id, pae]),
       authorization_history: this.authorizationHistory.map((entry) => authorizationArtifactsParser(entry)),
       ...(this.paymentReleaseApprovals.length ? {payment_release_approvals:structuredClone(this.paymentReleaseApprovals)} : {}),
@@ -745,9 +812,28 @@ export class DemoState extends AssessmentState {
     };
   }
 
+  getReadinessObservations(){return structuredClone(this.readinessObservations);}
+  recordReadinessObservation(id:string,result:J2aPreflightResult){if(this.readinessObservations.length>=1000)throw new Error('Readiness history capacity reached');this.readinessObservations.push({obligation_id:id,aggregate_version:this.store.get(DEMO_ORGANIZATION_ID,id).aggregate_version,observed_at:new Date().toISOString(),result:structuredClone(result)});}
+  getRecoveryEvents(){return structuredClone(this.recoveryEvents);}
+  getSealedPaeForOperation(key:string){return this.authorizationHistory.find(a=>a.sealed_pae.payload.idempotency_key===key)?.sealed_pae;}
+  prepareExecutionSuccessor(id:string,expectedVersion:number,requestId:string,requestHash:string,actorId:string,reason:string){
+    const previous=this.recoveryEvents.find(e=>e.request_id===requestId);
+    if(previous){if(previous.request_sha256!==requestHash||previous.obligation_id!==id)throw new Error('Successor request conflict');return previous;}
+    const pae=this.getSealedPae(id),proxy=this.getSettlementProxy(id);
+    let execution=pae?this.worker.getExecutionRecord(pae.payload.idempotency_key):undefined;
+    if(pae&&!execution&&Date.parse(pae.payload.expiry)<=Date.now())execution=this.worker.retireUnusedExpiredAuthority(pae);
+    const provenNoDispatch=execution?.status==='BLOCKED'&&execution.provider_ref===null&&execution.dispatch_evidence==='PROVEN_NOT_DISPATCHED';
+    const finalEffects=execution?.status==='FAILED'&&execution.provider_evidence?.status==='FAILED'&&['FAILED','DENIED','CANCELLED'].includes(execution.provider_evidence.transaction_state??'')&&typeof execution.provider_evidence.network_fee==='string'&&/^\d+(?:\.\d{1,18})?$/.test(execution.provider_evidence.network_fee);
+    if(!pae||!proxy||!execution||(!provenNoDispatch&&!finalEffects))throw new Error('Original operation effects are unverified; reconcile original identity');
+    const event={request_id:requestId,request_sha256:requestHash,obligation_id:id,predecessor_key:execution.idempotency_key,predecessor_sha256:sha256Hex(canonicalBytes(execution)),actor_id:actorId,reason,created_at:new Date().toISOString(),predecessor_pae:pae,predecessor_preflight:proxy};
+    this.store.prepareFinancialSuccessor(DEMO_ORGANIZATION_ID,id,expectedVersion,execution.idempotency_key);
+    this.recoveryEvents.push(event);this.sealedPaeByObligation.delete(id);this.settlementProxies.delete(id);return structuredClone(event);
+  }
+
   async flush(): Promise<void> {
     if (!this.repository || this.revision === undefined || this.namespace === undefined) return;
-    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, this.exportSnapshot() as unknown as Record<string, unknown>);
+    const snapshot=this.exportSnapshot();if(Buffer.byteLength(JSON.stringify(snapshot))>1_750_000)throw new Error("Durable state capacity reached");
+    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, snapshot as unknown as Record<string, unknown>);
   }
 
   private namespace?: string;
@@ -915,7 +1001,8 @@ export class J2aRealTestnetDemoState {
 
   async flush(): Promise<void> {
     if (!this.repository || this.revision === undefined || this.namespace === undefined) return;
-    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, this.exportSnapshot() as unknown as Record<string, unknown>);
+    const snapshot=this.exportSnapshot();if(Buffer.byteLength(JSON.stringify(snapshot))>1_750_000)throw new Error("Durable state capacity reached");
+    this.revision = await this.repository.compareAndSet(this.namespace, this.revision, snapshot as unknown as Record<string, unknown>);
   }
 
   attachRepository(repository: SupabaseDemoStateRepository, namespace: string, revision: number): void {
@@ -1081,7 +1168,7 @@ export async function loadExistingFinancialState(
     return {stored,snapshot,store};
   };
   const {stored,snapshot} = await load();
-  const keys = new TrustedKeyRegistry(); keys.restore(snapshot.trusted_keys); keys.resolve(DEMO_SIGNING_KEY_ID,"Ed25519");
+  const keys = new TrustedKeyRegistry(); keys.restore(snapshot.trusted_keys);
   let state: DemoState;
   const adapter = suppliedAdapter ?? new ArcCircleProviderAdapter(undefined,key=>state?.getSettlementProxyByIdempotencyKey(key)?.preflight??null);
   state = new DemoState(snapshot,repository,stored.revision,adapter,{

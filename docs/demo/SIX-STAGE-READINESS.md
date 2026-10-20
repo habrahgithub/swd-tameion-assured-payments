@@ -135,3 +135,12 @@ Required local gates: Node 24.21.0 hygiene, typecheck, focused integrated tests,
 full Vitest with moderate workers, build and Playwright. Record actual outcomes
 and omissions in the control report. Independent SQL/SENTINEL review, exact-head
 CI, factual owner approval and live rollout/AI/payment proof remain separate gates.
+
+## R1 recoverable workflow candidate
+
+R1 introduces explicit source revisions and HUMAN review through the existing
+six-stage controls. Its candidate verification is separate from historical UAT
+and does not clear live six-stage acceptance. The [R1 runbook](RECOVERABLE-PAYMENT-WORKFLOW-R1.md)
+records supported actions, migration gates and unsupported capabilities; the
+[scenario map](RECOVERABLE-PAYMENT-R1-SCENARIOS.md) distinguishes synthetic,
+conditional and unverified evidence for all 142 design scenarios.

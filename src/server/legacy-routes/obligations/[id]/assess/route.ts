@@ -181,15 +181,9 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
     if (!operation) break;
-    if (operation.status === "STALE") {
-      try {
-        await state.flush();
-        return existingOperationResponse(state, operation);
-      } catch (error) {
-        if (!(error instanceof DemoStateConflictError)) throw error;
-        state = await getDemoState();
-        continue;
-      }
+    if(operation.status==='UNKNOWN'||operation.status==='STALE'){
+      state.retainLateAssessmentResult(idempotencyKey,assessment);
+      try{await state.flush();return existingOperationResponse(state,operation);}catch(error){if(!(error instanceof DemoStateConflictError))throw error;state=await getDemoState();continue;}
     }
     if (operation.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
     if (operation.status !== "RESERVED") return existingOperationResponse(state, operation);
@@ -202,6 +196,15 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
     } catch (error) {
       if (!(error instanceof DemoStateConflictError)) throw error;
       state = await getDemoState();
+      // A human decision may win the CAS while the provider is awaiting. Even
+      // the one-attempt policy must retain that completed result under its
+      // original identity; it must never retry sealing it as current advice.
+      const latest=state.getAssessmentOperation(idempotencyKey);
+      if(latest&&(state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,latest.obligation_id)||state.store.get(DEMO_ORGANIZATION_ID,latest.obligation_id).aggregate_version!==latest.aggregate_version)){
+        if(latest.status==='RESERVED')state.checkpointAssessmentResult(idempotencyKey,assessment);
+        else state.retainLateAssessmentResult(idempotencyKey,assessment);
+        try{await state.flush();return existingOperationResponse(state,state.getAssessmentOperation(idempotencyKey)!);}catch(retentionError){if(!(retentionError instanceof DemoStateConflictError))throw retentionError;return persistenceUnknownResponse(idempotencyKey);}
+      }
     }
   }
   return persistenceUnknownResponse(idempotencyKey);
@@ -311,7 +314,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
   try{decision=await assessWithinBudget(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay,options.requireHistoricalBasis),provider,providerSignal);}
   catch(error){if(providerSignal?.aborted)return markUnknownAndReply(state,idempotencyKey);throw error;}
   await revalidate();
-  if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
+  if (isLiveNvidia && wasProviderCallFailure(decision)&&(!decision.provider_outcome||decision.provider_outcome==="TRANSPORT_UNCERTAIN")) return markUnknownAndReply(state, idempotencyKey);
 
   const runtimeIdentity = provider.runtimeIdentity;
   if (!runtimeIdentity) throw new Error("Assessment provider did not expose a durable runtime identity.");
@@ -332,7 +335,8 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     model_id: runtimeIdentity.model_id,
     model_config_version: runtimeIdentity.model_config_version,
     runtime_config_sha256: runtimeIdentity.runtime_config_sha256,
-    provider_mode: !isLiveNvidia ? "NOT_LIVE_AI" : "LIVE_AI",
+    ...(decision.provider_outcome?{provider_outcome:decision.provider_outcome}:{}),
+    provider_mode: !isLiveNvidia||decision.provider_outcome==="INVALID_OUTPUT" ? "NOT_LIVE_AI" : decision.provider_outcome ? "BLOCKED_EXTERNAL" : "LIVE_AI",
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),
   };
 

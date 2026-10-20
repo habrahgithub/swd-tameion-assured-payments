@@ -39,7 +39,7 @@ it.each(['UNKNOWN','SUBMITTING'] as const)('real expired loaders -> read project
  expect(()=>loadFinancialSourceAdmission()).toThrow();expect(()=>loadFinancialRequesterBinding()).toThrow();
  expect(loadFinancialSourceAdmissionForReconcile().source.obligation_id).toBe(p.id);expect(loadFinancialRequesterBindingForReconcile().actor_id).toBe(h.requester.actor_id);
  const providerReads=vi.mocked(h.client.getTransaction).mock.calls.length+vi.mocked(h.client.listTransactions).mock.calls.length,writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
- const projected=await readers.detail(new Request('https://fixture.invalid'),p.id);expect(projected.status).toBe(200);expect(await projected.json()).toMatchObject({financial_action_eligible:false,execution:{status}});
+ const projected=await readers.detail(new Request('https://fixture.invalid'),p.id);expect(projected.status).toBe(200);expect(await projected.json()).toMatchObject({financial_action_eligible:false,execution:{status},allowed_actions:expect.arrayContaining(['RECOVER_EXISTING_PAYMENT'])});
  expect(vi.mocked(h.client.getTransaction).mock.calls.length+vi.mocked(h.client.listTransactions).mock.calls.length).toBe(providerReads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);
  runtime.handler=action;vi.stubGlobal('crypto',webcrypto);
  const fetcher=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{

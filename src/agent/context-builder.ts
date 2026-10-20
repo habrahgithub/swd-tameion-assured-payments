@@ -6,6 +6,7 @@ import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 
 /** Shape of one record in data/live-usage/LIVE_USAGE_SET.json (J0-C). */
 export interface LiveUsageObligationRecord {
+  current_source_basis?: import("zod").infer<typeof import("./schema").currentSourceBasisSchema>;
   assessment_basis?: HistoricalAssessmentBasis;
   obligation_id: string;
   /** Source-backed supplier identity; absent for legacy records. Never part of the model context. */
@@ -94,11 +95,12 @@ export function buildFinanceAgentContext(
         : record.effective_due_date === asOfDate
           ? "DUE_TODAY"
           : "FUTURE";
-  const dueDatePosition = record.assessment_basis || requireHistoricalBasis
+  const dueDatePosition = record.current_source_basis?(record.current_source_basis.business_date<asOfDate?"OVERDUE":record.current_source_basis.business_date===asOfDate?"DUE_TODAY":"FUTURE"):record.assessment_basis || requireHistoricalBasis
     ? !historicalValid ? "INVALID" : record.assessment_basis!.transaction_type === "INVOICE"
       ? invoiceDueDatePosition : !rawDueDateConsistent ? "INVALID" : historicalDatePosition(record.assessment_basis!)
     : invoiceDueDatePosition;
   return {
+    ...(record.current_source_basis?{current_source_basis:record.current_source_basis}:{}),
     ...(record.assessment_basis ? {assessment_basis:record.assessment_basis} : {}),
     ...(record.assessment_basis||requireHistoricalBasis?{historical_basis_verified:historicalValid}:{}),
     obligation_id: record.obligation_id,
@@ -137,6 +139,7 @@ export function toFinanceAgentModelContext(context: FinanceAgentContext): Financ
     destination_readiness_source: _destinationReadinessSource,
     ...modelContext
   } = context;
+  if(context.current_source_basis)return {...modelContext,service_category:'Operator-entered payable; private description retained in source revision',commercial_terms:'Private terms retained in the current source revision',evidence_ids:context.evidence_ids.map(id=>`EVID-${createHash('sha256').update(id).digest('hex')}`)};
   return modelContext;
 }
 

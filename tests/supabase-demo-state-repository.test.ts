@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it,vi } from "vitest";
 
 import { DemoStateConflictError, SupabaseDemoStateRepository } from "../src/server/supabase-demo-state-repository";
 
@@ -60,4 +60,13 @@ describe("Supabase durable-state repository", () => {
     expect(transportSignal).toBeInstanceOf(AbortSignal);
     expect(transportSignal?.aborted).toBe(true);
   });
+});
+
+it('requires the installed R1 write capabilities without treating a legacy/missing capability as admission',async()=>{
+ const {SupabaseDemoStateRepository}=await import('../src/server/supabase-demo-state-repository');
+ const expected={schema_version:1,human_authorization_history:true,shared_wallet_namespace_lock:true,parent_child_retirement_lock:true,immutable_recovery_receipts:true};
+ const fetcher=vi.fn(async(_input:RequestInfo|URL,_init?:RequestInit)=>Response.json(expected));const repository=new SupabaseDemoStateRepository('https://synthetic.invalid','SYNTHETIC-NOT-A-CREDENTIAL',fetcher);
+ await expect(repository.assertRecoveryWorkflowCapability()).resolves.toBeUndefined();expect(String(fetcher.mock.calls[0]?.[0])).toContain('/rpc/tameion_recovery_capabilities');
+ const missing=new SupabaseDemoStateRepository('https://synthetic.invalid','SYNTHETIC-NOT-A-CREDENTIAL',async()=>Response.json({...expected,shared_wallet_namespace_lock:false}));
+ await expect(missing.assertRecoveryWorkflowCapability()).rejects.toThrow('capability unavailable');
 });

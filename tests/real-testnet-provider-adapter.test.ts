@@ -68,7 +68,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("does not reconcile a transaction until every Circle balance page is read", async () => {
+  it("recovers with the stored token identity without reading any Circle balance page", async () => {
     const api = createClient();
     const adapter = await statusAdapter(api);
     api.getWalletTokenBalance = vi.fn()
@@ -76,11 +76,11 @@ describe("Arc Circle provider adapter for J2A", () => {
       .mockResolvedValueOnce({ data: { tokenBalances: [{ amount: "10.000000", token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true } }], pagination: { nextPageAfter: null } } });
     const result = await adapter.getStatus("circle-tx-1", "exact-demo-key");
     expect(result.status).toBe("PENDING");
-    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(1, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50 });
-    expect(api.getWalletTokenBalance).toHaveBeenNthCalledWith(2, { id: J2A_DEMO_SOURCE.id, includeAll: true, pageSize: 50, pageAfter: "reconcile-page-2" });
+    expect(api.getWalletTokenBalance).not.toHaveBeenCalled();
+    expect(api.getTransaction).toHaveBeenCalledOnce();
   });
 
-  it("keeps reconciliation unknown when the terminal balance cursor is missing", async () => {
+  it("ignores an unavailable balance cursor while reading an existing transaction", async () => {
     const api = createClient();
     const adapter = await statusAdapter(api);
     api.getWalletTokenBalance = vi.fn(async () => ({
@@ -88,8 +88,9 @@ describe("Arc Circle provider adapter for J2A", () => {
     }));
 
     await expect(adapter.getStatus("circle-tx-1", "exact-demo-key"))
-      .resolves.toMatchObject({ status: "UNKNOWN" });
-    expect(api.getTransaction).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ status: "PENDING" });
+    expect(api.getTransaction).toHaveBeenCalledOnce();
+    expect(api.getWalletTokenBalance).not.toHaveBeenCalled();
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -246,7 +247,7 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(changedPrecisionApi.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("keeps reconciliation UNKNOWN when current provider precision differs from the reviewed preflight", async () => {
+  it("uses persisted provider precision without a new balance-identity read", async () => {
     const authorizedApi = createClient({
       getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "19.989211477825042",
@@ -259,8 +260,9 @@ describe("Arc Circle provider adapter for J2A", () => {
     const changedPrecisionApi = createClient();
     const adapter = new ArcCircleProviderAdapter(changedPrecisionApi, () => authorized);
 
-    expect(await adapter.getStatus("circle-tx-1", "exact-demo-key")).toEqual({ status: "UNKNOWN" });
-    expect(changedPrecisionApi.getTransaction).not.toHaveBeenCalled();
+    expect(await adapter.getStatus("circle-tx-1", "exact-demo-key")).toMatchObject({ status: "PENDING",provider_token_decimals:18 });
+    expect(changedPrecisionApi.getTransaction).toHaveBeenCalledOnce();
+    expect(changedPrecisionApi.getWalletTokenBalance).not.toHaveBeenCalled();
     expect(changedPrecisionApi.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -280,16 +282,12 @@ describe("Arc Circle provider adapter for J2A", () => {
     expect(api.createTransaction).not.toHaveBeenCalled();
   });
 
-  it("blocks before Circle submission when the fresh fee or token differs from the authorized preflight", async () => {
+  it("blocks token changes or fees above the authorized ceiling", async () => {
     const authorizedClient = createClient();
     const authorized = await runJ2aReadOnlyPreflight(authorizedClient);
     expect(authorized.readiness).toBe("READY");
     const cases = [
-      createClient({ estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.001500" } } })) }),
-      createClient({ getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
-        amount: "11.000000",
-        token: { id: "native-arc-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true, tokenAddress: null },
-      }] } })) }),
+      createClient({ estimateTransferFee: vi.fn(async () => ({ data: { medium: { networkFee: "0.100000" } } })) }),
       createClient({ getWalletTokenBalance: vi.fn(async () => ({ data: { tokenBalances: [{
         amount: "10.000000",
         token: { id: "changed-native-usdc", symbol: "USDC", blockchain: "ARC-TESTNET", decimals: 6, isNative: true, tokenAddress: null },

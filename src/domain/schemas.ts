@@ -76,6 +76,7 @@ export const durableAssessmentRecordSchema = z
     uncertainty_signal: z.boolean(),
     /** Optional only for immutable pre-#17 records; every new assessment carries RACE. */
     race: raceAssessmentSchema.optional(),
+    provider_outcome:z.enum(["CONFIGURATION_REJECTED","RATE_LIMITED","REFUSED","INVALID_OUTPUT","TRANSPORT_UNCERTAIN"]).optional(),
     provider_name: boundedAscii(),
     model_id: boundedAscii().optional(),
     model_config_version: boundedAscii().optional(),
@@ -106,6 +107,8 @@ export const durableAssessmentRecordSchema = z
   });
 export type DurableAssessmentRecord = z.infer<typeof durableAssessmentRecordSchema>;
 
+const hasExactlyOneReviewReference=(v:{assessment_id?:string;assessment_hash?:string;review_decision_id?:string;review_decision_hash?:string})=>Boolean(v.assessment_id&&v.assessment_hash&&!v.review_decision_id&&!v.review_decision_hash)||Boolean(v.review_decision_id&&v.review_decision_hash&&!v.assessment_id&&!v.assessment_hash);
+
 /** DURABLE-APPROVAL-RECORD-P0-1 canonical payload. */
 export const durableApprovalRecordSchema = z
   .object({
@@ -123,10 +126,12 @@ export const durableApprovalRecordSchema = z
     new_state: boundedAscii(),
     approved_at: rfc3339Millis,
     reason_hash: z.string().regex(/^[0-9a-f]{64}$/),
-    assessment_id: boundedAscii(),
-    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    assessment_id: boundedAscii().optional(),
+    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    review_decision_id: boundedAscii().optional(),
+    review_decision_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   })
-  .strict();
+  .strict().refine(hasExactlyOneReviewReference,"Exactly one immutable assessment or human decision reference is required");
 export type DurableApprovalRecord = z.infer<typeof durableApprovalRecordSchema>;
 
 /** PAE-APPROVAL-EVIDENCE-P0-1: the duplicated-field record bound inside the PAE. */
@@ -143,10 +148,12 @@ export const paeApprovalEvidenceSchema = z
     approved_at: rfc3339Millis,
     policy_version: boundedAscii(),
     approval_record_hash: z.string().regex(/^[0-9a-f]{64}$/),
-    assessment_id: boundedAscii(),
-    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    assessment_id: boundedAscii().optional(),
+    assessment_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    review_decision_id: boundedAscii().optional(),
+    review_decision_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   })
-  .strict();
+  .strict().refine(hasExactlyOneReviewReference,"Exactly one immutable assessment or human decision reference is required");
 export type PaeApprovalEvidence = z.infer<typeof paeApprovalEvidenceSchema>;
 
 /** DURABLE-ASSURANCE-RECORD-P0-1 canonical payload. */

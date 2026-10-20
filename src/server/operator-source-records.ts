@@ -62,11 +62,13 @@ export function parseOwnerAdmission(value: unknown): OwnerAdmissionState | undef
   return parsed.success ? { status: "VALID", admission: parsed.data } : { status: "INVALID" };
 }
 export interface OperatorStateBinding { namespace: string; revision: number; authority_sha256: string; workflow_base_sha256?: string }
-export interface OperatorSourceView { records: readonly LiveUsageObligationRecord[]; state_binding: OperatorStateBinding; owner_admission?: OwnerAdmissionState }
+export const sourceIngressSchema=z.object({schema_version:z.literal('SOURCE-INGRESS-1'),operator_key:text(),credential_version:z.number().int().positive(),actor_id:text(),valid_from:z.iso.datetime({precision:3}),expires_at:z.iso.datetime({precision:3}),permissions:z.array(z.enum(['CREATE_SOURCE','CORRECT_SOURCE','REVIEW_SOURCE'])).min(1).max(3)}).strict();
+export interface OperatorSourceView { source_ingress?:z.infer<typeof sourceIngressSchema>; records: readonly LiveUsageObligationRecord[]; state_binding: OperatorStateBinding; owner_admission?: OwnerAdmissionState }
 const packetFields = { state_binding: z.object({ namespace: text(), revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), authority_sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), purpose: z.literal("OPERATOR_VIEW_ONLY"), organization_id: z.literal("ORG-DEMO-001") };
 // V1 remains exactly five records. V2 is an explicitly approved genuine-view
 // catalog, not a controlled financial source or permission to seed missing state.
 const packetSchema = z.union([
+  z.object({...packetFields,purpose:z.literal('RECOVERABLE_PAYMENT_SOURCE'),schema_version:z.literal(4),provenance:z.literal('GENUINE_COMPANY_OBLIGATIONS'),record_count:z.number().int().min(0).max(50),records:z.array(operatorSourceRecordSchema).max(50),source_ingress:sourceIngressSchema}).strict().refine(packet=>packet.record_count===packet.records.length),
   z.object({ ...packetFields, purpose:z.literal("GENUINE_ADVISORY_SOURCE"), schema_version:z.literal(3), provenance:z.literal("GENUINE_COMPANY_OBLIGATIONS"),record_count:z.number().int().min(1).max(50),records:z.array(operatorSourceRecordSchema).min(1).max(50), state_binding:packetFields.state_binding.extend({workflow_base_sha256:z.string().regex(/^[a-f0-9]{64}$/)}),
     // Validated separately so a malformed admission disables only that capability, never the source or auth.
     owner_admission:z.unknown().optional() }).strict().refine(packet=>packet.record_count===packet.records.length),
@@ -85,7 +87,7 @@ export function parseOperatorSource(bytes: Uint8Array, expectedHash: string): Op
     const packet = packetSchema.parse(value);
     if (new Set(packet.records.map(record => record.obligation_id)).size !== packet.records.length) throw new Error();
     const admission = "owner_admission" in packet && "owner_admission" in (value as Record<string, unknown>) ? parseOwnerAdmission(packet.owner_admission) ?? ({ status: "INVALID" } as const) : undefined;
-    return structuredClone({records:packet.records,state_binding:packet.state_binding,...(admission?{owner_admission:admission}:{})});
+    return structuredClone({records:packet.records,state_binding:packet.state_binding,...("source_ingress" in packet?{source_ingress:packet.source_ingress}:{}),...(admission?{owner_admission:admission}:{})});
   } catch { throw new Error("OPERATOR_SOURCE_UNAVAILABLE"); }
 }
 /** Caller must authenticate before this read. Undefined means no private

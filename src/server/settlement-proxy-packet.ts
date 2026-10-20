@@ -1,3 +1,4 @@
+import {contentHash} from '../domain/linked-instruction';
 import { DEMO_ORGANIZATION_ID, type ExistingState } from "./load-existing-demo-state";
 import { getAuthorizedReviewedAssessment } from "../demo/authorized-assessment-lineage";
 import { buildJ2aExecutionPacket, hashJ2aPreflightEvidence } from "../demo/real-testnet-payment";
@@ -56,6 +57,8 @@ export function getCurrentSettlementProxyPacket(state: ExistingState, obligation
   } catch {
     return null;
   }
+  const reviewDecision=state.store.exportSnapshot().review_decisions?.find(r=>r.record.decision_id===authorization.approval_record.review_decision_id&&r.hash===authorization.approval_record.review_decision_hash);
+  const validHuman=Boolean(reviewDecision&&reviewDecision.record.organization_id===DEMO_ORGANIZATION_ID&&reviewDecision.record.obligation_id===obligationId&&String(reviewDecision.record.aggregate_version)===authorization.approval_record.reviewed_aggregate_version&&reviewDecision.record.actor_id===authorization.approval_record.actor_id&&reviewDecision.record.decision==='ACCEPT_FOR_AUTHORIZATION'&&reviewDecision.hash===sealedPae.payload.approval_evidence[0].review_decision_hash&&Date.parse(reviewDecision.record.expires_at)>Date.now());
   const assessment = getAuthorizedReviewedAssessment(
     state.store,
     DEMO_ORGANIZATION_ID,
@@ -64,16 +67,17 @@ export function getCurrentSettlementProxyPacket(state: ExistingState, obligation
     authorization,
     sealedPae,
   );
-  if (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
+  if ((!validHuman && (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
       assessment.record.missing_evidence.length || (assessment.record.race?.result.validated_findings.length ?? 0) ||
-      (assessment.record.race?.remediation.length ?? 0) || authorization.assurance_record.result !== "PASS" ||
+      (assessment.record.race?.remediation.length ?? 0))) || authorization.assurance_record.result !== "PASS" ||
       Date.parse(sealedPae.payload.expiry) <= Date.now()) return null;
   try {
     return buildJ2aExecutionPacket({
       preflight: proxy.preflight,
       aggregate,
-      assessment: assessment.record,
-      assessmentHash: assessment.hash,
+      assessment: validHuman?undefined:assessment!.record,
+      assessmentHash: validHuman?undefined:assessment!.hash,
+      reviewDecision: validHuman?reviewDecision:undefined,
       sealedPae,
     });
   } catch {
@@ -124,6 +128,9 @@ export function getSettlementEvidenceBinding(
       sealedPae,
     );
 
+    const human=state.store.exportSnapshot().review_decisions?.find(r=>r.record.decision_id===authorization.approval_record.review_decision_id&&r.hash===authorization.approval_record.review_decision_hash);
+    const historicalHuman=Boolean(human&&source&&human.record.organization_id===payload.organization_id&&human.record.obligation_id===obligationId&&String(human.record.aggregate_version)===authorization.approval_record.reviewed_aggregate_version&&human.record.source_record_sha256===contentHash(source)&&human.record.actor_id===authorization.approval_record.actor_id&&human.record.actor_role===authorization.approval_record.actor_role&&human.record.authority_version===authorization.approval_record.authority_version&&human.record.decision==='ACCEPT_FOR_AUTHORIZATION'&&human.hash===evidence?.review_decision_hash&&human.record.decision_id===evidence?.review_decision_id);
+
     if (!key || !source || !evidence || payload.organization_id !== DEMO_ORGANIZATION_ID ||
         payload.obligation_ids.length !== 1 || payload.obligation_ids[0] !== obligationId ||
         payload.aggregate_version !== String(aggregate.aggregate_version) ||
@@ -146,9 +153,9 @@ export function getSettlementEvidenceBinding(
         authorization.approval_record.actor_role !== evidence.actor_role ||
         authorization.approval_record.authority_version !== evidence.authority_version ||
         authorization.approval_record.assessment_hash !== evidence.assessment_hash ||
-        !archivedAssessment || archivedAssessment.record.provider_mode !== "LIVE_AI" || archivedAssessment.record.decision !== "PAY" ||
+        (!historicalHuman&&(!archivedAssessment || archivedAssessment.record.provider_mode !== "LIVE_AI" || archivedAssessment.record.decision !== "PAY" ||
         archivedAssessment.record.missing_evidence.length !== 0 || archivedAssessment.record.race?.result.validated_findings.length !== 0 ||
-        archivedAssessment.record.race?.remediation.length !== 0 ||
+        archivedAssessment.record.race?.remediation.length !== 0)) ||
         hashJ2aPreflightEvidence(preflight as unknown as Record<string, unknown>) !== preflight.evidence_sha256 ||
         !aggregate.evidence_hashes.includes(preflight.evidence_sha256) ||
         source.obligation_id !== obligationId || source.amount !== preflight.source_amount || source.currency !== preflight.source_currency ||
@@ -184,8 +191,9 @@ export function getSettlementEvidenceBinding(
     const packet = buildJ2aExecutionPacket({
       preflight,
       aggregate,
-      assessment: archivedAssessment.record,
-      assessmentHash: archivedAssessment.hash,
+      assessment:historicalHuman?undefined:archivedAssessment!.record,
+      assessmentHash:historicalHuman?undefined:archivedAssessment!.hash,
+      reviewDecision:historicalHuman?human:undefined,
       sealedPae,
     });
     return { state: "AVAILABLE_HISTORICAL", packet };

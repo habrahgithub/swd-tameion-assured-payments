@@ -11,7 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { providerAssess } = vi.hoisted(() => ({ providerAssess: vi.fn() }));
 
-vi.mock("../src/agent/ai-provider", () => ({
+vi.mock("../src/agent/ai-provider", async original => ({
+  ...await original<typeof import("../src/agent/ai-provider")>(),
   NvidiaProvider: class {
     readonly runtimeIdentity = {
       provider_name: "NVIDIA Build",

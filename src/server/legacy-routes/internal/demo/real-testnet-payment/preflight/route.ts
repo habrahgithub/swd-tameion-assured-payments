@@ -24,16 +24,24 @@ return async function POST(request: Request) {
     if (aggregate.aggregate_version !== body.expected_version) {
       return NextResponse.json({ error: "Selected obligation changed; reload before proxy preflight." }, { status: 409 });
     }
+    const review=state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,obligationId);
+    const humanAccepted=review?.record.decision==="ACCEPT_FOR_AUTHORIZATION";
+    const currentProxy=state.getSettlementProxy(obligationId);
+    if(currentProxy&&aggregate.execution_state==='NONE'){
+      const intent=state.createSettlementProxyIntent(obligationId);await revalidate();const refreshed=await preflightRun(undefined,undefined,intent,revalidate);await revalidate();
+      if(refreshed.readiness==='READY'&&(refreshed.amount!==currentProxy.preflight.amount||refreshed.provider_token.id!==currentProxy.preflight.provider_token.id||refreshed.provider_token.decimals!==currentProxy.preflight.provider_token.decimals||refreshed.source_wallet.id!==currentProxy.preflight.source_wallet.id||refreshed.destination_wallet.address.toLowerCase()!==currentProxy.preflight.destination_wallet.address.toLowerCase()||refreshed.max_network_fee!==currentProxy.preflight.max_network_fee||refreshed.max_total_debit!==currentProxy.preflight.max_total_debit))return NextResponse.json({code:'ECONOMIC_TERMS_RENEWAL_REQUIRED'},{status:409});
+      state.recordReadinessObservation(obligationId,refreshed);await state.flush();return NextResponse.json({...refreshed,aggregate_version:aggregate.aggregate_version,code:'READINESS_REFRESHED',authority_preserved:true},{status:refreshed.readiness==='READY'?200:409});
+    }
     const assessment = state.store.getCurrentAssessment(DEMO_ORGANIZATION_ID, obligationId);
-    if (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
+    if (!humanAccepted && (!assessment || assessment.record.provider_mode !== "LIVE_AI" || assessment.record.decision !== "PAY" ||
         assessment.record.missing_evidence.length || (assessment.record.race?.result.validated_findings.length ?? 0) ||
-        (assessment.record.race?.remediation.length ?? 0)) {
+        (assessment.record.race?.remediation.length ?? 0))) {
       return NextResponse.json({ error: "A current LIVE_AI PAY assessment with zero findings and zero missing evidence is required." }, { status: 409 });
     }
     const unassessed = state.store.findUnassessedObligation(DEMO_ORGANIZATION_ID);
-    if (unassessed) return NextResponse.json({ error: `Assess every frozen genuine obligation before proxy preparation; ${unassessed} is not current.` }, { status: 409 });
+    if (!humanAccepted && unassessed) return NextResponse.json({ error: `Assess every frozen genuine obligation before proxy preparation; ${unassessed} is not current.` }, { status: 409 });
     const otherCandidate = state.store.findCommittedCandidateExcluding(DEMO_ORGANIZATION_ID, obligationId);
-    if (otherCandidate) return NextResponse.json({ error: `Another obligation already has a committed proxy or live PAE: ${otherCandidate}.` }, { status: 409 });
+    if (!humanAccepted && otherCandidate) return NextResponse.json({ error: `Another obligation already has a committed proxy or live PAE: ${otherCandidate}.` }, { status: 409 });
     if (state.hasLivePaeAuthority(obligationId) || state.getSettlementProxy(obligationId)) {
       return NextResponse.json({ error: "This selected intent already has proxy or authorization authority; reconcile its existing identity." }, { status: 409 });
     }

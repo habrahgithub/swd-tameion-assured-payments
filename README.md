@@ -489,3 +489,13 @@ They do not establish hosted wallet access, provider reconciliation or a
 completed financial E2E. The temporary Preview wallet diagnostic requires a
 separately reviewed cleanup before submission. Merge and deployment remain
 separate release decisions.
+
+### Recoverable payment workflow R1 (local code candidate)
+
+The source/review path supports versioned invoice and prepaid entry, correction,
+explicit HUMAN review, scoped escalation resolution and existing-payment recovery.
+It retains exact financial authority and keeps controlled testnet children separate
+from genuine payables. Source entry does not verify wallet control or activate a
+payment source. See the [operator and migration runbook](docs/demo/RECOVERABLE-PAYMENT-WORKFLOW-R1.md),
+[142-scenario evidence map](docs/demo/RECOVERABLE-PAYMENT-R1-SCENARIOS.md) and
+[verification limits](docs/demo/RECOVERABLE-PAYMENT-R1-VERIFICATION.md).

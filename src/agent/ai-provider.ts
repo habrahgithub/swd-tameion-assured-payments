@@ -2,8 +2,9 @@ import type { FinanceAgentContext } from "./schema";
 import { toFinanceAgentModelContext } from "./context-builder";
 import { createHash } from "node:crypto";
 
+export type AiOperationalOutcome='CONFIGURATION_REJECTED'|'RATE_LIMITED'|'REFUSED'|'INVALID_OUTPUT'|'TRANSPORT_UNCERTAIN';
 export class AiProviderError extends Error {
-  constructor(message: string) {
+  constructor(message: string,public readonly outcome:AiOperationalOutcome='TRANSPORT_UNCERTAIN') {
     super(message);
     this.name = "AiProviderError";
   }
@@ -137,7 +138,7 @@ export class NvidiaProvider implements AiProvider {
   async assess(context: FinanceAgentContext, options: { signal?: AbortSignal } = {}): Promise<unknown> {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) {
-      throw new AiProviderError("NVIDIA_API_KEY is not configured in this environment");
+      throw new AiProviderError("NVIDIA_API_KEY is not configured in this environment","CONFIGURATION_REJECTED");
     }
 
     const maxAttempts=this.transport.maxTransportAttempts??NVIDIA_RUNTIME_CONFIG.max_transport_attempts;
@@ -188,24 +189,31 @@ export class NvidiaProvider implements AiProvider {
     }
 
     if (!response) throw new AiProviderError("NVIDIA transport returned no response");
-    if (!response.ok) throw new AiProviderError(`NVIDIA API returned HTTP ${response.status}`);
+    if (!response.ok) throw new AiProviderError(`NVIDIA API returned HTTP ${response.status}`,response.status===429?"RATE_LIMITED":[400,401,403,404,422].includes(response.status)?"CONFIGURATION_REJECTED":"TRANSPORT_UNCERTAIN");
 
-    const body = (await response.json()) as {
+    let responseBody:unknown;try{responseBody=await response.json();}catch{throw new AiProviderError("NVIDIA response was not valid JSON","INVALID_OUTPUT");}
+    if(!responseBody||typeof responseBody!=="object"||Array.isArray(responseBody))throw new AiProviderError("NVIDIA response envelope invalid","INVALID_OUTPUT");
+    const body = responseBody as {
       choices?: Array<{ finish_reason?: string; message?: { content?: string | null; refusal?: string | null } }>;
     };
     const choice = body.choices?.[0];
     if (choice?.message?.refusal || choice?.finish_reason === "content_filter") {
-      throw new AiProviderError("NVIDIA provider refused the assessment");
+      throw new AiProviderError("NVIDIA provider refused the assessment","REFUSED");
     }
     const content = choice?.message?.content;
     if (typeof content !== "string" || !content) {
-      throw new AiProviderError("NVIDIA API response had no message content");
+      throw new AiProviderError("NVIDIA API response had no message content","INVALID_OUTPUT");
     }
 
     try {
-      return JSON.parse(content);
+      const result:unknown=JSON.parse(content);
+      if(context.current_source_basis&&result&&typeof result==='object'&&!Array.isArray(result)&&'evidence_ids' in result&&Array.isArray(result.evidence_ids)){
+        const aliases=toFinanceAgentModelContext(context).evidence_ids;
+        result.evidence_ids=result.evidence_ids.map(id=>{const index=aliases.indexOf(id);return index<0?id:context.evidence_ids[index];});
+      }
+      return result;
     } catch {
-      throw new AiProviderError("NVIDIA API response content was not valid JSON");
+      throw new AiProviderError("NVIDIA API response content was not valid JSON","INVALID_OUTPUT");
     }
   }
 }

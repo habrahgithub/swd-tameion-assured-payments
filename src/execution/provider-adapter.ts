@@ -39,7 +39,7 @@ export interface SubmitTransferParams {
   asset: "USDC";
   network: "ARC_TESTNET";
   /** Worker-owned current-authority recheck, called after every async preflight and immediately before provider creation. */
-  beforeProviderSend: () => Promise<void>;
+  beforeProviderSend: (readiness?:{balance:string;total:string;observed_at:string}) => Promise<void>;
 }
 
 export type ProviderTransferStatus = "SUBMITTED" | "UNKNOWN";
@@ -52,9 +52,12 @@ export interface SubmitTransferResult {
 
 export interface StatusResult {
   status: ProviderStatusResult;
+  identity_problem?:"STORED_TOKEN_NETWORK_IDENTITY_UNVERIFIED";
+  outcome?:"ACCEPTED_PENDING"|"STUCK_INTERVENTION"|"UNRECOGNIZED"|"OUTCOME_UNKNOWN"|"DEFINITIVE_FAILED"|"DEFINITIVE_DENIED"|"DEFINITIVE_CANCELLED"|"SETTLED"|"SETTLEMENT_MISMATCH";
   /** Existing generic adapters use camelCase; retained for compatibility. */
   destinationAddress?: string;
   atomicAmount?: string;
+  identity_verified?:boolean;
   transaction_id?: string;
   transaction_state?: string;
   tx_hash?: string | null;
@@ -173,19 +176,20 @@ function statusForCircleTransaction(
     tx.walletId === expectedSource && sameEvmAddressIdentity(tx.destinationAddress, expectedDestination) &&
     tx.tokenId === tokenId && amountMatchesIntent &&
     tx.refId !== undefined && (expectedRefId ? tx.refId === expectedRefId : /^j2a-[0-9a-f]{28}$/.test(tx.refId));
-  if (!exactIdentity) return { status: "UNKNOWN", ...evidence };
-  if (["FAILED", "DENIED", "CANCELLED"].includes(tx.state ?? "")) return { status: "FAILED", ...evidence };
-  if (tx.state !== "COMPLETE") return { status: "PENDING", ...evidence };
+  if (!exactIdentity) return { status: "UNKNOWN", outcome:tx.state==="COMPLETE"?"SETTLEMENT_MISMATCH":"OUTCOME_UNKNOWN", ...evidence };
+  evidence.identity_verified=true;
+  if (["FAILED", "DENIED", "CANCELLED"].includes(tx.state ?? "")) return { status: "FAILED", outcome:tx.state==="DENIED"?"DEFINITIVE_DENIED":tx.state==="CANCELLED"?"DEFINITIVE_CANCELLED":"DEFINITIVE_FAILED", ...evidence };
+  if (tx.state !== "COMPLETE") return { status: "PENDING", outcome:tx.state==="STUCK"?"STUCK_INTERVENTION":["INITIATED","QUEUED","SENT","CONFIRMED","PENDING_RISK_SCREENING","PENDING"].includes(tx.state??"")?"ACCEPTED_PENDING":"UNRECOGNIZED", ...evidence };
 
   try {
-    if (!fee) return { status: "UNKNOWN", ...evidence };
+    if (!fee) return { status: "UNKNOWN", outcome:"SETTLEMENT_MISMATCH", ...evidence };
     const feeAtomic = decimalToAtomicAtScale(fee, tokenDecimals);
     const maxFeeAtomic = decimalToAtomicAtScale(authorizedPreflight?.max_network_fee ?? J2A_MAX_NETWORK_FEE, tokenDecimals);
-    if (feeAtomic === null || maxFeeAtomic === null || feeAtomic > maxFeeAtomic) return { status: "UNKNOWN", ...evidence };
+    if (feeAtomic === null || maxFeeAtomic === null || feeAtomic > maxFeeAtomic) return { status: "UNKNOWN", outcome:"SETTLEMENT_MISMATCH", ...evidence };
   } catch {
     return { status: "UNKNOWN", ...evidence };
   }
-  return { status: "CONFIRMED", ...evidence };
+  return { status: "CONFIRMED", outcome:"SETTLED", ...evidence };
 }
 
 export class ArcCircleProviderAdapter implements ProviderAdapter {
@@ -222,6 +226,7 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     const client = this.client();
     const commercial = authorized.business_payment_instruction.commercial;
     const intent: GenuineSettlementProxyIntent = {
+      ...(authorized.resolved_outbound_proofs?{resolved_outbound_proofs:authorized.resolved_outbound_proofs}:{}),
       organization_id: authorized.organization_id,
       obligation_id: authorized.obligation_id,
       source_amount: authorized.source_amount,
@@ -249,15 +254,14 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
         hashJ2aBusinessPaymentInstruction(preflight.business_payment_instruction) !==
           hashJ2aBusinessPaymentInstruction(authorized.business_payment_instruction) ||
         preflight.provider_token.id !== authorized.provider_token.id ||
-        preflight.source_balance !== authorized.source_balance ||
-        preflight.estimated_network_fee !== authorized.estimated_network_fee ||
+
         preflight.max_network_fee !== authorized.max_network_fee || preflight.max_total_debit !== authorized.max_total_debit) {
       throw new ProviderPreSubmitBlockedError("Fresh Circle token or fee evidence differs from the Prime-reviewed J2A intent.");
     }
     // No provider operation may occur between this current-authority read and
     // createTransaction. The worker callback is deliberately last after the
     // awaited Circle preflight and exact token/fee/intent comparisons.
-    await params.beforeProviderSend();
+    await params.beforeProviderSend({balance:preflight.source_balance,total:authorized.max_total_debit,observed_at:preflight.captured_at});
     const response = await client.createTransaction({
       amount: [authorized.amount],
       destinationAddress: authorized.destination_wallet.address,
@@ -276,30 +280,15 @@ export class ArcCircleProviderAdapter implements ProviderAdapter {
     const authorized = idempotencyKey ? this.authorizedPreflight?.(idempotencyKey) : null;
     if (!authorized || authorized.readiness !== "READY") return { status: "UNKNOWN" };
     const client = this.client();
-    let rows: unknown[];
-    try { rows = await readCompleteCircleBalanceRows(client, authorized.source_wallet.id, revalidate); }
-    catch { return { status: "UNKNOWN" }; }
-    const balances = tokenBalancesSchema.safeParse({ data: { tokenBalances: rows } });
-    if (!balances.success) return { status: "UNKNOWN" };
-    const nativeUsdc = balances.data.data.tokenBalances.filter(({ token }) =>
-      typeof token?.symbol === "string" && token.symbol.trim().toUpperCase() === "USDC" &&
-      token.blockchain === "ARC-TESTNET" && token.isNative === true);
-    if (nativeUsdc.length !== 1) return { status: "UNKNOWN" };
-    const nativeUsdcToken = nativeUsdc[0].token;
-    if (!nativeUsdcToken || typeof nativeUsdcToken.id !== "string" || !nativeUsdcToken.id ||
-        typeof nativeUsdcToken.decimals !== "number" || !Number.isSafeInteger(nativeUsdcToken.decimals) ||
-        nativeUsdcToken.decimals < USDC_DECIMALS || nativeUsdcToken.decimals > 36 ||
-        (nativeUsdcToken.tokenAddress !== undefined && nativeUsdcToken.tokenAddress !== null && typeof nativeUsdcToken.tokenAddress !== "string")) {
-      return { status: "UNKNOWN" };
-    }
-    if (nativeUsdcToken.id !== authorized.provider_token.id || nativeUsdcToken.decimals !== authorized.provider_token.decimals) {
-      return { status: "UNKNOWN" };
-    }
+    // The PAE-bound persisted preflight is the verified token/network identity.
+    // Existing-transaction recovery has no spendability or fee dependency.
+    const token=authorized.provider_token;
+    if(!token.id||token.symbol!=='USDC'||token.native!==true||!Number.isSafeInteger(token.decimals)||token.decimals<USDC_DECIMALS||token.decimals>36||authorized.network!=='ARC_TESTNET'||hashJ2aPreflightEvidence(authorized as unknown as Record<string,unknown>)!==authorized.evidence_sha256)return {status:'UNKNOWN',identity_problem:'STORED_TOKEN_NETWORK_IDENTITY_UNVERIFIED'};
     await revalidate();
     return statusForCircleTransaction(
       await client.getTransaction({ id: providerRef }),
-      nativeUsdcToken.id,
-      nativeUsdcToken.decimals,
+      token.id,
+      token.decimals,
       providerRef,
       idempotencyKey,
       authorized,

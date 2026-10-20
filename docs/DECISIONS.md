@@ -224,3 +224,20 @@ malformed server-owned state fails as unavailable/uncertain instead.
 
 USD1/USD-only linked activation remains the accepted UAT limitation; this patch
 does not widen currencies, conversion policy or financial source authority.
+
+## 2026-10-20 — R1 recoverable payment workflow
+
+R1 source revisions and explicit HUMAN decisions enter the same deterministic
+authorization and execution path as compatible AI reviews. AI advice remains
+optional; no manual decision is represented as an AI assessment. Temporary
+readiness observations are separate from reviewed economic ceilings. Existing
+financial uncertainty retains the original identity; successor preparation needs
+proven effects, and terminal settlement has an idempotent receipt.
+
+Necessary persistence additions retain source/review/activation/recovery evidence
+and enforce one durable financial namespace per payer wallet under SQL locks.
+A parent transition after child retirement checks the exact child revision under
+the same CAS. SQL installation/locking/permissions are acceptance gates, not
+claims established by synthetic CAS tests. The candidate does not activate,
+deploy, migrate hosted state or authorize genuine merchant payment. See the
+[R1 runbook](demo/RECOVERABLE-PAYMENT-WORKFLOW-R1.md).
