@@ -1,9 +1,12 @@
 'use client';
+import {stage2Status,providerCategory} from '../src/domain/assessment-status';
+import {assessmentReceiptSnapshot} from '../src/client/command-center-requests';
 import {useEffect,useRef,useState,type FormEvent} from 'react';
+import {canonicalize} from 'json-canonicalize';
 import type {SourceFields,SourceRevision} from '../src/domain/source-revision';
 import type {SealedReviewDecision} from '../src/domain/review-decision';
 
-export type SourceWorkflowView={review_decision_history?:SealedReviewDecision[];source_revision_history?:SourceRevision[];current_assessment?:{provider_mode:string}|null;review_findings?:{code:string;reason:string;advisory:boolean}[];allowed_actions?:string[];aggregate?:{aggregate_version:number};record?:{obligation_id:string;source_evidence:{evidence_id:string}[]};source_revision?:{revision:number;fields:SourceFields};current_review_decision?:SealedReviewDecision|null;blockers?:{code:string;owner:string;remedy:string}[];sealed_pae_instruction_hash?:string;sealed_pae_idempotency_key?:string;execution?:{idempotency_key:string}};
+export type SourceWorkflowView={stage2_status?:{code:string};superseded_review_hash?:string|null;stage2_provider_outcome?:unknown;review_decision_history?:SealedReviewDecision[];source_revision_history?:SourceRevision[];current_assessment?:{provider_mode:string}|null;review_findings?:{code:string;reason:string;advisory:boolean}[];allowed_actions?:string[];aggregate?:{aggregate_version:number};record?:{obligation_id:string;source_evidence:{evidence_id:string}[]};source_revision?:{revision:number;fields:SourceFields};current_review_decision?:SealedReviewDecision|null;blockers?:{code:string;owner:string;remedy:string}[];sealed_pae_instruction_hash?:string;sealed_pae_idempotency_key?:string;execution?:{idempotency_key:string}};
 const empty:Record<string,string>={kind:'INVOICE',supplier_name:'',invoice_number:'',invoice_issue_date:'',payment_terms:'',due_date:'',description:'',amount:'',currency:'USD',payer_circle_wallet_id:'',service_reference:'',purpose:'',service_date:'',evidence_id:'',content_sha256:'',reason:''};
 const labels:Record<string,string>={supplier_name:'Supplier name',invoice_number:'Invoice number',invoice_issue_date:'Invoice issue date',payment_terms:'Payment terms',due_date:'Due date',description:'Description',amount:'Exact amount',currency:'Source currency',payer_circle_wallet_id:'Payer Circle Wallet ID',service_reference:'Service reference',purpose:'Recharge purpose',service_date:'Service date',evidence_id:'Evidence reference',content_sha256:'Evidence SHA256',reason:'Correction or entry reason'};
 type PendingCommand={signature:string;key:string};
@@ -67,9 +70,15 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   }catch{if(owned===generation.current)setMessage('Current source status is unavailable. Refresh to read committed state.');}})();
  },[selectedId,csrfToken]);
  useEffect(()=>{if(readModel){setCreateAllowed(readModel.createAllowed);setView(readModel.detail?.record?.obligation_id===selectedId?readModel.detail:null);}},[readModel?.detail,readModel?.createAllowed,selectedId]);
+ // Read props directly when supplied: a parent source update must invalidate an
+ // awaited receipt before the effect that copies the read model into local state.
+ const live=useRef({selectedId,csrfToken,view});
+ live.current={selectedId,csrfToken,view:readModel?(readModel.detail?.record?.obligation_id===selectedId?readModel.detail:null):view};
  const actions=view?.allowed_actions??[];
  async function command(path:string,body:unknown,method='POST'){
-  const owned=generation.current,original=request.current?commandTransport(request.current,creating?'new':selectedId):null;
+  const owned=generation.current,sourceAtDispatch=canonicalize({record:live.current.view?.record??null,revision:live.current.view?.source_revision??null}),versionAtDispatch=live.current.view?.aggregate?.aggregate_version;
+  const contextCurrent=()=>lifetime.current&&owned===generation.current&&live.current.selectedId===selectedId&&live.current.csrfToken===csrfToken;
+  const original=request.current?commandTransport(request.current,creating?'new':selectedId):null;
   // Repeating unchanged review input recovers the pending receipt even when a
   // refresh supplied newer concurrency tokens. Changed human input gets a new key.
   if(original&&original.path===path&&original.method===method&&path.endsWith('/review')){
@@ -78,14 +87,28 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   }
   const signature=JSON.stringify({path,body,method});
   if(request.current?.signature!==signature)request.current={signature,key:crypto.randomUUID()};
-  const key=request.current.key;setPending(request.current);if(!persist()){setMessage('Pending command could not be retained. Enable tab storage before submitting.');return;}setBusy(true);setMessage('Saving; awaiting committed readback.');
+  const key=request.current.key;setPending(request.current);if(!persist()){setMessage('Pending command could not be retained. Enable tab storage before submitting.');return;}setBusy(true);setMessage(path.endsWith('/advisory')?'Submitting assessment request; submission and result are not yet confirmed.':'Saving; awaiting committed readback.');
   try{const response=await fetch(path,{method,headers:{'Content-Type':'application/json','X-Tameion-CSRF':csrfToken,'Idempotency-Key':key},body:JSON.stringify(body)}),data=await response.json();
-   if(!lifetime.current||owned!==generation.current)return;
-   if(!response.ok){setMessage(preflightRefusalMessage(path,response.status,data)??`${data.code??'COMMAND_UNVERIFIED'}. ${data.remedy??'Read current status before trying another action.'}`);return;}
-   setMessage(data.replayed?'Original review receipt recovered (historical only; no current authorization restored).':data.committed?'Source revision saved and read back.':'Command recorded. Refreshing committed status.');setEditing(false);request.current=null;setPending(null);try{sessionStorage.removeItem(storageKey);}catch{/* No new browser authority. */}onChanged();
+   if(!contextCurrent()||request.current?.key!==key||request.current.signature!==signature)return;
+   if(!response.ok){const status=stage2Status(data?.code),stage2=/\/(advisory|review|testnet-instruction)$/.test(path)||path==='/api/obligations'||method==='PATCH';setMessage(preflightRefusalMessage(path,response.status,data)??(stage2?`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`:`${data?.code??'COMMAND_UNVERIFIED'}. ${data?.remedy??'Read current status before trying another action.'}`));return;}
+   if(path.endsWith('/advisory')){
+    const receipt=assessmentReceiptSnapshot(data),current=live.current.view;
+    const currentSource=current?.record?.obligation_id===selectedId&&current.aggregate?.aggregate_version===versionAtDispatch&&
+     canonicalize({record:current.record,revision:current.source_revision??null})===sourceAtDispatch;
+    const committed=response.status===200&&receipt?.assessment_id===`ASM-${key}`&&receipt.obligation_id===selectedId&&
+     versionAtDispatch!==undefined&&receipt.aggregate_version===String(versionAtDispatch)&&currentSource;
+    // A category is evidence only after canonical receipt and exact original-key
+    // binding. Pending/foreign/stale replies never acknowledge this command.
+    // HTTP202/status strings are not a canonical key/source/version-bound
+    // reservation receipt. Keep completion unconfirmed even for IN_PROGRESS.
+    const status=stage2Status(committed?providerCategory(data.stage2_provider_outcome)??'COMPLETED':'UNKNOWN');
+    setMessage(`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`);
+    if(!committed)return;
+   }
+   if(!path.endsWith('/advisory'))setMessage(data.replayed?'Original review receipt recovered (historical only; no current authorization restored).':data.committed?'Source revision saved and read back.':'Command recorded. Refreshing committed status.');setEditing(false);request.current=null;setPending(null);try{sessionStorage.removeItem(storageKey);}catch{/* No new browser authority. */}onChanged();
    if(selectedId&&!readModel){const read=await fetch(`/api/obligations/${encodeURIComponent(selectedId)}`,{cache:'no-store'});const current=await read.json();if(read.ok&&owned===generation.current)setView(current);}
-  }catch{if(owned===generation.current)setMessage('Acknowledgement unavailable. Refresh committed status; the original request identity is retained.');}
-  finally{if(lifetime.current&&owned===generation.current)setBusy(false);}
+  }catch{if(contextCurrent()&&request.current?.key===key&&request.current.signature===signature)setMessage('Acknowledgement unavailable. Refresh committed status; the original request identity is retained.');}
+  finally{if(contextCurrent()&&(!request.current||request.current.key===key&&request.current.signature===signature))setBusy(false);}
  }
  async function observe(){
   const owned=generation.current;setBusy(true);
@@ -105,15 +128,19 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   if(request.current){try{const original=JSON.parse(request.current.signature);if(JSON.stringify(original.body.fields)===JSON.stringify(fields)&&original.body.reason===draft.reason){void command(original.path,original.body,original.method);return;}}catch{/* Invalid browser receipts grant no authority. */}}
   void command(creating?'/api/obligations':`/api/obligations/${encodeURIComponent(selectedId)}`,{expected_revision:creating?0:view?.source_revision?.revision??0,...(!creating?{expected_version:view?.aggregate?.aggregate_version}:{}),fields,reason:draft.reason},creating?'POST':'PATCH');
  }
- function review(decision:string){if(!view?.aggregate||!view.record)return;void command(`/api/obligations/${encodeURIComponent(selectedId)}/review`,{expected_version:view.aggregate.aggregate_version,...(view.current_review_decision?{expected_review_hash:view.current_review_decision.hash}:{}),mode:reviewMode,decision,...(decision==='ESCALATE'&&escalationOwner.trim()?{escalation_owner_actor_id:escalationOwner.trim()}:{}),rationale,evidence_ids:view.record.source_evidence.map(e=>e.evidence_id),finding_dispositions:acceptedFindings.map(code=>({finding_code:code,disposition:'ACCEPT_ADVISORY',rationale,evidence_ids:view.record!.source_evidence.map(e=>e.evidence_id)}))});}
+ function review(decision:string){if(!view?.aggregate||!view.record)return;void command(`/api/obligations/${encodeURIComponent(selectedId)}/review`,{expected_version:view.aggregate.aggregate_version,...((view.current_review_decision?.hash??view.superseded_review_hash)?{expected_review_hash:view.current_review_decision?.hash??view.superseded_review_hash}:{}),mode:reviewMode,decision,...(decision==='ESCALATE'&&escalationOwner.trim()?{escalation_owner_actor_id:escalationOwner.trim()}:{}),rationale,evidence_ids:view.record.source_evidence.map(e=>e.evidence_id),finding_dispositions:acceptedFindings.map(code=>({finding_code:code,disposition:'ACCEPT_ADVISORY',rationale,evidence_ids:view.record!.source_evidence.map(e=>e.evidence_id)}))});}
  const transport=pending?commandTransport(pending,creating?'new':selectedId):null;
  const pendingAction=transport?.path.endsWith('/review')?'MANUAL_REVIEW':transport?.path.endsWith('/successor')?'PREPARE_SUCCESSOR':transport?.path.endsWith('/reconcile')?'RECOVER_EXISTING_PAYMENT':transport?.path.endsWith('/advisory')?'REQUEST_AI_ADVICE':transport?.path.endsWith('/testnet-instruction')?'PREPARE_CONTROLLED_INSTRUCTION':transport?.path.endsWith('/approve')?'AUTHORIZE_PAYMENT':transport?.path.endsWith('/preflight')?'REFRESH_READINESS':'EDIT_SOURCE';
  const receiptVisible=pendingAction==='MANUAL_REVIEW'&&actions.length>0&&view?.review_decision_history?.some(review=>review.record.request_id===pending?.key);
- const canRecover=Boolean(transport&&view?.record?.obligation_id===selectedId&&(actions.includes(pendingAction)||receiptVisible));
+ const canRecover=Boolean(transport&&view?.record?.obligation_id===selectedId&&(actions.includes(pendingAction)||pendingAction==='REQUEST_AI_ADVICE'&&actions.includes('OBSERVE_AI_REQUEST')||receiptVisible));
  if(!createAllowed&&!actions.length&&!editing&&!view?.current_review_decision&&!view?.source_revision)return null;
+ const currentStatus=view?.stage2_status?stage2Status(view.stage2_status.code):null;
+ const providerStatus=providerCategory(view?.stage2_provider_outcome)?stage2Status(view?.stage2_provider_outcome):null;
  const fields=['supplier_name',...(draft.kind==='INVOICE'?['invoice_number','invoice_issue_date','payment_terms','due_date']:['service_reference','purpose','service_date']),'description','amount','currency','payer_circle_wallet_id','evidence_id','content_sha256','reason'];
  return <section id="payable-source-review" tabIndex={-1} aria-label="Payable source and human review" className="space-y-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
   <h2 className="font-semibold">Source and review</h2>
+  {currentStatus&&currentStatus.code!=='READY_FOR_REVIEW'&&<aside aria-label="Current source assessment status" className="text-sm"><p>{currentStatus.title}. {currentStatus.reason}</p><p>{currentStatus.remedy} Responsible: {currentStatus.owner}.</p><details><summary>Technical details</summary><p>Code: {currentStatus.code}. Resume: {currentStatus.resume}</p></details></aside>}
+  {providerStatus&&<aside aria-label="AI advisory service status" className="text-sm"><p>{providerStatus.title}. {providerStatus.reason}</p><p>{providerStatus.remedy} Responsible: {providerStatus.owner}.</p><details><summary>Technical details</summary><p>Category: {providerStatus.code}. This category does not identify an exact upstream HTTP status or unique cause.</p></details></aside>}
   {Boolean(view?.source_revision_history?.length)&&<details className="rounded border p-2 text-sm"><summary>Saved source versions</summary>{view!.source_revision_history!.map(row=><article key={row.revision} className="mt-3 space-y-1 break-words"><p>Revision {row.revision} · {row.activation==='CURRENT'?'Recorded current revision at save':'Draft pending original payment recovery'}</p><p>{row.created_at} · {row.reason}</p><dl>{Object.entries(row.fields).filter(([,value])=>typeof value==='string').map(([field,value])=><div key={field} className="min-w-0"><dt className="font-medium">{labels[field]??field}</dt><dd className="break-words">{String(value)}</dd></div>)}</dl><p>Evidence: {row.fields.evidence.map(e=>e.evidence_id).join(', ')}. Entered facts and payer control remain unverified.</p></article>)}</details>}
   <div className="flex flex-wrap gap-3">{createAllowed&&<button type="button" disabled={busy} onClick={()=>begin(true)}>Create payable</button>}{actions.includes('EDIT_SOURCE')&&<button type="button" disabled={busy} onClick={()=>begin(false)}>Edit payable / Save correction</button>}</div>
   {editing&&<form onSubmit={save} className="grid gap-3 sm:grid-cols-2"><label>Source type<select value={draft.kind} onChange={e=>update('kind',e.target.value)}><option value="INVOICE">Invoice</option><option value="PREPAID_RECHARGE">Prepaid recharge</option></select></label>{fields.map(field=><label key={field} className="flex min-w-0 flex-col gap-1 text-sm">{labels[field]}<input required value={draft[field]} type={field.includes('date')?'date':'text'} inputMode={field==='amount'?'decimal':undefined} onChange={e=>update(field,e.target.value)} className="min-w-0 rounded border p-2 text-[var(--color-ink)] bg-[var(--color-surface)]"/></label>)}<div className="space-y-2 sm:col-span-2">{retainedEvidence.slice(1).map((e,index)=><div key={index} className="grid gap-2 sm:grid-cols-2"><label className="min-w-0">Evidence reference {index+2}<input required value={e.evidence_id} onChange={event=>replaceEvidence(retainedEvidence.map((item,i)=>i===index+1?{...item,evidence_id:event.target.value}:item))} className="w-full min-w-0 rounded border p-2 bg-[var(--color-surface)]"/></label><label className="min-w-0">Evidence SHA256 {index+2}<input required value={e.content_sha256} onChange={event=>replaceEvidence(retainedEvidence.map((item,i)=>i===index+1?{...item,content_sha256:event.target.value}:item))} className="w-full min-w-0 rounded border p-2 bg-[var(--color-surface)]"/></label><button type="button" disabled={busy} onClick={()=>replaceEvidence(retainedEvidence.filter((_,i)=>i!==index+1))}>Remove evidence reference {index+2}</button></div>)}<button type="button" disabled={busy||retainedEvidence.length>=16} onClick={addEvidence}>Add evidence reference</button></div><p className="text-sm sm:col-span-2">Use an existing evidence reference. Saving records entered facts; payer control and the receiving destination require independent verification.</p><button disabled={busy} type="submit">{creating?'Save payable':'Save correction'}</button><button type="button" onClick={()=>setEditing(false)}>Close draft</button></form>}

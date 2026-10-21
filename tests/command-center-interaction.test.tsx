@@ -866,7 +866,7 @@ describe("Command Center mounted Operational Report", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run AI Assessment" }));
     const feedback = await screen.findByRole("status", { name: "Assessment request status" });
     await waitFor(() => expect(feedback.getAttribute("data-feedback-kind")).toBe("pending"));
-    expect(screen.getByRole("region", {name:"Hold reason and next action"}).textContent).toContain("Assessment pending");
+    expect(screen.getByRole("region", {name:"Hold reason and next action"}).textContent).toContain("Assessment confirmation pending");
     expect(screen.queryByRole("button", {name:"Run AI Assessment"})).toBeNull();
     expect(screen.queryByRole("status", { name: "Stage completion receipt" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Assessment result" })?.textContent ?? "").not.toContain("Assessment result — PAY");
@@ -1094,7 +1094,7 @@ describe("Command Center mounted Operational Report", () => {
     await screen.findByRole("region", { name: "Selected source payable" });
     await act(async () => { delayedOldRefresh.resolve(response(structuredClone(before))); });
     await waitFor(() => expect(obligationRow("OBL-J0C-003").getAttribute("aria-current")).toBe("true"));
-    expect(screen.getByRole("status", { name: "Assessment request status" }).textContent).toContain("Assessment outcome unverified");
+    expect(screen.getByRole("status", { name: "Assessment request status" }).textContent).toContain("Assessment completion not confirmed");
     expect(localStorage.getItem("tameion.assessment-request.OBL-J0C-003")).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
@@ -2903,7 +2903,7 @@ describe("HOLD reason and lawful resolution", () => {
     if (mode === "remount") { view.unmount(); renderWithExplicitFirstSelection(); }
     else { fireEvent.click(obligationRow("OBL-OTHER-UX")); await screen.findByRole("region", {name: "Selected source payable"}); fireEvent.click(obligationRow("OBL-UNRESOLVED-UX")); }
     const reason = await screen.findByRole("region", {name: "Hold reason and next action"});
-    expect(reason.textContent).toContain("Assessment outcome unverified");
+    expect(reason.textContent).toContain("Assessment completion not confirmed");
     expect(reason.textContent).toMatch(/do not.*retry/i);
     expect(obligationRow("OBL-UNRESOLVED-UX").textContent).not.toContain("Assessment result · HOLD");
     expect(screen.queryByRole("button", {name: /Reassess after correction|Run AI Assessment/})).toBeNull();
@@ -2938,7 +2938,7 @@ describe("unresolved assessment callback containment", () => {
     fireEvent.click(await screen.findByRole("button",{name:"Run AI Assessment"}));
     await waitFor(()=>expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1));
     await waitFor(()=>expect(localStorage.getItem("tameion.assessment-request.OBL-REFUSED-UX")).not.toBeNull());
-    await waitFor(()=>expect(screen.getByRole("region",{name:"Hold reason and next action"}).textContent).toContain("Assessment outcome unverified"));
+    await waitFor(()=>expect(screen.getByRole("region",{name:"Hold reason and next action"}).textContent).toContain("Assessment completion not confirmed"));
     expect(screen.queryByRole("button",{name:/Run AI Assessment|Reassess after correction|Authorize payment/})).toBeNull();
   });
 
@@ -2960,7 +2960,7 @@ describe("unresolved assessment callback containment", () => {
     expect(localStorage.getItem("tameion.assessment-request.OBL-RACE-A")).toBeNull();
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button",{name:"Run AI Assessment"}));
-    await screen.findByRole("heading",{name:"Assessment pending"});
+    await screen.findByRole("heading",{name:"Assessment confirmation pending"});
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
   });
 
@@ -2987,7 +2987,7 @@ describe("unresolved assessment callback containment", () => {
     const propsKey=Object.keys(action).find(k=>k.startsWith("__reactProps$"))!;
     const staleCallback=(action as any)[propsKey].onClick;
     fireEvent.click(action);
-    await screen.findByRole("heading",{name:"Assessment outcome unverified"});
+    await screen.findByRole("heading",{name:"Assessment completion not confirmed"});
     await waitFor(()=>expect((screen.getByRole("button",{name:"Refresh payable list"}) as HTMLButtonElement).disabled).toBe(false));
     const identity=localStorage.getItem("tameion.assessment-request.OBL-UNKNOWN-OLD-HOLD");
     expect(identity).toBeTruthy();
@@ -3147,7 +3147,7 @@ describe("selected payable business facts", () => {
     localStorage.setItem("tameion.assessment-request.OBL-CURRENT-FACTS","unresolved-request");
     setup(value,obligation("OBL-CURRENT-FACTS",true));
     const card=await screen.findByRole("region",{name:"Genuine obligation workspace"});
-    expect(within(card).getByLabelText("Current assessment outcome").textContent).toBe("Assessment outcome unverified");
+    expect(within(card).getByLabelText("Current assessment outcome").textContent).toBe("Assessment completion not confirmed");
     expect(within(card).getByLabelText("Current assessment outcome").textContent).not.toContain("HOLD");
   });
   it("explains that the assessment action records advice without sending payment",async()=>{
@@ -3182,7 +3182,7 @@ describe("compact dashboard and current controls",()=>{
     renderWithExplicitFirstSelection();
     const controls=await screen.findByRole("region",{name:"Current control status"});
     expect(within(controls).getAllByRole("definition")).toHaveLength(4);
-    expect(controls.textContent).toContain("Outcome unverified");
+    expect(controls.textContent).toContain("Assessment completion not confirmed");
     expect(controls.textContent).toContain("Not recorded");
     expect(controls.textContent).toContain("Not submitted");
     expect(controls.textContent).not.toMatch(/HOLD|PASS|paid|balance verified/i);
@@ -3599,7 +3599,7 @@ describe('R1 contradictory receipt containment',()=>{
    return Promise.resolve(response(String(input)==='/api/obligations'?{obligations:[{...obligation(id),source_group:'GENUINE_COMPANY'}]}:submitted?held:{...detail(id),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:true}));
   });vi.stubGlobal('fetch',mock);renderWithExplicitFirstSelection('FICTIONAL-CSRF');fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
   await waitFor(()=>expect(mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1));
-  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Assessment outcome unverified'));
+  await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Assessment completion not confirmed'));
   expect(localStorage.getItem(`tameion.assessment-request.${id}`)).not.toBeNull();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(screen.queryByRole('button',{name:'Review assessment'})).toBeNull();
  });
 });
@@ -3615,7 +3615,7 @@ describe('Stage 2 server-owned UNKNOWN presentation and deliberate recovery',()=
   vi.stubGlobal('fetch',mock);const view=renderWithExplicitFirstSelection('FICTIONAL-CSRF');return {value,mock,pending,statusMock,view};
  }
  it('shows UNKNOWN without browser identity, keeps HOLD historical and denies financial actions',async()=>{
-  const h=mountStage2();await screen.findByRole('region',{name:'Hold reason and next action'});await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Latest assessment UNKNOWN'));
+  const h=mountStage2();await screen.findByRole('region',{name:'Hold reason and next action'});await waitFor(()=>expect(screen.getByRole('region',{name:'Hold reason and next action'}).textContent).toContain('Assessment completion not confirmed'));
   expect(screen.queryByRole('button',{name:'Run AI Assessment'})).toBeNull();expect(screen.queryByRole('button',{name:'View HOLD findings'})).toBeNull();expect(screen.queryByRole('button',{name:'Request one new assessment'})).toBeNull();
   navigateStage('Assessment');expect(screen.getByText('Historical assessment · HOLD')).toBeTruthy();expect(screen.queryByRole('button',{name:/Authorize payment|Create linked testnet instruction|Pay testnet USDC/})).toBeNull();
   expect(h.mock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);expect(localStorage.length).toBe(0);

@@ -47,9 +47,9 @@ it.each([false,true])('real history-limit route rejection has zero effects and a
  expect(h.snapshot().assessment_operations).toHaveLength(4);
  expect(localStorage.getItem(`tameion.assessment-request.${h.id}`)).toMatch(/^[a-f0-9-]{36}$/);
  expect(screen.getByRole('main').textContent).toContain('GENUINE_ASSESSMENT_HISTORY_LIMIT');
- if(unknown){expect(screen.getByRole('main').textContent).toContain('Latest assessment UNKNOWN');}
+ if(unknown){expect(screen.getByRole('main').textContent).toContain('Assessment completion not confirmed');}
  else{
-  expect(screen.getByRole('main').textContent).not.toContain('Assessment outcome unverified');
+  expect(screen.getByRole('main').textContent).not.toContain('Assessment completion not confirmed');
   const action=screen.getAllByRole('button',{name:'View assessment status'}).at(-1)!;fireEvent.click(action);
   expect(screen.getByRole('region',{name:'Assessment result'}).textContent).toContain('history limit');
   fireEvent.click(await t.row(h.records[1].obligation_id));await waitFor(()=>expect(t.fetcher.mock.calls.some(([url])=>String(url).endsWith(h.records[1].obligation_id))).toBe(true));fireEvent.click(await t.row());
