@@ -161,3 +161,12 @@ export function buildAssessmentTrace(race: RaceAssessment): AssessmentTraceStep[
     },
   ];
 }
+
+/** Display-only translation. Cached statuses, request identities and financial
+ * outcome strings keep their existing protocol values. */
+export function stage2DisplayLabel(value:string):string {
+  if(['Assessment outcome unverified','Latest assessment UNKNOWN','Outcome unverified'].includes(value))return 'Assessment completion not confirmed';
+  if(value==='Assessment in progress')return 'Assessment request saved; result pending';
+  if(value==='Assessment pending')return 'Assessment confirmation pending';
+  return value;
+}

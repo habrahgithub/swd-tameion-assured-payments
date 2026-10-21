@@ -1,4 +1,5 @@
 "use client";
+import {stage2Status} from '../src/domain/assessment-status';
 import type {SealedReviewDecision} from '../src/domain/review-decision';
 import {SourceWorkflowPanel,type SourceWorkflowView} from "./source-workflow-panel";
 import type {LinkedInstruction} from "../src/domain/linked-instruction";
@@ -18,8 +19,9 @@ import {
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
 import { isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
-import { assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
+import { stage2DisplayLabel, assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 interface ObligationSummary {
+  stage2_status?:{code:string};
   source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   obligation_id: string;
   service_category: string;
@@ -73,6 +75,7 @@ interface AggregateView {
 }
 
 interface ObligationDetail {
+  stage2_status?:{code:string};
   current_review_decision?:SealedReviewDecision|null;
   allowed_actions?:string[];
   genuine_assessment?: GenuineAssessmentVisibility;
@@ -1707,7 +1710,10 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
   const serverUnresolved=['UNKNOWN','IN_PROGRESS'].includes(detail.genuine_assessment?.status??'');
   const rejected=feedback?.kind==='rejected';
   const unresolved = Boolean(serverUnresolved || requestKey&&!rejected || feedback && !["durable","rejected"].includes(feedback.kind));
-  if(serverUnresolved)blockers.push({kind:'assessment-unknown',title:detail.genuine_assessment?.status==='UNKNOWN'?'Latest assessment UNKNOWN':'Latest assessment in progress',reason:'The server records an unresolved assessment separately from historical advice.',impact:'Authorization and payment remain unavailable.',nextAction:detail.genuine_assessment?.recovery_eligible?'You may deliberately request one new assessment. The original UNKNOWN stays unchanged.':detail.genuine_assessment?.recovery_reason==='GRACE'?'Wait until the server verifies the grace period, then refresh current status.':'Owner review is required; another assessment is not admitted.',responsible:'User · assessment review',evidence:[],action:'refresh'});
+  if(serverUnresolved&&detail.current_review_decision?.record.decision!=='ACCEPT_FOR_AUTHORIZATION'){
+    const status=stage2Status(detail.genuine_assessment?.recovery_reason??detail.genuine_assessment?.status);
+    blockers.push({kind:'assessment-unknown',title:detail.genuine_assessment?.status==='UNKNOWN'?'Assessment completion not confirmed':'Assessment request saved; result pending',reason:status.reason,impact:status.consequence,nextAction:detail.genuine_assessment?.recovery_eligible?'You may deliberately request one new assessment under the existing explicit admission. The original UNKNOWN stays unchanged.':status.remedy,responsible:status.owner,evidence:[`Code: ${status.code}`,`Resume: ${status.resume}`],action:'refresh'});
+  }
   if(rejected)blockers.push({kind:'assessment-rejected',title:feedback.title,reason:feedback.message,impact:feedback.durability,nextAction:feedback.nextStep,responsible:feedback.owner,action:'evidence',evidence:['Request reference retained privately.',`Status code: ${feedback.statusCode}`]});
   if (unresolved && !serverUnresolved && !rejected) {
     const exactStatus=feedback?.statusCode?.startsWith("ASM_STATUS_")===true;
@@ -1716,8 +1722,8 @@ export function payableBlockers({ detail, state, selectedId, feedback, requestKe
     const pending = feedback?.kind === "in-flight" || feedback?.kind === "pending" || feedback?.kind === "awaiting-refresh";
     blockers.push({
       kind: conflict ? "assessment-earlier" : unavailable ? "system-unavailable" : pending ? "assessment-pending" : "assessment-unverified",
-      title: conflict ? "Earlier assessment needs review" : unavailable ? "Assessment unavailable" : pending ? "Assessment pending" : "Assessment outcome unverified",
-      reason: conflict ? "The service reported an earlier unresolved assessment. Its link to this payable’s current source and version is unverified." : exactStatus ? feedback!.message : storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment is still processing or awaiting confirmation." : "Reason not yet verified. The assessment request has no confirmed durable result.",
+      title: conflict ? "Earlier assessment needs review" : unavailable ? "Assessment unavailable" : pending ? "Assessment confirmation pending" : "Assessment completion not confirmed",
+      reason: conflict ? "The service reported an earlier unresolved assessment. Its link to this payable’s current source and version is unverified." : exactStatus ? feedback!.message : storageUnavailable ? "Assessment was not sent because its request identity could not be stored in this browser." : unavailable ? "The assessment service is unavailable. A final result has not been confirmed." : pending ? "The assessment request is awaiting confirmation; provider receipt and completion are not established." : "Reason not yet verified. The assessment request has no confirmed durable result.",
       impact: storageUnavailable ? "Assessment has not started. Payment remains unavailable." : "Assessment completion is unconfirmed. Payment remains unavailable.",
       nextAction: conflict ? "Ask the workspace owner to reconcile the earlier request before another assessment can be accepted. Do not submit another assessment." : exactStatus ? feedback!.nextStep : storageUnavailable ? "Allow browser storage, then reload before starting an assessment." : detail.source_group==="GENUINE_COMPANY" ? "Check the original assessment request. Do not submit another assessment while it is unresolved." : "Refresh the payable list to check for newer records. The exact assessment outcome remains unverified. Do not reassess or retry while unresolved.",
       responsible: conflict ? "Workspace owner · request review" : exactStatus ? feedback!.owner : storageUnavailable ? "User · status review" : "Workspace owner · assessment request review", action: pending && feedback?.kind === "in-flight" ? null : "assessment-status",
@@ -1813,6 +1819,7 @@ function assessmentFeedbackForResponse(
     ? String((result.data as { status: unknown }).status)
     : "";
   const statusCode = code || serverStatus || (result.status ? `HTTP ${result.status}` : "NO_RESPONSE");
+  const known=stage2Status(code);
   if(genuineAdmission&&isAssessmentHistoryLimitRejection(result))return {
     obligationId,expectedVersion,selectionGeneration,statusCode,kind:'rejected',title:'Assessment request rejected',
     message:'The assessment history limit rejected this new attempt before reservation or provider dispatch. Any separately recorded UNKNOWN remains unresolved.',
@@ -1820,6 +1827,7 @@ function assessmentFeedbackForResponse(
     nextStep:'Review the recorded assessment status and history with the workspace owner. Another assessment is not admitted.',
     owner:'Workspace owner · source and admission review',
   };
+  if(code&&known.code!=='UNKNOWN'&&result.status!==200)return {obligationId,expectedVersion,selectionGeneration,statusCode:known.code,kind:'unconfirmed',title:known.title,message:known.reason,durability:known.consequence,nextStep:known.remedy,owner:known.owner};
   if (result.status === 200) {
     const identity = assessmentReceiptIdentity(result.data);
     const receipt = assessmentReceiptSnapshot(result.data);
@@ -1859,6 +1867,10 @@ function assessmentFeedbackForResponse(
       assessmentId: receipt.assessment_id,
       assessmentHash: receipt.assessment_hash,
     };
+  }
+  if (result.status === 202 && !['IN_PROGRESS','RECOVERY_PENDING'].includes(serverStatus)) {
+    const uncertain=stage2Status('UNKNOWN');
+    return {obligationId,expectedVersion,selectionGeneration,statusCode,kind:'unconfirmed',title:uncertain.title,message:'A response was received, but the original reservation and result were not confirmed.',durability:uncertain.consequence,nextStep:uncertain.remedy,owner:uncertain.owner};
   }
   if (result.status === 202) {
     const recoveryPending = serverStatus === "RECOVERY_PENDING";
@@ -2616,8 +2628,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setDisplayedAssessment(null);
     setAssessmentConflict(null);
     setAssessmentFeedback({
-      obligationId, expectedVersion, selectionGeneration: generation, kind: "in-flight", title: "Assessment request sent.",
-      message: "Waiting for a response for the selected obligation. No duplicate request has been sent.",
+      obligationId, expectedVersion, selectionGeneration: generation, kind: "in-flight", title: "Submitting assessment request.",
+      message: "Submission and result are not yet confirmed. Waiting for the original request response.",
       durability: "No assessment receipt has been confirmed yet.",
       nextStep: "Wait for this request to resolve; the result remains advisory.",
       owner: "Finance Agent · waiting for assessment response",
@@ -2822,7 +2834,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         return judgeReadableState(detail.truth.source_truth.obligation_state);
       case "Assessment":
         if(humanDecision)return humanAccepted?'Human review recorded':humanDecision.record.decision==='ESCALATE'?'Escalation assigned':humanDecision.record.decision==='NEEDS_CORRECTION'?'Source correction requested':'Human review declined';
-        if(["UNKNOWN","IN_PROGRESS"].includes(detail.genuine_assessment?.status??""))return detail.genuine_assessment?.status==="UNKNOWN"?"Latest assessment UNKNOWN":"Assessment in progress";
+        if(["UNKNOWN","IN_PROGRESS"].includes(detail.genuine_assessment?.status??""))return detail.genuine_assessment?.status==="UNKNOWN"?"Assessment completion not confirmed":"Assessment request saved; result pending";
         if (!hasCurrentAssessment || !currentAssessment) return "Not current for this version";
         if (currentAssessment.decision === "HOLD") return "Requires attention";
         if (currentAssessment.decision === "ESCALATE") return "Escalation required";
@@ -3313,7 +3325,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     assessmentConflict.detailRequest===detailGeneration.current&&assessmentConflict.epoch===exactAssessmentLifetime.current.epoch&&exactAssessmentLifetime.current.mounted&&
     assessmentConflict.version===String(detail.aggregate.aggregate_version)&&assessmentConflict.sourceFingerprint===canonicalize(detail.record)?assessmentConflict:null;
   const selectedBlockers = payableBlockers({detail, state: detailState, selectedId, feedback: currentFeedback,
-    conflict:currentAssessmentConflict,requestKey: selectedRequestKey, stage: viewedStage, response: currentResult, executionResponse: selectedFinancialResult}).filter(blocker=>!humanAccepted||!['assessment-hold','assessment-request','assessment-unavailable'].includes(blocker.kind));
+    conflict:currentAssessmentConflict,requestKey: selectedRequestKey, stage: viewedStage, response: currentResult, executionResponse: selectedFinancialResult}).filter(blocker=>!humanAccepted||!['assessment-hold','assessment-request','assessment-unavailable','assessment-unknown'].includes(blocker.kind));
   const holdRenderSelection=selectionGeneration.current,holdRenderDetail=detailGeneration.current,holdRenderEpoch=exactAssessmentLifetime.current.epoch;
   const holdReviewBlocked=unresolvedSubmission||Boolean(detail?.execution)||Boolean(detail?.pae_sealed)||detail?.aggregate.state==="CANCELLED";
   const currentHoldReview=!holdReviewBlocked&&holdReview&&detailState==="loaded"&&!detailIsStale&&detail&&hasCurrentAssessment&&currentAssessment?.decision==="HOLD"&&!assessmentRequestUnresolved&&
@@ -3446,6 +3458,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     workspaceAction = { label: "Refresh current status", actor: "You · read-only refresh", run: () => void refreshDetail(selectedId, true) };
   } else if(humanDecision&&!detail?.pae_sealed&&!detail?.execution){
     workspaceAction={label:'Review human decision',actor:humanDecision.record.actor_role,run:()=>{const panel=document.getElementById('payable-source-review');panel?.scrollIntoView?.({block:'start',behavior:'smooth'});panel?.focus();}};
+  } else if(detailState==='loaded'&&!detailIsStale&&!busy&&csrfToken&&!detail?.execution&&!detail?.pae_sealed&&detail?.allowed_actions?.includes('MANUAL_REVIEW')){
+    workspaceAction={label:'Review source manually',actor:'Finance reviewer · current server capability',run:()=>{const panel=document.getElementById('payable-source-review');panel?.scrollIntoView?.({block:'start',behavior:'smooth'});panel?.focus();}};
   } else if (detailState==="loaded"&&!detailIsStale&&!busy&&csrfToken&&!detail?.execution&&!detail?.pae_sealed&&detail?.source_group==="GENUINE_COMPANY"&&detail.genuine_assessment?.disposition?.state==="AVAILABLE"&&selectedRequestKey&&assessmentRequestUuid.test(selectedRequestKey)&&retainedSuccessorRequestKey(selectedId)===null) {
     workspaceAction={label:"Request admitted current-source disposition",actor:"User · separate advisory attempt; original UNKNOWN retained",run:()=>{void runAssessment(false,false,true);}};
   } else if (detailState==="loaded"&&!detailIsStale&&!busy&&csrfToken&&!detail?.execution&&!detail?.pae_sealed&&detail?.source_group==="GENUINE_COMPANY"&&detail.genuine_assessment?.disposition?.state==="USED"&&detail.genuine_assessment.disposition.child_current===true&&selectedRequestKey&&retainedSuccessorRequestKey(selectedId)===null) {
@@ -3709,7 +3723,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               {obligations.filter(o => o.source_group === "GENUINE_COMPANY").slice(0,6).map(o => <li key={o.obligation_id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-3 gap-y-1 py-3 text-sm">
                 <p className="break-words font-semibold">{businessTitle(o.service_category)}</p><p className="tabular min-w-0 break-all text-end font-semibold"><bdi>{businessAmount(o.amount)} {o.currency}</bdi></p>
                 <p className="col-span-2 break-words text-xs text-[var(--color-ink-muted)]">{o.beneficiary_name?.trim() && o.beneficiary_name !== "Not captured" ? o.beneficiary_name : "Supplier not recorded"} · {o.due_date ? `Due ${o.due_date}` : "Due date not recorded"}</p>
-                <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{o.current_review_decision?`Human review · ${o.current_review_decision.record.decision}`:retainedAssessmentRequestKey(o.obligation_id) ? "Assessment outcome unverified" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : "Assessment required"}</p>
+                <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{o.current_review_decision?`Human review · ${o.current_review_decision.record.decision}`:retainedAssessmentRequestKey(o.obligation_id) ? "Assessment completion not confirmed" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : "Assessment required"}</p>
+                {(retainedAssessmentRequestKey(o.obligation_id)||["UNKNOWN","RESERVED"].includes(o.stage2_status?.code??""))&&<p className="col-span-2 text-xs">{stage2Status(o.stage2_status?.code).reason} {stage2Status(o.stage2_status?.code).remedy}</p>}
               </li>)}
             </ul>
             {obligations.filter(o => o.source_group === "GENUINE_COMPANY").length > 6 && <p className="text-xs text-[var(--color-ink-muted)]">Showing 6 payables. Open the list to review all.</p>}
@@ -3771,8 +3786,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               const rowHuman=selectedRow&&detailState==='loaded'?humanDecision:o.current_review_decision;
               const assessmentStatus = rowHuman?`Human review · ${rowHuman.record.decision}`:selectedRow&&detailState==='loaded'&&currentFeedback?.kind==='rejected'&&!serverAssessmentUnresolved?'Assessment request rejected':
                 selectedRow&&detailState==='loaded'&&reviewOnlyAssessment&&!serverAssessmentUnresolved?'Assessment review required':
-                known&&(!selectedRow||detailState!=='loaded')?`Last checked · ${unresolvedRequest?'Assessment outcome unverified':knownRejected?'Assessment request rejected':known.status}`:unresolvedRequest
-                ? selectedRow && currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
+                known&&(!selectedRow||detailState!=='loaded')?`Last checked · ${stage2DisplayLabel(unresolvedRequest?'Assessment outcome unverified':knownRejected?'Assessment request rejected':known.status)}`:unresolvedRequest
+                ? selectedRow && currentFeedback?.kind === "pending" ? "Assessment request saved; result pending" : "Assessment completion not confirmed"
                 : selectedRow && detailState !== "loaded" ? "Assessment status unavailable"
                 : assessed ? `Assessment result · ${decision ?? "Unavailable"}`
                 : workflowRecorded ? "Workflow recorded" : selectedRow&&detailState==='loaded'?"Assessment required":o.assessed===false?"Assessment not recorded":"Assessment status unavailable";
@@ -3799,8 +3814,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   >
                     <span className="col-span-2 min-w-0 break-words text-[13px] font-semibold text-[var(--color-ink)]">
                       <span
-                        aria-label={unresolvedRequest ? "assessment outcome unverified" : assessed ? "assessment recorded" : assessmentStatus.toLowerCase()}
-                        title={unresolvedRequest ? "Assessment completion unverified; do not retry." : assessed ? `Assessment result: ${decision}` : assessmentStatus}
+                        aria-label={unresolvedRequest ? "assessment completion not confirmed" : assessed ? "assessment recorded" : assessmentStatus.toLowerCase()}
+                        title={unresolvedRequest ? "Assessment completion not confirmed; check the original request before another action." : assessed ? `Assessment result: ${decision}` : assessmentStatus}
                         className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
                         style={{ background: assessed || workflowRecorded ? "var(--color-ink-muted)" : "var(--color-border-strong)" }}
                       />{" "}{o.service_category.replaceAll("_", " ").toLowerCase()}
@@ -3810,8 +3825,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                       <span className="min-w-0 max-w-full break-all">{o.amount} {o.currency}</span><span className="whitespace-nowrap font-normal text-[12px] text-[var(--color-ink-muted)]">Due {queueDueDate(o)}</span>
                     </span>
                     <span className="col-span-2 text-start text-[11px] font-semibold" style={{ color: statusColor }}>
-                      {assessmentStatus}
+                      {stage2DisplayLabel(assessmentStatus)}
                     </span>
+                    {(unresolvedRequest||["UNKNOWN","RESERVED"].includes(o.stage2_status?.code??""))&&<span className="col-span-2 text-start text-[11px]">{stage2Status(o.stage2_status?.code).reason} {stage2Status(o.stage2_status?.code).remedy}</span>}
                 </button>
               </li>
               );
@@ -3871,9 +3887,10 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                         <div key={field} className="min-w-0 break-words"><dt className="inline">{label}: </dt><dd className="inline">{field === "recurrence" ? businessTitle(sourceText(detail.record, field)) : sourceText(detail.record, field)}</dd></div>)}
                     </dl>
                     <p aria-label="Current assessment outcome" className="mt-2 text-xs font-semibold">{humanDecision?`Human review · ${humanDecision.record.decision}`:assessmentRequestUnresolved
-                      ? currentFeedback?.kind === "in-flight" || currentFeedback?.kind === "pending" ? "Assessment pending" : "Assessment outcome unverified"
+                      ? currentFeedback?.kind === "pending" ? "Assessment request saved; result pending" : currentFeedback?.kind === "in-flight" ? "Submitting assessment request; confirmation pending" : "Assessment completion not confirmed"
                       : hasCurrentAssessment && currentAssessment ? `Assessment result · ${currentAssessment.decision} · advisory`
                       : currentAssessment ? "Assessment needs refresh" : "Assessment not recorded"}</p>
+                    {assessmentRequestUnresolved&&<p className="mt-1 text-xs">{stage2Status(detail.stage2_status?.code??detail.genuine_assessment?.recovery_reason).reason} {stage2Status(detail.stage2_status?.code??detail.genuine_assessment?.recovery_reason).remedy}</p>}
                     {viewedStage !== "Assessment" && sourceServiceContext(detail.record) && <p data-testid="source-service-context" className="mt-1 text-sm leading-5 text-[var(--color-ink-muted)]">{sourceServiceContext(detail.record)}</p>}
                     {viewedStage === "Authorization" && <p className="mt-1 text-sm leading-5 text-[var(--color-warning)]">
                       ARC TESTNET · {detail.settlement_proxy ? "testnet payment destination prepared" : "testnet payment destination not prepared"} · real-world payable remains {sourcePayableState(detail)}.
@@ -4313,11 +4330,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {!isInitialObligationScreen && detailState === "loaded" && detail && <section aria-label="Current control status" className="rounded-lg border border-[var(--color-border)] px-3 py-2">
             <h3 className="text-xs font-semibold">Current controls</h3>
             <dl className="mt-2 grid grid-cols-2 gap-3 text-xs lg:grid-cols-4">
-              <div><dt className="text-[var(--color-ink-muted)]">{humanDecision?"Human review":"Assessment"}</dt><dd className="mt-1 font-semibold">{humanDecision?humanDecision.record.decision:assessmentRequestUnresolved ? "Outcome unverified" : hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} · advisory` : currentAssessment ? "Needs refresh" : "Not recorded"}</dd></div>
+              <div><dt className="text-[var(--color-ink-muted)]">{humanDecision?"Human review":"Assessment"}</dt><dd className="mt-1 font-semibold">{humanDecision?humanDecision.record.decision:assessmentRequestUnresolved ? "Assessment completion not confirmed" : hasCurrentAssessment && currentAssessment ? `${currentAssessment.decision} · advisory` : currentAssessment ? "Needs refresh" : "Not recorded"}</dd></div>
               <div><dt className="text-[var(--color-ink-muted)]">Authorization</dt><dd className="mt-1 font-semibold">{detail.aggregate.state === "AUTHORIZED" ? "Recorded · release checks separate" : "Not recorded"}</dd></div>
               <div><dt className="text-[var(--color-ink-muted)]">Assurance evidence</dt><dd className="mt-1 font-semibold">{detail.assurance_evidence?.state === "AVAILABLE_CURRENT_BINDING" ? "Recorded · current binding" : detail.assurance_evidence?.state === "AVAILABLE_HISTORICAL" ? "Historical record" : detail.assurance_evidence?.state === "NOT_CREATED" ? "Not recorded" : detail.assurance_evidence?.state === "INVALID" ? "Invalid" : "Not verified"}</dd></div>
               <div><dt className="text-[var(--color-ink-muted)]">Payment record</dt><dd className="mt-1 font-semibold">{unresolvedSubmission ? "Outcome unverified" : !detail.execution ? "Not submitted in Tameion" : detail.execution.status === "SETTLED" ? settledEvidenceSummary(detail) : businessTitle(detail.execution.status)}</dd></div>
             </dl>
+            {assessmentRequestUnresolved&&<p className="mt-2 text-xs">{stage2Status(detail.stage2_status?.code??detail.genuine_assessment?.recovery_reason).reason} {stage2Status(detail.stage2_status?.code??detail.genuine_assessment?.recovery_reason).remedy}</p>}
           </section>}
 
           {!isInitialObligationScreen && detailState === "loaded" && detail && (

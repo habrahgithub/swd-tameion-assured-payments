@@ -2286,7 +2286,7 @@ for (const width of [1365, 390, 320]) for (const unresolved of [false, true]) te
   const sourceBounds=await page.getByRole("region",{name:"Selected source payable"}).boundingBox();
   expect(reasonBounds!.width).toBeGreaterThanOrEqual(sourceBounds!.width * 0.95);
   await expect(page.getByRole("region",{name:"Selected source payable"}).getByTestId("hold-reason")).toHaveCount(1);
-  await expect(reason).toContainText(unresolved?"Assessment outcome unverified":"Source evidence is incomplete.");
+  await expect(reason).toContainText(unresolved?"Assessment completion not confirmed":"Source evidence is incomplete.");
   await expect(reason).toContainText(unresolved?"Unassigned":"Accounts Payable");
   const primary=page.getByRole("region",{name:"Current payable action"}).getByRole("button",{name:unresolved?"Refresh payable list":"View HOLD findings"});
   await primary.focus();await page.keyboard.press("Enter");
@@ -2532,7 +2532,7 @@ for(const width of [1365,390])for(const eligible of [false,true])test(`Stage 2 s
   return route.fulfill({json:value});
  });
  await page.goto('/');await openReviewPayables(page);if(width<768)await openMobileQueue(page);await queueItem(page,id).click();
- await expect(page.getByRole('region',{name:'Hold reason and next action'}).getByText('Latest assessment UNKNOWN',{exact:true})).toBeVisible();
+ await expect(page.getByRole('region',{name:'Hold reason and next action'}).getByText('Assessment completion not confirmed',{exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:/Run AI Assessment|View HOLD findings|Create linked testnet instruction|Authorize payment|Pay testnet USDC/})).toHaveCount(0);
  await expandLifecycleStages(page);await page.getByRole('navigation',{name:'Payment lifecycle navigation'}).getByRole('button',{name:'Assessment',exact:true}).click();
  await expect(page.getByText('Historical assessment · HOLD',{exact:true})).toBeVisible();expect(posts).toHaveLength(0);
