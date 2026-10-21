@@ -2,6 +2,7 @@
 import {stage2Status,providerCategory} from '../src/domain/assessment-status';
 import {assessmentReceiptSnapshot} from '../src/client/command-center-requests';
 import {useEffect,useRef,useState,type FormEvent} from 'react';
+import {canonicalize} from 'json-canonicalize';
 import type {SourceFields,SourceRevision} from '../src/domain/source-revision';
 import type {SealedReviewDecision} from '../src/domain/review-decision';
 
@@ -69,9 +70,15 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   }catch{if(owned===generation.current)setMessage('Current source status is unavailable. Refresh to read committed state.');}})();
  },[selectedId,csrfToken]);
  useEffect(()=>{if(readModel){setCreateAllowed(readModel.createAllowed);setView(readModel.detail?.record?.obligation_id===selectedId?readModel.detail:null);}},[readModel?.detail,readModel?.createAllowed,selectedId]);
+ // Read props directly when supplied: a parent source update must invalidate an
+ // awaited receipt before the effect that copies the read model into local state.
+ const live=useRef({selectedId,csrfToken,view});
+ live.current={selectedId,csrfToken,view:readModel?(readModel.detail?.record?.obligation_id===selectedId?readModel.detail:null):view};
  const actions=view?.allowed_actions??[];
  async function command(path:string,body:unknown,method='POST'){
-  const owned=generation.current,original=request.current?commandTransport(request.current,creating?'new':selectedId):null;
+  const owned=generation.current,sourceAtDispatch=canonicalize({record:live.current.view?.record??null,revision:live.current.view?.source_revision??null}),versionAtDispatch=live.current.view?.aggregate?.aggregate_version;
+  const contextCurrent=()=>lifetime.current&&owned===generation.current&&live.current.selectedId===selectedId&&live.current.csrfToken===csrfToken;
+  const original=request.current?commandTransport(request.current,creating?'new':selectedId):null;
   // Repeating unchanged review input recovers the pending receipt even when a
   // refresh supplied newer concurrency tokens. Changed human input gets a new key.
   if(original&&original.path===path&&original.method===method&&path.endsWith('/review')){
@@ -82,17 +89,26 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   if(request.current?.signature!==signature)request.current={signature,key:crypto.randomUUID()};
   const key=request.current.key;setPending(request.current);if(!persist()){setMessage('Pending command could not be retained. Enable tab storage before submitting.');return;}setBusy(true);setMessage(path.endsWith('/advisory')?'Submitting assessment request; submission and result are not yet confirmed.':'Saving; awaiting committed readback.');
   try{const response=await fetch(path,{method,headers:{'Content-Type':'application/json','X-Tameion-CSRF':csrfToken,'Idempotency-Key':key},body:JSON.stringify(body)}),data=await response.json();
-   if(!lifetime.current||owned!==generation.current)return;
+   if(!contextCurrent()||request.current?.key!==key||request.current.signature!==signature)return;
    if(!response.ok){const status=stage2Status(data?.code),stage2=/\/(advisory|review|testnet-instruction)$/.test(path)||path==='/api/obligations'||method==='PATCH';setMessage(preflightRefusalMessage(path,response.status,data)??(stage2?`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`:`${data?.code??'COMMAND_UNVERIFIED'}. ${data?.remedy??'Read current status before trying another action.'}`));return;}
    if(path.endsWith('/advisory')){
-    const receipt=assessmentReceiptSnapshot(data),status=stage2Status(providerCategory(data.stage2_provider_outcome)??(receipt?'COMPLETED':data.status));
+    const receipt=assessmentReceiptSnapshot(data),current=live.current.view;
+    const currentSource=current?.record?.obligation_id===selectedId&&current.aggregate?.aggregate_version===versionAtDispatch&&
+     canonicalize({record:current.record,revision:current.source_revision??null})===sourceAtDispatch;
+    const committed=response.status===200&&receipt?.assessment_id===`ASM-${key}`&&receipt.obligation_id===selectedId&&
+     versionAtDispatch!==undefined&&receipt.aggregate_version===String(versionAtDispatch)&&currentSource;
+    // A category is evidence only after canonical receipt and exact original-key
+    // binding. Pending/foreign/stale replies never acknowledge this command.
+    // HTTP202/status strings are not a canonical key/source/version-bound
+    // reservation receipt. Keep completion unconfirmed even for IN_PROGRESS.
+    const status=stage2Status(committed?providerCategory(data.stage2_provider_outcome)??'COMPLETED':'UNKNOWN');
     setMessage(`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`);
-    if(response.status!==200||!receipt||receipt.obligation_id!==selectedId||receipt.aggregate_version!==String(view?.aggregate?.aggregate_version)){onChanged();return;}
+    if(!committed)return;
    }
    if(!path.endsWith('/advisory'))setMessage(data.replayed?'Original review receipt recovered (historical only; no current authorization restored).':data.committed?'Source revision saved and read back.':'Command recorded. Refreshing committed status.');setEditing(false);request.current=null;setPending(null);try{sessionStorage.removeItem(storageKey);}catch{/* No new browser authority. */}onChanged();
    if(selectedId&&!readModel){const read=await fetch(`/api/obligations/${encodeURIComponent(selectedId)}`,{cache:'no-store'});const current=await read.json();if(read.ok&&owned===generation.current)setView(current);}
-  }catch{if(owned===generation.current)setMessage('Acknowledgement unavailable. Refresh committed status; the original request identity is retained.');}
-  finally{if(lifetime.current&&owned===generation.current)setBusy(false);}
+  }catch{if(contextCurrent()&&request.current?.key===key&&request.current.signature===signature)setMessage('Acknowledgement unavailable. Refresh committed status; the original request identity is retained.');}
+  finally{if(contextCurrent()&&(!request.current||request.current.key===key&&request.current.signature===signature))setBusy(false);}
  }
  async function observe(){
   const owned=generation.current;setBusy(true);
