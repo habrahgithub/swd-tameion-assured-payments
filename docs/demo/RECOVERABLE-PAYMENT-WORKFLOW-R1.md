@@ -71,3 +71,35 @@ version and component lifetime; it is not reconstructed as authority after reloa
 
 This local correction does not change the source packet, activate source-review
 capabilities, or verify hosted schema, Stage 2 completion or financial UAT.
+
+
+### Fresh assessment readiness and unavailable source controls
+
+Legacy genuine advisory views now describe the fresh assessment precondition
+from the original admitted source record and the existing deterministic context
+validator. Missing or invalid source assessment context is explained before a
+fresh request: the workspace owner must review the admitted context. This read
+check has not submitted an assessment and is not a rejection receipt. It does
+not identify a missing invoice fact, an AI outage or a configuration cause.
+
+This description can only narrow a fresh Run AI Assessment action. Existing
+advisory eligibility retains its original meaning for current assessment review
+and linked testnet drafts. Legitimate HOLD-compatible contexts remain eligible;
+older UNKNOWN operations, history limits, financial history, retained keys,
+status checks and explicitly admitted recovery keep their existing precedence.
+An absent readiness field preserves older-read compatibility. A positive field
+cannot create an action capability. List and detail derive the same current
+precondition from original source records; selected detail owns current labels.
+Versioned source-review and controlled financial views keep their existing paths.
+
+After successful, current reads, a small notice explains when source entry and
+manual review controls are not advertised in this view. Their exact absence
+cause is unverified. This creates no activation, reset or migration action and
+does not hide controls that are advertised elsewhere.
+
+The single Dashboard Review payables button is above the long overview, with
+its existing destination, keyboard-click handler/focus and 44px minimum retained.
+DOM order and focus are locally tested. jsdom is not mobile/desktop geometry
+proof; isolated browser visibility/overlap verification is a separate review step.
+No hosted schema/source activation or financial workflow acceptance follows from
+these local synthetic checks.

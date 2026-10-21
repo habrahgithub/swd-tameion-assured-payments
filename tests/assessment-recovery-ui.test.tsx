@@ -10,7 +10,7 @@ import {POST as advisoryPOST} from '../app/api/obligations/[id]/advisory/route';
 const runtime=vi.hoisted(()=>({handler:null as any}));
 vi.mock('../src/server/genuine-workflow',async original=>({...await original<typeof import('../src/server/genuine-workflow')>(),genuineWorkflowHandlers:(...args:any[])=>runtime.handler(...args)}));
 afterEach(()=>{cleanup();localStorage.clear();vi.restoreAllMocks();vi.unstubAllGlobals();vi.unstubAllEnvs();});
-function setup(options:{basis?:boolean}={}){
+function setup(options:{basis?:boolean;readiness?:'legacy-missing'}={}){
  const h=harness(options);runtime.handler=h.handler;
  const readers=createObligationReaders(h.guard,async(records,binding,_namespace,admission)=>loadExistingDemoState({call:async()=>({revision:h.revision(),snapshot:structuredClone(h.snapshot())})},h.state_binding.namespace,records,binding,admission),h.source,()=>undefined);
  const provider=vi.fn(()=>{throw new Error('Provider must not dispatch');});
@@ -26,9 +26,9 @@ function setup(options:{basis?:boolean}={}){
    if(url.endsWith('/advisory/status'))return Response.json({status:'NOT_FOUND',obligation_id:h.id,idempotency_key:JSON.parse(String(init.body)).idempotency_key,aggregate_version:String(h.snapshot().authority.aggregates[0].aggregate_version),source_record_sha256:hash(h.records[0]),financial_action_eligible:false});
    throw new Error('Unexpected mutation');
   }
-  if(url==='/api/obligations')return readers.list(request);
+  if(url==='/api/obligations'){const response=await readers.list(request);if(options.readiness!=='legacy-missing')return response;const body=await response.json();for(const item of body.obligations??[])delete item.fresh_assessment_readiness;return Response.json(body,{status:response.status});}
   if(detailFault)return detailFault.clone();
-  const response=await readers.detail(request,url.split('/').at(-1)!);return Response.json(afterDetail(await response.json()),{status:response.status});
+  const response=await readers.detail(request,url.split('/').at(-1)!);const body=await response.json();if(options.readiness==='legacy-missing')delete body.fresh_assessment_readiness;return Response.json(afterDetail(body),{status:response.status});
  });vi.stubGlobal('fetch',fetcher);vi.stubGlobal('crypto',webcrypto);
  const mount=()=>render(<CommandCenter csrfToken="SYNTHETIC-CSRF"/>);
  const row=async(id=h.id)=>waitFor(()=>{const r=document.querySelector<HTMLButtonElement>(`button[data-obligation-id="${id}"]`);expect(r).toBeTruthy();return r!;});
@@ -102,7 +102,7 @@ it.each(['transport','generic409','not-found'])('uncertainty %s retains its requ
 });
 
 it.each(['history','basis'])('a new retained key cannot inherit the prior exact %s rejection',async kind=>{
- const t=setup({basis:kind!=='basis'});if(kind==='history')t.onPost(()=>cap(t.h));t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await screen.findAllByText('Assessment request rejected');
+ const t=setup({basis:kind!=='basis',...(kind==='basis'?{readiness:'legacy-missing' as const}:{})});if(kind==='history')t.onPost(()=>cap(t.h));t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await screen.findAllByText('Assessment request rejected');
  localStorage.setItem(`tameion.assessment-request.${t.h.id}`,OTHER);
  fireEvent.click(await t.row(t.h.records[1].obligation_id));await screen.findByRole('button',{name:'Run AI Assessment'});fireEvent.click(await t.row());await screen.findByRole('button',{name:'Check assessment request'});
  expect(screen.getByRole('main').textContent).not.toContain('Assessment request rejected');
@@ -117,7 +117,7 @@ it('a transport detail failure keeps the cause unknown and never renders the thr
 });
 
 it.each(['history','basis'].flatMap(kind=>['source','version'].map(fault=>[kind,fault])))('a changed %s / %s cannot inherit a rejected attempt as current evidence',async(kind,fault)=>{
- const t=setup({basis:kind!=='basis'});if(kind==='history')t.onPost(()=>cap(t.h));t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await screen.findAllByText('Assessment request rejected');
+ const t=setup({basis:kind!=='basis',...(kind==='basis'?{readiness:'legacy-missing' as const}:{})});if(kind==='history')t.onPost(()=>cap(t.h));t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));await screen.findAllByText('Assessment request rejected');
  if(fault==='source')t.h.publish(undefined,records=>{records[0].commercial_terms='SYNTHETIC SOURCE CHANGE';});
  else{t.h.snapshot().authority.aggregates[0].aggregate_version=2;const {assessments,...base}=t.h.snapshot().authority;t.h.state_binding.workflow_base_sha256=hash(base);t.h.publish();}
  fireEvent.click(await t.row(t.h.records[1].obligation_id));await screen.findByRole('button',{name:'Run AI Assessment'});fireEvent.click(await t.row());await screen.findByRole('button',{name:'Check assessment request'});
@@ -133,8 +133,9 @@ it.each(['GENUINE_ASSESSMENT_HISTORY_LIMIT','GENUINE_ASSESSMENT_BASIS_INVALID'])
 });
 
 
-it('canonical source-basis rejection explains validation and retains exact request without retry authority',async()=>{
- const t=setup({basis:false}),before=JSON.stringify(t.h.snapshot());
+// Explicit older-read fixture omits new readiness so actual POST refusal/retained-key proof stays exercised.
+it('canonical source-basis rejection after an older read explains validation and retains exact request without retry authority',async()=>{
+ const t=setup({basis:false,readiness:'legacy-missing'}),before=JSON.stringify(t.h.snapshot());
  t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
  await waitFor(()=>expect(t.advisoryReplies).toEqual([{status:409,data:{code:'GENUINE_ASSESSMENT_BASIS_INVALID'}}]));
  expect(t.h.repository.compareAndSet).not.toHaveBeenCalled();expect(t.provider).not.toHaveBeenCalled();expect(JSON.stringify(t.h.snapshot())).toBe(before);
@@ -192,7 +193,7 @@ it('basis code from the assess command is not genuine advisory rejection evidenc
 });
 
 it('basis rejection preserves an older UNKNOWN without changing its recovery admission',async()=>{
- const t=setup({basis:false});let before='';t.onPost(()=>{t.h.snapshot().assessment_operations.push({idempotency_key:OTHER,obligation_id:t.h.id,aggregate_version:1,status:'UNKNOWN',reserved_at:1});before=JSON.stringify(t.h.snapshot());});
+ const t=setup({basis:false,readiness:'legacy-missing'});let before='';t.onPost(()=>{t.h.snapshot().assessment_operations.push({idempotency_key:OTHER,obligation_id:t.h.id,aggregate_version:1,status:'UNKNOWN',reserved_at:1});before=JSON.stringify(t.h.snapshot());});
  t.h.snapshot().authority.aggregates[0].aggregate_version=2;const {assessments,...base}=t.h.snapshot().authority;t.h.state_binding.workflow_base_sha256=hash(base);t.h.publish();
  t.project(d=>({...d,genuine_assessment:d.genuine_assessment?{...d.genuine_assessment,recovery_eligible:false}:d.genuine_assessment}));
  const view=t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
@@ -209,7 +210,7 @@ it('basis rejection preserves an older UNKNOWN without changing its recovery adm
 
 
 it('reload and NOT_FOUND alone cannot restore basis rejection or authorize retry',async()=>{
- const t=setup({basis:false}),view=t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
+ const t=setup({basis:false,readiness:'legacy-missing'}),view=t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Run AI Assessment'}));
  await screen.findAllByText('Assessment request rejected');const key=localStorage.getItem(`tameion.assessment-request.${t.h.id}`);
  view.unmount();t.mount();fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
  await waitFor(()=>expect(screen.getByRole('main').textContent).toContain('could not be verified'));

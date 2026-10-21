@@ -2228,3 +2228,19 @@ describe('exact status and independent production detail confirmation',()=>{
   const h=pair();vi.stubGlobal('crypto',{});expect(await assessmentStatusMatchesDetail(await h.read(),await h.detail())).toBe(false);
  });
 });
+
+
+it('V3 descriptive fresh blocker preserves actual current-PAY producer and linked-draft guidance',async()=>{
+ const {harness,hash}=await import('./test-support/disposition-fixture');
+ const {createObligationReaders}=await import('../src/server/operator-obligation-routes');
+ const {loadExistingDemoState}=await import('../src/server/load-existing-demo-state');
+ const {payableBlockers}=await import('../app/command-center');
+ const h=harness({basis:false}),state=new DemoState(h.snapshot(),undefined,undefined,undefined,{},h.records);
+ sealTestAssessment(state.store,DEMO_ORGANIZATION_ID,h.id,1,{decision:'PAY',source_record_sha256:hash(h.records[0])});h.snapshot().authority=state.store.exportSnapshot();
+ const readers=createObligationReaders(h.guard,(records,binding)=>loadExistingDemoState({call:async()=>({revision:h.revision(),snapshot:structuredClone(h.snapshot())})},h.state_binding.namespace,records,binding),h.source,()=>undefined);
+ const detail=await(await readers.detail(new Request('https://fixture.invalid'),h.id)).json();
+ expect(detail.fresh_assessment_readiness).toEqual({ready:false,blocker:'SOURCE_ASSESSMENT_CONTEXT_REQUIRED'});
+ expect(detail.advisory_action_eligible).toBe(true);expect(detail.current_assessment.decision).toBe('PAY');
+ expect(payableBlockers({detail,state:'loaded',selectedId:h.id,stage:'Assessment'}).some(b=>b.nextAction==='Create a separate linked testnet instruction for approval.')).toBe(true);
+ expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+});

@@ -23,6 +23,12 @@ function parse(value:unknown){const bytes=Buffer.from(JSON.stringify(value));ret
 describe('versioned private genuine view catalog',()=>{
  it('accepts explicit six-record v2 while preserving legacy five-record v1',()=>{const f=fixture();expect(parse(f.packet).records).toHaveLength(6);const {schema_version,record_count,provenance,...v1}=f.packet;expect(parse({...v1,records:f.records.slice(0,5)}).records).toHaveLength(5);expect(()=>parse({...v1,records:f.records})).toThrow(/UNAVAILABLE/);});
  it.each(['count','duplicate','provenance','version','extra','empty','oversized'])('rejects %s instead of widening source authority',kind=>{const f=fixture();const p:any=structuredClone(f.packet);if(kind==='count')p.record_count=5;if(kind==='duplicate')p.records[5]=p.records[0];if(kind==='provenance')p.provenance='DEMO_ARC_TESTNET';if(kind==='version')p.schema_version=3;if(kind==='extra')p.financial_action_eligible=true;if(kind==='empty'){p.record_count=0;p.records=[];}if(kind==='oversized')p.record_count=51;expect(()=>parse(p)).toThrow(/UNAVAILABLE/);});
+ it('legacy V1 list/detail omit fresh-only V3 metadata',async()=>{
+  const f=fixture(),{schema_version,record_count,provenance,...legacy}=f.packet,view=parse({...legacy,records:f.records.slice(0,5)});
+  const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),(records,binding)=>loadExistingDemoState({call:async()=>({revision:7,snapshot:f.snapshot})},'FICTIONAL-VIEW',records,binding),()=>view,()=>undefined);
+  const list=await(await readers.list(new Request('https://fixture.invalid'))).json();expect(list.total_count).toBe(5);expect(list.obligations.every((r:any)=>r.fresh_assessment_readiness===undefined)).toBe(true);
+  const detail=await(await readers.detail(new Request('https://fixture.invalid'),f.records[0].obligation_id)).json();expect(detail.record.obligation_id).toBe(f.records[0].obligation_id);expect(detail.fresh_assessment_readiness).toBeUndefined();
+ });
  it('packages the exact v2 bytes and reports six without creating any state',()=>{
   const f=fixture(),directory=mkdtempSync(join(tmpdir(),'catalog-v2-package-'));
   try{const bytes=Buffer.from(JSON.stringify(f.packet)),approved=join(directory,'approved.json');writeFileSync(approved,bytes);
@@ -33,8 +39,8 @@ describe('versioned private genuine view catalog',()=>{
  it('loads six only with matching existing aggregates and emits server-owned genuine provenance',async()=>{
   const f=fixture(),view=parse(f.packet),rpc={call:vi.fn(async(_name:string,_params:Record<string,unknown>)=>({revision:7,snapshot:f.snapshot}))};
   const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),(records,binding)=>loadExistingDemoState(rpc,'FICTIONAL-VIEW',records,binding),()=>view,()=>undefined);
-  const list=await (await readers.list(new Request('https://fixture.invalid'))).json();expect(list.total_count).toBe(6);expect(list.obligations.every((r:any)=>r.source_group==='GENUINE_COMPANY')).toBe(true);
-  for(const r of f.records){const d=await(await readers.detail(new Request('https://fixture.invalid'),r.obligation_id)).json();expect(d).toMatchObject({financial_action_eligible:false,source_group:'GENUINE_COMPANY'});}
+  const list=await (await readers.list(new Request('https://fixture.invalid'))).json();expect(list.total_count).toBe(6);expect(list.obligations.every((r:any)=>!('fresh_assessment_readiness' in r))).toBe(true);expect(list.obligations.every((r:any)=>r.source_group==='GENUINE_COMPANY')).toBe(true);
+  for(const r of f.records){const d=await(await readers.detail(new Request('https://fixture.invalid'),r.obligation_id)).json();expect(d).toMatchObject({financial_action_eligible:false,source_group:'GENUINE_COMPANY'});expect(d.fresh_assessment_readiness).toBeUndefined();}
   const added=list.obligations.find((r:any)=>r.obligation_id==='FICTIONAL-OWNER-ENTRY');expect(added).toMatchObject({assessed:false,decision:null});
   expect(rpc.call.mock.calls.every(c=>c[0]==='tameion_state_load_existing')).toBe(true);
   const missing=structuredClone(f.snapshot);missing.authority.aggregates.pop();rpc.call.mockResolvedValue({revision:7,snapshot:missing});
@@ -48,7 +54,7 @@ describe('versioned private genuine view catalog',()=>{
   const load=vi.fn(async(records:Parameters<typeof loadExistingDemoState>[2],binding?:Parameters<typeof loadExistingDemoState>[3],namespace?:string)=>namespace==='FICTIONAL-DEMO'?demo:loadExistingDemoState({call:async()=>({revision:7,snapshot:f.snapshot})},'FICTIONAL-VIEW',records,binding));
   const guard=async()=>({revalidate:async()=>{}} as AuthContext);
   const readers=createObligationReaders(guard,load,()=>view,controlled);
-  const list=await(await readers.list(new Request('https://fixture.invalid'))).json();expect(list.obligations.filter((r:any)=>r.source_group==='GENUINE_COMPANY')).toHaveLength(6);expect(list.obligations.filter((r:any)=>r.source_group==='DEMO_ARC_TESTNET')).toMatchObject([{obligation_id:source.obligation_id}]);
+  const list=await(await readers.list(new Request('https://fixture.invalid'))).json();expect(list.obligations.filter((r:any)=>r.source_group==='GENUINE_COMPANY')).toHaveLength(6);expect(list.obligations.every((r:any)=>!('fresh_assessment_readiness' in r))).toBe(true);expect(list.obligations.filter((r:any)=>r.source_group==='DEMO_ARC_TESTNET')).toMatchObject([{obligation_id:source.obligation_id}]);
   const collision=parse({...f.packet,records:[...f.records.slice(0,5),{...f.records[5],obligation_id:source.obligation_id}]});load.mockClear();
   expect((await createObligationReaders(guard,load,()=>collision,controlled).list(new Request('https://fixture.invalid'))).status).toBe(503);expect(load).not.toHaveBeenCalled();
  });

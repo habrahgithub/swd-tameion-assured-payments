@@ -6,8 +6,14 @@ import {methodNotAllowed} from './route-access-policy';
 import {loadPublicSourceRecords,isCurrentSourceEligible} from './source-records';
 import {loadOperatorSourceRecords,type OperatorSourceView,type OperatorStateBinding,type OwnerAdmissionState} from './operator-source-records';
 import {loadOptionalFinancialSourceAdmission,loadFinancialRequesterBinding,loadFinancialRequesterBindingForReconcile,type FinancialSourceAdmission,type FinancialSourceAdmissionRead} from './financial-source-admission';
-import type {LiveUsageObligationRecord} from '../agent/context-builder';
+import {deterministicHistoricalContextValid,type LiveUsageObligationRecord} from '../agent/context-builder';
 import {loadExistingDemoState,type ExistingState} from './load-existing-demo-state';
+/** Descriptive fresh-command precondition only. Broad advisory eligibility also
+ * supports current-result/link review and is deliberately left unchanged. */
+function freshAssessmentReadiness(record:LiveUsageObligationRecord|undefined,admitted:boolean){
+  const contextValid=Boolean(record?.assessment_basis&&deterministicHistoricalContextValid(record));
+  return {ready:admitted&&contextValid,blocker:!admitted?'EXISTING_ASSESSMENT_ADMISSION_REQUIRED':contextValid?null:'SOURCE_ASSESSMENT_CONTEXT_REQUIRED'};
+}
 /** Explicit in-process seam for mock verification; runtime has no fixture mode. */
 export function createObligationReaders(guard:(request:Request,post:boolean)=>Promise<AuthContext>,load:(records:readonly LiveUsageObligationRecord[],binding?:OperatorStateBinding,namespace?:string,ownerAdmission?:OwnerAdmissionState)=>Promise<ExistingState>,source:()=>readonly LiveUsageObligationRecord[]|OperatorSourceView=()=>loadOperatorSourceRecords()??loadPublicSourceRecords(),controlledSource:()=>FinancialSourceAdmission|undefined=()=>loadOptionalFinancialSourceAdmission(),workflowRead=sourceWorkflowHandlers){
   async function read(request:Request,id?:string,packet=false){
@@ -46,19 +52,21 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
       let response:Response;
       const selectedState=controlledMember?controlledState:operatorState;
       if(packet){const sealed=selectedState!.getSealedPae(id!);if(!sealed)return privateJson({error:'No sealed PAE for this obligation.'},409);const {buildJ2PrimeApprovalPacket,renderJ2PrimeApprovalPacketText}=await import('../pipeline/prime-approval-packet');const value=buildJ2PrimeApprovalPacket(sealed);response=privateJson({packet:value,text:renderJ2PrimeApprovalPacketText(value)});}
-      else if(id===undefined){const {projectObligationListData}=await import('./obligation-read-model');const parts=[...(operatorState?[projectObligationListData(operatorState,binding?"GENUINE_COMPANY":"UNVERIFIED",Boolean(binding?.workflow_base_sha256))]:[]),...(controlledState&&retainedControlled?[projectObligationListData(controlledState,"DEMO_ARC_TESTNET")]:[])];const obligations=[...(sourceCatalog?.obligations??[]),...parts.flatMap(part=>part.obligations)];response=privateJson({...(sourceCatalog?{allowed_actions:sourceCatalog.allowed_actions}:{}),obligations,assessed_count:obligations.filter(item=>item.assessed).length,total_count:obligations.length});}
+      else if(id===undefined){const {projectObligationListData}=await import('./obligation-read-model');const operatorList=operatorState?projectObligationListData(operatorState,binding?"GENUINE_COMPANY":"UNVERIFIED",Boolean(binding?.workflow_base_sha256)):undefined;
+        if(operatorList&&!versioned&&binding?.workflow_base_sha256)operatorList.obligations=operatorList.obligations.map(item=>({...item,fresh_assessment_readiness:freshAssessmentReadiness(records.find(record=>record.obligation_id===item.obligation_id),operatorState?.canAssessGenuine?.(item.obligation_id)===true)}));
+        const parts=[...(operatorList?[operatorList]:[]),...(controlledState&&retainedControlled?[projectObligationListData(controlledState,"DEMO_ARC_TESTNET")]:[])];const obligations=[...(sourceCatalog?.obligations??[]),...parts.flatMap(part=>part.obligations)];response=privateJson({...(sourceCatalog?{allowed_actions:sourceCatalog.allowed_actions}:{}),obligations,assessed_count:obligations.filter(item=>item.assessed).length,total_count:obligations.length});}
       else {const {projectObligationDetail}=await import('./obligation-read-model');
         // An actually expired controlled instruction stays readable so its existing execution can be recovered, with no renewed financial eligibility.
         let bindings;try {if(controlledMember){const requester=expiredControlled?loadFinancialRequesterBindingForReconcile():loadFinancialRequesterBinding();if(requester.operator_key===auth.session.operator_key&&requester.credential_version===auth.session.credential_version)bindings=paymentReleaseBindings(controlled,requester);}}catch { /* readable, but no release capability */ }
         response=projectObligationDetail(selectedState!,id,(controlledMember&&!expiredControlled)||legacyEligible,auth.session?.operator_key&&typeof auth.session.credential_version==="number"?{...bindings,namespace:controlledMember?controlled!.namespace:binding?.namespace??process.env.TAMEION_STATE_NAMESPACE??"UNVERIFIED",operator_key:auth.session.operator_key,credential_version:auth.session.credential_version}:undefined,controlledMember?"DEMO_ARC_TESTNET":binding?"GENUINE_COMPANY":"UNVERIFIED",binding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===id)):undefined,controlledMember?{namespace:controlled!.namespace,selected_obligation_id:controlled!.source.obligation_id,selected_source_record_sha256:contentHash(controlled!.source),source_valid_until:controlled!.expires_at}:undefined,Boolean(controlledMember&&bindings));}
-      if(id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256&&response.ok){
+      if(!versioned&&id!==undefined&&!packet&&!controlledMember&&binding?.workflow_base_sha256&&response.ok){
         const data=await response.json();
         const visibility=selectedState?.getGenuineAssessmentVisibility?.(id);
         const staleChildReceipt=visibility?.disposition?.state==='USED'&&!visibility.disposition.child_current&&visibility.disposition.child_seal_hash!==undefined&&data.current_assessment?.assessment_hash===visibility.disposition.child_seal_hash;
         const unresolved=visibility&&(['UNKNOWN','IN_PROGRESS'].includes(visibility.status)||staleChildReceipt);
         const prior=unresolved?selectedState?.store.getAssessmentHistory('ORG-DEMO-001',id).reverse().find(a=>a.record.source_record_sha256):undefined;
         const historical=prior?{obligation_id:id,assessment_id:prior.record.assessment_id,assessment_hash:prior.hash,aggregate_version:prior.record.aggregate_version,source_record_sha256:prior.record.source_record_sha256,decision:prior.record.decision,reasons:prior.record.reasons,provider_mode:prior.record.provider_mode}:null;
-        response=privateJson({...data,...(visibility?{genuine_assessment:visibility}:{}),...(unresolved?{historical_assessment:historical,current_assessment:null,financial_action_eligible:false,truth:{...data.truth,tameion_control_truth:{...data.truth.tameion_control_truth,assessment_state:"NOT_ASSESSED"}}}:{}),advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]},response.status);
+        response=privateJson({...data,...(visibility?{genuine_assessment:visibility}:{}),...(unresolved?{historical_assessment:historical,current_assessment:null,financial_action_eligible:false,truth:{...data.truth,tameion_control_truth:{...data.truth.tameion_control_truth,assessment_state:"NOT_ASSESSED"}}}:{}),fresh_assessment_readiness:freshAssessmentReadiness(records.find(record=>record.obligation_id===id),selectedState?.canAssessGenuine?.(id)===true),advisory_action_eligible:selectedState?.canAssessGenuine?.(id)===true,linked_testnet_instructions:selectedState?.getLinkedInstructions?.(id)??[]},response.status);
       }
       response.headers.set('Cache-Control','no-store');return response;
     }catch(error){return accessFailure(error);}
