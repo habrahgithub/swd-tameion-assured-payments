@@ -3,6 +3,7 @@ import {stage2Status,providerCategory} from '../src/domain/assessment-status';
 import {assessmentReceiptSnapshot} from '../src/client/command-center-requests';
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {canonicalize} from 'json-canonicalize';
+import {isSourceCommand,sourceCommandError,sourceSaveUnconfirmed} from '../src/client/source-command-errors';
 import type {SourceFields,SourceRevision} from '../src/domain/source-revision';
 import type {SealedReviewDecision} from '../src/domain/review-decision';
 
@@ -90,7 +91,14 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
   const key=request.current.key;setPending(request.current);if(!persist()){setMessage('Pending command could not be retained. Enable tab storage before submitting.');return;}setBusy(true);setMessage(path.endsWith('/advisory')?'Submitting assessment request; submission and result are not yet confirmed.':'Saving; awaiting committed readback.');
   try{const response=await fetch(path,{method,headers:{'Content-Type':'application/json','X-Tameion-CSRF':csrfToken,'Idempotency-Key':key},body:JSON.stringify(body)}),data=await response.json();
    if(!contextCurrent()||request.current?.key!==key||request.current.signature!==signature)return;
-   if(!response.ok){const status=stage2Status(data?.code),stage2=/\/(advisory|review|testnet-instruction)$/.test(path)||path==='/api/obligations'||method==='PATCH';setMessage(preflightRefusalMessage(path,response.status,data)??(stage2?`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`:`${data?.code??'COMMAND_UNVERIFIED'}. ${data?.remedy??'Read current status before trying another action.'}`));return;}
+   if(!response.ok){
+    if(isSourceCommand(path,method,selectedId)){
+     const source=sourceCommandError(path,method,selectedId,response.status,data);
+     setMessage(source?`${source.title}. ${source.fieldLabels.length?`Check: ${source.fieldLabels.join(', ')}. `:''}${source.remedy}${source.owner?` Responsible: ${source.owner}.`:''} Code: ${source.code}.`:sourceSaveUnconfirmed);return;
+    }
+    const status=stage2Status(data?.code),stage2=/\/(advisory|review|testnet-instruction)$/.test(path);
+    setMessage(preflightRefusalMessage(path,response.status,data)??(stage2?`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`:`${data?.code??'COMMAND_UNVERIFIED'}. ${data?.remedy??'Read current status before trying another action.'}`));return;
+   }
    if(path.endsWith('/advisory')){
     const receipt=assessmentReceiptSnapshot(data),current=live.current.view;
     const currentSource=current?.record?.obligation_id===selectedId&&current.aggregate?.aggregate_version===versionAtDispatch&&
