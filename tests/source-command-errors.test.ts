@@ -32,3 +32,26 @@ it('malformed, conflicting, uncertain and inherited payloads never acquire sourc
  expect(sourceCommandError('/api/obligations','POST',target,409,{code:'STALE_STATE'})).toBeNull();expect(present({code:'IMPORTED_SOURCE_REQUIRES_CORRECTION'},409)).toBeNull();
  expect(JSON.stringify(present({...fields(),remedy:'SYNTHETIC_PRIVATE_REMEDY'}))).not.toContain('SYNTHETIC_PRIVATE');expect(sourceSaveUnconfirmed).toMatch(/original request identity/);expect(sourceSaveUnconfirmed).not.toMatch(/not processed|not submitted|not saved|safe to retry/i);
 });
+
+for(const[code,status,owner,title]of [
+ ['SOURCE_BINDING_CHANGED',409,'Finance reviewer · source review','Source changed'],
+ ['EXISTING_FINANCIAL_CLAIM',409,'Treasury Operations','Existing financial history needs reconciliation'],
+ ['SOURCE_PERMISSION_REQUIRED',403,'Workspace owner · access authority','Current review authority unavailable'],
+ ['SOURCE_INGRESS_EXPIRED_OR_CHANGED',403,'Workspace owner · access authority','Current review authority unavailable'],
+ ['SOURCE_INGRESS_NOT_ADMITTED',403,'Workspace owner · access authority','Current review authority unavailable'],
+ ['RECOVERY_MIGRATION_REQUIRED',503,'Deployment owner','Workflow capability unavailable'],
+]as const)it(`canonical source ${code}/${status} retains static owner/code/remedy only for its exact boundary`,()=>{
+ const data={code,stage2_status:{...stage2Status(code),title:'SYNTHETIC_PRIVATE_TITLE',owner:'SYNTHETIC_PRIVATE_OWNER',remedy:'SYNTHETIC_PRIVATE_REMEDY'},remedy:'SYNTHETIC_PRIVATE_REMEDY'};
+ for(const method of ['POST','PATCH']){
+  const route=method==='POST'?'/api/obligations':path,result=sourceCommandError(route,method,target,status,data);
+  expect(result).toMatchObject({code,title,owner,fieldLabels:[]});expect(result?.remedy).toBe(stage2Status(code).remedy);expect(JSON.stringify(result)).not.toMatch(/SYNTHETIC_PRIVATE|apply migrations|automatically resend/i);
+  for(const wrong of [200,202,400,403,409,500,503].filter(value=>value!==status))expect(sourceCommandError(route,method,target,wrong,data)).toBeNull();
+ }
+ for(const[route,method]of [[path+'/advisory','POST'],[path+'/review','POST'],[path+'/approve','POST'],['/api/internal/demo/real-testnet-payment/preflight','POST'],[path+'?update=1','PATCH'],['/api/obligations/OTHER','PATCH']])expect(sourceCommandError(route,method,target,status,data)).toBeNull();
+ for(const extra of [{committed:true},{status:'UNKNOWN'},{receipt_only:true},{execution:{status:'UNKNOWN'}},{fields:[]},{stage2_status:null},{stage2_status:{owner:{raw:'private'}}}])expect(present({...data,...extra},status)).toBeNull();
+ expect(present(Object.create(data),status)).toBeNull();
+});
+it('503 alone, commit uncertainty, unknown403 and mismatched known codes cannot become canonical capability denial',()=>{
+ for(const data of [{},{code:'COMMIT_OUTCOME_UNVERIFIED'},{code:'SOURCE_PERMISSION_REQUIRED'},{code:'SOURCE_FIELDS_INVALID',fields:[]},{code:'OTHER_UNAVAILABLE'},{code:'RECOVERY_MIGRATION_REQUIRED',committed:true}])expect(present(data,503)).toBeNull();
+ expect(present({code:'RECOVERY_MIGRATION_REQUIRED'},403)).toBeNull();expect(present({code:'UNRECOGNIZED_PERMISSION'},403)).toBeNull();
+});

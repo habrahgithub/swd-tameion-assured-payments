@@ -1,8 +1,17 @@
+import {stage2Status} from '../domain/assessment-status';
 /** Presentation only: never clears a request, retries a command or grants authority. */
 export function isSourceCommand(path:string,method:string,target:string):boolean {
  return method==='POST'&&path==='/api/obligations'||method==='PATCH'&&target.length>0&&path===`/api/obligations/${encodeURIComponent(target)}`;
 }
+// Reuse existing static guidance, never the response's owner/title/remedy.
+function typedSourceGuidance(code:string,status:403|409|503){const {title,owner,remedy}=stage2Status(code);return{status,title,owner,remedy};}
 const guidance={
+ SOURCE_BINDING_CHANGED:typedSourceGuidance('SOURCE_BINDING_CHANGED',409),
+ EXISTING_FINANCIAL_CLAIM:typedSourceGuidance('EXISTING_FINANCIAL_CLAIM',409),
+ SOURCE_PERMISSION_REQUIRED:typedSourceGuidance('SOURCE_PERMISSION_REQUIRED',403),
+ SOURCE_INGRESS_EXPIRED_OR_CHANGED:typedSourceGuidance('SOURCE_INGRESS_EXPIRED_OR_CHANGED',403),
+ SOURCE_INGRESS_NOT_ADMITTED:typedSourceGuidance('SOURCE_INGRESS_NOT_ADMITTED',403),
+ RECOVERY_MIGRATION_REQUIRED:typedSourceGuidance('RECOVERY_MIGRATION_REQUIRED',503),
  SOURCE_FIELDS_INVALID:{status:400,title:'Source details need correction',remedy:'Check the listed fields against the source evidence, edit the draft, then explicitly save the corrected details.'},
  SOURCE_REVISION_CONFLICT:{status:409,title:'Source revision changed',remedy:'Refresh the current source revision and compare it with your retained draft before saving a correction.'},
  STALE_STATE:{status:409,title:'Payable version changed',remedy:'Refresh the current payable version and compare its source with your retained draft before saving a correction.'},
@@ -23,7 +32,7 @@ function fieldLabel(value:string):string|undefined {
  if(!match||Number(match[1])>=16)return undefined;
  return `${match[2]==='evidence_id'?'Evidence reference':'Evidence SHA256'}${match[1]==='0'?'':` ${Number(match[1])+1}`}`;
 }
-export type SourceCommandError={code:string;title:string;fieldLabels:string[];remedy:string};
+export type SourceCommandError={code:string;title:string;fieldLabels:string[];remedy:string;owner?:string};
 export function sourceCommandError(path:string,method:string,target:string,status:number,data:unknown):SourceCommandError|null {
  if(!isSourceCommand(path,method,target)||!object(data)||!Object.hasOwn(data,'code')||typeof data.code!=='string'||!Object.hasOwn(guidance,data.code))return null;
  const code=data.code as keyof typeof guidance,rule=guidance[code];
@@ -43,6 +52,6 @@ export function sourceCommandError(path:string,method:string,target:string,statu
    if(label&&!fieldLabels.includes(label)&&fieldLabels.length<12)fieldLabels.push(label);
   }
  }else if(Object.hasOwn(data,'fields'))return null;
- return{code,title:rule.title,fieldLabels,remedy:rule.remedy};
+ return{code,title:rule.title,fieldLabels,remedy:rule.remedy,...('owner'in rule?{owner:rule.owner}:{})};
 }
 export const sourceSaveUnconfirmed='Source save completion not confirmed. Keep the draft and original request identity; read committed source status before another action. Do not resend automatically.';

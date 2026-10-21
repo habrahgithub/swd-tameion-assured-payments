@@ -163,3 +163,13 @@ Draft facts, evidence and request identity survive reload through the existing
 recovery path. Source rejection is distinct from AI assessment UNKNOWN and
 financial reconciliation. Local handler/DOM tests do not establish hosted Stage1
 UAT, which remains NOT_RUN for this correction.
+
+Canonical source authority denials retain the actual code and direct the workspace
+owner to verify current actor/session/ingress authority. A canonical capability
+denial directs the deployment owner to the existing governed evidence-verification
+process; it does not instruct anyone to apply migrations or change settings. An
+arbitrary503, unconfirmed commit or transport failure remains uncertain with the
+original request retained. These messages grant no permission to save or resend.
+Source-binding changes and financial-claim denials retain their existing
+responsible-owner guidance. They grant no new financial eligibility and do not
+replace current source capabilities or original-operation reconciliation.

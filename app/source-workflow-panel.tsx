@@ -94,7 +94,7 @@ export function SourceWorkflowPanel({selectedId,csrfToken,onChanged,readModel}:{
    if(!response.ok){
     if(isSourceCommand(path,method,selectedId)){
      const source=sourceCommandError(path,method,selectedId,response.status,data);
-     setMessage(source?`${source.title}. ${source.fieldLabels.length?`Check: ${source.fieldLabels.join(', ')}. `:''}${source.remedy} Code: ${source.code}.`:sourceSaveUnconfirmed);return;
+     setMessage(source?`${source.title}. ${source.fieldLabels.length?`Check: ${source.fieldLabels.join(', ')}. `:''}${source.remedy}${source.owner?` Responsible: ${source.owner}.`:''} Code: ${source.code}.`:sourceSaveUnconfirmed);return;
     }
     const status=stage2Status(data?.code),stage2=/\/(advisory|review|testnet-instruction)$/.test(path);
     setMessage(preflightRefusalMessage(path,response.status,data)??(stage2?`${status.title}. ${status.reason} ${status.remedy} Responsible: ${status.owner}. Code: ${status.code}.`:`${data?.code??'COMMAND_UNVERIFIED'}. ${data?.remedy??'Read current status before trying another action.'}`));return;

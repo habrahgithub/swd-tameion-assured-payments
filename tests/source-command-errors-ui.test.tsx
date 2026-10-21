@@ -77,3 +77,58 @@ for(const change of ['selection','session','unmount','newer']as const)it(`late s
  const expected=sessionStorage.getItem(scope);const rejection=await t.h.handler('save',t.h.request(JSON.parse(old.request.signature).body,old.request.key),t.id);expect(rejection.status).toBe(400);await act(async()=>{finish(rejection);});
  expect(sessionStorage.getItem(scope)).toBe(change==='newer'?expected:original);expect(document.body.textContent).not.toContain('Source details need correction');expect(props.onChanged).not.toHaveBeenCalled();if(change==='newer')expect((screen.getByText('Save correction')as HTMLButtonElement).disabled).toBe(true);
 });
+
+// AXIS correction1: final independent authority/capability probe; shared imports/cleanup reused.
+import {createSourceWorkflowHandlers} from '../src/server/source-workflow';
+for(const kind of ['permission403','capability503']as const)it(`INTENDED FACTUAL: canonical source ${kind} keeps existing actionable authority/capability guidance`,async()=>{
+ const h=sourceHarness(),saved=await(await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic authority boundary'}))).json(),id=saved.obligation.obligation_id;
+ const detail=await(await h.handler('detail',new Request('https://synthetic.invalid'),id)).json();vi.stubGlobal('crypto',webcrypto);
+ const before=structuredClone(h.snapshot()),writes=h.repository.compareAndSet.mock.calls.length,changed=vi.fn();
+ if(kind==='permission403')h.source.source_ingress!.permissions=['REVIEW_SOURCE'];
+ const handler=kind==='capability503'?createSourceWorkflowHandlers({guard:h.guard,source:()=>h.source,repository:()=>({...h.repository,assertRecoveryWorkflowCapability:async()=>{throw Error('Synthetic unavailable capability');}})}):h.handler;
+ let result:{status:number;code:string}|undefined;
+ const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{const r=await handler('save',new Request('https://synthetic.invalid'+url,init),id);result={status:r.status,code:(await r.clone().json()).code};return r;});vi.stubGlobal('fetch',fetcher);
+ render(<SourceWorkflowPanel selectedId={id} csrfToken="SYNTHETIC-SOURCE-AUTHORITY" onChanged={changed} readModel={{detail,createAllowed:false}}/>);
+ fireEvent.click(screen.getByText('Edit payable / Save correction'));fireEvent.change(screen.getByLabelText('Exact amount'),{target:{value:'2.00'}});fireEvent.change(screen.getByLabelText('Correction or entry reason'),{target:{value:'Synthetic explicit corrected facts'}});fireEvent.submit(screen.getByRole('button',{name:'Save correction'}).closest('form')!);
+ await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(1));await waitFor(()=>expect((screen.getByRole('button',{name:'Save correction'})as HTMLButtonElement).disabled).toBe(false));
+ const code=kind==='permission403'?'SOURCE_PERMISSION_REQUIRED':'RECOVERY_MIGRATION_REQUIRED';expect(result).toEqual({status:kind==='permission403'?403:503,code});
+ expect(h.snapshot()).toEqual(before);expect(h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(changed).not.toHaveBeenCalled();expect(sessionStorage.length).toBe(1);
+ console.log('SENTINEL_CANONICAL_AUTHORITY',JSON.stringify({kind,...result,new_CAS:h.repository.compareAndSet.mock.calls.length-writes,state_unchanged:true,key_retained:!!JSON.parse(sessionStorage.getItem(sessionStorage.key(0)!)!).request.key,text:document.body.textContent}));
+ expect(document.body.textContent).toContain(code);
+ expect(document.body.textContent).not.toContain('Source save completion not confirmed');
+ expect(document.body.textContent).toContain(kind==='permission403'?'Current review authority unavailable':'Workflow capability unavailable');
+});
+
+for(const kind of ['absent','expired']as const)it(`canonical ${kind} ingress alias keeps code/owner/remedy and pending facts without new authority`,async()=>{
+ const t=await setup();const before=structuredClone(t.h.snapshot()),writes=t.h.repository.compareAndSet.mock.calls.length,changed=vi.fn();
+ if(kind==='expired')t.h.source.source_ingress!.expires_at=new Date(Date.now()-1).toISOString();
+ const handler=kind==='absent'?createSourceWorkflowHandlers({guard:t.h.guard,source:()=>undefined,repository:()=>t.h.repository}):t.h.handler;let result:{status:number;code:string}|undefined;
+ const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{const response=await handler('save',new Request('https://synthetic.invalid'+url,init),t.id);result={status:response.status,code:(await response.clone().json()).code};return response;});vi.stubGlobal('fetch',fetcher);
+ render(<SourceWorkflowPanel selectedId={t.id} csrfToken="SYNTHETIC-INGRESS-ALIAS" onChanged={changed} readModel={{detail:t.detail,createAllowed:false}}/>);fireEvent.click(await screen.findByText('Edit payable / Save correction'));fireEvent.change(screen.getByLabelText('Exact amount'),{target:{value:'2.00'}});submit();
+ const code=kind==='absent'?'SOURCE_INGRESS_NOT_ADMITTED':'SOURCE_INGRESS_EXPIRED_OR_CHANGED';await screen.findByText(new RegExp(`Code: ${code}`));expect(result).toEqual({status:403,code});expect(document.body.textContent).toContain('Current review authority unavailable');expect(document.body.textContent).toContain('Responsible: Workspace owner · access authority');expect(document.body.textContent).toContain('verify the current actor and session');expect(document.body.textContent).not.toContain('Source save completion not confirmed');
+ expect(retained().request.key).toBeTruthy();expect(JSON.parse(retained().request.signature).body.fields.amount).toBe('2.00');expect(retained().retainedEvidence).toHaveLength(2);expect(t.h.snapshot()).toEqual(before);expect(t.h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect(changed).not.toHaveBeenCalled();expect(fetcher).toHaveBeenCalledTimes(1);
+});
+for(const kind of ['permission','capability']as const)it(`canonical ${kind} guidance uses only static responsible owner and preserves draft without resend`,async()=>{
+ const t=await setup();if(kind==='permission')t.h.source.source_ingress!.permissions=['REVIEW_SOURCE'];
+ const handler=kind==='capability'?createSourceWorkflowHandlers({guard:t.h.guard,source:()=>t.h.source,repository:()=>({...t.h.repository,assertRecoveryWorkflowCapability:async()=>{throw Error('SYNTHETIC_PRIVATE_CAPABILITY_FAILURE');}})}):t.h.handler;
+ const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>handler('save',new Request('https://synthetic.invalid'+url,init),t.id));vi.stubGlobal('fetch',fetcher);
+ render(<SourceWorkflowPanel selectedId={t.id} csrfToken="SYNTHETIC-DENIED-OWNER" onChanged={()=>{}} readModel={{detail:t.detail,createAllowed:false}}/>);fireEvent.click(await screen.findByText('Edit payable / Save correction'));fireEvent.change(screen.getByLabelText('Exact amount'),{target:{value:'2.00'}});submit();await screen.findByText(/Responsible:/);
+ expect(document.body.textContent).toContain(kind==='permission'?'Responsible: Workspace owner · access authority':'Responsible: Deployment owner');expect(document.body.textContent).toContain(kind==='permission'?'verify the current actor and session':'approved operational process');expect(document.body.textContent).not.toMatch(/SYNTHETIC_PRIVATE|apply migrations|automatically resend/i);expect(retained().request.key).toBeTruthy();expect((screen.getByLabelText('Exact amount')as HTMLInputElement).value).toBe('2.00');expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+for(const kind of ['binding','claim']as const)it(`canonical source ${kind}409 retains existing typed guidance on the actual save boundary`,async()=>{
+ const t=await setup(),changed=vi.fn();
+ const claim={instruction_id:'SYNTHETIC-CONCURRENT-LINK',source_obligation_id:t.id,namespace:'SYNTHETIC-CHILD',source_sha256:'a'.repeat(64),activated_at:new Date().toISOString()};
+ if(kind==='binding')t.h.snapshot().source_ingress_anchor='f'.repeat(64);
+ if(kind==='claim'){
+  // A concurrent valid receipt is observed between the two final parent reads;
+  // the actual handler, not this mock, decides whether the save may proceed.
+  const auth=await t.h.guard();let checks=0;auth.revalidate=vi.fn(async()=>{if(++checks===3)t.h.snapshot().linked_activation_receipts=[structuredClone(claim)];});t.h.guard.mockResolvedValue(auth);
+ }
+ const before=structuredClone(t.h.snapshot()),writes=t.h.repository.compareAndSet.mock.calls.length;let result:{status:number;code:string}|undefined;
+ const fetcher=vi.fn(async(url:RequestInfo|URL,init?:RequestInit)=>{const r=await t.h.handler('save',new Request('https://synthetic.invalid'+url,init),t.id);result={status:r.status,code:(await r.clone().json()).code};return r;});vi.stubGlobal('fetch',fetcher);
+ render(<SourceWorkflowPanel selectedId={t.id} csrfToken="SYNTHETIC-BINDING-CLAIM" onChanged={changed} readModel={{detail:t.detail,createAllowed:false}}/>);fireEvent.click(await screen.findByText('Edit payable / Save correction'));fireEvent.change(screen.getByLabelText('Exact amount'),{target:{value:'2.00'}});fireEvent.change(screen.getByLabelText('Correction or entry reason'),{target:{value:'Synthetic concurrent-claim guarded correction'}});submit();await waitFor(()=>expect(fetcher).toHaveBeenCalledTimes(1));await waitFor(()=>expect((screen.getByText('Save correction')as HTMLButtonElement).disabled).toBe(false));
+ const code=kind==='binding'?'SOURCE_BINDING_CHANGED':'EXISTING_FINANCIAL_CLAIM';expect(result).toEqual({status:409,code});expect(t.h.repository.compareAndSet).toHaveBeenCalledTimes(writes);expect({...t.h.snapshot(),linked_activation_receipts:undefined}).toEqual({...before,linked_activation_receipts:undefined});if(kind==='claim')expect(t.h.snapshot().linked_activation_receipts).toEqual([claim]);
+ expect(document.body.textContent).toContain(`Code: ${code}`);expect(document.body.textContent).toContain(kind==='binding'?'Responsible: Finance reviewer · source review':'Responsible: Treasury Operations');expect(document.body.textContent).toContain(kind==='binding'?'Review the corrected source and original request history':'Reconcile the original payment identity');expect(document.body.textContent).not.toContain('Source save completion not confirmed');
+ expect(retained().request.key).toBeTruthy();expect(JSON.parse(retained().request.signature).body.fields.amount).toBe('2.00');expect(retained().retainedEvidence).toHaveLength(2);expect(changed).not.toHaveBeenCalled();expect(screen.queryByText('Authorize exact payment')).toBeNull();expect(fetcher).toHaveBeenCalledTimes(1);
+});
