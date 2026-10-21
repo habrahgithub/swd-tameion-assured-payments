@@ -144,3 +144,22 @@ and does not clear live six-stage acceptance. The [R1 runbook](RECOVERABLE-PAYME
 records supported actions, migration gates and unsupported capabilities; the
 [scenario map](RECOVERABLE-PAYMENT-R1-SCENARIOS.md) distinguishes synthetic,
 conditional and unverified evidence for all 142 design scenarios.
+
+## Stage 1 source errors and retained drafts
+
+A known source validation rejection identifies recognized form fields with safe
+labels. Correct those fields against the source evidence, then explicitly save
+the edited draft. Duplicate/imported-source guidance asks you to choose and correct
+the existing payable; revision/version/CAS conflicts require refreshing committed
+source status and comparing the retained draft first. No response supplies an
+invented payable link, verified wallet or independent invoice proof.
+
+These messages apply only to exact source create/correct routes and canonical
+status/code pairs. Raw validator messages, unknown paths and private response
+content are not displayed. Malformed responses, lost acknowledgements and
+unconfirmed commit outcomes preserve the original request and uncertainty;
+they do not establish that nothing was saved or permit an automatic resend.
+Draft facts, evidence and request identity survive reload through the existing
+recovery path. Source rejection is distinct from AI assessment UNKNOWN and
+financial reconciliation. Local handler/DOM tests do not establish hosted Stage1
+UAT, which remains NOT_RUN for this correction.
