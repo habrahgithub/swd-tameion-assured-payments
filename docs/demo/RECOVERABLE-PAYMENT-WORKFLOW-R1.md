@@ -51,3 +51,23 @@ See [142-scenario map](RECOVERABLE-PAYMENT-R1-SCENARIOS.md) and [verification re
 The disposable SQL gate requires both `TAMEION_RECOVERY_DISPOSABLE_PG_CONFIRMED=1` and `TAMEION_RECOVERY_DISPOSABLE_PG_URL`, an explicit loopback host/port and an empty database named `tameion_recovery_disposable_*` in a disposable cluster. It applies all actual migrations and uses two independent PostgreSQL connections. Never point it at a hosted or populated database. C1 did not rerun PostgreSQL. C2 executes fresh and representative populated verification in a new credential-free, network-isolated writer-owned PG17.11 cluster; host-suite database skips are reported separately from actual SQL executions. Full retirement/upgrade/receipt parity and scale coverage remain incomplete; changed candidate identity requires separate assurance.
 
 Unsupported capabilities include genuine merchant settlement, arbitrary controlled payment amounts, new FX/rails, batching/partials/refunds/reorg processing, user-controlled wallets, contract approvals, account unfreezing, acceleration/cancellation, source uploads/extraction and service-fulfillment verification. Operational owners must repair actual external restrictions; local timers or AI cannot remove them.
+
+
+### Source assessment context rejection
+
+For a genuine payable, only the advisory command's exact HTTP 409 singleton
+`GENUINE_ASSESSMENT_BASIS_INVALID` response is presented as a rejected new
+attempt: source assessment context failed validation before a new reservation
+or provider dispatch. The exact failing source fact is not established by this
+code. The workspace owner must review the admitted source assessment context;
+the message does not identify a missing invoice field or an AI outage.
+
+The original request key and history remain retained. This presentation grants
+no resend, new assessment, approval or payment authority. A separately recorded
+UNKNOWN remains unresolved. Wrong-context/status, malformed, extra/conflicting
+responses and transport failures remain unconfirmed. NOT_FOUND alone is not
+retry permission. The observed rejection is scoped to the current key, source,
+version and component lifetime; it is not reconstructed as authority after reload.
+
+This local correction does not change the source packet, activate source-review
+capabilities, or verify hosted schema, Stage 2 completion or financial UAT.

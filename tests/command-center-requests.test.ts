@@ -228,3 +228,19 @@ describe('bounded assessment admission rejection and safe read failures',()=>{
   for(const body of [null,'PRIVATE',{error:'PRIVATE'},{code:'PRIVATE'},{code:'SOURCE_BINDING_CHANGED PRIVATE'},{code:['SOURCE_BINDING_CHANGED']}])expect(observedReadFailure(503,body)).toBe('Obligations unavailable (HTTP 503).');
  });
 });
+
+
+describe('exact source-basis rejection is presentation only',()=>{
+ it('requires genuine advisory context, exact 409 and an own singleton code',async()=>{
+  const {isAssessmentBasisRejection}=await import('../src/client/command-center-requests');
+  const data={code:'GENUINE_ASSESSMENT_BASIS_INVALID'};
+  expect(isAssessmentBasisRejection({status:409,data},true)).toBe(true);
+  expect(isAssessmentBasisRejection({status:409,data},false)).toBe(false);
+  for(const status of [0,200,202,400,403,404,500,503])expect(isAssessmentBasisRejection({status,data},true)).toBe(false);
+  for(const body of [null,[],data.code,{code:[data.code]},{code:'UNKNOWN'},Object.assign(Object.create(data),{other:true}),{...data,status:'UNKNOWN'},{...data,attempt_consumed:false},{...data,error:'PRIVATE'},{...data,receipt:{}}])expect(isAssessmentBasisRejection({status:409,data:body},true)).toBe(false);
+ });
+ it('never releases a request key for the canonical rejection or a not-found status',()=>{
+  for(const data of [{code:'GENUINE_ASSESSMENT_BASIS_INVALID'},{status:'NOT_FOUND'}])
+   expect(assessmentKeyDisposition({status:409,data,obligationId:'SYNTHETIC-OBLIGATION',expectedAggregateVersion:'1'})).toBe('RETAIN');
+ });
+});

@@ -22,6 +22,15 @@ export function isAssessmentHistoryLimitRejection(result:{status:number;data:unk
     Object.keys(result.data).length===1&&(result.data as {code?:unknown}).code==='GENUINE_ASSESSMENT_HISTORY_LIMIT';
 }
 
+/** Presentation only for the canonical genuine advisory refusal. The caller
+ * supplies the actual submitted route context; status reads and other commands
+ * cannot establish this rejection. It never releases a key or admits a retry. */
+export function isAssessmentBasisRejection(result:{status:number;data:unknown}, genuineAdvisory:boolean):boolean {
+  return genuineAdvisory === true && result.status===409 && result.data!==null && typeof result.data==='object' && !Array.isArray(result.data) &&
+    Object.keys(result.data).length===1 && Object.hasOwn(result.data,'code') &&
+    (result.data as {code?:unknown}).code==='GENUINE_ASSESSMENT_BASIS_INVALID';
+}
+
 /** Do not surface raw error/provider bodies. These are existing public typed
  * read failures; an unknown code or a transport failure establishes no cause. */
 export function observedReadFailure(status:number,body:unknown):string {

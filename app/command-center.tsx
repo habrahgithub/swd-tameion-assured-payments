@@ -18,7 +18,7 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
-import { isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { isAssessmentBasisRejection, isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { stage2DisplayLabel, assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 interface ObligationSummary {
   stage2_status?:{code:string};
@@ -1811,6 +1811,7 @@ function assessmentFeedbackForResponse(
   expectedVersion: string,
   selectionGeneration: number,
   genuineAdmission = false,
+  assessmentRoute = "",
 ): AssessmentFeedback {
   const code = result.data && typeof result.data === "object" && "code" in result.data
     ? String((result.data as { code: unknown }).code)
@@ -1820,6 +1821,13 @@ function assessmentFeedbackForResponse(
     : "";
   const statusCode = code || serverStatus || (result.status ? `HTTP ${result.status}` : "NO_RESPONSE");
   const known=stage2Status(code);
+  if(isAssessmentBasisRejection(result,genuineAdmission&&assessmentRoute==='advisory'))return {
+    obligationId,expectedVersion,selectionGeneration,statusCode,kind:'rejected',title:'Assessment request rejected',
+    message:'Source assessment context failed validation. The exact source fact requiring correction has not been established.',
+    durability:'This new attempt was rejected before reservation or provider dispatch. The original request reference and earlier history are retained; any separately recorded UNKNOWN remains unresolved.',
+    nextStep:'Ask the workspace owner to review the admitted source assessment context. Do not resend this request; this rejection does not admit another assessment or authorize payment.',
+    owner:'Workspace owner · source assessment context review',
+  };
   if(genuineAdmission&&isAssessmentHistoryLimitRejection(result))return {
     obligationId,expectedVersion,selectionGeneration,statusCode,kind:'rejected',title:'Assessment request rejected',
     message:'The assessment history limit rejected this new attempt before reservation or provider dispatch. Any separately recorded UNKNOWN remains unresolved.',
@@ -1908,7 +1916,9 @@ function assessmentFeedbackForResponse(
   return {
     obligationId, expectedVersion, selectionGeneration, statusCode, kind: "unconfirmed",
     title: "Assessment result is unavailable.",
-    message: actionErrorMessage(result.data),
+    message: code === "GENUINE_ASSESSMENT_BASIS_INVALID"
+      ? "Assessment completion is not confirmed. Keep the original request reference for read-only review."
+      : actionErrorMessage(result.data),
     durability: "No current receipt; existing request key retained.",
     nextStep: "Refresh the read-only queue summary for any newer record; this does not confirm the operation. No automatic retry was sent.",
     owner: "Finance Agent · individual recovery owner is not recorded",
@@ -2451,7 +2461,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setStageCompletionReceipt({obligationId: selectedId, message});
   }, [lastResult, selectedFinancialResult, detail, detailIsStale, detailError, selectedId]);
 
-  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string, assessmentRecovery = false) => {
+  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string, assessmentRecovery = false, assessmentRoute = "") => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
     const packetPae = detail.execution_packet?.packet?.pae as Record<string, unknown> | undefined;
@@ -2487,7 +2497,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         const exactResponse = result.ok && result.status === 200 && Boolean(receipt) &&
           identity.obligation_id === targetId && identity.aggregate_version === assessmentExpectedVersion;
         actionSucceeded = exactResponse;
-        const feedback=assessmentFeedbackForResponse(result,targetId,assessmentExpectedVersion??"",generation,detail.source_group==='GENUINE_COMPANY');
+        const feedback=assessmentFeedbackForResponse(result,targetId,assessmentExpectedVersion??"",generation,detail.source_group==='GENUINE_COMPANY',assessmentRoute);
         if(feedback.kind==='rejected'&&assessmentRequestIdentity&&retainedAssessmentRequestKey(targetId)===assessmentRequestIdentity){
           setAssessmentRejections(old=>new Map(old).set(targetId,{key:assessmentRequestIdentity,source:canonicalize(detail.record),epoch:assessmentEpoch,feedback}));
         }
@@ -2636,6 +2646,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     });
     const storageKey = successorLike ? `tameion.assessment-successor.${obligationId}` : `tameion.assessment-request.${obligationId}`;
     const requestIdentity = crypto.randomUUID();
+    const assessmentRoute = disposition ? "advisory/disposition" : successorLike || detail.advisory_action_eligible===true ? "advisory" : "assess";
     return run("assess", async () => {
       const sourceHash=successorLike?await hashHistoricalSourceRecord(detail.record):null;
       if(successorLike&&!sourceHash)return {ok:false,status:503,data:{code:"SOURCE_IDENTITY_UNAVAILABLE"}};
@@ -2658,7 +2669,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       } catch {
         return {ok:false, status:503, data:{code:"REQUEST_IDENTITY_UNAVAILABLE", error:"Assessment was not sent because its request identity could not be stored."}};
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/${disposition?"advisory/disposition":successorLike||detail.advisory_action_eligible===true?"advisory":"assess"}`, disposition?{disposition:"CURRENT_SOURCE_REASSESSMENT",expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,approval_id:dispositionAdmission!.approval_id,predecessor_key:earlierReference,predecessor_sha256:dispositionAdmission!.predecessor_sha256}:recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${assessmentRoute}`, disposition?{disposition:"CURRENT_SOURCE_REASSESSMENT",expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,approval_id:dispositionAdmission!.approval_id,predecessor_key:earlierReference,predecessor_sha256:dispositionAdmission!.predecessor_sha256}:recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
         "Idempotency-Key": requestIdentity,
       });
       // No refusal code proves non-submission. Keep the attempted identity;
@@ -2697,7 +2708,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         });
       }
       return result;
-    }, expectedVersion, requestIdentity, successorLike);
+    }, expectedVersion, requestIdentity, successorLike, assessmentRoute);
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
