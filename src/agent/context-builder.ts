@@ -6,8 +6,12 @@ import type { FinanceAgentContext, FinanceAgentModelContext } from "./schema";
 
 /** Shape of one record in data/live-usage/LIVE_USAGE_SET.json (J0-C). */
 export interface LiveUsageObligationRecord {
+  current_source_basis?: import("zod").infer<typeof import("./schema").currentSourceBasisSchema>;
   assessment_basis?: HistoricalAssessmentBasis;
   obligation_id: string;
+  /** Source-backed supplier identity; absent for legacy records. Never part of the model context. */
+  beneficiary_name?: string;
+  beneficiary_provenance?: { provenance_class: "SOURCE_EVIDENCE"; evidence_id: string };
   service_category: string;
   recurrence: "MONTHLY" | "YEARLY" | "ONE_TIME";
   issue_date?: string | null;
@@ -91,11 +95,12 @@ export function buildFinanceAgentContext(
         : record.effective_due_date === asOfDate
           ? "DUE_TODAY"
           : "FUTURE";
-  const dueDatePosition = record.assessment_basis || requireHistoricalBasis
+  const dueDatePosition = record.current_source_basis?(record.current_source_basis.business_date<asOfDate?"OVERDUE":record.current_source_basis.business_date===asOfDate?"DUE_TODAY":"FUTURE"):record.assessment_basis || requireHistoricalBasis
     ? !historicalValid ? "INVALID" : record.assessment_basis!.transaction_type === "INVOICE"
       ? invoiceDueDatePosition : !rawDueDateConsistent ? "INVALID" : historicalDatePosition(record.assessment_basis!)
     : invoiceDueDatePosition;
   return {
+    ...(record.current_source_basis?{current_source_basis:record.current_source_basis}:{}),
     ...(record.assessment_basis ? {assessment_basis:record.assessment_basis} : {}),
     ...(record.assessment_basis||requireHistoricalBasis?{historical_basis_verified:historicalValid}:{}),
     obligation_id: record.obligation_id,
@@ -134,6 +139,7 @@ export function toFinanceAgentModelContext(context: FinanceAgentContext): Financ
     destination_readiness_source: _destinationReadinessSource,
     ...modelContext
   } = context;
+  if(context.current_source_basis)return {...modelContext,service_category:'Operator-entered payable; private description retained in source revision',commercial_terms:'Private terms retained in the current source revision',evidence_ids:context.evidence_ids.map(id=>`EVID-${createHash('sha256').update(id).digest('hex')}`)};
   return modelContext;
 }
 
@@ -155,4 +161,11 @@ export function hasCurrentControlledInstruction(context:FinanceAgentContext):boo
  try{const proof=context.controlled_instruction;if(!proof||Date.parse(proof.observed_at)>Date.now())return false;const current=loadFinancialSourceAdmission();const expected=controlledInstructionFor(current.source,context.aggregate_version,proof.observed_at);
  return JSON.stringify(proof)===JSON.stringify(expected)&&context.obligation_id===current.source.obligation_id&&context.amount===current.source.amount&&context.currency===current.source.currency&&context.business_purpose_confirmed===false&&context.issue_date==null&&context.due_date===null&&context.effective_due_date==null&&context.effective_due_date_basis==null&&context.evidence_ids.join("\0")===current.source.source_evidence.map(e=>e.evidence_id).join("\0")&&context.due_date_position==="CONTROLLED_WINDOW_OPEN";
  }catch{return false;}
+}
+
+/** Admission reuses the complete deterministic production normalization, before spending a provider attempt.
+ * INVALID is rejected; overdue/future/missing commercial evidence can still yield legitimate advisory HOLD. */
+export function deterministicHistoricalContextValid(record:LiveUsageObligationRecord):boolean {
+ const context=buildFinanceAgentContext(record,1,undefined,undefined,true);
+ return context.historical_basis_verified===true&&context.due_date_position!=='INVALID';
 }

@@ -14,6 +14,23 @@ export interface PostInterpretation {
   message: string;
 }
 
+/** Presentation evidence only. GenuineAssessmentState emits this exact response
+ * before creating a NEW reservation; existing keys are resolved first. No other
+ * denial, timeout or status-not-found establishes non-submission. */
+export function isAssessmentHistoryLimitRejection(result:{status:number;data:unknown}):boolean {
+  return result.status===409&&result.data!==null&&typeof result.data==='object'&&!Array.isArray(result.data)&&
+    Object.keys(result.data).length===1&&(result.data as {code?:unknown}).code==='GENUINE_ASSESSMENT_HISTORY_LIMIT';
+}
+
+/** Do not surface raw error/provider bodies. These are existing public typed
+ * read failures; an unknown code or a transport failure establishes no cause. */
+export function observedReadFailure(status:number,body:unknown):string {
+  const code=body&&typeof body==='object'&&!Array.isArray(body)?(body as {code?:unknown}).code:undefined;
+  const safe=typeof code==='string'&&['AUTH_UNAVAILABLE','SESSION_REQUIRED','SOURCE_BINDING_CHANGED','STATE_UNAVAILABLE',
+    'OPERATOR_SOURCE_UNAVAILABLE','FINANCIAL_AUTHORITY_UNAVAILABLE','ORIGIN_REJECTED','INGRESS_UNVERIFIED','SRC-001'].includes(code)?code:null;
+  return `Obligations unavailable (HTTP ${status}${safe?`; ${safe}`:''}).`;
+}
+
 import { assessmentReviewSnapshot, type AssessmentReviewSnapshot } from "./assessment-review-snapshot";
 
 export function interpretPostResponse(status: number, text: string): PostInterpretation {
@@ -39,12 +56,15 @@ export function interpretPostResponse(status: number, text: string): PostInterpr
  * session/requester/worker failures are deliberately excluded: they can occur
  * during later revalidation. This is presentation containment, not authority. */
 export function executionResponseNeedsReconciliation(result: { status: number; data: unknown }): boolean {
-  if (result.status < 400 || result.status >= 500 || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return true;
+  if (result.status < 400 || !result.data || typeof result.data !== "object" || Array.isArray(result.data)) return true;
   const reply = result.data as Record<string, unknown>;
   // Production pre-effect refusals are exactly {code}. Extra fields cannot
   // contradict or masquerade as that contract and release an uncertainty lock.
   if (Object.keys(reply).length !== 1) return true;
   switch (reply.code) {
+    // The read-only wallet boundary precedes effectsStarted; later failures are
+    // wrapped as OUTCOME_UNVERIFIED. This never grants financial authority.
+    case "BALANCE_NOT_VERIFIED": return result.status !== 503 || !Object.hasOwn(reply, "code");
     case "BODY_REJECTED": return ![400, 408, 413].includes(result.status);
     case "CONTENT_TYPE_REJECTED": return result.status !== 415;
     case "METHOD_NOT_ALLOWED": return result.status !== 405;

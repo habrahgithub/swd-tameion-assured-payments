@@ -1,4 +1,8 @@
-import { describe,expect,it,vi } from "vitest";
+import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
+import { mkdtempSync,mkdirSync,rmSync,writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { computeProductionConfigurationSha256 } from "../src/server/production-config-identity";
 import { createOperatorHandlers, csrfForBearer } from "../src/server/operator-auth";
 import { parseOperatorPolicy, digest } from "../src/server/route-access-policy";
 import type { OperatorAuthRepository } from "../src/server/operator-auth-repository";
@@ -60,5 +64,76 @@ describe("#65 auth before effect",()=>{
  });
  it("session GET is pure validation with reproducible CSRF and no expiry refresh",async()=>{
   const h=harness();const response=await h.session(request('/api/operator/session',{}, {cookie:`__Host-tameion-session=${token}`},'GET'));expect(response.status).toBe(200);expect((await response.json()).csrf_token).toBe(csrfForBearer(token));expect(response.headers.get('set-cookie')).toBeNull();expect(h.r.issueChallenge).not.toHaveBeenCalled();expect(h.r.admitRefresh).not.toHaveBeenCalled();
+ });
+});
+
+describe("private first-failure policy diagnostics",()=>{
+ let directory:string;
+ beforeEach(()=>{
+  directory=mkdtempSync(join(tmpdir(),"tameion-policy-diagnostic-"));
+  vi.spyOn(process,"cwd").mockReturnValue(directory);
+  vi.spyOn(console,"error").mockImplementation(()=>{});
+ });
+ afterEach(()=>{vi.restoreAllMocks();rmSync(directory,{recursive:true,force:true});});
+ function fixture():Record<string,string|undefined>{
+  return {TAMEION_ALLOWED_ORIGINS:JSON.stringify([origin]),TAMEION_INGRESS_MODE:"vercel-direct-v1",TAMEION_INGRESS_RECORD:JSON.stringify({approval_id:"MOCK",project_id:"P",deployment_id:"D",environment:"preview",direct_edge:true,trusted_proxy_override:false,origins:[origin]}),TAMEION_THROTTLE_HMAC_KEY:"a".repeat(64),VERCEL:"1",VERCEL_ENV:"preview",VERCEL_PROJECT_ID:"P",VERCEL_DEPLOYMENT_ID:"D"};
+ }
+ function productionFixture():Record<string,string|undefined>{
+  // Deliberately invalid source: configuration validation must pass before the
+  // canonical source validator can reject it. These inputs are all invented.
+  const values={...fixture(),SUPABASE_URL:"https://db.example.invalid",SUPABASE_SERVICE_ROLE_KEY:"INVENTED-PRIVATE-SENTINEL",TAMEION_OPERATOR_KEY:"invented-user",TAMEION_OPERATOR_SOURCE_DOCUMENT:"{}",TAMEION_OPERATOR_SOURCE_SHA256:digest("{}"),VERCEL_ENV:"production",VERCEL_GIT_COMMIT_SHA:"d".repeat(40)};
+  return {...values,TAMEION_INGRESS_RECORD:JSON.stringify({approval_id:"MOCK-PRODUCTION",project_id:"P",binding:"git-sha-production-v1",git_commit_sha:"d".repeat(40),environment:"production",direct_edge:true,trusted_proxy_override:false,origins:[origin],configuration_schema:"tameion-production-config-v1",configuration_sha256:computeProductionConfigurationSha256(values)})};
+ }
+ async function session(env:Record<string,string|undefined>){
+  const h=harness();
+  const handlers=createOperatorHandlers({policy:()=>parseOperatorPolicy(env),repository:h.factory,operatorKey:()=>"MOCK-OPERATOR",verifyPassword:h.verify,balance:h.balance});
+  const response=await handlers.session(request('/api/operator/session',{}, {},'GET'));
+  expect(h.factory).not.toHaveBeenCalled();expect(h.verify).not.toHaveBeenCalled();expect(h.balance).not.toHaveBeenCalled();
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("pragma")).toBe("no-cache");
+  expect(response.headers.get("set-cookie")).toBeNull();
+  return response;
+ }
+ it.each([
+  ["malformed origins","DIAG_OP_01",()=>({...fixture(),TAMEION_ALLOWED_ORIGINS:"INVENTED-PRIVATE-SENTINEL"})],
+  ["duplicate origins","DIAG_OP_02",()=>({...fixture(),TAMEION_ALLOWED_ORIGINS:JSON.stringify([origin,origin])})],
+  ["wrong ingress mode","DIAG_OP_02",()=>({...fixture(),TAMEION_INGRESS_MODE:"INVENTED-PRIVATE-SENTINEL"})],
+  ["malformed approval","DIAG_OP_03",()=>({...fixture(),TAMEION_INGRESS_RECORD:"INVENTED-PRIVATE-SENTINEL"})],
+  ["absent approval","DIAG_OP_03",()=>({...fixture(),TAMEION_INGRESS_RECORD:undefined})],
+  ["runtime mapping","DIAG_OP_04",()=>({...productionFixture(),VERCEL_GIT_COMMIT_SHA:"e".repeat(40)})],
+  ["configuration mismatch","DIAG_OP_05",()=>({...productionFixture(),SUPABASE_SERVICE_ROLE_KEY:"DIFFERENT-INVENTED-PRIVATE-SENTINEL"})],
+  ["unavailable configuration input","DIAG_OP_05",()=>({...productionFixture(),SUPABASE_SERVICE_ROLE_KEY:undefined})],
+  ["canonical source rejection","DIAG_OP_06",()=>productionFixture()],
+  ["HMAC format","DIAG_OP_07",()=>({...fixture(),TAMEION_THROTTLE_HMAC_KEY:"INVENTED-PRIVATE-SENTINEL"})],
+ ] as const)("reports only the first failing stage for %s",async(_name,id,makeEnv)=>{
+  const response=await session(makeEnv());
+  expect(response.status).toBe(503);expect(await response.json()).toEqual({code:"AUTH_UNAVAILABLE"});
+  expect(vi.mocked(console.error).mock.calls).toEqual([[id]]);
+ });
+ it("classifies conflicting packaged approval without exposing either record",async()=>{
+  const env=fixture();mkdirSync(join(directory,".tameion"));
+  writeFileSync(join(directory,".tameion/deployment-approval.json"),JSON.stringify({...JSON.parse(env.TAMEION_INGRESS_RECORD!),approval_id:"INVENTED-PRIVATE-SENTINEL"}));
+  const response=await session(env);
+  expect(response.status).toBe(503);expect(await response.json()).toEqual({code:"AUTH_UNAVAILABLE"});
+  expect(vi.mocked(console.error).mock.calls).toEqual([["DIAG_OP_03"]]);
+ });
+ it("does not disclose unexpected exception text or evaluate later inputs",async()=>{
+  const env=fixture(),later=vi.fn(()=>{throw new Error("LATER-PRIVATE-SENTINEL");});
+  Object.defineProperty(env,"TAMEION_ALLOWED_ORIGINS",{get:()=>{throw new Error("INVENTED-PRIVATE-SENTINEL");}});
+  Object.defineProperty(env,"TAMEION_INGRESS_RECORD",{get:later});
+  const response=await session(env);
+  expect(response.status).toBe(503);expect(await response.json()).toEqual({code:"AUTH_UNAVAILABLE"});
+  expect(vi.mocked(console.error).mock.calls).toEqual([["DIAG_OP_01"]]);expect(later).not.toHaveBeenCalled();
+ });
+ it("keeps the public denial when telemetry itself throws",async()=>{
+  vi.mocked(console.error).mockImplementation(()=>{throw new Error("TELEMETRY-PRIVATE-SENTINEL");});
+  const response=await session({...fixture(),TAMEION_INGRESS_MODE:"invalid"});
+  expect(response.status).toBe(503);expect(await response.json()).toEqual({code:"AUTH_UNAVAILABLE"});
+  expect(console.error).toHaveBeenCalledExactlyOnceWith("DIAG_OP_02");
+ });
+ it("passes valid policy silently and denies the absent cookie before repository construction",async()=>{
+  const response=await session(fixture());
+  expect(response.status).toBe(401);expect(await response.json()).toEqual({code:"SESSION_REQUIRED"});
+  expect(console.error).not.toHaveBeenCalled();
  });
 });

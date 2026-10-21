@@ -1,12 +1,13 @@
 import {parseDemoStateSnapshot} from "./demo-state";
 import {genuineAssessmentVisibility,type GenuineAssessmentVisibility} from "./genuine-assessment-recovery";
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
+import {classifyGenuineAdmission,bootstrapProtectionAttested} from './genuine-admission';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {ActorAuthorityRegistry} from '../authority/actor-authority';
 import {createHash} from "node:crypto";
 import {canonicalize} from "json-canonicalize";
-import type {OperatorStateBinding} from "./operator-source-records";
+import type {OperatorStateBinding,OwnerAdmissionState} from "./operator-source-records";
 import {AuthorityStore} from '../authority/aggregate';
 import {TrustedKeyRegistry} from '../pae/keys';
 import {sealedPaeSchema} from '../domain/schemas';
@@ -20,10 +21,10 @@ import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState={getGenuineAssessmentVisibility?:(id:string)=>GenuineAssessmentVisibility;canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState={getReadinessObservations?:DemoState["getReadinessObservations"];getRecoveryEvents?:DemoState["getRecoveryEvents"];getSealedPaeForOperation?:DemoState["getSealedPaeForOperation"];getGenuineAssessmentVisibility?:(id:string)=>GenuineAssessmentVisibility;canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
-export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding):Promise<ExistingState> {
+export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding,ownerAdmission?:OwnerAdmissionState):Promise<ExistingState> {
   if(!namespace||namespace.length>128)throw new AccessError('STATE_UNAVAILABLE',503);
   try {
     const result=await rpc.call('tameion_state_load_existing',{namespace,expected_schema_version:2});
@@ -40,15 +41,17 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     const assessmentSnapshot=binding?.workflow_base_sha256?parseDemoStateSnapshot(s):undefined;
+    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>{const admission=classifyGenuineAdmission(snapshot,id);return {...admission,can_bootstrap:admission.can_bootstrap&&bootstrapProtectionAttested()};};
     return {store,trustedKeys,
-      getGenuineAssessmentVisibility:assessmentSnapshot?id=>genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version):undefined,
-      canAssessGenuine:id=>!genuineHasFinancialHistory(s,id)&&(!assessmentSnapshot||
-        !assessmentSnapshot.assessment_operations.some(operation=>operation.obligation_id===id&&operation.recovery?.generation===1)&&
-        !["UNKNOWN","IN_PROGRESS"].includes(genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version).status)),
+      getReadinessObservations:()=>structuredClone(s.readiness_observations??[]),
+      getRecoveryEvents:()=>structuredClone(s.recovery_events??[]),
+      getSealedPaeForOperation:key=>s.authorization_history.find(a=>a.sealed_pae.payload.idempotency_key===key)?.sealed_pae,
+      getGenuineAssessmentVisibility:assessmentSnapshot?id=>({...genuineAssessmentVisibility(assessmentSnapshot,{records,state_binding:binding!,...(ownerAdmission?{owner_admission:ownerAdmission}:{})},id,store.get(DEMO_ORGANIZATION_ID,id).aggregate_version),admission:genuineAdmission(assessmentSnapshot,id)}):undefined,
+      canAssessGenuine:id=>assessmentSnapshot?genuineAdmission(assessmentSnapshot,id).can_assess:!genuineHasFinancialHistory(s,id),
       getLinkedInstructions:id=>linkedInstructions.filter(r=>r.source_obligation_id===id),
       resolveDesignatedApprover:(organizationId=DEMO_ORGANIZATION_ID,now=new Date())=>actorAuthorities.resolveDesignatedApprover(organizationId,now),
       getPaymentReleaseApproval:id=>releases.find(a=>a.record.namespace===namespace&&a.record.pae_instruction_hash===sealed.get(id)?.instruction_hash),
-      listObligations:()=>records.map(r=>({obligation_id:r.obligation_id,service_category:r.service_category,amount:r.amount,currency:r.currency,recurrence:r.recurrence,due_date:r.due_date,commercial_terms:r.commercial_terms})),
+      listObligations:()=>records.map(r=>({obligation_id:r.obligation_id,service_category:r.service_category,amount:r.amount,currency:r.currency,recurrence:r.recurrence,due_date:r.due_date,commercial_terms:r.commercial_terms,...(r.beneficiary_name!==undefined?{beneficiary_name:r.beneficiary_name,beneficiary_provenance:r.beneficiary_provenance}:{})})),
       getRecord:id=>records.find(r=>r.obligation_id===id),
       getCanonicalObligation:id=>{const r=records.find(r=>r.obligation_id===id);return r?adaptDirectEvidenceObligation(r):undefined;},
       getSealedPae:id=>sealed.get(id),getSettlementProxy:id=>s.settlement_proxies?.find(p=>p.preflight.obligation_id===id),

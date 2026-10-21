@@ -147,6 +147,26 @@ describe("recovery key release requires the complete receipt validator used for 
 });
 
 describe("execute production response contract", () => {
+  it('S05-F01 recognises the exact pre-effect wallet refusal only',()=>{
+    expect(executionResponseNeedsReconciliation({status:503,data:{code:'BALANCE_NOT_VERIFIED'}})).toBe(false);
+  });
+  it.each([0,200,202,400,401,403,409,500,502,504])('S05-F01 keeps wallet code uncertain at status %s',status=>{
+    expect(executionResponseNeedsReconciliation({status,data:{code:'BALANCE_NOT_VERIFIED'}})).toBe(true);
+  });
+  it.each([
+    null,[],['BALANCE_NOT_VERIFIED'],'BALANCE_NOT_VERIFIED',{},
+    Object.assign(Object.create({code:'BALANCE_NOT_VERIFIED'}),{other:true}),
+    {code:'PROVIDER_BALANCE_NOT_VERIFIED'},{code:'OUTCOME_UNVERIFIED'},
+    {code:'BALANCE_NOT_VERIFIED',outcome:'UNKNOWN'},
+    {code:'BALANCE_NOT_VERIFIED',retry_submission:false},
+    {code:'BALANCE_NOT_VERIFIED',retry_submission:true},
+    {code:'BALANCE_NOT_VERIFIED',execution:{status:'UNKNOWN'}},
+    {code:'BALANCE_NOT_VERIFIED',execution_gate:'RECONCILIATION_ONLY'},
+    {code:'BALANCE_NOT_VERIFIED',error:'Retry'},
+    {code:'NO_RECORDED_EXECUTION'},
+  ])('S05-F01 preserves uncertainty for non-exact wallet response %j',data=>{
+    expect(executionResponseNeedsReconciliation({status:503,data})).toBe(true);
+  });
   it.each([
     [400,"BODY_REJECTED"], [408,"BODY_REJECTED"], [413,"BODY_REJECTED"],
     [415,"CONTENT_TYPE_REJECTED"], [405,"METHOD_NOT_ALLOWED"],
@@ -191,5 +211,20 @@ describe('R1 contradictory complete receipts',()=>{
   const data={...fullReceipt('OBL-A','1'),code:'ASM-001'};
   expect(assessmentKeyDisposition({status:200,data,obligationId:'OBL-A',expectedAggregateVersion:'1'})).toBe('RETAIN');
   expect(assessmentReceiptSnapshot(data)).toBeNull();
+ });
+});
+
+
+describe('bounded assessment admission rejection and safe read failures',()=>{
+ it('recognizes only the exact pre-reservation history-limit response, never uncertainty or generic denial',async()=>{
+  const {isAssessmentHistoryLimitRejection}=await import('../src/client/command-center-requests');
+  expect(isAssessmentHistoryLimitRejection({status:409,data:{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT'}})).toBe(true);
+  for(const status of [0,200,202,400,403,500,503])expect(isAssessmentHistoryLimitRejection({status,data:{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT'}})).toBe(false);
+  for(const data of [null,[],{code:'ASM_STATUS_NOT_FOUND'},{code:'ASM-UNKNOWN'},{code:'ASM-001'},{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT',status:'UNKNOWN'},{code:'GENUINE_ASSESSMENT_HISTORY_LIMIT',attempt_consumed:true}])expect(isAssessmentHistoryLimitRejection({status:409,data})).toBe(false);
+ });
+ it('shows only a known typed read code, never unknown codes or raw error values',async()=>{
+  const {observedReadFailure}=await import('../src/client/command-center-requests');
+  expect(observedReadFailure(409,{code:'SOURCE_BINDING_CHANGED',error:'PRIVATE'})).toBe('Obligations unavailable (HTTP 409; SOURCE_BINDING_CHANGED).');
+  for(const body of [null,'PRIVATE',{error:'PRIVATE'},{code:'PRIVATE'},{code:'SOURCE_BINDING_CHANGED PRIVATE'},{code:['SOURCE_BINDING_CHANGED']}])expect(observedReadFailure(503,body)).toBe('Obligations unavailable (HTTP 503).');
  });
 });

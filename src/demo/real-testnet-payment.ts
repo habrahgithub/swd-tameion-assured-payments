@@ -1,3 +1,4 @@
+import type {SealedReviewDecision} from '../domain/review-decision';
 import {loadFinancialSourceAdmission} from "../server/financial-source-admission";
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
@@ -76,7 +77,9 @@ export interface BusinessPaymentInstruction {
   };
 }
 
+export type ResolvedOutboundProof={ref_id:string;transaction_id:string;transaction_state:string;network_fee:string};
 export interface GenuineSettlementProxyIntent {
+  resolved_outbound_proofs?:ResolvedOutboundProof[];
   organization_id: string;
   obligation_id: string;
   source_amount: string;
@@ -176,6 +179,7 @@ const businessPaymentInstructionSchema = z.object({
 export type J2aPreflightResult =
   | {
       readiness: "READY";
+      resolved_outbound_proofs?:ResolvedOutboundProof[];
       profile: string;
       classification: string;
       organization_id: string;
@@ -206,6 +210,7 @@ const providerDecimalSchema = z.string().min(1).max(MAX_PROVIDER_NUMERIC_LENGTH)
 const evidenceSha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export const j2aPreflightResultSchema = z.discriminatedUnion("readiness", [
   z.object({
+    resolved_outbound_proofs:z.array(z.object({ref_id:z.string().min(1),transaction_id:z.string().min(1),transaction_state:z.enum(['COMPLETE','FAILED','DENIED','CANCELLED']),network_fee:providerDecimalSchema}).strict()).max(1000).optional(),
     readiness: z.literal("READY"), profile: z.string().min(1),
     classification: z.string().min(1),
     organization_id: z.string().min(1), obligation_id: z.string().min(1),
@@ -243,6 +248,7 @@ function sha256(value: unknown): string {
  * of this value, so an identity edit advances the isolated aggregate version. */
 export function hashJ2aPreflightEvidence(evidence: Record<string, unknown>): string {
   return sha256({
+    ...(evidence.resolved_outbound_proofs?{resolved_outbound_proofs:evidence.resolved_outbound_proofs}:{}),
     profile: evidence.profile,
     classification: evidence.classification,
     wallet_set_id: evidence.wallet_set_id,
@@ -397,8 +403,12 @@ export async function runJ2aReadOnlyPreflight(
     if (providerTransferAtomic === null || feeAtomic === null || maxFeeAtomic === null || maxTotalDebitAtomic === null) return blocked("INVALID_FEE_ESTIMATE", now);
     if (feeAtomic > maxFeeAtomic) return blocked("FEE_CAP_EXCEEDED", now);
     if (providerTransferAtomic + feeAtomic > maxTotalDebitAtomic) return blocked("TOTAL_DEBIT_CAP_EXCEEDED", now);
-    if (sourceBalanceAtomic < providerTransferAtomic + feeAtomic) return blocked("INSUFFICIENT_BALANCE", now);
-    if (transactions.some((transaction) => matchingPriorOutbound(transaction, tokenId, tokenDecimals, transferAmount))) return blocked("PRIOR_MATCHING_OUTBOUND", now);
+    if (sourceBalanceAtomic < maxTotalDebitAtomic) return blocked("INSUFFICIENT_BALANCE", now);
+    if (transactions.some((transaction) => {
+      if(!matchingPriorOutbound(transaction,tokenId,tokenDecimals,transferAmount))return false;
+      const row=transaction as Record<string,unknown>;
+      return !(intent.resolved_outbound_proofs??[]).some(proof=>row.refId===proof.ref_id&&row.id===proof.transaction_id&&row.state===proof.transaction_state&&typeof row.networkFee==='string'&&row.networkFee===proof.network_fee);
+    })) return blocked("PRIOR_MATCHING_OUTBOUND", now);
 
     const capturedAt = now().toISOString();
     const businessPaymentInstruction: BusinessPaymentInstruction = {
@@ -460,6 +470,7 @@ export async function runJ2aReadOnlyPreflight(
       },
     };
     const evidence = {
+      ...(intent.resolved_outbound_proofs?.length?{resolved_outbound_proofs:intent.resolved_outbound_proofs}:{}),
       profile: genuineIntent ? "GENUINE_OBLIGATION_ARC_TESTNET_PROXY" : "J2A_REAL_TESTNET_DEMO",
       classification: intent.classification,
       wallet_set_id: J2A_DEMO_WALLET_SET_ID,
@@ -484,6 +495,7 @@ export async function runJ2aReadOnlyPreflight(
       source_amount: intent.source_amount,
       source_currency: intent.source_currency,
       source_evidence_ids: [...intent.source_evidence_ids],
+      ...(intent.resolved_outbound_proofs?.length?{resolved_outbound_proofs:intent.resolved_outbound_proofs}:{}),
       profile: genuineIntent ? "GENUINE_OBLIGATION_ARC_TESTNET_PROXY" : "J2A_REAL_TESTNET_DEMO",
       classification: intent.classification,
       amount: transferAmount,
@@ -496,7 +508,7 @@ export async function runJ2aReadOnlyPreflight(
       destination_wallet: { id: J2A_DEMO_DESTINATION.id, address: J2A_DEMO_DESTINATION.address, network: "ARC_TESTNET", state: "LIVE", wallet_set_id: J2A_DEMO_WALLET_SET_ID, name: J2A_DEMO_DESTINATION.name },
       provider_token: { id: tokenId, symbol: "USDC", decimals: tokenDecimals, native: true },
     } as const;
-    const result = { ...resultWithoutHash, evidence_sha256: hashJ2aPreflightEvidence(resultWithoutHash) } as const;
+    const result = { ...resultWithoutHash,...(intent.resolved_outbound_proofs?.length?{resolved_outbound_proofs:intent.resolved_outbound_proofs}:{}), evidence_sha256: hashJ2aPreflightEvidence({...resultWithoutHash,...(intent.resolved_outbound_proofs?.length?{resolved_outbound_proofs:intent.resolved_outbound_proofs}:{})}) } as const;
     evidenceSha256Schema.parse(result.evidence_sha256);
     return j2aPreflightResultSchema.parse(result);
   } catch {
@@ -591,8 +603,9 @@ export function buildJ2aIntentIdentity(
 export function buildJ2aExecutionPacket(input: {
   preflight: Extract<J2aPreflightResult, { readiness: "READY" }>;
   aggregate: AuthorityAggregate;
-  assessment: DurableAssessmentRecord;
-  assessmentHash: string;
+  assessment?: DurableAssessmentRecord;
+  assessmentHash?: string;
+  reviewDecision?: SealedReviewDecision;
   sealedPae: SealedPae;
 }) {
   const { preflight, aggregate, assessment, assessmentHash, sealedPae } = input;
@@ -620,7 +633,8 @@ export function buildJ2aExecutionPacket(input: {
     max_total_debit: preflight.max_total_debit,
     preflight_captured_at: preflight.captured_at,
     preflight_evidence_sha256: preflight.evidence_sha256,
-    assessment: {
+    ...(input.reviewDecision ? {review_decision:input.reviewDecision} : {}),
+    assessment: assessment ? {
       assessment_id: assessment.assessment_id,
       assessment_hash: assessmentHash,
       aggregate_version: assessment.aggregate_version,
@@ -629,7 +643,7 @@ export function buildJ2aExecutionPacket(input: {
       provider_name: assessment.provider_name,
       model_id: assessment.model_id,
       model_config_version: assessment.model_config_version,
-    },
+    } : null,
     pae: {
       instruction_id: sealedPae.payload.instruction_id,
       instruction_hash: sealedPae.instruction_hash,

@@ -4,6 +4,7 @@ import type { AuthorityAggregate, AuthorityStore } from "../authority/aggregate"
 import { T1_SINGLE_APPROVAL, type ActorAuthorityRecord } from "../authority/actor-authority";
 import { AuthorityError } from "../authority/aggregate";
 import type { DurableApprovalRecord, DurableAssuranceRecord, SealedPae } from "../domain/schemas";
+import {verifyHistoricalPaeSignature} from "../pae/sign-verify";
 import { verifySealedPae } from "../pae/sign-verify";
 import { verifyDurableApprovalRecordHash, verifyDurableAssuranceRecordHash } from "../pae/durable-records";
 import { processTrustedKeyRegistry, TrustedKeyRegistry, type TrustedKeyEntry } from "../pae/keys";
@@ -24,6 +25,8 @@ export interface ExecutionRecord {
   obligation_id: string;
   idempotency_key: string;
   provider_ref: string | null;
+  provider_observations?:StatusResult[];
+  dispatch_evidence?:"PROVEN_NOT_DISPATCHED";
   status: "SUBMITTING" | "SETTLED" | "FAILED" | "UNKNOWN" | "BLOCKED";
   atomic_amount: string;
   destination_address: string;
@@ -41,6 +44,7 @@ export interface WorkerAuthorizationArtifacts {
 export type CurrentActorAuthority = ActorAuthorityRecord;
 
 export interface ExecutionWorkerOptions {
+  walletBudgetForIntent?:(id:string)=>{balance:string;total:string;observed_at:string}|undefined;
   /** Read the current durable authorization snapshot for the exact PAE identity. */
   loadAuthorizationArtifacts?: (
     organizationId: string,
@@ -210,7 +214,9 @@ export class ExecutionWorker {
 
     // (7) Atomic claim: PAE UNUSED -> RESERVED for exactly one execution_id/idempotency key.
     try {
-      this.store.reserveForExecution(
+      const budget=this.options.walletBudgetForIntent?.(obligationId);
+    if(budget)this.store.reserveWalletBudget(obligationId,payload.idempotency_key,payload.source_wallet_ref,budget.balance,budget.total,budget.observed_at,false);
+    this.store.reserveForExecution(
         payload.organization_id,
         obligationId,
         aggregate.aggregate_version,
@@ -296,6 +302,7 @@ export class ExecutionWorker {
         idempotency_key: payload.idempotency_key,
         provider_ref: null,
         status: "BLOCKED",
+          dispatch_evidence:"PROVEN_NOT_DISPATCHED",
         atomic_amount: payload.atomic_amount,
         destination_address: payload.destination_address,
       };
@@ -325,6 +332,7 @@ export class ExecutionWorker {
         idempotency_key: payload.idempotency_key,
         provider_ref: null,
         status: "BLOCKED",
+          dispatch_evidence:"PROVEN_NOT_DISPATCHED",
         atomic_amount: payload.atomic_amount,
         destination_address: payload.destination_address,
       };
@@ -351,7 +359,7 @@ export class ExecutionWorker {
         atomicAmount: payload.atomic_amount,
         asset: payload.asset,
         network: payload.network,
-        beforeProviderSend: () => this.validateAtProviderSendBoundary(sealed),
+        beforeProviderSend: readiness => this.validateAtProviderSendBoundary(sealed,readiness),
       });
     } catch (error) {
       if (error instanceof ExecutionBlockedError) {
@@ -362,6 +370,7 @@ export class ExecutionWorker {
           idempotency_key: payload.idempotency_key,
           provider_ref: null,
           status: "BLOCKED",
+          dispatch_evidence:"PROVEN_NOT_DISPATCHED",
           atomic_amount: payload.atomic_amount,
           destination_address: payload.destination_address,
         };
@@ -382,6 +391,7 @@ export class ExecutionWorker {
           idempotency_key: payload.idempotency_key,
           provider_ref: null,
           status: "BLOCKED",
+          dispatch_evidence:"PROVEN_NOT_DISPATCHED",
           atomic_amount: payload.atomic_amount,
           destination_address: payload.destination_address,
         };
@@ -446,6 +456,7 @@ export class ExecutionWorker {
       throw persistenceError;
     }
     const acceptedAggregate = this.store.get(payload.organization_id, obligationId);
+    const acceptedAuthority=this.store.exportSnapshot();
     const status = await this.adapter.getStatus(submission.providerRef, payload.idempotency_key);
     const finalRecord = this.finalizeFromStatus(acceptedRecord, status, payload.organization_id);
     this.executionLedger.set(payload.idempotency_key, finalRecord);
@@ -455,6 +466,7 @@ export class ExecutionWorker {
       // Restore the most recent durable checkpoint, including its accepted
       // provider reference, so reconciliation never loses known identity.
       this.store.restoreAggregateSnapshot(acceptedAggregate);
+      this.store.restoreAuxiliarySnapshot(acceptedAuthority);
       this.executionLedger.set(payload.idempotency_key, { ...acceptedRecord });
       throw persistenceError;
     }
@@ -466,9 +478,13 @@ export class ExecutionWorker {
    * after its awaited read-only Circle preflight and exact intent comparison.
    * No provider operation may be awaited between this check and create.
    */
-  private async validateAtProviderSendBoundary(sealed: SealedPae): Promise<void> {
+  private async validateAtProviderSendBoundary(sealed: SealedPae,readiness?:{balance:string;total:string;observed_at:string}): Promise<void> {
     const { payload } = sealed;
     const obligationId = payload.obligation_ids[0];
+    if(readiness){
+      try{this.store.reserveWalletBudget(obligationId,payload.idempotency_key,payload.source_wallet_ref,readiness.balance,readiness.total,readiness.observed_at);await this.onDurableStateChange?.();}
+      catch{throw new ExecutionBlockedError('Current wallet budget could not be reserved','WALLET_BUDGET_UNVERIFIED');}
+    }
     try { await this.options.revalidateRequester?.(); }
     catch { throw new ExecutionBlockedError("Authenticated requester authority changed before provider send", "AUTH-REQUESTER"); }
     let durableContext: Awaited<ReturnType<NonNullable<ExecutionWorkerOptions["reloadDurableExecutionContext"]>>> | undefined;
@@ -599,6 +615,7 @@ export class ExecutionWorker {
         approval.authorized_aggregate_version !== evidence.authorized_aggregate_version ||
         approval.approved_at !== evidence.approved_at ||
         approval.assessment_id !== evidence.assessment_id || approval.assessment_hash !== evidence.assessment_hash ||
+        approval.review_decision_id !== evidence.review_decision_id || approval.review_decision_hash !== evidence.review_decision_hash ||
         approval.action !== "APPROVE" || approval.authorized_aggregate_version !== payload.aggregate_version ||
         authorization.sealed_pae.instruction_hash !== sealed.instruction_hash ||
         authorization.sealed_pae.signature !== sealed.signature) {
@@ -667,8 +684,14 @@ export class ExecutionWorker {
    */
   async reconcilePendingByIdempotencyKey(idempotencyKey: string, organizationId: string): Promise<ExecutionRecord> {
     const record = this.executionLedger.get(idempotencyKey);
-    if (!record || record.status !== "UNKNOWN") {
+    if (!record || !["UNKNOWN","FAILED"].includes(record.status)) {
       throw new ExecutionBlockedError("No pending UNKNOWN execution for this idempotency key", "OPS-008");
+    }
+    if(this.options.loadAuthorizationArtifacts){
+      const archived=this.options.loadAuthorizationArtifacts(organizationId,record.obligation_id),pae=archived?.sealed_pae;
+      const key=pae?this.trustedKeys.export().find(k=>k.signing_key_id===pae.payload.signing_key_id&&k.signing_algorithm===pae.payload.signing_algorithm):undefined;
+      if(!pae||!key||pae.payload.idempotency_key!==idempotencyKey||pae.payload.atomic_amount!==record.atomic_amount||!sameEvmAddressIdentity(pae.payload.destination_address,record.destination_address))throw new ExecutionBlockedError('Original operation identity is unverified','REC-IDENTITY');
+      verifyHistoricalPaeSignature(pae,key.public_key_spki_base64url);
     }
     await this.options.revalidateRequester?.();
     const status = record.provider_ref
@@ -678,9 +701,13 @@ export class ExecutionWorker {
         : { status: "UNKNOWN" as const };
     await this.options.revalidateRequester?.();
     const previousAggregate = this.store.get(organizationId, record.obligation_id);
-    const finalRecord = status.status === "UNKNOWN"
-      ? { ...record, provider_evidence: status }
-      : this.finalizeFromStatus(record, status, organizationId);
+    const previousAuthority=this.store.exportSnapshot();
+    const identityRecord={...record};
+    if(status.identity_verified&&status.transaction_id){if(record.provider_ref&&record.provider_ref!==status.transaction_id)throw new ExecutionBlockedError('Conflicting recovered provider reference','REC-IDENTITY');identityRecord.provider_ref=status.transaction_id;}
+    // A terminal principal failure is immutable. Later status may enrich its
+    // missing fee proof, but cannot regress it to pending or authorize a send.
+    const finalRecord=record.status==='FAILED'&&status.status!=='FAILED'?identityRecord:status.status==='UNKNOWN'?{...identityRecord,provider_evidence:status}:this.finalizeFromStatus(identityRecord,status,organizationId);
+    if(record.provider_evidence&&JSON.stringify(record.provider_evidence)!==JSON.stringify(finalRecord.provider_evidence)){finalRecord.provider_observations=[...(record.provider_observations??[]),structuredClone(record.provider_evidence)];if(finalRecord.provider_observations.length>1000)throw new ExecutionBlockedError('Provider observation history capacity reached','REC-CAPACITY');}
     this.executionLedger.set(idempotencyKey, finalRecord);
     try {
       await this.options.revalidateRequester?.();
@@ -689,10 +716,22 @@ export class ExecutionWorker {
       // Provider observation is evidence, not proof of a committed local
       // settlement. Preserve the previous durable UNKNOWN record on conflict.
       this.store.restoreAggregateSnapshot(previousAggregate);
+      this.store.restoreAuxiliarySnapshot(previousAuthority);
       this.executionLedger.set(idempotencyKey, { ...record });
       throw persistenceError;
     }
     return finalRecord;
+  }
+
+  retireUnusedExpiredAuthority(sealed:SealedPae):ExecutionRecord {
+    const p=sealed.payload,id=p.obligation_ids[0],current=this.store.get(p.organization_id,id);
+    const key=this.trustedKeys.export().find(k=>k.signing_key_id===p.signing_key_id&&k.signing_algorithm===p.signing_algorithm);
+    if(!key||p.obligation_ids.length!==1||Date.parse(p.expiry)>Date.now()||current.aggregate_version!==Number(p.aggregate_version)||current.state!=='AUTHORIZED'||current.execution_state!=='NONE'||current.execution_idempotency_key!==null||current.pae_state!=='UNUSED'||this.executionLedger.has(p.idempotency_key))throw new ExecutionBlockedError('Unused expired authority is not proven','REC-UNUSED');
+    verifyHistoricalPaeSignature(sealed,key.public_key_spki_base64url);
+    this.store.reserveForExecution(p.organization_id,id,current.aggregate_version,p.idempotency_key);
+    this.store.markBlocked(p.organization_id,id,'Expired unused authority retired atomically without dispatch');
+    const record:ExecutionRecord={obligation_id:id,idempotency_key:p.idempotency_key,provider_ref:null,status:'BLOCKED',dispatch_evidence:'PROVEN_NOT_DISPATCHED',atomic_amount:p.atomic_amount,destination_address:p.destination_address};
+    this.executionLedger.set(p.idempotency_key,record);return record;
   }
 
   /** Recover an interrupted durable SUBMITTING marker without crossing the
@@ -731,14 +770,16 @@ export class ExecutionWorker {
       const amountMatches = (status.atomic_amount ?? status.atomicAmount) === record.atomic_amount;
       const destinationMatches = sameEvmAddressIdentity(status.destination_address ?? status.destinationAddress, record.destination_address);
       if (!amountMatches || !destinationMatches) {
-        this.store.markBlocked(organizationId, record.obligation_id, "settlement does not reconcile to authorized obligation");
-        return { ...record, status: "BLOCKED", provider_evidence: status };
+        this.store.markUnknown(organizationId, record.obligation_id);
+        return { ...record, status: "UNKNOWN", provider_evidence: {...status,outcome:"SETTLEMENT_MISMATCH"} };
       }
+      this.store.recordSettlementPosting(organizationId,record.obligation_id,record.idempotency_key,record.atomic_amount,record.destination_address,status);
       this.store.markSettled(organizationId, record.obligation_id);
       this.store.markReconciled(organizationId, record.obligation_id);
       return { ...record, status: "SETTLED", provider_evidence: status };
     }
 
+    this.store.markFailed(organizationId,record.obligation_id,typeof status.network_fee==='string'&&/^\d+(?:\.\d{1,18})?$/.test(status.network_fee)&&['FAILED','DENIED','CANCELLED'].includes(status.transaction_state??''));
     return { ...record, status: "FAILED", provider_evidence: status };
   }
 }

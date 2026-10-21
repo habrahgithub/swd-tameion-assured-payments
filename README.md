@@ -58,10 +58,16 @@ obligation, amount, current state, responsible actor, and one legal next action.
 | Mainnet or production release | Out of scope. |
 
 The current delivery work is tracked in
-[Job #65](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/65)
-and [draft PR #70](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/70).
+[Job #77](https://github.com/habrahgithub/swd-tameion-assured-payments/issues/77)
+and [draft PR #78](https://github.com/habrahgithub/swd-tameion-assured-payments/pull/78).
 Passing local tests, CI, or a Vercel build does not by itself establish hosted
 login, a verified wallet balance, payment authority, or release approval.
+
+The [six-stage readiness runbook](docs/demo/SIX-STAGE-READINESS.md) covers
+owner-admitted current-source assessment disposition, supplier/timing prerequisites,
+linked controlled instructions and exact execution recovery after authority expiry.
+A genuine payable remains `OUTSTANDING` after its non-economic testnet child is
+reconciled. This candidate provides no live rollout, live AI or payment proof.
 
 ## Core safety principles
 
@@ -483,3 +489,13 @@ They do not establish hosted wallet access, provider reconciliation or a
 completed financial E2E. The temporary Preview wallet diagnostic requires a
 separately reviewed cleanup before submission. Merge and deployment remain
 separate release decisions.
+
+### Recoverable payment workflow R1 (local code candidate)
+
+The source/review path supports versioned invoice and prepaid entry, correction,
+explicit HUMAN review, scoped escalation resolution and existing-payment recovery.
+It retains exact financial authority and keeps controlled testnet children separate
+from genuine payables. Source entry does not verify wallet control or activate a
+payment source. See the [operator and migration runbook](docs/demo/RECOVERABLE-PAYMENT-WORKFLOW-R1.md),
+[142-scenario evidence map](docs/demo/RECOVERABLE-PAYMENT-R1-SCENARIOS.md) and
+[verification limits](docs/demo/RECOVERABLE-PAYMENT-R1-VERIFICATION.md).

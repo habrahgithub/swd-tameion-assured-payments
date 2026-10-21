@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "claude/stage2-assessment-admission-20261019": false,
+      "codex/recoverable-payment-workflow-20261020": false
+    }
+  }
+}

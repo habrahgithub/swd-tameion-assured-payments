@@ -1,11 +1,23 @@
+import {sealDurableAssessmentRecord} from '../pae/durable-records';
 import {AuthorityStore} from '../authority/aggregate';
 import {durableAssessmentRecordSchema,type DurableAssessmentRecord} from '../domain/schemas';
 import type {LiveUsageObligationRecord} from '../agent/context-builder';
 import type {AssessmentOperation} from './demo-state';
 const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 /** Shared durable reservation/result engine; no signer, wallet or execution dependency. */
+export type LateAssessmentResult={idempotency_key:string;record:DurableAssessmentRecord;assessment_hash:string};
 export abstract class AssessmentState {
- constructor(readonly store:AuthorityStore,protected readonly assessmentOperations:Map<string,AssessmentOperation>){}
+ protected readonly lateAssessmentResults:LateAssessmentResult[];
+ constructor(readonly store:AuthorityStore,protected readonly assessmentOperations:Map<string,AssessmentOperation>,lateResults:LateAssessmentResult[]=[]){this.lateAssessmentResults=structuredClone(lateResults);}
+ getLateAssessmentResults(){return structuredClone(this.lateAssessmentResults);}
+ retainLateAssessmentResult(key:string,record:DurableAssessmentRecord){
+  const operation=this.assessmentOperations.get(key),sealed=sealDurableAssessmentRecord(record);
+  if(!operation||record.assessment_id!==`ASM-${key}`||record.obligation_id!==operation.obligation_id||record.aggregate_version!==String(operation.aggregate_version))throw new Error('Late result identity mismatch');
+  const previous=this.lateAssessmentResults.find(r=>r.idempotency_key===key);
+  if(previous){if(previous.assessment_hash!==sealed.assessment_hash)throw new Error('Late result conflict');return;}
+  this.lateAssessmentResults.push({idempotency_key:key,record:sealed.record,assessment_hash:sealed.assessment_hash});
+ }
+
  abstract getRecord(id:string):LiveUsageObligationRecord|undefined;
  abstract hasLivePaeAuthority(id:string):boolean;
  abstract flush():Promise<void>;
@@ -37,7 +49,7 @@ export abstract class AssessmentState {
     if (aggregate.aggregate_version !== aggregateVersion) {
       throw new Error("Assessment aggregate changed before provider submission.");
     }
-    if (this.hasLivePaeAuthority(obligationId)) throw new Error("Assessment is closed after authorization or PAE creation.");
+    if (this.hasLivePaeAuthority(obligationId)||this.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,obligationId)) throw new Error("Assessment is closed after authorization or PAE creation.");
     const unresolved = this.findUnresolvedAssessmentOperation(obligationId, aggregateVersion);
     if (unresolved) throw new Error("Another assessment operation is unresolved for this obligation and aggregate version.");
     const operation: AssessmentOperation = {
@@ -55,7 +67,8 @@ export abstract class AssessmentState {
     const operation = this.assessmentOperations.get(idempotencyKey);
     if (!operation || operation.status !== "RESERVED") throw new Error("Assessment operation is not reserved for a provider result.");
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
+    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)||this.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,operation.obligation_id)) {
+      this.retainLateAssessmentResult(idempotencyKey,record);
       operation.status = "STALE";
       if(!operation.recovery)delete operation.reserved_at;
       return { ...operation };
@@ -84,7 +97,8 @@ export abstract class AssessmentState {
       throw new Error("Assessment operation has no durable provider result to seal.");
     }
     const aggregate = this.store.get(DEMO_ORGANIZATION_ID, operation.obligation_id);
-    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)) {
+    if (aggregate.aggregate_version !== operation.aggregate_version || this.hasLivePaeAuthority(operation.obligation_id)||this.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,operation.obligation_id)) {
+      this.retainLateAssessmentResult(idempotencyKey,operation.provider_result);
       operation.status = "STALE";
       delete operation.provider_result;
       if(!operation.recovery)delete operation.reserved_at;

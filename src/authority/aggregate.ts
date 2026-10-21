@@ -1,3 +1,6 @@
+import {contentHash} from '../domain/linked-instruction';
+import {decimalToAtomicAtScale} from '../j0d-spike/intent';
+import {sealReviewDecision,type SealedReviewDecision,type ReviewDecision} from '../domain/review-decision';
 import { sealDurableAssessmentRecord, verifyDurableAssessmentRecordHash } from "../pae/durable-records";
 import type { DurableAssessmentRecord } from "../domain/schemas";
 import { isSettleableCurrency, convertSourceToSettlement } from "../domain/currency-conversion";
@@ -110,7 +113,12 @@ export interface SealedAssessment {
   hash: string;
 }
 
+export interface WalletReservation {idempotency_key:string;obligation_id:string;wallet_id:string;total_atomic_18:string;state:"RESERVED"|"EXPOSURE_UNKNOWN"|"SETTLED"|"RELEASED";observed_at:string;updated_at:string}
+
 export interface AuthorityStoreSnapshot {
+  wallet_reservations?:WalletReservation[];
+  settlement_postings?:Array<{idempotency_key:string;obligation_id:string;atomic_amount:string;destination_address:string;evidence_sha256:string;posted_at:string}>;
+  review_decisions?: SealedReviewDecision[];
   aggregates: AuthorityAggregate[];
   kill_switches: string[];
   assessments: Array<{ organization_id: string; obligation_id: string; record: DurableAssessmentRecord; hash: string }>;
@@ -173,6 +181,10 @@ export class AuthorityStore {
     assessment: SealedAssessment;
   }> = [];
 
+  private readonly settlementPostings:NonNullable<AuthorityStoreSnapshot["settlement_postings"]>=[];
+  private readonly walletReservations:WalletReservation[]=[];
+  private readonly reviewDecisions: SealedReviewDecision[] = [];
+
   static fromSnapshot(snapshot: AuthorityStoreSnapshot): AuthorityStore {
     const store = new AuthorityStore();
     for (const aggregate of snapshot.aggregates) store.seed(aggregate);
@@ -196,11 +208,21 @@ export class AuthorityStore {
         hash: assessment.hash,
       });
     }
+    for (const review of snapshot.review_decisions ?? []) {
+      const sealed=sealReviewDecision(review.record);
+      if(sealed.hash!==review.hash||store.reviewDecisions.some(r=>r.record.decision_id===sealed.record.decision_id))throw new AuthorityError("Invalid human review history","REV-001");
+      store.reviewDecisions.push(sealed);
+    }
+    for(const posting of snapshot.settlement_postings??[]){if(store.settlementPostings.some(p=>p.idempotency_key===posting.idempotency_key)||!/^\d+$/.test(posting.atomic_amount)||! /^[a-f0-9]{64}$/.test(posting.evidence_sha256))throw new AuthorityError("Invalid settlement receipt","REC-004");store.settlementPostings.push(structuredClone(posting));}
+    for(const r of snapshot.wallet_reservations??[]){if(!r.idempotency_key||!/^\d+$/.test(r.total_atomic_18)||!['RESERVED','EXPOSURE_UNKNOWN','SETTLED','RELEASED'].includes(r.state)||store.walletReservations.some(p=>p.idempotency_key===r.idempotency_key))throw new AuthorityError('Invalid wallet reservation','WAL-007');store.walletReservations.push(structuredClone(r));}
     return store;
   }
 
   exportSnapshot(): AuthorityStoreSnapshot {
     return {
+      ...(this.settlementPostings.length?{settlement_postings:structuredClone(this.settlementPostings)}:{}),
+      ...(this.walletReservations.length?{wallet_reservations:structuredClone(this.walletReservations)}:{}),
+      ...(this.reviewDecisions.length ? {review_decisions:structuredClone(this.reviewDecisions)} : {}),
       aggregates: [...this.aggregates.values()].map((aggregate) => ({ ...aggregate, evidence_hashes: [...aggregate.evidence_hashes] })),
       kill_switches: [...this.killSwitches].sort(),
       // Assessments are persisted append-only: the Supabase CAS RPC
@@ -292,6 +314,44 @@ export class AuthorityStore {
     return this.getAssessmentHistory(organizationId, obligationId)
       .reverse()
       .find((assessment) => assessment.record.aggregate_version === String(current.aggregate_version));
+  }
+
+  /** Immutable transport receipt only; callers must separately check current
+   * access. Finding a receipt never makes it current authorization. */
+  getReviewDecisionReceipt(org:string,id:string,requestId:string,requestHash:string):SealedReviewDecision|undefined {
+    this.get(org,id);
+    const previous=this.reviewDecisions.find(r=>r.record.request_id===requestId);
+    if(previous&&(previous.record.organization_id!==org||previous.record.obligation_id!==id||previous.record.request_sha256!==requestHash))throw new AuthorityError('Review request conflict','REV-002');
+    return previous?structuredClone(previous):undefined;
+  }
+
+  recordReviewDecision(record:ReviewDecision):SealedReviewDecision {
+    const aggregate=this.get(record.organization_id,record.obligation_id);
+    const previous=this.getReviewDecisionReceipt(record.organization_id,record.obligation_id,record.request_id,record.request_sha256);
+    if(previous)return previous;
+    this.requireVersion(aggregate,record.aggregate_version);
+    const previousReview=this.getCurrentReviewDecision(record.organization_id,record.obligation_id);
+    if((previousReview&&record.supersedes_review_hash!==previousReview.hash)||aggregate.execution_state!=='NONE'||aggregate.state==='AUTHORIZED')throw new AuthorityError('Review changed; refresh current authority','REV-003');
+    const sealed=sealReviewDecision(record);this.reviewDecisions.push(sealed);return structuredClone(sealed);
+  }
+
+  getCurrentReviewDecision(org:string,id:string,now=Date.now()):SealedReviewDecision|undefined {
+    const aggregate=this.get(org,id);
+    const review=this.reviewDecisions.findLast(r=>r.record.organization_id===org&&r.record.obligation_id===id&&r.record.aggregate_version===aggregate.aggregate_version);
+    return review&&Date.parse(review.record.created_at)<=now&&now<Date.parse(review.record.expires_at)?structuredClone(review):undefined;
+  }
+
+  private approveHuman(current:AuthorityAggregate,id:string,hash:string):AuthorityAggregate {
+    const sealed=this.getCurrentReviewDecision(current.organization_id,current.obligation_id);
+    if(!sealed||sealed.record.decision_id!==id||sealed.hash!==hash||sealReviewDecision(sealed.record).hash!==hash||sealed.record.decision!=='ACCEPT_FOR_AUTHORIZATION'||sealed.record.policy_version!==current.policy_version)throw new AuthorityError('Current accepted human review required','REV-004');
+    if(!current.source_amount||!current.source_currency||!isSettleableCurrency(current.source_currency))throw new AuthorityError('Source currency or amount unverified','AUT-015');
+    const conversion=convertSourceToSettlement(current.source_amount,current.source_currency);
+    if(!conversion.isAdmitted||conversion.settlementAmount!==current.amount||current.amount==='0.000000')throw new AuthorityError('Source conversion mismatch','AUT-014');
+    if(!hasCurrentProductTrustEvidence(current))throw new AuthorityError('Current product trust required','AUT-016');
+    // Shared-wallet accounting remains enforced at reservation, before dispatch.
+    // A human decision cannot alter factual trust, freezes, or uncertain effects.
+    if(current.execution_state!=='NONE'||current.execution_idempotency_key!==null)throw new AuthorityError('Existing operation requires reconciliation','REV-005');
+    return this.write({...current,state:'AUTHORIZED',aggregate_version:current.aggregate_version+1,reviewed_aggregate_version:current.aggregate_version});
   }
 
   /** Returns the obligation_id of the first obligation in this organization
@@ -412,6 +472,7 @@ export class AuthorityStore {
     if (current.business_hold || current.security_freeze) {
       throw new AuthorityError("Cannot approve while HOLD or security freeze is active", "OPS-001");
     }
+    if(this.getCurrentReviewDecision(organizationId,obligationId))return this.approveHuman(current,reviewedAssessmentId,reviewedAssessmentHash);
     const sealed = this.getCurrentAssessment(organizationId, obligationId);
     if (!sealed) {
       const previous = this.getSealedAssessment(organizationId, obligationId);
@@ -572,6 +633,7 @@ export class AuthorityStore {
         | "source_wallet_ref"
         | "source_wallet_version"
         | "source_wallet_status"
+        | "evidence_hashes"
         | "policy_version"
         | "source_amount"
         | "source_currency"
@@ -642,6 +704,32 @@ export class AuthorityStore {
     return this.write({ ...current, pae_state: "UNUSED" });
   }
 
+  recordSettlementPosting(org:string,id:string,key:string,amount:string,destination:string,evidence:unknown):void {
+    const current=this.get(org,id);
+    if(current.execution_idempotency_key!==key||BigInt(current.amount.replace('.','')).toString()!==amount||current.destination_address.toLowerCase()!==destination.toLowerCase())throw new AuthorityError('Settlement posting identity mismatch','REC-004');
+    const previous=this.settlementPostings.find(p=>p.idempotency_key===key);
+    if(previous){if(previous.atomic_amount!==amount||previous.obligation_id!==id||previous.destination_address.toLowerCase()!==destination.toLowerCase())throw new AuthorityError('Settlement posting conflict','REC-005');return;}
+    this.settlementPostings.push({idempotency_key:key,obligation_id:id,atomic_amount:amount,destination_address:destination,evidence_sha256:contentHash(evidence),posted_at:new Date().toISOString()});
+  }
+  restoreAuxiliarySnapshot(snapshot:AuthorityStoreSnapshot):void {
+    this.walletReservations.splice(0,this.walletReservations.length,...structuredClone(snapshot.wallet_reservations??[]));
+    this.settlementPostings.splice(0,this.settlementPostings.length,...structuredClone(snapshot.settlement_postings??[]));
+  }
+
+  reserveWalletBudget(id:string,key:string,wallet:string,balance:string,total:string,observedAt:string,requireFresh=true):void {
+    const available=decimalToAtomicAtScale(balance,18),required=decimalToAtomicAtScale(total,18);
+    if(available===null||required===null||required<=0n||(requireFresh&&(Date.now()-Date.parse(observedAt)>60000||Date.parse(observedAt)>Date.now())))throw new AuthorityError('Refresh current funding and fee evidence','WAL-STALE');
+    const pending=this.walletReservations.filter(r=>r.wallet_id===wallet&&r.idempotency_key!==key);
+    if(pending.some(r=>r.state==='EXPOSURE_UNKNOWN'))throw new AuthorityError('Reconcile existing shared-wallet exposure before allocating funds','WALLET_EXPOSURE_UNVERIFIED');
+    if(pending.some(r=>r.state==='SETTLED'&&Date.parse(r.updated_at)>Date.parse(observedAt)))throw new AuthorityError('Funding observation predates settlement; refresh readiness','WAL-STALE');
+    const held=pending.filter(r=>r.state==='RESERVED').reduce((n,r)=>n+BigInt(r.total_atomic_18),0n);
+    if(available<held+required)throw new AuthorityError('Shared-wallet budget is already reserved','WALLET_BUDGET_RESERVED');
+    if(!this.walletReservations.some(r=>r.idempotency_key===key))this.walletReservations.push({idempotency_key:key,obligation_id:id,wallet_id:wallet,total_atomic_18:required.toString(),state:'RESERVED',observed_at:observedAt,updated_at:new Date().toISOString()});
+  }
+  private resolveWalletReservation(current:AuthorityAggregate,state:WalletReservation['state']):void {
+    const row=this.walletReservations.find(r=>r.idempotency_key===current.execution_idempotency_key);if(row){row.state=state;row.updated_at=new Date().toISOString();}
+  }
+
   /** Atomic claim: PAE UNUSED -> RESERVED for exactly one execution_id/idempotency key. */
   reserveForExecution(
     organizationId: string,
@@ -670,6 +758,7 @@ export class AuthorityStore {
     if (current.pae_state !== "RESERVED") {
       throw new AuthorityError("Cannot mark SUBMITTING without a RESERVED claim", "EXE-005");
     }
+    this.resolveWalletReservation(current,"EXPOSURE_UNKNOWN");
     return this.write({ ...current, execution_state: "SUBMITTING" });
   }
 
@@ -680,6 +769,7 @@ export class AuthorityStore {
 
   markUnknown(organizationId: string, obligationId: string): AuthorityAggregate {
     const current = this.get(organizationId, obligationId);
+    this.resolveWalletReservation(current,"EXPOSURE_UNKNOWN");
     return this.write({ ...current, execution_state: "UNKNOWN" });
   }
 
@@ -687,11 +777,25 @@ export class AuthorityStore {
     const current = this.get(organizationId, obligationId);
     // eslint-disable-next-line no-console
     console.warn(`[authority] BLOCKED ${organizationId}/${obligationId}: ${reason}`);
+    this.resolveWalletReservation(current,"RELEASED");
     return this.write({ ...current, execution_state: "BLOCKED", pae_state: "REVOKED" });
+  }
+
+  prepareFinancialSuccessor(org:string,id:string,expectedVersion:number,predecessorKey:string):AuthorityAggregate {
+    const current=this.get(org,id);this.requireVersion(current,expectedVersion);
+    if(current.execution_idempotency_key!==predecessorKey||!['FAILED','BLOCKED'].includes(current.execution_state))throw new AuthorityError('Original operation must have established effects','SUCCESSOR_NOT_ADMITTED');
+    return this.write({...current,state:'APPROVAL_PENDING',aggregate_version:current.aggregate_version+1,execution_state:'NONE',execution_idempotency_key:null,pae_state:'REVOKED',reviewed_aggregate_version:null});
+  }
+
+  markFailed(organizationId:string,obligationId:string,effectsEstablished=false):AuthorityAggregate {
+    const current=this.get(organizationId,obligationId);
+    this.resolveWalletReservation(current,effectsEstablished?'RELEASED':'EXPOSURE_UNKNOWN');
+    return this.write({...current,execution_state:'FAILED',pae_state:'CONSUMED'});
   }
 
   markSettled(organizationId: string, obligationId: string): AuthorityAggregate {
     const current = this.get(organizationId, obligationId);
+    this.resolveWalletReservation(current,"SETTLED");
     return this.write({
       ...current,
       pae_state: "CONSUMED",

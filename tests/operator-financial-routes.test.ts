@@ -1,3 +1,5 @@
+import {sourceFixture,productionAuthorityFixture,controlledHarness,preparedApproval,directory,cleanupSyntheticFinancialFixture} from './test-support/financial-fixture';
+import {executionResponseNeedsReconciliation} from '../src/client/command-center-requests';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
@@ -6,13 +8,36 @@ import {join} from 'node:path';
 import {syntheticSourceRecords} from './test-support/synthetic-source-records';
 import {isCurrentSourceEligible,loadPublicSourceRecords} from '../src/server/source-records';
 vi.unmock('../src/server/source-records');
-let directory:string|undefined;
-afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();if(directory)rmSync(directory,{recursive:true,force:true});directory=undefined;});
-function sourceFixture(linked=false,linkedDraft?:{instruction_id:string,source_obligation_id:string,instruction_content_sha256:string}){
- const sample=syntheticSourceRecords()[0];const {counterparty_id,synthetic,classification,source_destination_evidence,source_destination_reference_token,arc_product_destination_status,...commercial}=sample as typeof sample & Record<string,unknown>;const source={...commercial,obligation_id:linkedDraft?.instruction_id??'TESTNET-CONTROLLED-FRESH-001',amount:'1.00',currency:'USD',business_purpose_confirmed:false,issue_date:null,due_date:null,effective_due_date:null,effective_due_date_basis:null,effective_due_date_provenance:null,service_category:'TESTNET_ONLY controlled test obligation',commercial_terms:'TESTNET_ONLY NON_ECONOMIC NOT_VENDOR_PAYMENT',source_evidence:[{evidence_id:'CONTROLLED-TESTNET-001',content_sha256:'a'.repeat(64)}]};
- const now=Date.now();const packet={...(linked?{linked_instruction:{source_obligation_id:linkedDraft?.source_obligation_id??'FICTIONAL-GENUINE',instruction_content_sha256:linkedDraft?.instruction_content_sha256??'b'.repeat(64)}}:{}),purpose:'TESTNET_FINANCIAL_SOURCE',approval_id:'SYNTHETIC-INDEPENDENT-SOURCE-APPROVAL',organization_id:'ORG-DEMO-001',deployment_id:'dpl_synthetic',namespace:'synthetic-financial',valid_from:new Date(now-1000).toISOString(),expires_at:new Date(now+600000).toISOString(),intent_id:'SYNTHETIC-FRESH-INTENT-001',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT',principal:'1.000000',estimated_fee_ceiling:'0.002000',estimated_total_ceiling:'1.002000',source};
- directory=mkdtempSync(join(tmpdir(),'tameion-financial-'));mkdirSync(join(directory,'.tameion'));const bytes=JSON.stringify(packet);writeFileSync(join(directory,'.tameion/financial-source.json'),bytes);vi.spyOn(process,'cwd').mockReturnValue(directory);vi.stubEnv('TAMEION_FINANCIAL_SOURCE_SHA256',createHash('sha256').update(bytes).digest('hex'));vi.stubEnv('VERCEL_DEPLOYMENT_ID',packet.deployment_id);vi.stubEnv('TAMEION_STATE_NAMESPACE',packet.namespace);return packet;
-}
+
+afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();cleanupSyntheticFinancialFixture();});
+describe('S05-F01 exact no-effect wallet response provenance',()=>{
+ async function humanPayment(){
+  const h=controlledHarness(),id=h.source.source.obligation_id;
+  const review=async(version:number,key:string)=>{
+   const req=h.request({expected_version:version,mode:'MANUAL_REVIEW',decision:'ACCEPT_FOR_AUTHORIZATION',rationale:'Explicit synthetic HUMAN review;AI OFF',evidence_ids:h.source.source.source_evidence.map(e=>e.evidence_id),finding_dispositions:[]});req.headers.set('Idempotency-Key',key);
+   const result=await h.handler('review',req,id);expect(result.status).toBe(201);return result.json();
+  };
+  await review(1,'00000000-0000-4000-8000-000000000901');expect((await h.handler('preflight',h.request({obligation_id:id,expected_version:1}))).status).toBe(200);
+  const current=await review(2,'00000000-0000-4000-8000-000000000902');
+  const approved=await h.handler('approve',h.request({expected_version:2,reviewed_decision_id:current.review_decision.decision_id,reviewed_decision_hash:current.review_decision_hash,reason_text:'Exact HUMAN-approved synthetic payment'}),id);expect(approved.status).toBe(200);const a=await approved.json();
+  const body={expected_version:a.aggregate.aggregate_version,packet_sha256:a.packet_sha256,pae_instruction_hash:a.pae_instruction_hash,confirmation:'SUBMIT EXACT TESTNET SETTLEMENT PROXY'};
+  expect((await h.handler('release',h.request({...body,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),id)).status).toBe(200);return {h,id,body};
+ }
+ it('S05-F01 exact canonical wallet503 precedes every execution effect and remains the original request',async()=>{
+  const {h,id,body}=await humanPayment(),before=structuredClone(h.snapshot()),revision=h.revision(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async revalidate=>{await revalidate();throw new AccessError('BALANCE_NOT_VERIFIED',503);}});
+  const result=await action('execute',h.request(body),id),data=await result.json();expect({status:result.status,data}).toEqual({status:503,data:{code:'BALANCE_NOT_VERIFIED'}});
+  expect(h.snapshot()).toEqual(before);expect(h.revision()).toBe(revision);expect(vi.mocked(h.repo.compareAndSet)).toHaveBeenCalledTimes(writes);expect(h.client.createTransaction).not.toHaveBeenCalled();expect(h.snapshot().execution_ledger).toEqual([]);
+  expect(executionResponseNeedsReconciliation({status:result.status,data})).toBe(false);
+ });
+ it('S05-F01 contains same-named AccessError after effectsStarted as no-retry uncertainty',async()=>{
+  const {h,id,body}=await humanPayment(),before=structuredClone(h.snapshot()),revision=h.revision(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
+  const load:FinancialDependencies['load']=async(...args)=>{const state=await h.load(...args);vi.spyOn(state.worker,'execute').mockRejectedValue(new AccessError('BALANCE_NOT_VERIFIED',503));return state;};
+  const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,providerBoundary:async revalidate=>{await revalidate();}});
+  const result=await action('execute',h.request(body),id),data=await result.json();expect({status:result.status,data}).toEqual({status:503,data:{code:'OUTCOME_UNVERIFIED',execution_gate:'RECONCILIATION_ONLY',retry_submission:false}});
+  expect(executionResponseNeedsReconciliation({status:result.status,data})).toBe(true);expect(h.snapshot()).toEqual(before);expect(h.revision()).toBe(revision);expect(vi.mocked(h.repo.compareAndSet)).toHaveBeenCalledTimes(writes);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ });
+});
 describe('independent controlled testnet source admission',()=>{
  it('admits exactly the independently approved fresh source without restoring public data',()=>{const p=sourceFixture();expect(isCurrentSourceEligible(p.organization_id,p.source.obligation_id)).toBe(true);expect(loadPublicSourceRecords()).toEqual([]);expect(isCurrentSourceEligible(p.organization_id,'OBL-J0C-003')).toBe(false);});
 });
@@ -26,44 +51,6 @@ import type {AuthContext} from '../src/server/operator-auth';
 import {AccessError} from '../src/server/route-access-policy';
 import {sealTestAssessment,currentAssessmentReview} from './test-support/seal-assessment';
 import {computeProductionConfigurationSha256} from '../src/server/production-config-identity';
-function productionAuthorityFixture(){
- const legacy=sourceFixture(),origin='https://production.example.invalid',gitSha='f'.repeat(40),projectId='prj_PRODUCTION_SYNTHETIC',sourceDocument='{"synthetic":"operator-source"}';
- const config={SUPABASE_SERVICE_ROLE_KEY:'synthetic-service-role',SUPABASE_URL:'https://db.example.invalid',TAMEION_ALLOWED_ORIGINS:JSON.stringify([origin]),TAMEION_INGRESS_MODE:'vercel-direct-v1',TAMEION_OPERATOR_KEY:'SYNTHETIC-OWNER',TAMEION_OPERATOR_SOURCE_DOCUMENT:sourceDocument,TAMEION_OPERATOR_SOURCE_SHA256:createHash('sha256').update(sourceDocument).digest('hex'),TAMEION_THROTTLE_HMAC_KEY:'9'.repeat(64)};
- const configuration_sha256=computeProductionConfigurationSha256(config),ingress={approval_id:'PRODUCTION-INGRESS',binding:'git-sha-production-v1',project_id:projectId,git_commit_sha:gitSha,environment:'production',direct_edge:true,trusted_proxy_override:false,origins:[origin],configuration_schema:'tameion-production-config-v1',configuration_sha256},ingressBytes=JSON.stringify(ingress);
- const {deployment_id,...sourceCore}=legacy,sourceBinding={binding:'git-sha-production-v1',git_commit_sha:gitSha,project_id:projectId,environment:'production',origin,ingress_approval_id:ingress.approval_id,ingress_record_sha256:createHash('sha256').update(ingressBytes).digest('hex'),source_record_sha256:createHash('sha256').update(JSON.stringify(legacy.source)).digest('hex'),configuration_schema:'tameion-production-config-v1',configuration_sha256};void deployment_id;
- const source={...sourceCore,...sourceBinding},sourceBytes=JSON.stringify(source),sourceHash=createHash('sha256').update(sourceBytes).digest('hex'),requester={purpose:'FINANCIAL_REQUESTER_ACTOR_BINDING',approval_id:'PRODUCTION-REQUESTER',organization_id:source.organization_id,...sourceBinding,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:'SYNTHETIC-OWNER',credential_version:1,actor_id:'SYNTHETIC-ACTOR',source_sha256:sourceHash,intent_id:source.intent_id},requesterBytes=JSON.stringify(requester),requesterHash=createHash('sha256').update(requesterBytes).digest('hex');
- writeFileSync(join(directory!,'.tameion/financial-source.json'),sourceBytes);writeFileSync(join(directory!,'.tameion/financial-requester.json'),requesterBytes);
- const env={...config,TAMEION_FINANCIAL_SOURCE_SHA256:sourceHash,TAMEION_FINANCIAL_REQUESTER_SHA256:requesterHash,TAMEION_INGRESS_RECORD:ingressBytes,VERCEL:'1',VERCEL_ENV:'production',VERCEL_PROJECT_ID:projectId,VERCEL_GIT_COMMIT_SHA:gitSha};for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);return {source,requester,env};
-}
-function controlledHarness(options:{lostResponse?:boolean,sessionRevokedOnSend?:boolean,releaseRemovedOnSend?:boolean,revokeAfterReleaseSave?:boolean,finalExpiryOffset?:number,linkedChangedOnFinalRead?:boolean,omitFinalLinkHook?:boolean,linkedDraft?:{instruction_id:string,source_obligation_id:string,instruction_content_sha256:string},verifyLink?:(source:ReturnType<typeof loadFinancialSourceAdmission>)=>Promise<void>}={}){
- const source=sourceFixture(Boolean(options.linkedChangedOnFinalRead||options.linkedDraft),options.linkedDraft);const initial=new DemoState(undefined,undefined,undefined,undefined,{},[source.source]);
- initial.trustedKeys.loadServerSigningKey(DEMO_SIGNING_KEY_ID);
- let snapshot=initial.exportSnapshot(),revision=1,tx:Record<string,unknown>|undefined;
- const requester={purpose:'FINANCIAL_REQUESTER_ACTOR_BINDING',approval_id:'INDEPENDENT-REQUESTER-APPROVAL',organization_id:source.organization_id,deployment_id:source.deployment_id,namespace:source.namespace,valid_from:source.valid_from,expires_at:source.expires_at,operator_key:'SYNTHETIC-OWNER',credential_version:1,actor_id:initial.resolveDesignatedApprover().actor_id,source_sha256:process.env.TAMEION_FINANCIAL_SOURCE_SHA256,intent_id:source.intent_id};
- const bytes=JSON.stringify(requester);writeFileSync(join(directory!,'.tameion/financial-requester.json'),bytes);vi.stubEnv('TAMEION_FINANCIAL_REQUESTER_SHA256',createHash('sha256').update(bytes).digest('hex'));
- let advanceOnNextRead=false;let linkDriftOnNextRead=false;let linkChanged=false;let revoked=false;const auth={session:{valid:true,operator_key:requester.operator_key,credential_version:1},revalidate:vi.fn(async()=>{if(revoked)throw new AccessError('SESSION_REQUIRED',401);})} as unknown as AuthContext;
- const client:J2aCircleClient={
- getWallet:vi.fn(async({id})=>({data:{wallet:{id,address:id===J2A_DEMO_SOURCE.id?J2A_DEMO_SOURCE.address:J2A_DEMO_DESTINATION.address,blockchain:'ARC-TESTNET',walletSetId:J2A_DEMO_WALLET_SET_ID,state:'LIVE'}}})),
- getWalletTokenBalance:vi.fn(async()=>({data:{tokenBalances:[{amount:'100.000000',token:{id:'TEST-NATIVE-USDC',symbol:'USDC',blockchain:'ARC-TESTNET',decimals:6,isNative:true}}],pagination:{nextPageAfter:null}}})),
- estimateTransferFee:vi.fn(async()=>({data:{medium:{networkFee:'0.002000'}}})),listTransactions:vi.fn(async()=>({data:{transactions:tx?[tx]:[],pagination:{nextPageAfter:null}}})),
- getTransaction:vi.fn(async()=>({data:{transaction:tx}})),
- createTransaction:vi.fn(async(input)=>{tx={id:'synthetic-provider-tx-1',state:'COMPLETE',walletId:input.walletId,destinationAddress:input.destinationAddress,amounts:input.amount,tokenId:input.tokenId,refId:input.refId,blockchain:'ARC-TESTNET',networkFee:'0.002000',txHash:'0x'+'a'.repeat(64)};if(options.lostResponse)throw new Error('synthetic lost response');return {data:{id:tx.id}};})};
- const repo={loadExisting:vi.fn(async()=>{if(linkDriftOnNextRead){linkDriftOnNextRead=false;linkChanged=true;}if(advanceOnNextRead){advanceOnNextRead=false;vi.spyOn(Date,'now').mockReturnValue(Date.parse(snapshot.payment_release_approvals![0].record.expires_at)+options.finalExpiryOffset!);}return {revision,snapshot:structuredClone(snapshot) as unknown as Record<string,unknown>};}),loadOrSeed:vi.fn(()=>{throw new Error('SEED FORBIDDEN');}),compareAndSet:vi.fn(async(_n:string,r:number,next:Record<string,unknown>)=>{if(r!==revision)throw new DemoStateConflictError();snapshot=structuredClone(next) as unknown as typeof snapshot;if(options.revokeAfterReleaseSave&&snapshot.payment_release_approvals?.length)revoked=true;return ++revision;})} as unknown as SupabaseDemoStateRepository;
- const load=vi.fn(async(s:ReturnType<typeof loadFinancialSourceAdmission>,revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"],revalidateLinkAtSend?:()=>Promise<void>)=>{
- let validations=0;let state:DemoState;const adapter=new ArcCircleProviderAdapter(client,k=>state?.getSettlementProxyByIdempotencyKey(k)?.preflight??null);
- state=await loadExistingFinancialState(repo,s.namespace,[s.source],{revalidateLinkedInstructionAtProviderSend:options.omitFinalLinkHook?undefined:revalidateLinkAtSend,assertRequesterAtProviderSend:assertAtSend,revalidateRequester:async()=>{if(options.sessionRevokedOnSend)revoked=true;if(options.releaseRemovedOnSend)snapshot.payment_release_approvals=[];await revalidate();validations++;if(options.finalExpiryOffset!==undefined&&validations===2)advanceOnNextRead=true;if(options.linkedChangedOnFinalRead&&validations===2)linkDriftOnNextRead=true;}},adapter);return Object.assign(state,{getCompleteExecutionRecords:()=>structuredClone(snapshot.execution_ledger)});
- });
- const handler=createFinancialHandlers({verifyLink:async(source)=>{await options.verifyLink?.(source);if(linkChanged)throw new AccessError('LINK_SOURCE_STALE',409);},guard:async()=>auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load,preflight:(_c,now,intent)=>runJ2aReadOnlyPreflight(client,now,intent)});
- const request=(body:unknown)=>new Request('https://synthetic.invalid/api/action',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'00000000-0000-4000-8000-000000000001'},body:JSON.stringify(body)});
- let assessmentKey=10;
- const sealCurrent=async()=>{
- vi.stubEnv('NVIDIA_API_KEY','NETWORK_DENIED_SYNTHETIC_NOT_A_CREDENTIAL');
- vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL)=>{if(String(input)!=='https://integrate.api.nvidia.com/v1/chat/completions')throw new Error('External network forbidden');return Response.json({choices:[{message:{content:JSON.stringify({obligation_id:source.source.obligation_id,decision:'PAY',finding_codes:[],evidence_ids:source.source.source_evidence.map(e=>e.evidence_id),uncertainty_signal:false,explanation:'Network-denied synthetic recommendation, no live proof.'})}}]});}));
- const req=request({});req.headers.set('Idempotency-Key','00000000-0000-4000-8000-'+String(++assessmentKey).padStart(12,'0'));
- const response=await handler('assess',req,source.source.obligation_id);expect(response.status).toBe(200);expect(await response.json()).toMatchObject({decision:{decision:'PAY'},provider_mode:'LIVE_AI'});
- };
- return {source,requester,handler,request,load,client,repo,auth,sealCurrent,snapshot:()=>snapshot,revision:()=>revision,revoke:()=>{revoked=true;}};
-}
 describe('guarded canonical controlled testnet financial lifecycle',()=>{
  it('keeps state and provider work untouched when Production configuration parity is unavailable',async()=>{
   const f=productionAuthorityFixture();vi.stubEnv('SUPABASE_URL','https://drift.example.invalid');
@@ -109,14 +96,6 @@ describe('truthful canonical controlled assessment',()=>{
 });
 import * as contextModule from '../src/agent/context-builder';
 function recommendation(context:ReturnType<typeof buildFinanceAgentContext>,decision:'PAY'|'HOLD'='PAY',finding_codes:string[]=[]){return {name:'NETWORK_DENIED_SYNTHETIC',assess:vi.fn(async()=>({obligation_id:context.obligation_id,decision,finding_codes,evidence_ids:context.evidence_ids,uncertainty_signal:false,explanation:'Synthetic recommendation.'}))};}
-async function preparedApproval(h:ReturnType<typeof controlledHarness>,release=true){
- await h.sealCurrent();const id=h.source.source.obligation_id;
- expect((await h.handler('preflight',h.request({obligation_id:id,expected_version:1}))).status).toBe(200);
- await h.sealCurrent();const state=await h.load(loadFinancialSourceAdmission(),async()=>{}),aggregate=state.store.get(DEMO_ORGANIZATION_ID,id),review=currentAssessmentReview(state.store,DEMO_ORGANIZATION_ID,id);
- const response=await h.handler('approve',h.request({expected_version:aggregate.aggregate_version,reviewed_assessment_id:review.reviewedAssessmentId,reviewed_assessment_hash:review.reviewedAssessmentHash,reason_text:'Explicit controlled test-only approval.'}),id);expect(response.status).toBe(200);const a=await response.json();vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',a.packet_sha256);
- if(release)expect((await h.handler('release',h.request({expected_version:a.aggregate.aggregate_version,packet_sha256:a.packet_sha256,pae_instruction_hash:a.pae_instruction_hash,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),id)).status).toBe(200);
- return {a,id,body:{expected_version:a.aggregate.aggregate_version,packet_sha256:a.packet_sha256,pae_instruction_hash:a.pae_instruction_hash,confirmation:'SUBMIT EXACT TESTNET SETTLEMENT PROXY'}};
-}
 describe('controlled authority negative and fault sensitivity',()=>{
  it('enforces half-open exact UTC millisecond window independently of calendar as-of',()=>{const p=sourceFixture();expect(()=>loadFinancialSourceAdmission(process.env,Date.parse(p.valid_from))).not.toThrow();for(const now of [Date.parse(p.valid_from)-1,Date.parse(p.expires_at),NaN,Infinity])expect(()=>loadFinancialSourceAdmission(process.env,now)).toThrow();expect(buildFinanceAgentContext(p.source,1,'1900-01-01').due_date_position).toBe('CONTROLLED_WINDOW_OPEN');const path=join(directory!,'.tameion/financial-source.json');const bytes=JSON.stringify({...p,valid_from:p.valid_from.replace('Z','1Z')});writeFileSync(path,bytes);vi.stubEnv('TAMEION_FINANCIAL_SOURCE_SHA256',createHash('sha256').update(bytes).digest('hex'));expect(()=>loadFinancialSourceAdmission()).toThrow();});
  it.each(['source_sha256','intent_id','organization_id','aggregate_version','approval_id'] as const)('rejects forged controlled proof %s before provider',async field=>{const p=sourceFixture(),context=buildFinanceAgentContext(p.source,1);const bad={...context,controlled_instruction:{...context.controlled_instruction!,[field]:'FORGED'}};const provider=recommendation(bad);expect((await assessObligation(bad,provider)).decision).not.toBe('PAY');expect(provider.assess).not.toHaveBeenCalled();});
@@ -131,7 +110,7 @@ describe('controlled authority negative and fault sensitivity',()=>{
 });
 it('keeps execution locked without final exact packet approval and rejects identity substitutions',async()=>{const h=controlledHarness(),p=await preparedApproval(h,false);vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',p.a.packet_sha256);expect((await h.handler('execute',h.request(p.body),p.id)).status).toBe(403);vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',p.a.packet_sha256);for(const patch of [{packet_sha256:'0'.repeat(64)},{pae_instruction_hash:'0'.repeat(64)},{expected_version:p.body.expected_version+1}])expect((await h.handler('execute',h.request({...p.body,...patch}),p.id)).status).toBe(403);expect(h.client.createTransaction).not.toHaveBeenCalled();});
 it('bounded existing-state RPC rejects redirects/oversize without seed or credential disclosure',async()=>{const fetcher=vi.fn(async(_input:RequestInfo|URL,_init?:RequestInit)=>new Response('x'.repeat(2_097_153)));const repo=new SupabaseDemoStateRepository('https://synthetic.invalid','SYNTHETIC_NOT_SECRET',fetcher);await expect(repo.loadExisting('SYNTHETIC')).rejects.toThrow(/bound/);expect(fetcher).toHaveBeenCalledOnce();expect(fetcher.mock.calls[0]?.[1]).toMatchObject({redirect:'error',cache:'no-store'});});
-it('provider-completeness boundary refuses hosted-style preflight before state/provider construction',async()=>{const h=controlledHarness();const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async()=>{throw new AccessError('PROVIDER_BALANCE_NOT_VERIFIED',503);}});const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'PROVIDER_BALANCE_NOT_VERIFIED'});expect(h.load).not.toHaveBeenCalled();expect(h.client.getWallet).not.toHaveBeenCalled();});
+it('provider-completeness refusal permits capability/state read but blocks wallet preflight and every write',async()=>{const h=controlledHarness();const action=createFinancialHandlers({guard:async()=>h.auth,source:loadFinancialSourceAdmission,requester:loadFinancialRequesterBinding,load:h.load,providerBoundary:async()=>{throw new AccessError('PROVIDER_BALANCE_NOT_VERIFIED',503);}});const response=await action('preflight',h.request({obligation_id:h.source.source.obligation_id,expected_version:1}));expect(response.status).toBe(503);expect(await response.json()).toMatchObject({code:'PROVIDER_BALANCE_NOT_VERIFIED'});expect(h.load).toHaveBeenCalledOnce();expect(h.repo.compareAndSet).not.toHaveBeenCalled();expect(h.client.getWallet).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();});
 it('passes authenticated revalidation into an admitted provider-completeness boundary before preflight',async()=>{
  const h=controlledHarness();await h.sealCurrent();
  const providerBoundary=vi.fn(async(revalidate:()=>Promise<void>,assertAtSend?:import("../src/execution/worker").ExecutionWorkerOptions["assertRequesterAtProviderSend"])=>{await revalidate();});
@@ -418,7 +397,7 @@ describe('Job65 production existing-state restoration',()=>{
   if(fault==='tampered'){expect(result.status).toBe(503);}else{
    expect(result.status).toBe(200);const data=await result.json();
    expect(data.payment_release_current).toBe(fault==='matching');
-   expect(data.execution_gate).toBe(fault==='matching'?'PORTAL_APPROVED_EXACT_PACKET':fault==='runtime'?'PORTAL_RELEASE_UNAVAILABLE':fault==='namespace'?'PORTAL_RELEASE_APPROVAL_REQUIRED':'PORTAL_RELEASE_RENEWAL_REQUIRED');
+   expect(data.execution_gate).toBe(fault==='matching'?'PORTAL_APPROVED_EXACT_PACKET':['runtime','operator','credential'].includes(fault)?'PORTAL_RELEASE_UNAVAILABLE':fault==='namespace'?'PORTAL_RELEASE_APPROVAL_REQUIRED':'PORTAL_RELEASE_RENEWAL_REQUIRED');
    if(fault==='namespace')expect(data.payment_release_approval).toBeNull();
    else expect(Object.keys(data.payment_release_approval).sort()).toEqual(['actor_id','approved_at','expires_at']);
   }
@@ -433,7 +412,8 @@ describe('Job65 production existing-state restoration',()=>{
   const list=await reader.list(new Request('https://synthetic.invalid/api/obligations'));
   expect(await list.json()).toMatchObject({obligations:[],total_count:0});
   expect((await reader.detail(new Request('https://synthetic.invalid/api/obligations/'+p.id),p.id)).status).toBe(404);
-  expect(rpc.call).not.toHaveBeenCalled();expect(h.snapshot()).toEqual(snapshot);expect(h.client.createTransaction).not.toHaveBeenCalled();
+  // The expired instruction has no recorded execution to recover: it is only consulted (read-only) and never exposed.
+  expect(rpc.call.mock.calls.every(call=>(call as unknown[])[0]==='tameion_state_load_existing')).toBe(true);expect(h.snapshot()).toEqual(snapshot);expect(h.client.createTransaction).not.toHaveBeenCalled();
  });
  it('production route callback refuses provider-send without the required release context',async()=>{
   const h=controlledHarness(),p=await preparedApproval(h,false);
@@ -560,13 +540,13 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   expect(h.load.mock.calls.length).toBeGreaterThan(loads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();
   expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');
  });
- it.each(['unavailable','wrong token'])('retains UNKNOWN when native token identity is %s without resending',async fault=>{
+ it.each(['unavailable','wrong token'])('recovers from stored identity when the current balance service reports %s',async fault=>{
   const {h,p,identity}=await recordedUnknown(),boundary=rejectedBalance();
   if(fault==='unavailable')vi.mocked(h.client.getWalletTokenBalance).mockRejectedValue(new Error('Synthetic token identity unavailable'));
   else{const balances:any=structuredClone(await h.client.getWalletTokenBalance({id:J2A_DEMO_SOURCE.id}));balances.data.tokenBalances[0].token.id='SYNTHETIC-WRONG-TOKEN';vi.mocked(h.client.getWalletTokenBalance).mockResolvedValue(balances);}
   const reads=statusReads(h),result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
-  expect(result.status).toBe(202);expect(await result.json()).toMatchObject({code:'RECONCILIATION_ONLY',execution:{status:'UNKNOWN'}});
-  expect(statusReads(h)).toBeGreaterThan(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({code:'RECONCILED',execution:{status:'SETTLED'}});
+  expect(statusReads(h)).toBeGreaterThan(reads);expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).toHaveBeenCalledOnce();expect(h.snapshot().execution_ledger[0]?.status).toBe('SETTLED');
  });
  it.each(['obligation','amount','destination','malformed destination'])('rejects a cold-restored %s mismatch before status or persistence',async fault=>{
   const {h,p,identity}=await recordedUnknown(),boundary=admittedBalance(),record=h.snapshot().execution_ledger[0]!;
@@ -629,11 +609,11 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   const result=await guarded(h,boundary)('reconcile',h.request({idempotency_key:key,pae_instruction_hash:p.a.pae_instruction_hash}),p.id);
   expect(result.status).toBe(202);expect(await result.json()).toMatchObject({execution:{status:'UNKNOWN',idempotency_key:key}});expect(h.snapshot().execution_ledger[0]?.status).toBe('UNKNOWN');expect(boundary).not.toHaveBeenCalled();expect(h.client.createTransaction).not.toHaveBeenCalled();
  });
- it.each(['SETTLED','FAILED','BLOCKED'] as const)('retains the fresh operator gate for an already-terminal %s record',async status=>{
+ it.each(['SETTLED','FAILED','BLOCKED'] as const)('does not require new funding for an already-terminal %s record',async status=>{
   const {h,p,identity}=await recordedUnknown();h.snapshot().execution_ledger[0]!.status=status;
   const before=structuredClone(h.snapshot()),boundary=rejectedBalance(),reads=statusReads(h),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
   const result=await guarded(h,boundary)('reconcile',h.request(identity),p.id);
-  expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'BALANCE_NOT_VERIFIED'});expect(boundary).toHaveBeenCalledOnce();expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+  expect(result.status).toBe(200);expect(await result.json()).toMatchObject({execution:{status}});expect(boundary).not.toHaveBeenCalled();if(status==='FAILED'){expect(statusReads(h)).toBeGreaterThan(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes+1);expect(h.snapshot().execution_ledger[0].idempotency_key).toBe(before.execution_ledger[0].idempotency_key);}else{expect(statusReads(h)).toBe(reads);expect(vi.mocked(h.repo.compareAndSet).mock.calls.length).toBe(writes);expect(h.snapshot()).toEqual(before);}expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
  it.each(['preflight','execute'] as const)('still requires current operator balance before new %s effects',async kind=>{
   const h=controlledHarness(),p=await preparedApproval(h),before=structuredClone(h.snapshot()),boundary=rejectedBalance(),writes=vi.mocked(h.repo.compareAndSet).mock.calls.length;
@@ -653,4 +633,20 @@ describe('exact uncertain execution recovery without fresh operator funding',()=
   const result=await guarded(h,rejectedBalance())('reconcile',h.request(identity),p.id);
   expect(result.status).toBe(503);expect(await result.json()).toMatchObject({code:'FINANCIAL_AUTHORITY_UNAVAILABLE'});expect(statusReads(h)).toBe(reads);expect(h.snapshot()).toEqual(before);expect(h.client.createTransaction).toHaveBeenCalledOnce();
  });
+});
+
+
+it('C2 AI-only original packet shape continues the exact release once without rewriting old approvals',async()=>{
+ const {getCurrentSettlementProxyPacket}=await import('../src/server/settlement-proxy-packet');const {sealPaymentRelease}=await import('../src/domain/payment-release-approval');const {contentHash}=await import('../src/domain/linked-instruction');
+ const h=controlledHarness(),p=await preparedApproval(h),state=await h.load(loadFinancialSourceAdmission(),async()=>{}),packet=getCurrentSettlementProxyPacket(state,p.id)!;
+ // Original f4118048 constructor has no HUMAN property. Full independent
+ // baseline constructor equality is replayed separately in isolated SQL.
+ const originalShape={...packet.packet} as Record<string,unknown>;delete originalShape.review_decision;const originalHash=contentHash(originalShape);
+ h.snapshot().payment_release_approvals![0]=sealPaymentRelease({...h.snapshot().payment_release_approvals![0].record,packet_sha256:originalHash});const before=structuredClone(h.snapshot());
+ vi.stubEnv('J2A_EXECUTION_AUTHORIZED_PACKET_SHA256',originalHash);
+ expect((await h.handler('execute',h.request({...p.body,packet_sha256:'0'.repeat(64)}),p.id)).status).toBe(403);expect(h.client.createTransaction).not.toHaveBeenCalled();
+ expect((await h.handler('release',h.request({...p.body,packet_sha256:originalHash,confirmation:'APPROVE EXACT TESTNET SETTLEMENT PROXY'}),p.id)).status).toBe(200);
+ expect((await h.handler('execute',h.request({...p.body,packet_sha256:originalHash}),p.id)).status).toBe(200);expect(h.client.createTransaction).toHaveBeenCalledOnce();
+ expect(h.snapshot().payment_release_approvals).toEqual(before.payment_release_approvals);expect(h.snapshot().authorization_history).toEqual(before.authorization_history);expect(h.snapshot().authority.assessments).toEqual(before.authority.assessments);expect(h.snapshot().authority.settlement_postings).toHaveLength(1);
+ expect(packet.packet).not.toHaveProperty('review_decision');expect(packet.packet_sha256).toBe(originalHash);
 });

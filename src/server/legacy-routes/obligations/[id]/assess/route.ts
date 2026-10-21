@@ -21,7 +21,11 @@ const DEFAULT_RESERVED_OPERATION_TIMEOUT_MS = 70_000;
 const ASSESSMENT_CONFLICT_MESSAGE =
   "Assessment state changed while this request was running. The assessment was not made current; reload the obligation before starting a new assessment.";
 
-export interface AssessmentHandlerOptions {controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;maxTransportAttempts?:1;providerSignal?:()=>AbortSignal}
+/** `admittedDisposition`: the caller's state class has already proven one expressly admitted new attempt, so the shared unresolved
+ * refusal is skipped for a FRESH key only. Unlike controlledRecovery, existing keys keep the ordinary replay/seal behavior
+ * (a durable provider result is sealed without a second dispatch). `beforeProviderDispatch` runs after the reservation is
+ * durable and re-read, immediately before the first provider call; throwing refuses dispatch and keeps the consumed attempt. */
+export interface AssessmentHandlerOptions {admittedDisposition?:boolean;beforeProviderDispatch?:(state:AssessmentState)=>void;controlledRecovery?:boolean;recheckReservationBeforeProvider?:boolean;requireHistoricalBasis?:boolean;reservationTimeoutMs?:number;maxPersistenceAttempts?:number;maxTransportAttempts?:1;providerSignal?:()=>AbortSignal}
 export function createAssessmentHandler(load: () => Promise<AssessmentState> = getDemoState, revalidate: () => Promise<void> = async () => {},options:AssessmentHandlerOptions={}) {
 const getDemoState = load;
 const MAX_PERSISTENCE_ATTEMPTS=options.maxPersistenceAttempts??DEFAULT_MAX_PERSISTENCE_ATTEMPTS;
@@ -177,15 +181,9 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
   for (let attempt = 0; attempt < MAX_PERSISTENCE_ATTEMPTS; attempt += 1) {
     const operation = state.getAssessmentOperation(idempotencyKey);
     if (!operation) break;
-    if (operation.status === "STALE") {
-      try {
-        await state.flush();
-        return existingOperationResponse(state, operation);
-      } catch (error) {
-        if (!(error instanceof DemoStateConflictError)) throw error;
-        state = await getDemoState();
-        continue;
-      }
+    if(operation.status==='UNKNOWN'||operation.status==='STALE'){
+      state.retainLateAssessmentResult(idempotencyKey,assessment);
+      try{await state.flush();return existingOperationResponse(state,operation);}catch(error){if(!(error instanceof DemoStateConflictError))throw error;state=await getDemoState();continue;}
     }
     if (operation.status === "PROVIDER_RESULT_DURABLE") return sealDurableProviderResult(idempotencyKey, state);
     if (operation.status !== "RESERVED") return existingOperationResponse(state, operation);
@@ -198,6 +196,15 @@ async function persistProviderResult(idempotencyKey: string, assessment: Durable
     } catch (error) {
       if (!(error instanceof DemoStateConflictError)) throw error;
       state = await getDemoState();
+      // A human decision may win the CAS while the provider is awaiting. Even
+      // the one-attempt policy must retain that completed result under its
+      // original identity; it must never retry sealing it as current advice.
+      const latest=state.getAssessmentOperation(idempotencyKey);
+      if(latest&&(state.store.getCurrentReviewDecision(DEMO_ORGANIZATION_ID,latest.obligation_id)||state.store.get(DEMO_ORGANIZATION_ID,latest.obligation_id).aggregate_version!==latest.aggregate_version)){
+        if(latest.status==='RESERVED')state.checkpointAssessmentResult(idempotencyKey,assessment);
+        else state.retainLateAssessmentResult(idempotencyKey,assessment);
+        try{await state.flush();return existingOperationResponse(state,state.getAssessmentOperation(idempotencyKey)!);}catch(retentionError){if(!(retentionError instanceof DemoStateConflictError))throw retentionError;return persistenceUnknownResponse(idempotencyKey);}
+      }
     }
   }
   return persistenceUnknownResponse(idempotencyKey);
@@ -235,7 +242,7 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     const expiredReservation = !options.controlledRecovery && state.findUnresolvedAssessmentOperations(id).find(reservationExpired);
     if (expiredReservation) return markUnknownAndReply(state, expiredReservation.idempotency_key);
     const unresolved = state.findUnresolvedAssessmentOperation(id, aggregateVersion);
-    if (unresolved && !options.controlledRecovery) {
+    if (unresolved && !options.controlledRecovery && !options.admittedDisposition) {
       if (reservationExpired(unresolved)) return markUnknownAndReply(state, unresolved.idempotency_key);
       return NextResponse.json(
         { error: "An assessment operation for this obligation and aggregate version is unresolved. Use its original Idempotency-Key; a new provider request is blocked.", code: "ASM-OPERATION-UNRESOLVED", operation_status: unresolved.status, idempotency_key: unresolved.idempotency_key },
@@ -301,11 +308,13 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
   };
   await revalidate();
   const providerSignal=options.providerSignal?.();
+  // This is deliberately after the final await. A window may close while authentication/source revalidation waits.
+  options.beforeProviderDispatch?.(state);
   let decision:Awaited<ReturnType<typeof assessObligation>>;
   try{decision=await assessWithinBudget(buildFinanceAgentContext(record, aggregateVersion, new Date().toISOString().slice(0, 10), readinessOverlay,options.requireHistoricalBasis),provider,providerSignal);}
   catch(error){if(providerSignal?.aborted)return markUnknownAndReply(state,idempotencyKey);throw error;}
   await revalidate();
-  if (isLiveNvidia && wasProviderCallFailure(decision)) return markUnknownAndReply(state, idempotencyKey);
+  if (isLiveNvidia && wasProviderCallFailure(decision)&&(!decision.provider_outcome||decision.provider_outcome==="TRANSPORT_UNCERTAIN")) return markUnknownAndReply(state, idempotencyKey);
 
   const runtimeIdentity = provider.runtimeIdentity;
   if (!runtimeIdentity) throw new Error("Assessment provider did not expose a durable runtime identity.");
@@ -326,7 +335,8 @@ async function POST(request: Request, context: { params: Promise<{ id: string }>
     model_id: runtimeIdentity.model_id,
     model_config_version: runtimeIdentity.model_config_version,
     runtime_config_sha256: runtimeIdentity.runtime_config_sha256,
-    provider_mode: !isLiveNvidia ? "NOT_LIVE_AI" : "LIVE_AI",
+    ...(decision.provider_outcome?{provider_outcome:decision.provider_outcome}:{}),
+    provider_mode: !isLiveNvidia||decision.provider_outcome==="INVALID_OUTPUT" ? "NOT_LIVE_AI" : decision.provider_outcome ? "BLOCKED_EXTERNAL" : "LIVE_AI",
     assessed_at: new Date().toISOString().replace(/(\.\d{3})\d*Z$/, "$1Z"),
   };
 

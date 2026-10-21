@@ -50,16 +50,17 @@ export interface DirectEvidenceObligationInput {
   currency: string;
   due_date: string | null;
   source_evidence: Array<{ evidence_id: string }>;
+  current_source_basis?:{revision:number;source_revision_sha256:string};
 }
 
 export function adaptDirectEvidenceObligation(record: DirectEvidenceObligationInput): CanonicalPaymentObligation {
   return canonicalPaymentObligationSchema.parse({
     source: {
       source_kind: "DIRECT_EVIDENCE",
-      source_system_id: "J0-C-LIVE-USAGE-LEDGER",
+      source_system_id: record.current_source_basis?"TAMEION-SOURCE-REVISION-1":"J0-C-LIVE-USAGE-LEDGER",
       record_type: "BUSINESS_OBLIGATION",
       record_id: record.obligation_id,
-      record_version: "1",
+      record_version: record.current_source_basis?String(record.current_source_basis.revision):"1",
       approval_state: "NOT_ASSERTED",
       execution_authority: "NONE",
     },

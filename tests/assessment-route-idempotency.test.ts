@@ -120,7 +120,7 @@ function createDurableFetch(options: {
           obligation_id: "OBL-J0C-001",
           decision: "HOLD",
           finding_codes: [],
-          evidence_ids: ["EVD-J0C-001"],
+          evidence_ids: ["EVID-SYNTHETIC-001"],
           uncertainty_signal: true,
           explanation: "Provider returned a valid test assessment.",
         }) } }],

@@ -721,7 +721,8 @@ describe("Execution Worker (P0 core tests 6-11)", () => {
     const worker = new ExecutionWorker(store, adapter);
 
     const record = await worker.execute(sealed);
-    expect(record.status).toBe("BLOCKED");
+    expect(record.status).toBe("UNKNOWN");
+    expect(record.provider_evidence?.outcome).toBe("SETTLEMENT_MISMATCH");
     expect(store.get("ORG-DEMO-001", "OBL-J0C-002").state).not.toBe("RECONCILED");
   });
 });
