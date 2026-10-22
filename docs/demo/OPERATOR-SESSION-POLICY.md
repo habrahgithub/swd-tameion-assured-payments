@@ -1,0 +1,23 @@
+# Operator session policy
+
+New logins have a fixed two-hour server expiry. Existing sessions keep their original stored expiry; sign in again after separately approved activation to receive the new lifetime. The host-only Secure, HttpOnly, SameSite=Lax cookie never grants more authority than the stored session.
+
+While the private workspace is open, the browser checks the same session once an hour with a same-origin, no-store GET. Successful validation is quiet: it does not replace the session, extend expiry, reset credentials, refresh a wallet, or grant payment authority. The hourly request has a ten-second deadline. Failure, revocation, mismatched session data or timeout closes the private view and clears its balance, preserving recovery request keys. This privacy closure does not claim durable server logout. Logout and server authorization remain separate.
+
+Absolute expiry is checked around asynchronous work and on focus/visibility resume. Background timers may be delayed; this is not a claim of continuous background validation. Pagehide/BFcache restoration hides private data and requires explicit workspace verification again. Ignored aborts and late replies cannot restore a closed view. Expiry and revocation always take precedence.
+
+Release order: deploy compatible application readers first; then activate the forward database migration only under a separate admission. Before database activation, new logins can still receive the old one-hour expiry. The migration guards the original TTL constraint and login-function definition, changes the session cap, two mint/return intervals and admitted per-session refresh window/lock numbers, and leaves existing rows, grants, locks and other authority windows intact. Unknown or duplicate constraint semantics fail transactionally. Reapplying the already-installed migration fails closed.
+
+Rollback requires review: old application readers reject sessions with more than one hour remaining, and a one-hour constraint cannot safely be restored while two-hour rows exist. Do not delete sessions, shorten rows, reset operation identities or downgrade constraints automatically. Hosted activation, actual two-hour hosted behavior, login UAT and payment readiness remain UNVERIFIED by local tests.
+
+## Wallet observations on display
+
+After explicit authenticated Open workspace, the displayed Dashboard triggers one read-only balance observation. Each actual Dashboard/workflow switch supplies a new observation intent. Re-rendering, changing the selected payable or viewing another payment stage does not. The existing manual Refresh wallet balance button uses the same endpoint and scheduler.
+
+Only one balance request can be in flight. All display and manual events inside the thirty-second interval from dispatch are skipped, with no pending request, deferred catch-up, timer-triggered send or automatic failure retry. A subsequent distinct display or manual action can request a new observation after the limit. The previous in-memory observation retains its original timestamp; it does not become fresh merely because another page is displayed.
+
+Before dispatch, the browser writes and reads back only versioned last-attempt/cooldown timestamps in sessionStorage. No amount, balance, operator identity, password, cookie or CSRF token is stored there. Reload inside the interval suppresses a new query and truthfully shows that this view has no balance observation. Storage errors suppress dispatch; malformed/future metadata consumes the current event and is repaired to a new cooldown. Within a mounted view a monotonic deadline prevents wall-clock jumps from shortening the interval. Tab-local metadata is untrusted and never authorizes access or proves elapsed real time across reloads. A bounded valid Retry-After can lengthen the cooldown, with no automatic retry.
+
+The same forward migration changes only the existing refresh-admit per-session scope from one request per five seconds to one per thirty seconds, retaining the existing network limit of twelve per minute and all guards, locks, grants and auth_charge behavior. The original refresh function definition is checked before any migration changes; drift rolls back. Durable enforcement is per session, not a global operator/wallet limit. Until separately admitted database activation, that new durable limit is not hosted fact.
+
+Privacy hide, expiry, logout, unmount and failed hourly session checks cancel queued work and invalidate late balance replies. Successful hourly validation does not trigger or cancel balance observation. A balance observation is not affordability, fee assurance, permission to pay, or payment success. Local fake-transport tests do not prove hosted/provider behavior.

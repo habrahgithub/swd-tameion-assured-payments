@@ -1,4 +1,5 @@
 /** @vitest-environment jsdom */
+import {StrictMode} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 
@@ -330,6 +331,20 @@ describe("Command Center mounted Operational Report", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("emits only actual Dashboard/workflow display transitions, including StrictMode replay",async()=>{
+    fetchMock.mockImplementation(async input=>String(input)==='/api/obligations'?response({obligations:[obligation('DISPLAY',true)]}):response(assessedDetail('DISPLAY','HOLD')));
+    const display=vi.fn(),replacement=vi.fn();const r=rtlRender(<StrictMode><CommandCenter initialView="dashboard" onDisplay={display}/></StrictMode>);
+    await screen.findByRole('button',{name:'Review payables'});expect(display.mock.calls).toEqual([['dashboard']]);
+    r.rerender(<StrictMode><CommandCenter initialView="dashboard" onDisplay={replacement}/></StrictMode>);expect(replacement).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button',{name:'Review payables'}));await screen.findByRole('heading',{name:'Choose a payable'});expect(replacement.mock.calls).toEqual([['workflow']]);
+    fireEvent.click(obligationRow('DISPLAY'));await waitFor(()=>expect(fetchMock.mock.calls.some(([url])=>String(url).endsWith('/DISPLAY'))).toBe(true));
+    await waitFor(()=>expect(screen.getByRole('main').querySelector('nav[aria-label="Payment lifecycle navigation"]')).toBeTruthy());
+    navigateStage('Assessment');navigateStage('Obligation');
+    expect(replacement.mock.calls).toEqual([['workflow']]);
+    fireEvent.click(screen.getByRole('button',{name:'Dashboard'}));expect(replacement.mock.calls).toEqual([['workflow'],['dashboard']]);
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(0);
   });
 
   it("shows the source-backed queue on a compact dashboard and opens Stage 1 without a second queue owner", async () => {
