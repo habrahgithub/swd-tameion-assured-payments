@@ -3103,7 +3103,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";
   const optionalReassessmentAvailable = acknowledgedSuccessorKey(selectedId)===null && !unresolvedSubmission && !retainedAssessmentRequestKey(selectedId) && detailState === "loaded" && !detail?.pae_sealed &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady && !freshAssessmentBlocked(detail);
   const reviewCurrentAssessment = () => {
     if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
     setDisplayedAssessment(currentAssessment);

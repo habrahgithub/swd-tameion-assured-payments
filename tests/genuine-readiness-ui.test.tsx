@@ -179,3 +179,35 @@ it('an ingress permission name alone is not a canonical advertised edit action',
  expect(screen.queryByRole('button',{name:'Edit payable / Save correction'})).toBeNull();
  expect(t.fetcher.mock.calls.every(([,init])=>init?.method!=='POST')).toBe(true);
 });
+
+async function seedRetainedPayLink(t:ReturnType<typeof setup>){
+ const state=new DemoState(t.h.snapshot(),undefined,undefined,undefined,{},t.h.records);
+ const review=sealTestAssessment(state.store,'ORG-DEMO-001',t.h.id,1,{decision:'PAY',source_record_sha256:hash(t.h.records[0])});t.h.snapshot().authority=state.store.exportSnapshot();
+ const {sealLinkedInstruction}=await import('../src/domain/linked-instruction');
+ t.h.snapshot().linked_settlement_instructions=[sealLinkedInstruction({schema_version:1,kind:'ARC_TESTNET_SETTLEMENT_INSTRUCTION',status:'DRAFT_AUTHORITY_REQUIRED',organization_id:'ORG-DEMO-001',source_obligation_id:t.h.id,source_record_sha256:hash(t.h.records[0]),source_aggregate_version:1,assessment_id:review.record.assessment_id,assessment_hash:review.assessment_hash,instruction_id:`TESTNET-CONTROLLED-LINKED-${'a'.repeat(32)}`,attempt_id:'11111111-1111-4111-8111-111111111111',source_amount:t.h.records[0].amount,source_currency:t.h.records[0].currency,network:'ARC_TESTNET',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT',created_at:'2026-01-01T00:00:00.000Z'})];
+}
+
+it('reviewed current PAY with blocked source has no dead-end optional rerun and keeps retained link/result',async()=>{
+ const t=setup();await seedRetainedPayLink(t);
+ const before=JSON.stringify(t.h.snapshot()),detail=await(await t.readers.detail(new Request('https://fixture.invalid'),t.h.id)).json();
+ expect(detail.fresh_assessment_readiness).toEqual({ready:false,blocker:'SOURCE_ASSESSMENT_CONTEXT_REQUIRED'});expect(detail.advisory_action_eligible).toBe(true);
+ render(<CommandCenter csrfToken="SYNTHETIC-CSRF"/>);fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'View Assessment'}));
+ fireEvent.click(await screen.findByRole('button',{name:'Review current PAY assessment'}));fireEvent.click(screen.getByText('Findings and supporting detail'));
+ expect(screen.getByRole('region',{name:'Assessment result'}).textContent).toContain('PAY');expect(screen.getByRole('region',{name:'Linked Arc Testnet instructions'}).textContent).toContain('TESTNET-CONTROLLED-LINKED-');
+ expect(screen.queryByRole('button',{name:'Run AI Assessment again'})).toBeNull();
+ expect(t.fetcher.mock.calls.every(([,init])=>init?.method!=='POST')).toBe(true);expect(t.h.repository.compareAndSet).not.toHaveBeenCalled();expect(JSON.stringify(t.h.snapshot())).toBe(before);expect(localStorage.length).toBe(0);
+});
+
+
+it.each(['ready','legacy-missing'])('current reviewed PAY rerun remains functional for %s context',async kind=>{
+ const t=setup(true);await seedRetainedPayLink(t);
+ if(kind==='legacy-missing')t.projectDetail(d=>{const {fresh_assessment_readiness,...olderRead}=d;return olderRead;});
+ const canonical=await(await t.readers.detail(new Request('https://fixture.invalid'),t.h.id)).json();expect(canonical.fresh_assessment_readiness.ready).toBe(true);
+ const before=JSON.stringify(t.h.snapshot());render(<CommandCenter csrfToken="SYNTHETIC-CSRF"/>);fireEvent.click(await t.row());fireEvent.click(await screen.findByRole('button',{name:'View Assessment'}));fireEvent.click(await screen.findByRole('button',{name:'Review current PAY assessment'}));fireEvent.click(screen.getByText('Findings and supporting detail'));
+ const rerun=screen.getByRole('button',{name:'Run AI Assessment again'}) as HTMLButtonElement;expect(rerun.disabled).toBe(false);expect(screen.getByRole('region',{name:'Linked Arc Testnet instructions'})).toBeTruthy();
+ // This counted fake transport throws without invoking a server/provider. Only the existing UI request path is exercised.
+ fireEvent.click(rerun);await waitFor(()=>expect(t.fetcher.mock.calls.filter(([url,init])=>init?.method==='POST'&&String(url).endsWith('/advisory'))).toHaveLength(1));
+ const request=t.fetcher.mock.calls.find(([,init])=>init?.method==='POST')![1]!;const key=(request.headers as Record<string,string>)['Idempotency-Key'];
+ expect(localStorage.getItem(`tameion.assessment-request.${t.h.id}`)).toBe(key);expect(JSON.stringify(t.h.snapshot())).toBe(before);expect(t.h.repository.compareAndSet).not.toHaveBeenCalled();
+ await screen.findByRole('button',{name:'Check assessment request'});expect(t.fetcher.mock.calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1);
+});
