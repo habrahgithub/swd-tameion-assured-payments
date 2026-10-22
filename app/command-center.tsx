@@ -18,10 +18,11 @@ import {
   type AssessmentReviewSnapshot,
   type ProviderRuntimeTruth,
 } from "../src/client/assessment-review-snapshot";
-import { isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
+import { isAssessmentBasisRejection, isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { stage2DisplayLabel, assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
 interface ObligationSummary {
   stage2_status?:{code:string};
+  fresh_assessment_readiness?:{ready?:boolean;blocker?:string|null};
   source_group?: "GENUINE_COMPANY" | "DEMO_ARC_TESTNET" | "UNVERIFIED";
   obligation_id: string;
   service_category: string;
@@ -76,6 +77,7 @@ interface AggregateView {
 
 interface ObligationDetail {
   stage2_status?:{code:string};
+  fresh_assessment_readiness?:{ready?:boolean;blocker?:string|null};
   current_review_decision?:SealedReviewDecision|null;
   allowed_actions?:string[];
   genuine_assessment?: GenuineAssessmentVisibility;
@@ -1604,6 +1606,18 @@ export async function assessmentStatusMatchesDetail(status:GenuineAssessmentStat
  const digest=await globalThis.crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonicalize(detail.record)));
  return Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,"0")).join("")===status.source_record_sha256;
 }
+const sourceContextReviewTitle='Source assessment context needs review';
+function freshAssessmentBlocked(view:{source_group?:string;fresh_assessment_readiness?:{ready?:boolean}}|null|undefined):boolean {
+  return view?.source_group==='GENUINE_COMPANY'&&view.fresh_assessment_readiness?.ready===false;
+}
+function freshAssessmentLabel(view:{fresh_assessment_readiness?:{blocker?:string|null}}):string {
+  return view.fresh_assessment_readiness?.blocker==='SOURCE_ASSESSMENT_CONTEXT_REQUIRED'?sourceContextReviewTitle:'Assessment review required';
+}
+function freshAssessmentGuidance(view:{fresh_assessment_readiness?:{blocker?:string|null}}):string {
+  return view.fresh_assessment_readiness?.blocker==='SOURCE_ASSESSMENT_CONTEXT_REQUIRED'
+    ? 'The source assessment context does not pass the fresh assessment precondition. Ask the workspace owner to review the admitted source context. This check has not requested a new assessment.'
+    : 'A fresh assessment is not available in this view. Ask the workspace owner to review current assessment admission; the exact cause is not established here.';
+}
 type AssessmentFeedback = {
   obligationId: string;
   expectedVersion: string;
@@ -1811,6 +1825,7 @@ function assessmentFeedbackForResponse(
   expectedVersion: string,
   selectionGeneration: number,
   genuineAdmission = false,
+  assessmentRoute = "",
 ): AssessmentFeedback {
   const code = result.data && typeof result.data === "object" && "code" in result.data
     ? String((result.data as { code: unknown }).code)
@@ -1820,6 +1835,13 @@ function assessmentFeedbackForResponse(
     : "";
   const statusCode = code || serverStatus || (result.status ? `HTTP ${result.status}` : "NO_RESPONSE");
   const known=stage2Status(code);
+  if(isAssessmentBasisRejection(result,genuineAdmission&&assessmentRoute==='advisory'))return {
+    obligationId,expectedVersion,selectionGeneration,statusCode,kind:'rejected',title:'Assessment request rejected',
+    message:'Source assessment context failed validation. The exact source fact requiring correction has not been established.',
+    durability:'This new attempt was rejected before reservation or provider dispatch. The original request reference and earlier history are retained; any separately recorded UNKNOWN remains unresolved.',
+    nextStep:'Ask the workspace owner to review the admitted source assessment context. Do not resend this request; this rejection does not admit another assessment or authorize payment.',
+    owner:'Workspace owner · source assessment context review',
+  };
   if(genuineAdmission&&isAssessmentHistoryLimitRejection(result))return {
     obligationId,expectedVersion,selectionGeneration,statusCode,kind:'rejected',title:'Assessment request rejected',
     message:'The assessment history limit rejected this new attempt before reservation or provider dispatch. Any separately recorded UNKNOWN remains unresolved.',
@@ -1908,7 +1930,9 @@ function assessmentFeedbackForResponse(
   return {
     obligationId, expectedVersion, selectionGeneration, statusCode, kind: "unconfirmed",
     title: "Assessment result is unavailable.",
-    message: actionErrorMessage(result.data),
+    message: code === "GENUINE_ASSESSMENT_BASIS_INVALID"
+      ? "Assessment completion is not confirmed. Keep the original request reference for read-only review."
+      : actionErrorMessage(result.data),
     durability: "No current receipt; existing request key retained.",
     nextStep: "Refresh the read-only queue summary for any newer record; this does not confirm the operation. No automatic retry was sent.",
     owner: "Finance Agent · individual recovery owner is not recorded",
@@ -2386,7 +2410,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         const assessment=assessmentReviewSnapshot(accepted.current_assessment);
         const unresolved=['UNKNOWN','IN_PROGRESS'].includes(accepted.genuine_assessment?.status??'');
         const current=assessment?.obligation_id===id&&assessment.aggregate_version===String(accepted.aggregate.aggregate_version);
-        const status=accepted.current_review_decision?`Human review · ${accepted.current_review_decision.record.decision}`:unresolved?'Assessment outcome unverified':accepted.financial_action_eligible!==true&&accepted.advisory_action_eligible!==true?'Assessment review required':current?`Assessment result · ${assessment!.decision}`:'Assessment required';
+        const status=accepted.current_review_decision?`Human review · ${accepted.current_review_decision.record.decision}`:unresolved?'Assessment outcome unverified':accepted.financial_action_eligible!==true&&accepted.advisory_action_eligible!==true?'Assessment review required':current?`Assessment result · ${assessment!.decision}`:freshAssessmentBlocked(accepted)?freshAssessmentLabel(accepted):'Assessment required';
         const date=sourceText(accepted.record,'effective_due_date')!=='Not captured'?sourceText(accepted.record,'effective_due_date'):sourceText(accepted.record,'due_date');
         setQueueObservations(old=>new Map(old).set(id,{summary:canonicalize(member),epoch:requestEpoch,status,date,source:canonicalize(accepted.record),version:String(accepted.aggregate.aggregate_version)}));
       }
@@ -2451,7 +2475,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     setStageCompletionReceipt({obligationId: selectedId, message});
   }, [lastResult, selectedFinancialResult, detail, detailIsStale, detailError, selectedId]);
 
-  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string, assessmentRecovery = false) => {
+  const run = async (label: string, action: () => Promise<{ ok: boolean; status: number; data: unknown }>, assessmentExpectedVersion?: string, assessmentRequestIdentity?: string, assessmentRecovery = false, assessmentRoute = "") => {
     const targetId = selectedRef.current;
     if (detailIsStale || !detail || !hasExpectedObligationIdentity(detail, targetId)) return;
     const packetPae = detail.execution_packet?.packet?.pae as Record<string, unknown> | undefined;
@@ -2487,7 +2511,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         const exactResponse = result.ok && result.status === 200 && Boolean(receipt) &&
           identity.obligation_id === targetId && identity.aggregate_version === assessmentExpectedVersion;
         actionSucceeded = exactResponse;
-        const feedback=assessmentFeedbackForResponse(result,targetId,assessmentExpectedVersion??"",generation,detail.source_group==='GENUINE_COMPANY');
+        const feedback=assessmentFeedbackForResponse(result,targetId,assessmentExpectedVersion??"",generation,detail.source_group==='GENUINE_COMPANY',assessmentRoute);
         if(feedback.kind==='rejected'&&assessmentRequestIdentity&&retainedAssessmentRequestKey(targetId)===assessmentRequestIdentity){
           setAssessmentRejections(old=>new Map(old).set(targetId,{key:assessmentRequestIdentity,source:canonicalize(detail.record),epoch:assessmentEpoch,feedback}));
         }
@@ -2606,6 +2630,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const runAssessment = (recovery = false, bootstrap = false, disposition = false) => {
     const successorLike = recovery || bootstrap || disposition;
     const obligationId = selectedId;
+    if(!successorLike&&freshAssessmentBlocked(detail))return;
     if (assessmentCallbackGeneration !== selectionGeneration.current || assessmentCallbackDetailGeneration !== detailGeneration.current || selectedRef.current !== obligationId ||
         !obligationId || !detail || detailIsStale || !hasExpectedObligationIdentity(detail, obligationId)) return;
     // Contain the callback as well as its affordance, including stale handlers
@@ -2636,6 +2661,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     });
     const storageKey = successorLike ? `tameion.assessment-successor.${obligationId}` : `tameion.assessment-request.${obligationId}`;
     const requestIdentity = crypto.randomUUID();
+    const assessmentRoute = disposition ? "advisory/disposition" : successorLike || detail.advisory_action_eligible===true ? "advisory" : "assess";
     return run("assess", async () => {
       const sourceHash=successorLike?await hashHistoricalSourceRecord(detail.record):null;
       if(successorLike&&!sourceHash)return {ok:false,status:503,data:{code:"SOURCE_IDENTITY_UNAVAILABLE"}};
@@ -2658,7 +2684,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       } catch {
         return {ok:false, status:503, data:{code:"REQUEST_IDENTITY_UNAVAILABLE", error:"Assessment was not sent because its request identity could not be stored."}};
       }
-      const result = await postCommand(`/api/obligations/${obligationId}/${disposition?"advisory/disposition":successorLike||detail.advisory_action_eligible===true?"advisory":"assess"}`, disposition?{disposition:"CURRENT_SOURCE_REASSESSMENT",expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,approval_id:dispositionAdmission!.approval_id,predecessor_key:earlierReference,predecessor_sha256:dispositionAdmission!.predecessor_sha256}:recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
+      const result = await postCommand(`/api/obligations/${obligationId}/${assessmentRoute}`, disposition?{disposition:"CURRENT_SOURCE_REASSESSMENT",expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,approval_id:dispositionAdmission!.approval_id,predecessor_key:earlierReference,predecessor_sha256:dispositionAdmission!.predecessor_sha256}:recovery?{recovery:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash}:bootstrap?{bootstrap:true,expected_version:detail.aggregate.aggregate_version,source_record_sha256:sourceHash,unmatched_reference_key:earlierReference}:{}, {
         "Idempotency-Key": requestIdentity,
       });
       // No refusal code proves non-submission. Keep the attempted identity;
@@ -2697,7 +2723,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         });
       }
       return result;
-    }, expectedVersion, requestIdentity, successorLike);
+    }, expectedVersion, requestIdentity, successorLike, assessmentRoute);
   };
 
   const selected = obligations.find((o) => o.obligation_id === selectedId);
@@ -2783,6 +2809,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
   const hasCurrentPayAssessment = hasCurrentAssessment && currentAssessment?.decision === "PAY";
   // Guidance may only point at an assessment/reassessment the server capability actually allows.
   const assessmentCapabilityAvailable = detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true;
+  const freshAssessmentAvailable = assessmentCapabilityAvailable && !freshAssessmentBlocked(detail);
   const reviewOnlyAssessment = Boolean(detailState === "loaded" && detail && !assessmentCapabilityAvailable && !detail.execution);
   const selectedFinancialScope = selectedFinancialScopeReadiness(
     detailState === "loaded" ? detail : null,
@@ -2835,7 +2862,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       case "Assessment":
         if(humanDecision)return humanAccepted?'Human review recorded':humanDecision.record.decision==='ESCALATE'?'Escalation assigned':humanDecision.record.decision==='NEEDS_CORRECTION'?'Source correction requested':'Human review declined';
         if(["UNKNOWN","IN_PROGRESS"].includes(detail.genuine_assessment?.status??""))return detail.genuine_assessment?.status==="UNKNOWN"?"Assessment completion not confirmed":"Assessment request saved; result pending";
-        if (!hasCurrentAssessment || !currentAssessment) return "Not current for this version";
+        if (!hasCurrentAssessment || !currentAssessment) return freshAssessmentBlocked(detail)?freshAssessmentLabel(detail):"Not current for this version";
         if (currentAssessment.decision === "HOLD") return "Requires attention";
         if (currentAssessment.decision === "ESCALATE") return "Escalation required";
         return "PAY — advisory";
@@ -3076,7 +3103,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                   ? `Resolve the current ${currentAssessment.decision} findings before reassessment.`
                   : "No assessment action is available for the current obligation state.";
   const optionalReassessmentAvailable = acknowledgedSuccessorKey(selectedId)===null && !unresolvedSubmission && !retainedAssessmentRequestKey(selectedId) && detailState === "loaded" && !detail?.pae_sealed &&
-    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady;
+    hasCurrentPayAssessment && Boolean(authorizationAssessment) && !routeAssuranceReady && !freshAssessmentBlocked(detail);
   const reviewCurrentAssessment = () => {
     if (detailState !== "loaded" || currentAssessment?.obligation_id !== selectedId || !currentAssessment?.race) return;
     setDisplayedAssessment(currentAssessment);
@@ -3318,6 +3345,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     };
   }, [dashboardVisible, currentPayableListCheck?.status, currentExactAssessmentCheck?.status, holdReview?.status]);
   const currentFeedback = assessmentFeedbackIsCurrent ? feedbackForSelection : null;
+  const freshSourceContextBlocked = detailState==='loaded'&&!detailIsStale&&!hasCurrentAssessment&&!humanDecision&&!detail?.execution&&!detail?.pae_sealed&&!reviewOnlyAssessment&&!currentFeedback&&!retainedAssessmentRequestKey(selectedId)&&!['UNKNOWN','IN_PROGRESS'].includes(detail?.genuine_assessment?.status??'')&&freshAssessmentBlocked(detail);
   const serverAssessmentUnresolved=detailState==="loaded"&&["UNKNOWN","IN_PROGRESS"].includes(detail?.genuine_assessment?.status??"");
   const assessmentRequestUnresolved = !humanAccepted&&Boolean(serverAssessmentUnresolved || selectedRequestKey && currentFeedback?.kind!=="rejected" || currentFeedback && !["durable","rejected"].includes(currentFeedback.kind));
   const currentAssessmentConflict=assessmentConflict&&detailState==="loaded"&&!detailIsStale&&detail?.source_group==="GENUINE_COMPANY"&&
@@ -3482,6 +3510,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     workspaceAction={label:"Review assessment",actor:"User · advisory review",run:()=>{setDisplayedAssessment(currentAssessment);showStage("Assessment");setExactAssessmentCheck(null);}};
   } else if (!holdReviewBlocked && hasCurrentAssessment && currentAssessment?.decision === "HOLD" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction={label:"View HOLD findings",actor:"User · findings review",run:reviewHoldFindings};
+  } else if (detailState==='loaded'&&!hasCurrentAssessment&&freshAssessmentBlocked(detail)&&!reviewOnlyAssessment) {
+    workspaceAction={label:'View assessment requirements',actor:'Workspace owner · source and admission review',run:()=>showStage('Assessment')};
   } else if (currentFeedback?.kind==='rejected'||reviewOnlyAssessment) {
     workspaceAction={label:hasCurrentAssessment?viewedStage==='Assessment'&&currentAssessment?.decision==='PAY'?'Review current PAY assessment':'View Assessment':'View assessment status',actor:'Workspace owner · source and admission review',run:()=>{if(viewedStage==='Assessment'&&hasCurrentAssessment&&currentAssessment)setDisplayedAssessment(currentAssessment);showStage('Assessment');}};
   } else if (viewedStage === "Obligation" && hasCurrentAssessment && currentAssessment && !detail?.pae_sealed && !detail?.execution) {
@@ -3525,7 +3555,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         expected_version: detail.aggregate.aggregate_version,
       }));
     } };
-  } else if ((detail?.financial_action_eligible === true || detail?.advisory_action_eligible === true) && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
+  } else if (freshAssessmentAvailable && assessmentAction === "assess" && (viewedStage === "Obligation" || viewedStage === "Assessment")) {
     workspaceAction = {
       label: "Run AI Assessment",
       actor: "Finance Agent · advisory review",
@@ -3694,11 +3724,18 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       {walletSummary}
       {csrfToken&&<SourceWorkflowPanel readModel={{detail:detailIsStale?null:detail as unknown as SourceWorkflowView|null,createAllowed:sourceCreateAllowed}} selectedId={selectedId} csrfToken={csrfToken} onChanged={()=>{void refreshObligations(true);if(selectedId)void refreshDetail(selectedId,true);}}/>}
 
+      {listPresentation==='ready'&&selectedId&&detailState==='loaded'&&!detailIsStale&&detail?.source_group==='GENUINE_COMPANY'&&!sourceCreateAllowed&&!(Array.isArray(detail.allowed_actions)&&detail.allowed_actions.some(action=>['MANUAL_REVIEW','EDIT_SOURCE','CREATE_SOURCE'].includes(action)))&&<section role="status" aria-label="Source controls availability" className="rounded border border-[var(--color-border)] p-3 text-sm">
+        <p>Source entry and manual review controls are not advertised in this view.</p>
+        <p>The exact cause is unverified. Ask the workspace owner to review available source and review capabilities. Existing recorded decisions and other advertised controls remain subject to their current requirements.</p>
+      </section>}
       {dashboardVisible ? (
         <section aria-label="Dashboard" className="flex min-w-0 flex-1 flex-col gap-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-soft)] md:p-6">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">Circle · Arc · USDC</p>
             <h2 ref={dashboardHeadingRef} tabIndex={-1} className="mt-1 text-2xl font-semibold tracking-tight text-[var(--color-ink)]">Dashboard</h2>
+          </div>
+          <div className="flex justify-start">
+            <button type="button" onClick={()=>{pendingViewFocus.current=true;setDashboardVisible(false);}} className="min-h-11 rounded-lg bg-[var(--color-primary-action)] px-5 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Review payables</button>
           </div>
           <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-[repeat(2,minmax(0,1fr))]">
             <section aria-label="Total payables" className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4">
@@ -3723,7 +3760,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               {obligations.filter(o => o.source_group === "GENUINE_COMPANY").slice(0,6).map(o => <li key={o.obligation_id} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-3 gap-y-1 py-3 text-sm">
                 <p className="break-words font-semibold">{businessTitle(o.service_category)}</p><p className="tabular min-w-0 break-all text-end font-semibold"><bdi>{businessAmount(o.amount)} {o.currency}</bdi></p>
                 <p className="col-span-2 break-words text-xs text-[var(--color-ink-muted)]">{o.beneficiary_name?.trim() && o.beneficiary_name !== "Not captured" ? o.beneficiary_name : "Supplier not recorded"} · {o.due_date ? `Due ${o.due_date}` : "Due date not recorded"}</p>
-                <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{o.current_review_decision?`Human review · ${o.current_review_decision.record.decision}`:retainedAssessmentRequestKey(o.obligation_id) ? "Assessment completion not confirmed" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : "Assessment required"}</p>
+                <p className="col-span-2 text-xs text-[var(--color-ink-muted)]">{o.current_review_decision?`Human review · ${o.current_review_decision.record.decision}`:retainedAssessmentRequestKey(o.obligation_id) ? "Assessment completion not confirmed" : o.assessed ? `Recorded assessment · ${o.decision ?? "Unavailable"}` : freshAssessmentBlocked(o)?freshAssessmentLabel(o):"Assessment required"}</p>
                 {(retainedAssessmentRequestKey(o.obligation_id)||["UNKNOWN","RESERVED"].includes(o.stage2_status?.code??""))&&<p className="col-span-2 text-xs">{stage2Status(o.stage2_status?.code).reason} {stage2Status(o.stage2_status?.code).remedy}</p>}
               </li>)}
             </ul>
@@ -3731,9 +3768,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           </section>}
           {listPresentation === "empty" && <p role="status" className="text-sm text-[var(--color-ink-muted)]">No items in the payment queue.</p>}
           {listPresentation === "error" && <p role="alert" className="text-sm text-[var(--color-danger)]">Payment queue unavailable. Review payables to retry.</p>}
-          <div className="mt-auto flex justify-end border-t border-[var(--color-border)] pt-4">
-            <button type="button" onClick={()=>{pendingViewFocus.current=true;setDashboardVisible(false);}} className="min-h-11 rounded-lg bg-[var(--color-primary-action)] px-5 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Review payables</button>
-          </div>
+
         </section>
       ) : (
       <div ref={workflowContainerRef} tabIndex={-1} className="grid grid-cols-1 gap-2 md:grid-cols-[300px_minmax(0,1fr)] md:gap-3">
@@ -3786,11 +3821,11 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
               const rowHuman=selectedRow&&detailState==='loaded'?humanDecision:o.current_review_decision;
               const assessmentStatus = rowHuman?`Human review · ${rowHuman.record.decision}`:selectedRow&&detailState==='loaded'&&currentFeedback?.kind==='rejected'&&!serverAssessmentUnresolved?'Assessment request rejected':
                 selectedRow&&detailState==='loaded'&&reviewOnlyAssessment&&!serverAssessmentUnresolved?'Assessment review required':
-                known&&(!selectedRow||detailState!=='loaded')?`Last checked · ${stage2DisplayLabel(unresolvedRequest?'Assessment outcome unverified':knownRejected?'Assessment request rejected':known.status)}`:unresolvedRequest
+                known&&(!selectedRow||detailState!=='loaded'&&known.status!==sourceContextReviewTitle)?`Last checked · ${stage2DisplayLabel(unresolvedRequest?'Assessment outcome unverified':knownRejected?'Assessment request rejected':known.status)}`:unresolvedRequest
                 ? selectedRow && currentFeedback?.kind === "pending" ? "Assessment request saved; result pending" : "Assessment completion not confirmed"
                 : selectedRow && detailState !== "loaded" ? "Assessment status unavailable"
                 : assessed ? `Assessment result · ${decision ?? "Unavailable"}`
-                : workflowRecorded ? "Workflow recorded" : selectedRow&&detailState==='loaded'?"Assessment required":o.assessed===false?"Assessment not recorded":"Assessment status unavailable";
+                : workflowRecorded ? "Workflow recorded" : freshAssessmentBlocked(selectedRow?detailState==='loaded'?detail:null:o)?freshAssessmentLabel(selectedRow?detail!:o):selectedRow&&detailState==='loaded'?"Assessment required":o.assessed===false?"Assessment not recorded":"Assessment status unavailable";
               const statusColor = assessed
                 ? decision === "ESCALATE"
                   ? "var(--status-hold-text)"
@@ -3930,6 +3965,11 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
             </div>
           )}
 
+          {freshSourceContextBlocked&&<section role="status" aria-label="Source assessment context" className="rounded border-s-4 border-[var(--color-warning)] p-3 text-sm">
+            <h2 className="font-semibold">{freshAssessmentLabel(detail!)}</h2>
+            <p>{freshAssessmentGuidance(detail!)}</p><p>Workspace owner · source and admission review. Existing request history and financial requirements are unchanged.</p>
+          </section>}
+
           {selected && detail && detailState === "loaded" && detail.financial_action_eligible !== true && detail.advisory_action_eligible !== true && !serverAssessmentUnresolved && (
             <section role="status" aria-label="Review-only payable" className="rounded border-s-4 border-s-[var(--color-warning)] bg-[var(--color-surface)] px-3 py-3">
               <p className="text-[13px] font-semibold text-[var(--color-ink)]">Review-only payable</p>
@@ -3992,9 +4032,9 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
                 {!isInitialObligationScreen && <p className="text-sm font-semibold text-[var(--color-ink-muted)]">{stagePositionLabel}</p>}
                 <h3 ref={stageHeadingRef} tabIndex={-1} aria-describedby={stageDescriptionId} className="mt-1 text-[16px] font-semibold leading-5 text-[var(--color-ink)]">{!selectedId
                   ? listPresentation === "ready" ? "Choose a payable" : listPresentation === "empty" ? "No payables" : "Payables unavailable"
-                  : humanDecision&&!detail?.pae_sealed&&!detail?.execution ? humanAccepted?'Human review recorded':lifecycleStatus('Assessment') : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? "Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
-                {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" && assessmentCapabilityAvailable && !currentFeedback ? "This obligation needs an assessment before it can proceed." : selectedWorkspaceGuidance}</p>}
-                {isInitialObligationScreen && selectedId && assessmentCapabilityAvailable && !currentFeedback && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.</p>}
+                  : humanDecision&&!detail?.pae_sealed&&!detail?.execution ? humanAccepted?'Human review recorded':lifecycleStatus('Assessment') : detailState === "loaded" && currentLifecycleStage === "Obligation" && !hasCurrentAssessment ? freshSourceContextBlocked?freshAssessmentLabel(detail!):"Assessment required" : viewedStage === "Assessment" && hasCurrentPayAssessment ? "PAY — advisory" : viewedStage === "Payment" && detailState === "loaded" && detail ? paymentStageStatus(detail, exactPacketSubmissionReady, detailState) : detailState === "loaded" ? lifecycleStatus(viewedStage) : state.label}</h3>
+                {!showExceptionRecovery && selectedWorkspaceGuidance !== lifecycleStatus(viewedStage) && <p className="mt-1 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">{isInitialObligationScreen && selectedId && detailState === "loaded" && freshAssessmentAvailable && !currentFeedback ? "This obligation needs an assessment before it can proceed." : freshSourceContextBlocked?freshAssessmentGuidance(detail!):selectedWorkspaceGuidance}</p>}
+                {isInitialObligationScreen && selectedId && freshAssessmentAvailable && !currentFeedback && <p className="mt-2 max-w-3xl text-[13px] leading-5 text-[var(--color-ink-muted)]">This action records an advisory PAY, HOLD or ESCALATE result. It does not approve or send payment.</p>}
                 {visibleWorkspaceAction && !showExceptionRecovery && !isInitialObligationScreen && <p className="mt-2 text-[12px] text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">{visibleWorkspaceAction.actor}</strong></p>}
               {!visibleWorkspaceAction && !showContinueToAuthorization && !showContinueToPayment && selectedId && detailState === "loaded" && !showExceptionRecovery && !isInitialObligationScreen && (
                   <p className="mt-2 text-sm text-[var(--color-ink-muted)]">Next owner: <strong className="text-[var(--color-ink)]">
