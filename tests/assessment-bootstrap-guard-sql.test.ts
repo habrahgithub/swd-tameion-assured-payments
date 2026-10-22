@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {resolve} from 'node:path';
 import {assertBootstrapOperationPreservation} from '../src/server/genuine-admission';
 const sql=readFileSync(resolve(import.meta.dirname,'../supabase/migrations/20261019120000_assessment_bootstrap_guard.sql'),'utf8');
-const previous=readFileSync(resolve(import.meta.dirname,'../supabase/migrations/20261014230000_linked_instruction_history_guard.sql'),'utf8');
+const previous=readFileSync(resolve(import.meta.dirname,'../supabase/migrations/20261014200005_linked_instruction_history_guard.sql'),'utf8');
 const guardStart=sql.indexOf('create or replace function tameion_private.assessment_bootstrap_guard'),guardEnd=sql.indexOf('revoke all on function tameion_private.assessment_bootstrap_guard');
 const guardSql=sql.slice(guardStart,guardEnd),casSql=sql.slice(guardEnd);
 

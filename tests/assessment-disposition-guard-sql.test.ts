@@ -8,7 +8,7 @@ import {assertDispositionLineage,assertDispositionPreservation} from '../src/ser
 const migrations=resolve(import.meta.dirname,'../supabase/migrations');
 const sql=readFileSync(resolve(migrations,'20261019190000_assessment_disposition_guard.sql'),'utf8');
 const bootstrapMigration=readFileSync(resolve(migrations,'20261019120000_assessment_bootstrap_guard.sql'),'utf8');
-const linkedMigration=readFileSync(resolve(migrations,'20261014230000_linked_instruction_history_guard.sql'),'utf8');
+const linkedMigration=readFileSync(resolve(migrations,'20261014200005_linked_instruction_history_guard.sql'),'utf8');
 const hash=(v:unknown)=>createHash('sha256').update(canonicalize(v)).digest('hex');
 const guardStart=sql.indexOf('create or replace function tameion_private.assessment_disposition_guard'),guardEnd=sql.indexOf('revoke all on function tameion_private.assessment_disposition_guard');
 const guardSql=sql.slice(guardStart,guardEnd);
