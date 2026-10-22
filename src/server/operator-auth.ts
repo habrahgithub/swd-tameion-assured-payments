@@ -1,3 +1,4 @@
+import { OPERATOR_SESSION_DURATION_MS } from "../operator-session-policy";
 import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { AccessError, digest, methodNotAllowed, parseOperatorPolicy, readBoundedJson, requireJson, resolveRequestIdentity, type OperatorPolicy } from "./route-access-policy";
 import { runtimeRpc, SupabaseOperatorAuthRepository, type OperatorAuthRepository, type Session, type Verifier } from "./operator-auth-repository";
@@ -71,8 +72,9 @@ export function createOperatorHandlers(deps:Dependencies) {
         const bearer=fresh(),sessionCsrf=csrfForBearer(bearer);
         const finished=await repository.finishLogin({attempt_digest:tokenDigest(attempt),expected_credential_version:r.verifier.credential_version,verified:matches&&body.username===operatorKey,session_digest:tokenDigest(bearer),csrf_digest:tokenDigest(sessionCsrf)});
         if(finished.accepted!==true)throw new AccessError("LOGIN_REJECTED",401);
-        if(!finished.expires_at||!Number.isFinite(Date.parse(finished.expires_at))||Date.parse(finished.expires_at)<=Date.now()||Date.parse(finished.expires_at)>Date.now()+3600000)throw new AccessError("AUTH_UNAVAILABLE",503);
-        const response=privateJson({authenticated:true,expires_at:finished.expires_at,csrf_token:sessionCsrf});response.headers.append("Set-Cookie",setCookie(sessionCookie,bearer,Math.floor((Date.parse(finished.expires_at)-Date.now())/1000)));response.headers.append("Set-Cookie",setCookie(preloginCookie,"",0));return response;
+        if(!finished.expires_at||!Number.isFinite(Date.parse(finished.expires_at))||Date.parse(finished.expires_at)<=Date.now()||Date.parse(finished.expires_at)>Date.now()+OPERATOR_SESSION_DURATION_MS)throw new AccessError("AUTH_UNAVAILABLE",503);
+        const maxAge=Math.floor((Date.parse(finished.expires_at)-Date.now())/1000);if(maxAge<1)throw new AccessError("AUTH_UNAVAILABLE",503);
+        const response=privateJson({authenticated:true,expires_at:finished.expires_at,csrf_token:sessionCsrf});response.headers.append("Set-Cookie",setCookie(sessionCookie,bearer,Math.min(OPERATOR_SESSION_DURATION_MS/1000,maxAge)));response.headers.append("Set-Cookie",setCookie(preloginCookie,"",0));return response;
       }catch(error){const response=failure(error);response.headers.append("Set-Cookie",setCookie(preloginCookie,"",0));return response;}
     },
     session:async(request:Request)=>{

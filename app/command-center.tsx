@@ -2222,8 +2222,11 @@ function paymentStageStatus(detail: ObligationDetail, exactPacketSubmissionReady
   return currentAuthorityGuidance(detail) ?? "The instruction is sealed, but current execution checks are not satisfied. Refresh and re-establish current payment authority before submission.";
 }
 
-export function CommandCenter({operatorControls,walletSummary,csrfToken,initialView="workflow"}:{operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance;csrfToken?:string;initialView?:"dashboard"|"workflow"}={}) {
+export function CommandCenter({operatorControls,walletSummary,csrfToken,initialView="workflow",onDisplay}:{onDisplay?:(view:"dashboard"|"workflow")=>void;operatorControls?:ReactNode;walletSummary?:ReactNode;walletBalance?:ObservedWalletBalance;csrfToken?:string;initialView?:"dashboard"|"workflow"}={}) {
   const [dashboardVisible, setDashboardVisible] = useState(initialView === "dashboard");
+  const displayCallback=useRef(onDisplay),lastDisplay=useRef<"dashboard"|"workflow"|null>(null);
+  displayCallback.current=onDisplay;
+  useEffect(()=>{const view=dashboardVisible?"dashboard":"workflow";if(lastDisplay.current===view)return;lastDisplay.current=view;displayCallback.current?.(view);},[dashboardVisible]);
   const dashboardHeadingRef = useRef<HTMLHeadingElement>(null);
   const workflowContainerRef = useRef<HTMLDivElement>(null);
   const commandCenterRef = useRef<HTMLElement>(null);

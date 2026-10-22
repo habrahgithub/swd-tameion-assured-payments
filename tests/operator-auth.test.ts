@@ -14,6 +14,18 @@ function repo(){const expires=new Date(Date.now()+3600000).toISOString();return 
 function request(path:string,body:unknown={},extra:Record<string,string>={},method="POST") {return new Request(origin+path,{method,headers:{host:"operator.example.invalid","x-forwarded-host":"operator.example.invalid","x-forwarded-proto":"https",origin,"sec-fetch-site":"same-origin","sec-fetch-dest":"empty","x-vercel-forwarded-for":"192.0.2.1","content-type":"application/json",...extra},...(method==='POST'?{body:JSON.stringify(body)}:{})});}
 function harness(){const r=repo(),factory=vi.fn(()=>r),verify=vi.fn(async()=>true),balance=vi.fn(async()=>({amount:"12.345678",asset:"USDC",captured_at:new Date().toISOString()}));const handlers=createOperatorHandlers({policy:()=>policy,repository:factory,operatorKey:()=>"MOCK-OPERATOR",verifyPassword:verify,balance});return {r,factory,verify,balance,...handlers};}
 describe("#65 auth before effect",()=>{
+ it.each([3600001,7200000])('accepts a fixed durable login expiry at %sms with a bounded host-only cookie',async ttl=>{
+  vi.useFakeTimers();try{const h=harness();const expires=new Date(Date.now()+ttl).toISOString();h.r.finishLogin.mockResolvedValueOnce({accepted:true,expires_at:expires});
+   const response=await h.login(request('/api/operator/login',{username:'MOCK-OPERATOR',password:'invented'},{cookie:`__Host-tameion-prelogin=${token}`,'x-tameion-csrf':token}));
+   expect(response.status).toBe(200);expect((await response.json()).expires_at).toBe(expires);
+   const cookies=response.headers.get('set-cookie')!;expect(cookies).toContain(`Max-Age=${Math.floor(ttl/1000)}`);expect(cookies).toContain('HttpOnly; Secure; SameSite=Lax');expect(cookies).not.toContain('Domain=');
+  }finally{vi.useRealTimers();}
+ });
+ it.each([0,-1,1,999,7200001,NaN])('rejects invalid new login lifetime %s without session cookie',async ttl=>{
+  vi.useFakeTimers();try{const h=harness();h.r.finishLogin.mockResolvedValueOnce({accepted:true,expires_at:Number.isFinite(ttl)?new Date(Date.now()+ttl).toISOString():'invalid'});
+  const response=await h.login(request('/api/operator/login',{username:'MOCK-OPERATOR',password:'invented'},{cookie:`__Host-tameion-prelogin=${token}`,'x-tameion-csrf':token}));
+  expect(response.status).toBe(503);expect(response.headers.get('set-cookie')).not.toContain('__Host-tameion-session=');}finally{vi.useRealTimers();}
+ });
  it("denies unverified origin before repository construction",async()=>{
   const h=harness();const response=await h.csrf(request('/api/operator/csrf',{}, {'x-tameion-csrf-bootstrap':'1',origin:'https://evil.invalid'}));
   expect(response.status).toBe(403);expect(h.factory).not.toHaveBeenCalled();
