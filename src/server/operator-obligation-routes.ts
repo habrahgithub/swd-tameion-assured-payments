@@ -15,6 +15,16 @@ function freshAssessmentReadiness(record:LiveUsageObligationRecord|undefined,adm
   const contextValid=Boolean(record?.assessment_basis&&deterministicHistoricalContextValid(record));
   return {ready:admitted&&contextValid,blocker:!admitted?'EXISTING_ASSESSMENT_ADMISSION_REQUIRED':contextValid?null:'SOURCE_ASSESSMENT_CONTEXT_REQUIRED'};
 }
+async function withLegacyAssessmentOverlay(response:Response,state:ExistingState|undefined,id:string,records:readonly LiveUsageObligationRecord[]):Promise<Response>{
+  if(!state||!response.ok)return response;
+  const data=await response.json(),visibility=state.getGenuineAssessmentVisibility?.(id);
+  const staleChildReceipt=visibility?.disposition?.state==='USED'&&!visibility.disposition.child_current&&visibility.disposition.child_seal_hash!==undefined&&data.current_assessment?.assessment_hash===visibility.disposition.child_seal_hash;
+  const unresolved=Boolean(visibility&&(['UNKNOWN','IN_PROGRESS'].includes(visibility.status)||staleChildReceipt));
+  const prior=unresolved?state.store.getAssessmentHistory('ORG-DEMO-001',id).reverse().find(a=>a.record.source_record_sha256):undefined;
+  const historical=prior?{obligation_id:id,assessment_id:prior.record.assessment_id,assessment_hash:prior.hash,aggregate_version:prior.record.aggregate_version,source_record_sha256:prior.record.source_record_sha256,decision:prior.record.decision,reasons:prior.record.reasons,provider_mode:prior.record.provider_mode}:null;
+  const admitted=state.canAssessGenuine?.(id)===true;
+  return privateJson({...data,...(visibility?{genuine_assessment:visibility}:{}),...(unresolved?{historical_assessment:historical,current_assessment:null,financial_action_eligible:false,truth:{...data.truth,tameion_control_truth:{...data.truth.tameion_control_truth,assessment_state:'NOT_ASSESSED'}}}:{}),fresh_assessment_readiness:freshAssessmentReadiness(records.find(record=>record.obligation_id===id),admitted),advisory_action_eligible:admitted,linked_testnet_instructions:state.getLinkedInstructions?.(id)??[]},response.status);
+}
 /** Explicit in-process seam for mock verification; runtime has no fixture mode. */
 export function createObligationReaders(guard:(request:Request,post:boolean)=>Promise<AuthContext>,load:(records:readonly LiveUsageObligationRecord[],binding?:OperatorStateBinding,namespace?:string,ownerAdmission?:OwnerAdmissionState)=>Promise<ExistingState>,source:()=>readonly LiveUsageObligationRecord[]|OperatorSourceView=()=>loadOperatorSourceRecords()??loadPublicSourceRecords(),controlledSource:()=>FinancialSourceAdmission|undefined=()=>loadOptionalFinancialSourceAdmission(),workflowRead=sourceWorkflowHandlers,readCapabilities=async():Promise<RecoveryWorkflowCapabilities|null>=>{const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)return null;return new SupabaseDemoStateRepository(url,key).readRecoveryWorkflowCapabilities();}){
   async function read(request:Request,id?:string,packet=false,diagnostic=false){
@@ -72,12 +82,14 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
         if(diagnostic){
           const ids=new Set(["OBL-J0C-001","OBL-J0C-002","OBL-J0C-003","OBL-J0C-004","OBL-J0C-005","OBL-SWD-20261014-001"]);
           const diagnosticRows:Record<string,unknown>[]=[];
-          for(const value of sourceCatalog?.obligations??[])if(value&&typeof value==="object"&&!Array.isArray(value)){const row=value as Record<string,unknown>;if(typeof row.obligation_id==="string"&&ids.has(row.obligation_id))diagnosticRows.push({...row,command_admitted_actions:Array.isArray(row.allowed_actions)?row.allowed_actions:[],diagnostic_binding_namespace:binding?.namespace??null});}
+          for(const value of sourceCatalog?.obligations??[])if(value&&typeof value==="object"&&!Array.isArray(value)){const row=value as Record<string,unknown>;if(typeof row.obligation_id==="string"&&ids.has(row.obligation_id))diagnosticRows.push({...row,diagnostic_binding_namespace:binding?.namespace??null});}
           const projectRows=async(state:ExistingState|undefined,group:"GENUINE_COMPANY"|"UNVERIFIED"|"DEMO_ARC_TESTNET",ns:string|undefined,sourceBinding?:OperatorStateBinding)=>{
             if(!state)return;
             const {projectObligationDetail}=await import('./obligation-read-model');
             for(const obligation of state.listObligations())if(ids.has(obligation.obligation_id)){
-              const detail=await (await projectObligationDetail(state,obligation.obligation_id,false,undefined,group,sourceBinding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===obligation.obligation_id)):undefined)).json() as Record<string,unknown>;
+              let detailResponse:Response=projectObligationDetail(state,obligation.obligation_id,false,undefined,group,sourceBinding?.workflow_base_sha256?contentHash(records.find(r=>r.obligation_id===obligation.obligation_id)):undefined);
+              if(group==='GENUINE_COMPANY'&&sourceBinding?.workflow_base_sha256)detailResponse=await withLegacyAssessmentOverlay(detailResponse,state,obligation.obligation_id,records);
+              const detail=await detailResponse.json() as Record<string,unknown>;
               diagnosticRows.push({...detail,obligation_id:obligation.obligation_id,diagnostic_binding_namespace:ns??state.persistence_namespace});
             }
           };

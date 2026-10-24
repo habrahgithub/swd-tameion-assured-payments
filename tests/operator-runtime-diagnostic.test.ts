@@ -30,11 +30,11 @@ describe("operator runtime diagnostic", () => {
   });
 
   it("keeps the composed evaluator authentication failure fail-closed without adding diagnostics", async () => {
-    const evaluate = vi.fn(async () => Response.json({ code: "SESSION_REQUIRED" }, { status: 401 }));
+    const evaluate = vi.fn(async () => Response.json({ code: "SESSION_REQUIRED" }, { status: 401, headers: { "Cache-Control": "no-store" } }));
     const { handle } = handler(evaluate);
     const response = await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"));
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ code: "DIAGNOSTIC_UNAVAILABLE" });
+    expect(await response.json()).toEqual({ code: "SESSION_REQUIRED" });
     expect(evaluate).toHaveBeenCalledOnce();
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
@@ -120,6 +120,22 @@ describe("operator runtime diagnostic", () => {
     expect(body.observation_status).toBe("INCONSISTENT");
     expect(body.observation_reason_code).toBe("STATE_REVISION_CHANGED");
     expect(body.payables.every((row: { permitted_next_actions: string[] }) => row.permitted_next_actions.length === 0)).toBe(true);
+  });
+
+  it("distinguishes unresolved assessment from uncertain settlement", async () => {
+    const { handle } = handler(async () => internal({ obligations: [
+      { obligation_id: "OBL-J0C-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", stage2_status: "UNKNOWN" },
+      { obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", blockers: [{ code: "OUTCOME_UNKNOWN", stage: "RECONCILIATION" }] },
+      { obligation_id: "OBL-J0C-002", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", stage2_status: "READY_FOR_REVIEW", blockers: [{ code: "SOURCE_HISTORY_LIMIT" }] },
+      { obligation_id: "OBL-J0C-003", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", fresh_assessment_readiness: { ready: false, blocker: "SOURCE_ASSESSMENT_CONTEXT_REQUIRED" } },
+    ] }));
+    const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();
+    expect(body.payables[0].blocking_reason_code).toBe("ASSESSMENT_OUTCOME_UNKNOWN");
+    expect(body.payables[0].stage).toBe("ASSESSMENT");
+    expect(body.payables[5].blocking_reason_code).toBe("SETTLEMENT_OUTCOME_UNKNOWN");
+    expect(body.payables[5].stage).toBe("RECONCILIATION");
+    expect(body.payables[1].blocking_reason_code).toBe("SOURCE_HISTORY_LIMIT");
+    expect(body.payables[2].blocking_reason_code).toBe("ASSESSMENT_CONTEXT_REQUIRED");
   });
 
   it("does not treat display affordances as admitted commands and requires valid build identity", async () => {

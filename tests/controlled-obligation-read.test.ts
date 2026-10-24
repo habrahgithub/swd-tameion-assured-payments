@@ -12,6 +12,7 @@ import {loadExistingDemoState} from "../src/server/load-existing-demo-state";
 import {loadFinancialRequesterBinding,loadFinancialSourceAdmission,loadOptionalFinancialSourceAdmission} from "../src/server/financial-source-admission";
 import {AccessError} from "../src/server/route-access-policy";
 import type {AuthContext} from "../src/server/operator-auth";
+import type {OperatorSourceView} from "../src/server/operator-source-records";
 import {syntheticSourceRecords} from "./test-support/synthetic-source-records";
 import {computeProductionConfigurationSha256} from "../src/server/production-config-identity";
 
@@ -67,6 +68,26 @@ describe("controlled obligation read isolation",()=>{
   expect(result.obligations.every((row:{command_admitted_actions?:string[]})=>!row.command_admitted_actions?.includes("PAYMENT_EXECUTE"))).toBe(true);
   expect(load.mock.calls.length).toBe(4);
   expect(publicState.exportSnapshot()).toEqual(publicBefore);expect(controlledState.exportSnapshot()).toEqual(controlledBefore);
+ });
+
+ it("uses the ordinary legacy detail overlay for unresolved assessment and source-context blockers",async()=>{
+  const records=syntheticSourceRecords(),id=records[0].obligation_id;
+  const view={records,state_binding:{namespace:"LEGACY-NAMESPACE",revision:4,authority_sha256:"a".repeat(64),workflow_base_sha256:"b".repeat(64)}} as OperatorSourceView;
+  const state=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},records),{
+   persistence_namespace:"LEGACY-NAMESPACE",persistence_revision:4,
+   getGenuineAssessmentVisibility:()=>({status:"UNKNOWN" as const,recovery_eligible:false,recovery_reason:"SOURCE_CHANGED" as const}),
+   canAssessGenuine:()=>true,
+  });
+  const load=vi.fn(async()=>state);
+  const capabilities={status:"READY" as const,reason_codes:["CAPABILITY_CONTRACT_READY"],schema_version:1,available:{human_authorization_history:true,shared_wallet_namespace_lock:true,parent_child_retirement_lock:true,immutable_recovery_receipts:true}};
+  const workflowRead=vi.fn(async()=>Response.json({diagnostic_meta:{observation_status:"CONSISTENT",observation_reason_code:"SOURCE_INGRESS_NOT_ADMITTED",binding_namespaces:[],revision_vector:[],source_path:"LEGACY_ADVISORY",source_reason_codes:["LEGACY_ADVISORY_SELECTED"]},capabilities:null,obligations:[],allowed_actions:[]}));
+  const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),load,()=>view,()=>undefined,workflowRead,async()=>capabilities);
+  const response=await readers.diagnostic(new Request("https://operator.example.invalid/api/operator/runtime-diagnostic"));
+  const result=await response.json();
+  expect(result.obligations.find((row:{obligation_id:string})=>row.obligation_id===id)).toMatchObject({
+   genuine_assessment:{status:"UNKNOWN",recovery_reason:"SOURCE_CHANGED"},
+   fresh_assessment_readiness:{ready:false,blocker:"SOURCE_ASSESSMENT_CONTEXT_REQUIRED"},
+  });
  });
 
  it("combines five view-only obligations with exactly one controlled obligation and routes detail by namespace",async()=>{

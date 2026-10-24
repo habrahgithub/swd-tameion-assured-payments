@@ -12,9 +12,9 @@ const ACTIONS = new Set(["CREATE_SOURCE", "EDIT_SOURCE", "OBSERVE_AI_REQUEST", "
 const OBSERVATION_REASONS = new Set(["SOURCE_INGRESS_NOT_ADMITTED", "READ_LIMIT_EXCEEDED", "STATE_REVISION_CHANGED", "STATE_READ_UNAVAILABLE", "CAPABILITY_RPC_UNAVAILABLE", "BINDING_INCOMPLETE", "BUILD_IDENTITY_INCOMPLETE", "OBSERVATION_UNAVAILABLE"]);
 const CAPABILITY_REASONS = new Set(["CAPABILITY_CONTRACT_READY", "CAPABILITY_RPC_MISSING", "CAPABILITY_RPC_UNAVAILABLE", "CAPABILITY_SCHEMA_VERSION_MISMATCH", "REQUIRED_CAPABILITY_MISSING", "CAPABILITY_RESULT_INCONSISTENT", "CAPABILITY_NOT_EVALUATED_FOR_LEGACY_PATH"]);
 const BLOCKERS = new Set([
-  "SOURCE_INGRESS_NOT_ADMITTED", "SOURCE_PERMISSION_REQUIRED", "INGRESS_EXPIRED", "SOURCE_BINDING_CHANGED",
+  "SOURCE_INGRESS_NOT_ADMITTED", "SOURCE_PERMISSION_REQUIRED", "INGRESS_EXPIRED", "SOURCE_BINDING_CHANGED", "SOURCE_HISTORY_LIMIT",
   "EXISTING_FINANCIAL_CLAIM", "UNRESOLVED_OPERATION", "CURRENT_HUMAN_REVIEW_REQUIRED", "SOURCE_NOT_FOUND",
-  "HUMAN_REVIEW_CURRENT", "READY_FOR_REVIEW", "RECOVERY_MIGRATION_REQUIRED", "STATE_UNAVAILABLE", "PREDICATE_UNAVAILABLE", "PAYABLE_NOT_PRESENT",
+  "ASSESSMENT_OUTCOME_UNKNOWN", "ASSESSMENT_CONTEXT_REQUIRED", "ASSESSMENT_ADMISSION_REQUIRED", "SETTLEMENT_OUTCOME_UNKNOWN", "HUMAN_REVIEW_CURRENT", "READY_FOR_REVIEW", "RECOVERY_MIGRATION_REQUIRED", "STATE_UNAVAILABLE", "PREDICATE_UNAVAILABLE", "PAYABLE_NOT_PRESENT",
 ]);
 
 type InternalDiagnostic = {
@@ -61,22 +61,34 @@ function capabilityProjection(value: RecoveryWorkflowCapabilities | null | undef
 }
 
 function primaryBlocker(row: Record<string, unknown>): string {
+  const rowBlockers = Array.isArray(row.blockers) ? row.blockers : [];
+  const reconciliationUnknown = rowBlockers.find((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).stage === "RECONCILIATION" && (entry as Record<string, unknown>).code === "OUTCOME_UNKNOWN"));
+  if (reconciliationUnknown) return "SETTLEMENT_OUTCOME_UNKNOWN";
+  if (rowBlockers.some(entry => Boolean(entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).code === "SOURCE_HISTORY_LIMIT"))) return "SOURCE_HISTORY_LIMIT";
+  const assessment = row.genuine_assessment;
+  if (assessment && typeof assessment === "object" && "status" in assessment && ["UNKNOWN", "IN_PROGRESS"].includes(String(assessment.status))) return "ASSESSMENT_OUTCOME_UNKNOWN";
+  const fresh = row.fresh_assessment_readiness;
+  if (fresh && typeof fresh === "object" && "blocker" in fresh) {
+    if (fresh.blocker === "SOURCE_ASSESSMENT_CONTEXT_REQUIRED") return "ASSESSMENT_CONTEXT_REQUIRED";
+    if (fresh.blocker === "EXISTING_ASSESSMENT_ADMISSION_REQUIRED") return "ASSESSMENT_ADMISSION_REQUIRED";
+  }
   const status = row.stage2_status;
   const stage = typeof status === "string" ? status : status && typeof status === "object" && "code" in status && typeof status.code === "string" ? status.code : "";
   if (stage === "SOURCE_PERMISSION_REQUIRED") return "SOURCE_PERMISSION_REQUIRED";
   if (["SOURCE_BINDING_CHANGED", "SOURCE_CHANGED"].includes(stage)) return "SOURCE_BINDING_CHANGED";
   if (["EXISTING_FINANCIAL_CLAIM", "FINANCIAL_HISTORY"].includes(stage)) return "EXISTING_FINANCIAL_CLAIM";
-  if (["UNRESOLVED_OPERATION", "UNKNOWN", "IN_PROGRESS", "RESERVED", "PROVIDER_RESULT_DURABLE"].includes(stage)) return "UNRESOLVED_OPERATION";
+  if (stage === "OUTCOME_UNKNOWN") return "SETTLEMENT_OUTCOME_UNKNOWN";
+  if (["UNRESOLVED_OPERATION", "UNKNOWN", "IN_PROGRESS", "RESERVED", "PROVIDER_RESULT_DURABLE"].includes(stage)) return "ASSESSMENT_OUTCOME_UNKNOWN";
   if (stage === "HUMAN_REVIEW_CURRENT") return "HUMAN_REVIEW_CURRENT";
   if (stage === "READY_FOR_REVIEW") return "READY_FOR_REVIEW";
-  const blockers = Array.isArray(row.blockers) ? row.blockers : [];
-  const first = blockers.find((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)));
+  const first = rowBlockers.find((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)));
   const code = typeof first?.code === "string" ? first.code : stage;
   return BLOCKERS.has(code) ? code : "PREDICATE_UNAVAILABLE";
 }
 
-function stageProjection(row: Record<string, unknown>): string {
+function stageProjection(row: Record<string, unknown>, blocker: string): string {
   const allowed = new Set(["OBLIGATION", "ASSESSMENT", "AUTHORIZATION", "ASSURANCE", "PAYMENT", "RECONCILIATION"]);
+  if (blocker === "SETTLEMENT_OUTCOME_UNKNOWN") return "RECONCILIATION";
   return typeof row.stage === "string" && allowed.has(row.stage) ? row.stage : "ASSESSMENT";
 }
 
@@ -87,8 +99,8 @@ export function createRuntimeDiagnosticHandler(deps: RuntimeDiagnosticDependenci
       const internalResponse = await deps.evaluate(request);
       // The shared evaluator authenticates before reading any source or state.
       // Preserve its standard fail-closed response without adding diagnostics.
-      const internal = await internalResponse.json() as InternalDiagnostic;
-      if (!internalResponse.ok && !internal.diagnostic_meta) return privateJson({ code: "DIAGNOSTIC_UNAVAILABLE" }, internalResponse.status);
+      const internal = await internalResponse.clone().json() as InternalDiagnostic;
+      if (!internalResponse.ok && !internal.diagnostic_meta) return internalResponse;
       const meta = internal.diagnostic_meta;
       const projectRef = projectReference(deps.env.SUPABASE_URL);
       const rawNamespaces = Array.isArray(meta?.binding_namespaces) ? meta.binding_namespaces : [];
@@ -134,11 +146,12 @@ export function createRuntimeDiagnosticHandler(deps: RuntimeDiagnosticDependenci
         const actions = Array.isArray(row.command_admitted_actions) ? row.command_admitted_actions.filter((action): action is string => typeof action === "string" && ACTIONS.has(action)) : [];
         const namespace = typeof row.diagnostic_binding_namespace === "string" ? row.diagnostic_binding_namespace : null;
         const fingerprint = namespace === null ? null : fingerprintByNamespace.get(namespace) ?? null;
+        const blockingReason = capabilities.status === "READY" ? primaryBlocker(row) : "RECOVERY_MIGRATION_REQUIRED";
         return {
           obligation_id,
           binding_fingerprint: fingerprint,
-          stage: stageProjection(row),
-          blocking_reason_code: capabilities.status === "READY" ? primaryBlocker(row) : "RECOVERY_MIGRATION_REQUIRED",
+          stage: stageProjection(row, blockingReason),
+          blocking_reason_code: blockingReason,
           permitted_next_actions: actionsEnabled ? [...new Set(actions)] : [],
         };
       });
