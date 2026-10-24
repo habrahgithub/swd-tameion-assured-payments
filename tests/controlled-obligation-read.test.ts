@@ -11,6 +11,7 @@ import {createObligationReaders} from "../src/server/operator-obligation-routes"
 import {loadExistingDemoState} from "../src/server/load-existing-demo-state";
 import {loadFinancialRequesterBinding,loadFinancialSourceAdmission,loadOptionalFinancialSourceAdmission} from "../src/server/financial-source-admission";
 import {AccessError} from "../src/server/route-access-policy";
+import type {DiagnosticReadContext} from "../src/server/source-workflow";
 import type {AuthContext} from "../src/server/operator-auth";
 import type {OperatorSourceView} from "../src/server/operator-source-records";
 import {syntheticSourceRecords} from "./test-support/synthetic-source-records";
@@ -68,6 +69,35 @@ describe("controlled obligation read isolation",()=>{
   expect(result.obligations.every((row:{command_admitted_actions?:string[]})=>!row.command_admitted_actions?.includes("PAYMENT_EXECUTE"))).toBe(true);
   expect(load.mock.calls.length).toBe(4);
   expect(publicState.exportSnapshot()).toEqual(publicBefore);expect(controlledState.exportSnapshot()).toEqual(controlledBefore);
+ });
+
+ it("rechecks the recoverable source after later controlled-state reads in mixed diagnostics",async()=>{
+  const f=fixture(),publicRecords=syntheticSourceRecords(),controlledId="OBL-SWD-20261014-001";
+  const controlledSource={...f.source,source:{...f.source.source,obligation_id:controlledId},namespace:"CONTROLLED-NAMESPACE",authority_window:"OPEN"} as ReturnType<typeof loadFinancialSourceAdmission>;
+  const view={records:publicRecords,state_binding:{namespace:"V4-SOURCE-NAMESPACE",revision:3,authority_sha256:"a".repeat(64)},source_ingress:{}} as unknown as OperatorSourceView;
+  const publicState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},publicRecords),{persistence_namespace:"V4-SOURCE-NAMESPACE",persistence_revision:3});
+  const controlledState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},[controlledSource.source]),{persistence_namespace:"CONTROLLED-NAMESPACE",persistence_revision:9,getCompleteExecutionRecords:()=>[]});
+  let v4Revision=3,controlledReadFinished=false;
+  const load=vi.fn(async(_records:readonly {obligation_id:string}[],_binding?:unknown,namespace?:string)=>{
+   if(namespace===controlledSource.namespace){controlledReadFinished=true;v4Revision=4;return controlledState;}
+   return publicState;
+  });
+  const workflowRead=vi.fn(async(_kind:"diagnostic"|"list"|"detail"|"save"|"review"|"draft"|"assess",_request:Request,_id?:string,context?:DiagnosticReadContext)=>{
+   const previous=context?.budget.revisions.get("V4-SOURCE-NAMESPACE");context!.budget.count++;
+   if(previous!==undefined&&previous!==v4Revision)context!.budget.revisionConflict=true;
+   context?.budget.revisions.set("V4-SOURCE-NAMESPACE",v4Revision);
+   const inconsistent=context?.budget.revisionConflict===true;
+   return Response.json({diagnostic_meta:{observation_status:inconsistent?"INCONSISTENT":"CONSISTENT",observation_reason_code:inconsistent?"STATE_REVISION_CHANGED":null,binding_namespace:"V4-SOURCE-NAMESPACE",revision_vector:[{namespace:"V4-SOURCE-NAMESPACE",revision:v4Revision}],source_path:"RECOVERABLE_SOURCE_INGRESS",read_count:context?.budget.count??0},capabilities:{status:"READY"},obligations:[],allowed_actions:[]});
+  });
+  const capabilities={status:"READY" as const,reason_codes:["CAPABILITY_CONTRACT_READY"],schema_version:1,available:{human_authorization_history:true,shared_wallet_namespace_lock:true,parent_child_retirement_lock:true,immutable_recovery_receipts:true}};
+  const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),load,()=>view,()=>controlledSource,workflowRead,async()=>capabilities);
+  const response=await readers.diagnostic(new Request("https://operator.example.invalid/api/operator/runtime-diagnostic"));
+  const result=await response.json();
+  expect(controlledReadFinished).toBe(true);
+  expect(workflowRead).toHaveBeenCalledTimes(2);
+  expect(result.diagnostic_meta).toMatchObject({observation_status:"INCONSISTENT",observation_reason_code:"STATE_REVISION_CHANGED"});
+  expect(result.obligations).toEqual([]);expect(result.allowed_actions).toEqual([]);
+  expect(result.diagnostic_meta.read_count).toBeLessThanOrEqual(16);
  });
 
  it("uses the ordinary legacy detail overlay for unresolved assessment and source-context blockers",async()=>{

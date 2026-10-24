@@ -103,6 +103,26 @@ export function createObligationReaders(guard:(request:Request,post:boolean)=>Pr
           }
           if(budget!.exceeded||budget!.revisionConflict||budget!.readUnavailable)diagnosticRows.length=0;
           if(!budget!.exceeded)for(const reload of diagnosticReloads){try{await reload();}catch{budget!.readUnavailable=true;break;}if(budget!.exceeded)break;}
+          // The controlled/public composition may perform reads after the V4
+          // evaluator's own final check. Re-run that same bounded, read-only
+          // evaluator last so its namespace revision is compared against the
+          // shared vector at the end of the composed observation.
+          if(versioned){
+            try{
+              const finalSourceResponse=await workflowRead('diagnostic',request,undefined,workflowContext);
+              if(!finalSourceResponse.ok)budget!.readUnavailable=true;
+              else{
+                const finalSource=await finalSourceResponse.json().catch(()=>undefined);
+                const finalMeta=finalSource?.diagnostic_meta;
+                if(finalMeta?.observation_status==='INCONSISTENT'){
+                  if(finalMeta.observation_reason_code==='READ_LIMIT_EXCEEDED')budget!.exceeded=true;
+                  else if(finalMeta.observation_reason_code==='STATE_REVISION_CHANGED')budget!.revisionConflict=true;
+                  else budget!.readUnavailable=true;
+                }else if(finalMeta?.observation_status!=='CONSISTENT')budget!.readUnavailable=true;
+              }
+            }catch{budget!.readUnavailable=true;}
+          }
+          if(budget!.exceeded||budget!.revisionConflict||budget!.readUnavailable)diagnosticRows.length=0;
           await auth.revalidate();
           if(JSON.stringify([source(),controlledSource()])!==sourceFingerprint)throw new Error("DIAGNOSTIC_SOURCE_CHANGED");
           const paths:string[]=[];
