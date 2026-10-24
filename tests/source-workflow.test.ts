@@ -10,6 +10,37 @@ import type {OperatorSourceView} from '../src/server/operator-source-records';
 import {sourceFieldsSchema,sourceIdentity} from '../src/domain/source-revision';
 import {sourceHarness,invoice} from './test-support/source-workflow-fixture';
 describe('server-owned source creation and correction',()=>{
+ it('exposes a read-only bounded diagnostic from the same source evaluator and retains no raw public route',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic diagnostic source'}));
+  const response=await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'));
+  expect(response.status).toBe(200);const result=await response.json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'UNAVAILABLE',observation_reason_code:'CAPABILITY_RPC_UNAVAILABLE',source_path:'RECOVERABLE_SOURCE_INGRESS',binding_namespace:'synthetic-source-revisions'});
+  expect(result.obligations).toHaveLength(1);expect(result.obligations[0].allowed_actions).toContain('MANUAL_REVIEW');
+  expect(result.allowed_actions).toContain('CREATE_SOURCE');expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+  expect(h.repository.loadExisting.mock.calls.length).toBeLessThanOrEqual(16);
+ });
+ it('identifies an absent recoverable ingress without loading or mutating state',async()=>{
+  const h=sourceHarness();h.source.source_ingress=undefined;h.guard.mockImplementation(async()=>({session:{operator_key:'SYNTHETIC-OWNER',credential_version:1},revalidate:vi.fn(async()=>{})} as unknown as AuthContext));
+  const response=await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'));
+  expect(response.status).toBe(200);expect(await response.json()).toMatchObject({diagnostic_meta:{observation_status:'CONSISTENT',observation_reason_code:'SOURCE_INGRESS_NOT_ADMITTED',source_path:'LEGACY_ADVISORY',read_count:0},obligations:[],allowed_actions:[]});
+  expect(h.repository.loadExisting).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
+ it('marks state revision movement inconsistent and never admits diagnostic actions',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic racing diagnostic source'}));
+  let diagnosticRevision=2;h.repository.loadExisting.mockImplementation(async()=>({revision:++diagnosticRevision,snapshot:structuredClone(h.snapshot()) as unknown as Record<string,unknown>}));
+  const result=await(await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'))).json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'INCONSISTENT',observation_reason_code:'STATE_REVISION_CHANGED'});
+  expect(result.obligations).toEqual([]);expect(result.allowed_actions).toEqual([]);expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+ });
+ it('stops diagnostic state reads at the fixed limit',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic bounded diagnostic source'}));
+  const id=h.source.records[0]?.obligation_id??h.snapshot().authority.aggregates[0].obligation_id;
+  h.snapshot().linked_activation_receipts=Array.from({length:20},(_,i)=>({namespace:`SYNTHETIC-CHILD-${i}`,instruction_id:`SYNTHETIC-INSTRUCTION-${i}`,source_obligation_id:id,source_sha256:'a'.repeat(64),activated_at:new Date().toISOString()}));
+  const beforeReads=h.repository.loadExisting.mock.calls.length;
+  const result=await(await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'))).json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'INCONSISTENT',observation_reason_code:'READ_LIMIT_EXCEEDED'});
+  expect(h.repository.loadExisting.mock.calls.length-beforeReads).toBeLessThanOrEqual(16);expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+ });
  it('commits complete invoice, reads back and corrects its original lineage without AI/provider access',async()=>{
   const h=sourceHarness(),network=vi.fn(()=>{throw new Error('No network');});vi.stubGlobal('fetch',network);
   const created=await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic invoice entry'}));expect(created.status).toBe(201);

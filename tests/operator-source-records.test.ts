@@ -49,6 +49,7 @@ describe("production private source/file/read-only restoration boundary",()=>{
   const f=privateFixture(),before=JSON.stringify(f.snapshot);
   vi.stubEnv("CIRCLE_API_KEY","SYNTHETIC_TEST_KEY");vi.stubEnv("CIRCLE_ENTITY_SECRET","a".repeat(64));
   const state=await loadExistingDemoState(f.rpc,"VIEW-NAMESPACE",f.packet.records,f.packet.state_binding);
+  expect(state).toMatchObject({persistence_namespace:"VIEW-NAMESPACE",persistence_revision:1});
   expect(state.providerAdapter.name).toBe("arc-circle-live");
   const response=await projectObligationDetail(state,f.packet.records[0].obligation_id,false).json();
   expect(response.financial_action_eligible).toBe(false);

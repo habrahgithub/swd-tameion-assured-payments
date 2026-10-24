@@ -44,6 +44,31 @@ function childEnv(env:Record<string,string>,clock:number){
 }
 
 describe("controlled obligation read isolation",()=>{
+ it("diagnoses the same public plus controlled source composition with one bounded revision vector",async()=>{
+  const f=fixture(),publicRecords=syntheticSourceRecords(),controlledId="OBL-SWD-20261014-001";
+  const controlledSource={...f.source,source:{...f.source.source,obligation_id:controlledId},namespace:"CONTROLLED-NAMESPACE",authority_window:"OPEN"} as ReturnType<typeof loadFinancialSourceAdmission>;
+  const publicState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},publicRecords),{persistence_namespace:"PUBLIC-NAMESPACE",persistence_revision:4});
+  const controlledRecord={...controlledSource.source};
+  const controlledState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},[controlledRecord]),{persistence_namespace:controlledSource.namespace,persistence_revision:9,getCompleteExecutionRecords:()=>[]});
+  const load=vi.fn(async(_records:readonly {obligation_id:string}[],_binding?:unknown,namespace?:string)=>namespace===controlledSource.namespace?controlledState:publicState);
+  const workflowRead=vi.fn(async()=>Response.json({diagnostic_meta:{observation_status:"CONSISTENT",observation_reason_code:null,binding_namespaces:[],revision_vector:[],source_path:"PUBLIC_SOURCE",source_reason_codes:["INGRESS_ABSENT"]},capabilities:null,obligations:[],allowed_actions:[]}));
+  const capabilities={status:"READY" as const,reason_codes:["CAPABILITY_CONTRACT_READY"],schema_version:1,available:{human_authorization_history:true,shared_wallet_namespace_lock:true,parent_child_retirement_lock:true,immutable_recovery_receipts:true}};
+  const readers=createObligationReaders(async()=>({revalidate:async()=>{}} as AuthContext),load,()=>publicRecords,()=>controlledSource,workflowRead,async()=>capabilities);
+  const publicBefore=publicState.exportSnapshot(),controlledBefore=controlledState.exportSnapshot();
+  const response=await readers.diagnostic(new Request("https://operator.example.invalid/api/operator/runtime-diagnostic"));
+  const result=await response.json();
+  expect(response.status).toBe(200);
+  expect(workflowRead).toHaveBeenCalledOnce();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:"CONSISTENT",source_path:"AMBIGUOUS",read_count:5});
+  expect(result.diagnostic_meta.binding_namespaces).toEqual(expect.arrayContaining(["PUBLIC-NAMESPACE","CONTROLLED-NAMESPACE"]));
+  expect(result.capabilities).toEqual(capabilities);
+  expect(result.obligations.map((row:{obligation_id:string})=>row.obligation_id)).toEqual(expect.arrayContaining(["OBL-J0C-001","OBL-J0C-005",controlledId]));
+  expect(result.obligations.find((row:{obligation_id:string})=>row.obligation_id===controlledId).diagnostic_binding_namespace).toBe("CONTROLLED-NAMESPACE");
+  expect(result.obligations.every((row:{command_admitted_actions?:string[]})=>!row.command_admitted_actions?.includes("PAYMENT_EXECUTE"))).toBe(true);
+  expect(load.mock.calls.length).toBe(4);
+  expect(publicState.exportSnapshot()).toEqual(publicBefore);expect(controlledState.exportSnapshot()).toEqual(controlledBefore);
+ });
+
  it("combines five view-only obligations with exactly one controlled obligation and routes detail by namespace",async()=>{
   const f=fixture(),historical=syntheticSourceRecords(),historicalState=new DemoState(undefined,undefined,undefined,undefined,{},historical),controlledState=Object.assign(new DemoState(undefined,undefined,undefined,undefined,{},[f.record]),{getCompleteExecutionRecords:()=>[]});
   const load=vi.fn(async(records:readonly {obligation_id:string}[],_binding?:unknown,namespace?:string)=>namespace===f.source.namespace?controlledState:historicalState);
