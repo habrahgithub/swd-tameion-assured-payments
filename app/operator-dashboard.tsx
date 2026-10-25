@@ -5,7 +5,7 @@ import {CommandCenter} from './command-center';
 import {OperatorAccessCard,OperatorAccessShell} from './operator-access-ui';
 import {ThemeControl} from './theme-control';
 import {PrivacyEntryIllustration} from './operator/privacy-entry-illustration';
-import OperatorLogin from './operator/login/page';
+import OperatorLogin from './operator/login/operator-login';
 type Session={csrf_token:string;expires_at:string};
 type Balance={amount:string;asset:'USDC';captured_at:string;network:string};
 const ORGANIZATION={name:'Star Wealth Dynamics LLC',id:'ORG-DEMO-001',environment:'Arc Testnet'} as const;

@@ -4,12 +4,71 @@ import {AuthorityStore} from '../src/authority/aggregate';
 import {DemoState,parseDemoStateSnapshot} from '../src/server/demo-state';
 import {contentHash} from '../src/domain/linked-instruction';
 import {DemoStateConflictError} from '../src/server/supabase-demo-state-repository';
+import type {RecoveryWorkflowCapabilities} from '../src/server/supabase-demo-state-repository';
 import type {AuthContext} from '../src/server/operator-auth';
 import type {OperatorSourceView} from '../src/server/operator-source-records';
 
 import {sourceFieldsSchema,sourceIdentity} from '../src/domain/source-revision';
 import {sourceHarness,invoice} from './test-support/source-workflow-fixture';
 describe('server-owned source creation and correction',()=>{
+ it('exposes a read-only bounded diagnostic from the same source evaluator and retains no raw public route',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic diagnostic source'}));
+  const response=await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'));
+  expect(response.status).toBe(200);const result=await response.json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'UNAVAILABLE',observation_reason_code:'CAPABILITY_RPC_UNAVAILABLE',source_path:'RECOVERABLE_SOURCE_INGRESS',binding_namespace:'synthetic-source-revisions'});
+  expect(result.obligations).toHaveLength(1);expect(result.obligations[0].allowed_actions).toContain('MANUAL_REVIEW');
+  expect(result.obligations[0].command_admitted_actions).toContain('MANUAL_REVIEW');
+  expect(result.allowed_actions).toContain('CREATE_SOURCE');expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+  expect(h.repository.loadExisting.mock.calls.length).toBeLessThanOrEqual(16);
+ });
+ it('does not advertise source edits when the durable source history is at its command limit',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic diagnostic source'}));
+  const rows=h.snapshot().source_revisions as Array<Record<string,unknown>>;let prior=rows[0];
+  for(let revision=2;revision<=1000;revision++){
+   const next={...prior,revision,parent_sha256:contentHash(prior),request_id:`00000000-0000-4000-8000-${String(revision).padStart(12,'0')}`,request_sha256:'b'.repeat(64)};
+   rows.push(next);prior=next;
+  }
+  const result=await(await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'))).json();
+  expect(result.obligations[0].allowed_actions).toContain('EDIT_SOURCE');
+  expect(result.obligations[0].command_admitted_actions).not.toContain('EDIT_SOURCE');
+  expect(result.obligations[0].blockers).toContainEqual(expect.objectContaining({code:'SOURCE_HISTORY_LIMIT'}));
+ });
+ it('identifies an absent recoverable ingress without loading or mutating state',async()=>{
+  const h=sourceHarness();h.source.source_ingress=undefined;h.guard.mockImplementation(async()=>({session:{operator_key:'SYNTHETIC-OWNER',credential_version:1},revalidate:vi.fn(async()=>{})} as unknown as AuthContext));
+  const response=await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'));
+  expect(response.status).toBe(200);expect(await response.json()).toMatchObject({diagnostic_meta:{observation_status:'CONSISTENT',observation_reason_code:'SOURCE_INGRESS_NOT_ADMITTED',source_path:'LEGACY_ADVISORY',read_count:0},obligations:[],allowed_actions:[]});
+  expect(h.repository.loadExisting).not.toHaveBeenCalled();expect(h.repository.compareAndSet).not.toHaveBeenCalled();
+ });
+ it('marks state revision movement inconsistent and never admits diagnostic actions',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic racing diagnostic source'}));
+  let diagnosticRevision=2;h.repository.loadExisting.mockImplementation(async()=>({revision:++diagnosticRevision,snapshot:structuredClone(h.snapshot()) as unknown as Record<string,unknown>}));
+  const result=await(await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'))).json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'INCONSISTENT',observation_reason_code:'STATE_REVISION_CHANGED'});
+  expect(result.obligations).toEqual([]);expect(result.allowed_actions).toEqual([]);expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+ });
+ it('revalidates V4 state after the capability read before returning actions',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic race source'}));
+  let begin!:()=>void,finish!:(value:RecoveryWorkflowCapabilities)=>void;
+  const started=new Promise<void>(resolve=>{begin=resolve;});
+  (h.repository as typeof h.repository&{readRecoveryWorkflowCapabilities?:()=>Promise<RecoveryWorkflowCapabilities>}).readRecoveryWorkflowCapabilities=vi.fn(()=>{begin();return new Promise<RecoveryWorkflowCapabilities>(resolve=>{finish=resolve;});});
+  const pending=h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'));
+  await started;
+  const changed=h.snapshot();changed.actor_authorities[0].status='REVOKED';
+  await h.repository.compareAndSet('synthetic-source-revisions',2,changed as unknown as Record<string,unknown>);
+  finish({status:'READY',reason_codes:['CAPABILITY_CONTRACT_READY'],schema_version:1,available:{human_authorization_history:true,shared_wallet_namespace_lock:true,parent_child_retirement_lock:true,immutable_recovery_receipts:true}});
+  const result=await(await pending).json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'INCONSISTENT',observation_reason_code:'STATE_REVISION_CHANGED'});
+  expect(result.obligations).toEqual([]);expect(result.allowed_actions).toEqual([]);
+ });
+ it('stops diagnostic state reads at the fixed limit',async()=>{
+  const h=sourceHarness();await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic bounded diagnostic source'}));
+  const id=h.source.records[0]?.obligation_id??h.snapshot().authority.aggregates[0].obligation_id;
+  h.snapshot().linked_activation_receipts=Array.from({length:20},(_,i)=>({namespace:`SYNTHETIC-CHILD-${i}`,instruction_id:`SYNTHETIC-INSTRUCTION-${i}`,source_obligation_id:id,source_sha256:'a'.repeat(64),activated_at:new Date().toISOString()}));
+  const beforeReads=h.repository.loadExisting.mock.calls.length;
+  const result=await(await h.handler('diagnostic',new Request('https://synthetic.invalid/api/operator/runtime-diagnostic'))).json();
+  expect(result.diagnostic_meta).toMatchObject({observation_status:'INCONSISTENT',observation_reason_code:'READ_LIMIT_EXCEEDED'});
+  expect(h.repository.loadExisting.mock.calls.length-beforeReads).toBeLessThanOrEqual(16);expect(h.repository.compareAndSet).toHaveBeenCalledOnce();
+ });
  it('commits complete invoice, reads back and corrects its original lineage without AI/provider access',async()=>{
   const h=sourceHarness(),network=vi.fn(()=>{throw new Error('No network');});vi.stubGlobal('fetch',network);
   const created=await h.handler('save',h.request({expected_revision:0,fields:invoice,reason:'Synthetic invoice entry'}));expect(created.status).toBe(201);

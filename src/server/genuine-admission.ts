@@ -7,6 +7,8 @@ import type {OperatorSourceView} from './operator-source-records';
 const ORG='ORG-DEMO-001';
 export const MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION=4;
 export type GenuineAdmissionReason='ELIGIBLE'|'LEGACY_HISTORY_ONLY'|'HISTORY_LIMIT'|'UNRESOLVED_OPERATION'|'FINANCIAL_HISTORY';
+export const BOOTSTRAP_GATE_CODES=['BOOTSTRAP_AVAILABLE','BOOTSTRAP_PROTECTION_NOT_ATTESTED','BOOTSTRAP_FINANCIAL_HISTORY','BOOTSTRAP_UNRESOLVED_OPERATION','BOOTSTRAP_HISTORY_LIMIT','BOOTSTRAP_HISTORY_NOT_ESTABLISHED','NOT_APPLICABLE','UNAVAILABLE'] as const;
+export type BootstrapGateCode=typeof BOOTSTRAP_GATE_CODES[number];
 export interface GenuineAdmission {
  can_assess:boolean;reason:GenuineAdmissionReason;
  /** Server would accept one explicit current-source bootstrap (all other gates, incl. protection attestation, checked by caller). */
@@ -17,6 +19,7 @@ export interface GenuineAdmission {
  genuine_admissions:number;
  unclassifiable_history:number;
 }
+export type ProjectedGenuineAdmission=GenuineAdmission&{bootstrap_gate_code:BootstrapGateCode};
 /** Controller attestation values for the one existing guard variable. 'APPLIED' attests only migration 20261019120000 (bootstrap);
  * the distinct versioned value attests the superseding migration 20261019190000 that also guards current-source dispositions. */
 export const BOOTSTRAP_GUARD_ATTESTATION='APPLIED';
@@ -65,6 +68,18 @@ export function classifyGenuineAdmission(snapshot:Snapshot,id:string):GenuineAdm
  const reason:GenuineAdmissionReason=financial?'FINANCIAL_HISTORY':unresolved?'UNRESOLVED_OPERATION':counted>=MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION?'HISTORY_LIMIT':pairs.size>0&&counted===0?'LEGACY_HISTORY_ONLY':'ELIGIBLE';
  const can_assess=reason==='ELIGIBLE'||reason==='LEGACY_HISTORY_ONLY';
  return {can_assess,reason,can_bootstrap:can_assess&&pairs.size>0&&genuine===0&&unclassifiable===0,legacy_history_count:pairs.size,counted_history:counted,genuine_admissions:genuine,unclassifiable_history:unclassifiable};
+}
+/** Adds an explanatory projection only; the existing classifier remains the sole eligibility oracle. */
+export function projectGenuineAdmission(snapshot:Snapshot,id:string,protectionAttested=bootstrapProtectionAttested()):ProjectedGenuineAdmission{
+ const classified=classifyGenuineAdmission(snapshot,id);
+ const classifierAllows=classified.can_bootstrap;
+ const bootstrap_gate_code:BootstrapGateCode=classifierAllows
+  ?protectionAttested?'BOOTSTRAP_AVAILABLE':'BOOTSTRAP_PROTECTION_NOT_ATTESTED'
+  :classified.reason==='FINANCIAL_HISTORY'?'BOOTSTRAP_FINANCIAL_HISTORY'
+  :classified.reason==='UNRESOLVED_OPERATION'?'BOOTSTRAP_UNRESOLVED_OPERATION'
+  :classified.reason==='HISTORY_LIMIT'?'BOOTSTRAP_HISTORY_LIMIT'
+  :'BOOTSTRAP_HISTORY_NOT_ESTABLISHED';
+ return {...classified,can_bootstrap:classifierAllows&&protectionAttested,bootstrap_gate_code};
 }
 const TRANSITIONS:Record<string,string[]>={RESERVED:['RESERVED','PROVIDER_RESULT_DURABLE','UNKNOWN','STALE','COMPLETED'],PROVIDER_RESULT_DURABLE:['PROVIDER_RESULT_DURABLE','COMPLETED','STALE'],UNKNOWN:['UNKNOWN'],COMPLETED:['COMPLETED'],STALE:['STALE']};
 /** Mirrors the SQL guard in migration 20261019120000: bootstrap identity/binding/reference is immutable; only status progression is allowed. */

@@ -1,7 +1,7 @@
 import {parseDemoStateSnapshot} from "./demo-state";
 import {genuineAssessmentVisibility,type GenuineAssessmentVisibility} from "./genuine-assessment-recovery";
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
-import {classifyGenuineAdmission,bootstrapProtectionAttested} from './genuine-admission';
+import {projectGenuineAdmission} from './genuine-admission';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {ActorAuthorityRegistry} from '../authority/actor-authority';
@@ -21,7 +21,7 @@ import type {LiveUsageObligationRecord} from '../agent/context-builder';
 
 export const DEMO_ORGANIZATION_ID='ORG-DEMO-001';
 export const DEMO_ARC_TRUST_SIMULATED=true;
-export type ExistingState={getReadinessObservations?:DemoState["getReadinessObservations"];getRecoveryEvents?:DemoState["getRecoveryEvents"];getSealedPaeForOperation?:DemoState["getSealedPaeForOperation"];getGenuineAssessmentVisibility?:(id:string)=>GenuineAssessmentVisibility;canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
+export type ExistingState={persistence_namespace?:string;persistence_revision?:number;getReadinessObservations?:DemoState["getReadinessObservations"];getRecoveryEvents?:DemoState["getRecoveryEvents"];getSealedPaeForOperation?:DemoState["getSealedPaeForOperation"];getGenuineAssessmentVisibility?:(id:string)=>GenuineAssessmentVisibility;canAssessGenuine?:(id:string)=>boolean;getLinkedInstructions?:(id:string)=>LinkedInstruction[];getCompleteExecutionRecords?:()=>readonly ExecutionRecord[]} & Pick<DemoState,'store'|'trustedKeys'|'listObligations'|'getRecord'|'getCanonicalObligation'|'getSealedPae'|'getSettlementProxy'|'getAuthorizationArtifacts'> & {getPaymentReleaseApproval?:(id:string)=>PaymentReleaseApproval|undefined;resolveDesignatedApprover?:DemoState["resolveDesignatedApprover"];worker:Pick<DemoState['worker'],'getExecutionRecord'>;providerAdapter:{name:string}};
 /** Existing-state restoration only. No DemoState, worker, provider, signer,
  * actor seeding, migration, key generation or persistence constructor. */
 export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRpc(),namespace=process.env.TAMEION_STATE_NAMESPACE,sourceRecords:readonly LiveUsageObligationRecord[]=loadPublicSourceRecords(),binding?:OperatorStateBinding,ownerAdmission?:OwnerAdmissionState):Promise<ExistingState> {
@@ -41,8 +41,8 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     const assessmentSnapshot=binding?.workflow_base_sha256?parseDemoStateSnapshot(s):undefined;
-    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>{const admission=classifyGenuineAdmission(snapshot,id);return {...admission,can_bootstrap:admission.can_bootstrap&&bootstrapProtectionAttested()};};
-    return {store,trustedKeys,
+    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>projectGenuineAdmission(snapshot,id);
+    return {persistence_namespace:namespace,persistence_revision:result.revision as number,store,trustedKeys,
       getReadinessObservations:()=>structuredClone(s.readiness_observations??[]),
       getRecoveryEvents:()=>structuredClone(s.recovery_events??[]),
       getSealedPaeForOperation:key=>s.authorization_history.find(a=>a.sealed_pae.payload.idempotency_key===key)?.sealed_pae,

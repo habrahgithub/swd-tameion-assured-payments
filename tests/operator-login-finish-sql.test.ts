@@ -2,7 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 // Source-contract checks only. This suite never parses or executes SQL.
-const sql=readFileSync(resolve(import.meta.dirname,'../supabase/migrations/20261011053000_operator_read_only_access.sql'),'utf8');
+const sql=readFileSync(resolve(import.meta.dirname,'../supabase/migrations/20261013085427_operator_read_only_access.sql'),'utf8');
 const finish=sql.split('CREATE FUNCTION public.tameion_operator_login_finish(')[1].split('CREATE FUNCTION public.tameion_operator_session_validate')[0];
 const deny=finish.match(/IF p_verified IS NOT TRUE[\s\S]*?END IF;/)?.[0]??'';
 describe('login finish SQL source contract (not SQL runtime proof)',()=>{

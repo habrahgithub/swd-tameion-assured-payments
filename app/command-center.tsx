@@ -20,6 +20,17 @@ import {
 } from "../src/client/assessment-review-snapshot";
 import { isAssessmentBasisRejection, isAssessmentHistoryLimitRejection, observedReadFailure, executionResponseNeedsReconciliation, assessmentEarlierReference, assessmentReceiptIdentity, assessmentReceiptSnapshot, interpretPostResponse, isCurrentGeneration, isCurrentRequest, isSameIdentity, parseJsonBody } from "../src/client/command-center-requests";
 import { stage2DisplayLabel, assessmentNextAction, buildAssessmentTrace, hasExpectedObligationIdentity, hasSimulatedTrustFixture, judgeReadableState, settlementDisplay } from "../src/client/command-center-state";
+
+function bootstrapDenialGuidance(code: string | undefined): { reason: string; nextStep: string } | null {
+  const guidance: Record<string, { reason: string; nextStep: string }> = {
+    BOOTSTRAP_PROTECTION_NOT_ATTESTED: { reason: "bootstrap protection is not attested", nextStep: "Ask the workspace owner to verify the required recovery protection through the approved operational process." },
+    BOOTSTRAP_FINANCIAL_HISTORY: { reason: "payment-control history blocks another assessment", nextStep: "Ask the workspace owner to review the original financial-control records and preserve the payment identity." },
+    BOOTSTRAP_UNRESOLVED_OPERATION: { reason: "another assessment operation is unresolved", nextStep: "Ask the workspace owner to resolve the existing assessment operation using its original request identity; do not retry it." },
+    BOOTSTRAP_HISTORY_LIMIT: { reason: "the assessment history limit has been reached", nextStep: "Ask the workspace owner to review the retained assessment history and currently available review actions." },
+    BOOTSTRAP_HISTORY_NOT_ESTABLISHED: { reason: "required bootstrap history is not established", nextStep: "Ask the workspace owner to verify the original request history and source binding before any new assessment." },
+  };
+  return code ? guidance[code] ?? null : null;
+}
 interface ObligationSummary {
   stage2_status?:{code:string};
   fresh_assessment_readiness?:{ready?:boolean;blocker?:string|null};
@@ -3161,7 +3172,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     const requestName=confirmDisposition?"current disposition":bootstrapReference?"current-source":successor?"successor":"original";
     const requestStorageKey=successor?`tameion.assessment-successor.${selectedId}`:`tameion.assessment-request.${selectedId}`;
     const sourceFingerprint=canonicalize(detail.record);
-    const canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
+    let canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
+    let bootstrapDenial=requestName==="original"?bootstrapDenialGuidance(detail.genuine_assessment?.admission?.bootstrap_gate_code):null;
     if(!confirmDisposition&&key!==selectedRequestKey&&key!=="Request identity unavailable")return;
     const token=++exactAssessmentSequence.current,generation=exactCheckRenderGeneration,epoch=exactCheckRenderEpoch;
     let expectedDetail=exactCheckRenderDetail;
@@ -3194,11 +3206,12 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
         :status==="UNKNOWN"?`The ${requestName} assessment outcome is unknown.`
         :status==="STALE"?"This request does not confirm a current result for this payable."
         :status==="NOT_FOUND"&&canOfferBootstrap?"Your earlier request could not be matched in the current source state. Its reference is preserved, and its earlier outcome remains unverified."
+        :status==="NOT_FOUND"&&bootstrapDenial?`The original request could not be matched in the current source state; its earlier outcome remains unverified. Bootstrap is blocked because ${bootstrapDenial.reason}. Ask the workspace owner to review the original request and current source; do not submit another assessment.`
         :status==="NOT_FOUND"?`The ${requestName} request could not be verified. This does not mean it was never sent.`
         :status==="TIMEOUT"?"Assessment status check timed out. The outcome remains unverified; no assessment was resubmitted.":"Assessment status could not be checked. No assessment was resubmitted.";
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":status==="FAILED"||status==="TIMEOUT"?"failed":"unknown",message});
       feedback(status==="RESERVED"||status==="PROVIDER_RESULT_DURABLE"?"pending":status==="STALE"?"stale":"unconfirmed",message,status,
-        status==="NOT_FOUND"&&canOfferBootstrap?"You can explicitly request one assessment for the current source. The earlier reference stays as history.":undefined);
+        status==="NOT_FOUND"&&canOfferBootstrap?"You can explicitly request one assessment for the current source. The earlier reference stays as history.":status==="NOT_FOUND"&&bootstrapDenial?bootstrapDenial.nextStep:undefined);
     };
     setDisplayedAssessment(null);
     setExactAssessmentCheck({...bound,status:"checking",message:`Checking the ${requestName} assessment request…`});
@@ -3222,7 +3235,20 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if(firstResponse.status===401||firstResponse.status===403)setAssessmentConflict(null);
       const first=firstResponse.ok&&firstResponse.status===200?exactAssessmentStatus(firstResponse.data,selectedId,key,version):null;
       if(!first){unresolved("FAILED");return;}
-      if(first.status!=="COMPLETED_CURRENT"){unresolved(first.status);return;}
+      if(first.status!=="COMPLETED_CURRENT"){
+        if(first.status==="NOT_FOUND"&&requestName==="original"){
+          const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===key);
+          expectedDetail=detailGeneration.current;
+          setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the current bootstrap gate…"});
+          const refreshed=await waitForStatus(pendingDetail);
+          if(!identityCurrent())return;
+          if(!refreshed||String(refreshed.aggregate.aggregate_version)!==version||canonicalize(refreshed.record)!==sourceFingerprint){unresolved("STALE");return;}
+          const admission=refreshed.genuine_assessment?.admission;
+          canOfferBootstrap=admission?.can_bootstrap===true&&!refreshed.pae_sealed&&!refreshed.execution;
+          bootstrapDenial=bootstrapDenialGuidance(admission?.bootstrap_gate_code);
+        }
+        unresolved(first.status);return;
+      }
       const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===(confirmDisposition?originalKey:key));
       expectedDetail=detailGeneration.current;
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the recorded assessment…"});
@@ -4606,7 +4632,7 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
           {" "}Assessment outcome remains unverified.
         </p>}
         {currentHoldReview&&viewedStage==="Assessment"&&<p role="status" aria-label="HOLD findings review" aria-live="polite" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentHoldReview.status==="opened"?"HOLD findings opened. Review the required evidence and responsible owner. HOLD remains.":currentHoldReview.status==="unavailable"?"HOLD — details unavailable. Ask the workspace owner to review the recorded findings. Authorization and payment remain blocked.":"Opening HOLD findings…"}</p>}
-        {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?bootstrapOfferable?" You can explicitly request one assessment for the current source. The earlier reference stays as history.":" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
+        {currentExactAssessmentCheck&&<p role="status" aria-label="Assessment request check" className="mx-auto mt-1 max-w-[1392px] text-[12px] text-[var(--color-ink-muted)]">{currentExactAssessmentCheck.message}{currentExactAssessmentCheck.status!=="checking"&&currentExactAssessmentCheck.status!=="confirmed"?bootstrapOfferable?" You can explicitly request one assessment for the current source. The earlier reference stays as history.":currentExactAssessmentCheck.message.includes("Bootstrap is blocked because")?"":" Ask the workspace owner to review the original request. Do not submit another assessment.":""}</p>}
       </section>}
     </main>
   );

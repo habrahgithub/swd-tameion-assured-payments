@@ -3725,21 +3725,22 @@ describe('Stage 2 server-owned UNKNOWN presentation and deliberate recovery',()=
 describe('Stage 2 admission browser flow',()=>{
  const idA='FICTIONAL-BS-A',idB='FICTIONAL-BS-B',earlierKey='00000000-0000-4000-8000-000000000401',newKey='00000000-0000-4000-8000-000000000402';
  const requestStorage=`tameion.assessment-request.${idA}`,successorStorage=`tameion.assessment-successor.${idA}`;
- const bootstrapAdmission={can_assess:true,reason:'LEGACY_HISTORY_ONLY',can_bootstrap:true,legacy_history_count:7,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
- const reviewOnly={can_assess:false,reason:'FINANCIAL_HISTORY',can_bootstrap:false,legacy_history_count:20,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
+ const bootstrapAdmission={can_assess:true,reason:'LEGACY_HISTORY_ONLY',can_bootstrap:true,bootstrap_gate_code:'BOOTSTRAP_AVAILABLE',legacy_history_count:7,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
+ const reviewOnly={can_assess:false,reason:'FINANCIAL_HISTORY',can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_FINANCIAL_HISTORY',legacy_history_count:20,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
  function genuine(id:string,admission:Record<string,unknown>,cancelled=false):Record<string,any>{
   const value:Record<string,any>={...detail(id),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:admission.can_assess===true,genuine_assessment:{status:'COMPLETED',recovery_eligible:false,recovery_reason:'NO_UNKNOWN',admission}};
   if(cancelled)value.aggregate={...value.aggregate,state:'CANCELLED'};return value;
  }
- function mount(admissions:Record<string,Record<string,unknown>>,options:{bootstrapReply?:()=>Promise<Response>}={}){
+ function mount(admissions:Record<string,Record<string,unknown>>,options:{bootstrapReply?:()=>Promise<Response>;afterStatusAdmission?:Record<string,unknown>}={}){
   localStorage.clear();localStorage.setItem(requestStorage,earlierKey);vi.stubGlobal('crypto',{randomUUID:()=>newKey,subtle:webcrypto.subtle});
+  let statusObserved=false;
   const mock=vi.fn<typeof fetch>((input,init)=>{
    const url=String(input);
-   if(url===`/api/obligations/${idA}/advisory/status`&&init?.method==='POST')return Promise.resolve(response({status:'NOT_FOUND',obligation_id:idA,idempotency_key:JSON.parse(init.body as string).idempotency_key,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));
+   if(url===`/api/obligations/${idA}/advisory/status`&&init?.method==='POST'){statusObserved=true;return Promise.resolve(response({status:'NOT_FOUND',obligation_id:idA,idempotency_key:JSON.parse(init.body as string).idempotency_key,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));}
    if(url===`/api/obligations/${idA}/advisory`&&init?.method==='POST')return options.bootstrapReply?.()??Promise.resolve(response({status:'IN_PROGRESS',idempotency_key:newKey},202));
    if(init?.method==='POST')throw new Error('Forbidden extra POST '+url);
    if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(idA),source_group:'GENUINE_COMPANY'},{...obligation(idB),source_group:'GENUINE_COMPANY'}]}));
-   const id=url.endsWith(idB)?idB:idA;return Promise.resolve(response(genuine(id,admissions[id]??reviewOnly,id===idB)));
+   const id=url.endsWith(idB)?idB:idA;return Promise.resolve(response(genuine(id,statusObserved&&id===idA?options.afterStatusAdmission??admissions[id]??reviewOnly:admissions[id]??reviewOnly,id===idB)));
   });vi.stubGlobal('fetch',mock);return {mock,view:renderWithExplicitFirstSelection('FICTIONAL-CSRF')};
  }
  const posts=(mock:ReturnType<typeof vi.fn<typeof fetch>>)=>mock.mock.calls.filter(([,init])=>init?.method==='POST');
@@ -3789,6 +3790,37 @@ describe('Stage 2 admission browser flow',()=>{
   fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toMatch(/could not be verified/));
   expect(screen.queryByRole('button',{name:/Request one assessment|Run AI Assessment/})).toBeNull();expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
+ });
+ it.each([
+  ['BOOTSTRAP_PROTECTION_NOT_ATTESTED',/bootstrap protection is not attested/],
+  ['BOOTSTRAP_FINANCIAL_HISTORY',/payment-control history blocks another assessment/],
+  ['BOOTSTRAP_UNRESOLVED_OPERATION',/another assessment operation is unresolved/],
+  ['BOOTSTRAP_HISTORY_LIMIT',/assessment history limit has been reached/],
+  ['BOOTSTRAP_HISTORY_NOT_ESTABLISHED',/required bootstrap history is not established/],
+ ] as const)('shows the evaluator reason %s only after exact NOT_FOUND and does not resubmit',async(code,copy)=>{
+  const {mock}=mount({[idA]:{...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:code}});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  const status=await screen.findByRole('status',{name:'Assessment request check'});
+  await waitFor(()=>expect(status.textContent).toMatch(copy));
+  expect(status.textContent).toMatch(/current source state|current recorded state/);
+  expect(status.textContent).toMatch(/earlier outcome remains unverified/);
+  expect(status.textContent).toMatch(/workspace owner/i);
+  expect(status.textContent).not.toMatch(/never sent|was not sent/i);
+  expect(screen.queryByRole('button',{name:/Request one assessment|Run AI Assessment/})).toBeNull();
+  expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
+ });
+ it('refreshes and rebinds the gate after exact NOT_FOUND before showing its reason',async()=>{
+  const stale={...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_PROTECTION_NOT_ATTESTED'};
+  const current={...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_HISTORY_LIMIT'};
+  const {mock}=mount({[idA]:stale},{afterStatusAdmission:current});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  const status=await screen.findByRole('status',{name:'Assessment request check'});
+  await waitFor(()=>expect(status.textContent).toMatch(/assessment history limit has been reached/));
+  expect(status.textContent).not.toMatch(/bootstrap protection is not attested/);
+  const calls=mock.mock.calls.map(([url,init])=>({url:String(url),method:init?.method??'GET'}));
+  const statusIndex=calls.findIndex(call=>call.url.endsWith('/advisory/status')&&call.method==='POST');
+  expect(calls.slice(statusIndex+1).some(call=>call.url===`/api/obligations/${idA}`&&call.method==='GET')).toBe(true);
+  expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
  });
  it('shows a capability-derived review-only reason, no assessment instruction, and a history navigation action',async()=>{
   const {mock}=mount({});localStorage.clear();

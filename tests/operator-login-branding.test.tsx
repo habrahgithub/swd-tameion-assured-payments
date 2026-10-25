@@ -4,7 +4,7 @@ import {renderToString} from 'react-dom/server';
 import {act,cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {LoginIntroduction,LoginJourney} from '../app/operator/login/login-branding';
-import OperatorLogin from '../app/operator/login/page';
+import OperatorLogin from '../app/operator/login/operator-login';
 
 let preference: EventTarget;
 let reduced=false;

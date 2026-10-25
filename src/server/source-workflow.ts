@@ -20,19 +20,43 @@ import {SupabaseDemoStateRepository,DemoStateConflictError} from './supabase-dem
 import {sealLinkedInstruction,parseLinkedInstructions} from '../domain/linked-instruction';
 
 const org='ORG-DEMO-001';
-type Repository=Pick<SupabaseDemoStateRepository,'loadExisting'|'compareAndSet'>&Partial<Pick<SupabaseDemoStateRepository,'assertRecoveryWorkflowCapability'>>;
+type Repository=Pick<SupabaseDemoStateRepository,'loadExisting'|'compareAndSet'>&Partial<Pick<SupabaseDemoStateRepository,'assertRecoveryWorkflowCapability'|'readRecoveryWorkflowCapabilities'>>;
 const saveSchema=z.object({expected_revision:z.number().int().min(0),expected_version:z.number().int().positive().optional(),fields:sourceFieldsSchema,reason:z.string().trim().min(1).max(1024)}).strict();
 type SourceSnapshot=DemoStateSnapshot&{source_ingress_anchor?:string};
 interface Dependencies {guard:(r:Request,post:boolean)=>Promise<AuthContext>;source:()=>OperatorSourceView|undefined;repository:()=>Repository}
+export interface DiagnosticReadBudget {count:number;limit:number;exceeded:boolean;revisionConflict:boolean;readUnavailable:boolean;revisions:Map<string,number>}
+export interface DiagnosticReadContext {auth:AuthContext;budget:DiagnosticReadBudget}
+export const createDiagnosticReadBudget=(limit=16):DiagnosticReadBudget=>({count:0,limit,exceeded:false,revisionConflict:false,readUnavailable:false,revisions:new Map()});
 /** The owner-approved V4 ingress grants source/review commands only. Financial
  * activation still requires the independently admitted exact controlled child. */
 export function createSourceWorkflowHandlers(deps:Dependencies){
- return async function handle(kind:'list'|'detail'|'save'|'review'|'draft'|'assess',request:Request,id?:string):Promise<Response>{
-  let writing=false;
+ return async function handle(kind:'list'|'detail'|'save'|'review'|'draft'|'assess'|'diagnostic',request:Request,id?:string,diagnosticContext?:DiagnosticReadContext):Promise<Response>{
+  let writing=false,diagnosticBudget:DiagnosticReadBudget|undefined;
   try{
-   const mutate=['save','review','draft','assess'].includes(kind),auth=await deps.guard(request,mutate),view=deps.source(),ingress=view?.source_ingress;
-   if(!view||!ingress)throw new AccessError('SOURCE_INGRESS_NOT_ADMITTED',403);
-   const fingerprint=contentHash(view),repository=deps.repository();
+   const mutate=['save','review','draft','assess'].includes(kind),auth=kind==='diagnostic'&&diagnosticContext?diagnosticContext.auth:await deps.guard(request,mutate),view=deps.source(),ingress=view?.source_ingress;
+   const budget=kind==='diagnostic'?(diagnosticContext?.budget??createDiagnosticReadBudget()):undefined;diagnosticBudget=budget;
+   const countDiagnosticRead=()=>{if(!budget)return true;budget.count++;if(budget.count>budget.limit){budget.exceeded=true;return false;}return true;};
+   if(!view||!ingress){
+    if(kind==='diagnostic')return privateJson({diagnostic_meta:{observation_status:'CONSISTENT',observation_reason_code:'SOURCE_INGRESS_NOT_ADMITTED',binding_namespace:view?.state_binding.namespace??process.env.TAMEION_STATE_NAMESPACE??null,revision_vector:[],source_path:view?'LEGACY_ADVISORY':'PUBLIC_SOURCE',read_count:budget?.count??0},capabilities:null,obligations:[],allowed_actions:[]});
+    throw new AccessError('SOURCE_INGRESS_NOT_ADMITTED',403);
+   }
+   const fingerprint=contentHash(view),baseRepository=deps.repository();
+   const repository:Repository=kind==='diagnostic'?{
+    compareAndSet:baseRepository.compareAndSet.bind(baseRepository),
+    ...(baseRepository.assertRecoveryWorkflowCapability?{assertRecoveryWorkflowCapability:baseRepository.assertRecoveryWorkflowCapability.bind(baseRepository)}:{}),
+    loadExisting:async(namespace,signal)=>{
+     if(!countDiagnosticRead())throw new Error('DIAGNOSTIC_READ_LIMIT');
+     let result:Awaited<ReturnType<typeof baseRepository.loadExisting>>;
+     try{result=await baseRepository.loadExisting(namespace,signal);}catch(error){if(budget)budget.readUnavailable=true;throw error;}
+     const previous=budget?.revisions.get(namespace);
+     if(previous!==undefined&&previous!==result.revision){if(budget)budget.revisionConflict=true;}else budget?.revisions.set(namespace,result.revision);
+     return result;
+    },
+    ...(baseRepository.readRecoveryWorkflowCapabilities?{readRecoveryWorkflowCapabilities:async()=>{
+     if(!countDiagnosticRead())throw new Error('DIAGNOSTIC_READ_LIMIT');
+     return baseRepository.readRecoveryWorkflowCapabilities!();
+    }}:{})
+   }:baseRepository;
    let authoritySnapshot:DemoStateSnapshot|undefined,boundActorVersion:string|undefined,boundActorHash:string|undefined;
    let claimedTargets=new Set<string>();
    const requester=(state:DemoStateSnapshot)=>new ActorAuthorityRegistry(state.actor_authorities).resolve(org,ingress.actor_id);
@@ -96,7 +120,31 @@ export function createSourceWorkflowHandlers(deps:Dependencies){
     const blockers=financialClaim(target)?[{code:'EXISTING_FINANCIAL_CLAIM',stage:'RECONCILIATION',scope:target,owner:'Treasury Operations',remedy:'Recover the existing controlled instruction; proposed source changes remain draft.',resume_predicate:'Authoritative original-operation reconciliation',observed_at:new Date().toISOString()}]:[];
     return {...(outcome?{stage2_provider_outcome:outcome}:{}),source_verification:'AUTHENTICATED_OPERATOR_ASSERTION_NOT_INDEPENDENT_VERIFICATION',payer_verification:'UNVERIFIED',obligation:source,aggregate,source_revision:revision??null,active_source_revision:active(target)??null,superseded_review_hash:store.getCurrentReviewDecision(org,target)?.hash??null,stage2_status:stage2Status(!canWrite()?'SOURCE_PERMISSION_REQUIRED':review?.record.decision==='ACCEPT_FOR_AUTHORIZATION'?'HUMAN_REVIEW_CURRENT':(aiDenial(authoritySnapshot??snapshot,target)==='UNRESOLVED_OPERATION'?(authoritySnapshot??snapshot).assessment_operations.find(o=>o.obligation_id===target&&['RESERVED','UNKNOWN','PROVIDER_RESULT_DURABLE'].includes(o.status))?.status:aiDenial(authoritySnapshot??snapshot,target))??'READY_FOR_REVIEW'),current_review_decision:review??null,advisory_action_eligible:allowed_actions.includes('REQUEST_AI_ADVICE'),review_findings:(store.getCurrentAssessment(org,target)?.record.race?.result.validated_findings??[]).map(f=>({...f,advisory:HUMAN_ADVISORY_CODES.has(f.code)})),allowed_actions,blockers,financial_action_eligible:false,genuine_business_status:'OUTSTANDING',service_fulfillment:'UNVERIFIED'};
    };
-   if(kind==='list'){await revalidate();return privateJson({obligations:records.map(r=>({...r,...projection(r.obligation_id),source_group:'GENUINE_COMPANY',assessed:Boolean(store.getCurrentAssessment(org,r.obligation_id)),decision:store.getCurrentAssessment(org,r.obligation_id)?.record.decision??null,provider_mode:store.getCurrentAssessment(org,r.obligation_id)?.record.provider_mode??null})),assessed_count:records.filter(r=>store.getCurrentAssessment(org,r.obligation_id)).length,total_count:records.length,allowed_actions:canWrite()&&ingress.permissions.includes('CREATE_SOURCE')?['CREATE_SOURCE']:[]});}
+   if(kind==='list'||kind==='diagnostic'){
+    await revalidate();
+    let obligations=records.map(r=>({...r,...projection(r.obligation_id),source_group:'GENUINE_COMPANY',assessed:Boolean(store.getCurrentAssessment(org,r.obligation_id)),decision:store.getCurrentAssessment(org,r.obligation_id)?.record.decision??null,provider_mode:store.getCurrentAssessment(org,r.obligation_id)?.record.provider_mode??null}));
+    let allowed_actions=canWrite()&&ingress.permissions.includes('CREATE_SOURCE')?['CREATE_SOURCE']:[];
+    if(kind==='list')return privateJson({obligations,assessed_count:records.filter(r=>store.getCurrentAssessment(org,r.obligation_id)).length,total_count:records.length,allowed_actions});
+    await revalidate();
+    if(budget?.exceeded||budget?.revisionConflict||budget?.readUnavailable){obligations=[];allowed_actions=[];}
+    let capabilities:Awaited<ReturnType<NonNullable<Repository['readRecoveryWorkflowCapabilities']>>>|null=null;
+    try{capabilities=repository.readRecoveryWorkflowCapabilities?await repository.readRecoveryWorkflowCapabilities():null;}catch{capabilities=null;}
+    // The capability RPC is an outstanding read. Revalidate the session,
+    // selected source and durable revision after it completes before deriving
+    // any action or blocker projection from the observed state.
+    await revalidate();
+    if(!budget?.exceeded&&!budget?.revisionConflict&&!budget?.readUnavailable){
+     obligations=records.map(r=>{
+      const projected=projection(r.obligation_id),command_admitted_actions=projected.allowed_actions.filter(action=>action!=='EDIT_SOURCE'||rows.length<1000);
+      const blockers=rows.length>=1000?[...projected.blockers,{code:'SOURCE_HISTORY_LIMIT',stage:'OBLIGATION',scope:r.obligation_id,owner:'Workspace owner',remedy:'Review retained source history before attempting another source revision.',resume_predicate:'Source history below the supported limit',observed_at:new Date().toISOString()}]:projected.blockers;
+      return {...r,...projected,command_admitted_actions,blockers,source_group:'GENUINE_COMPANY',assessed:Boolean(store.getCurrentAssessment(org,r.obligation_id)),decision:store.getCurrentAssessment(org,r.obligation_id)?.record.decision??null,provider_mode:store.getCurrentAssessment(org,r.obligation_id)?.record.provider_mode??null};
+     });
+     allowed_actions=canWrite()&&ingress.permissions.includes('CREATE_SOURCE')&&rows.length<1000?['CREATE_SOURCE']:[];
+    }else{obligations=[];allowed_actions=[];}
+    const inconsistent=Boolean(budget?.exceeded||budget?.revisionConflict||!budget?.revisions.size);
+    const unavailable=Boolean(budget?.readUnavailable||!capabilities);
+    return privateJson({diagnostic_meta:{observation_status:inconsistent?'INCONSISTENT':unavailable?'UNAVAILABLE':'CONSISTENT',observation_reason_code:budget?.exceeded?'READ_LIMIT_EXCEEDED':budget?.revisionConflict?'STATE_REVISION_CHANGED':budget?.readUnavailable?'STATE_READ_UNAVAILABLE':!capabilities?'CAPABILITY_RPC_UNAVAILABLE':null,binding_namespace:view.state_binding.namespace,revision_vector:[...(budget?.revisions.entries()??[])].map(([namespace,revision])=>({namespace,revision})),source_path:'RECOVERABLE_SOURCE_INGRESS',read_count:budget?.count??0},capabilities,obligations,allowed_actions});
+   }
    if(kind==='detail'){
     if(!record)throw new AccessError('SOURCE_NOT_FOUND',404);
     const state=await loadExistingDemoState({call:async()=>({revision:stored.revision,snapshot})},view.state_binding.namespace,records);
@@ -202,7 +250,7 @@ export function createSourceWorkflowHandlers(deps:Dependencies){
    const existing=links.find(l=>l.source_obligation_id===id&&l.source_aggregate_version===aggregate.aggregate_version&&l.source_record_sha256===contentHash(record)&&l.review_decision_hash===review.hash);if(existing)return privateJson({instruction:existing,financial_action_eligible:false},200);
    const instruction=sealLinkedInstruction({schema_version:1,kind:'ARC_TESTNET_SETTLEMENT_INSTRUCTION',status:'DRAFT_AUTHORITY_REQUIRED',organization_id:org,source_obligation_id:id,source_record_sha256:contentHash(record),source_aggregate_version:aggregate.aggregate_version,review_decision_id:review.record.decision_id,review_decision_hash:review.hash,instruction_id:`TESTNET-CONTROLLED-LINKED-${contentHash({id,review:review.hash}).slice(0,32)}`,attempt_id:requestId.data,source_amount:record.amount,source_currency:record.currency,network:'ARC_TESTNET',classification:'TESTNET_ONLY_NON_ECONOMIC_NOT_VENDOR_PAYMENT',created_at:new Date().toISOString()});
    snapshot.linked_settlement_instructions=[...links,instruction];snapshot.source_ingress_anchor=anchor;await revalidate();if(!validReview(id,review)||financialClaim(id))throw new AccessError('CURRENT_HUMAN_REVIEW_REQUIRED',409);writing=true;await repository.compareAndSet(view.state_binding.namespace,stored.revision,snapshot as unknown as Record<string,unknown>);await revalidate();return privateJson({instruction,financial_action_eligible:false},201);
-  }catch(error){if(error instanceof DemoStateConflictError)return privateJson({code:'SOURCE_CONFLICT',remedy:'Reload the committed revision and reconcile your draft.'},409);if(writing)return privateJson({code:'COMMIT_OUTCOME_UNVERIFIED',remedy:'Read back the original request identity before another command.'},503);if(error instanceof AuthorityError)return privateJson({code:error.code},409);if(error instanceof AccessError)return privateJson(error.code==='GENUINE_ASSESSMENT_HISTORY_LIMIT'?{code:error.code}:{code:error.code,stage2_status:stage2Status(error.code)},error.status);return accessFailure(error);}
+  }catch(error){if(kind==='diagnostic'&&error instanceof AccessError&&(error.status===401||error.status===403))return accessFailure(error);if(kind==='diagnostic'){const budget=diagnosticContext?.budget??diagnosticBudget;return privateJson({diagnostic_meta:{observation_status:budget?.exceeded||budget?.revisionConflict?'INCONSISTENT':'UNAVAILABLE',observation_reason_code:budget?.exceeded?'READ_LIMIT_EXCEEDED':budget?.revisionConflict?'STATE_REVISION_CHANGED':error instanceof AccessError?error.code:'DIAGNOSTIC_UNAVAILABLE',read_count:budget?.count??0,revision_vector:[...(budget?.revisions.entries()??[])].map(([namespace,revision])=>({namespace,revision}))},capabilities:null,obligations:[],allowed_actions:[]},budget?.exceeded?200:error instanceof AccessError?error.status:503);}if(error instanceof DemoStateConflictError)return privateJson({code:'SOURCE_CONFLICT',remedy:'Reload the committed revision and reconcile your draft.'},409);if(writing)return privateJson({code:'COMMIT_OUTCOME_UNVERIFIED',remedy:'Read back the original request identity before another command.'},503);if(error instanceof AuthorityError)return privateJson({code:error.code},409);if(error instanceof AccessError)return privateJson(error.code==='GENUINE_ASSESSMENT_HISTORY_LIMIT'?{code:error.code}:{code:error.code,stage2_status:stage2Status(error.code)},error.status);return accessFailure(error);}
  };
 }
 export const sourceWorkflowHandlers=createSourceWorkflowHandlers({guard:operatorHandlers.guard,source:loadOperatorSourceRecords,repository:()=>{const url=process.env.SUPABASE_URL,key=process.env.SUPABASE_SERVICE_ROLE_KEY;if(!url||!key)throw new AccessError('STATE_UNAVAILABLE',503);return new SupabaseDemoStateRepository(url,key);}});

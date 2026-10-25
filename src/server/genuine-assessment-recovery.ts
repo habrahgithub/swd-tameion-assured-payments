@@ -3,7 +3,7 @@ import {contentHash} from '../domain/linked-instruction';
 import type {AssessmentOperation,DemoStateSnapshot} from './demo-state';
 import type {OperatorSourceView} from './operator-source-records';
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
-import {classifyGenuineAdmission,evaluateDispositionAdmission,MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION,type DispositionDenial,type GenuineAdmission} from './genuine-admission';
+import {classifyGenuineAdmission,evaluateDispositionAdmission,MAX_GENUINE_ASSESSMENTS_PER_OBLIGATION,type DispositionDenial,type ProjectedGenuineAdmission} from './genuine-admission';
 import {assertDispositionLineage,dispositionReceiptCurrent,isUnboundLegacyUnknown,resolveDisposition,unresolvedAssessmentOperations} from './genuine-disposition';
 export const RECOVERY_GRACE_MS=60_000;
 const keyPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -47,7 +47,7 @@ export interface DispositionVisibility {
  /** Public assessment hash of the child's seal (never an operation key) and whether that receipt is current for the source/version/binding. */
  child_status?:AssessmentOperation['status'];child_seal_hash?:string;child_current?:boolean;prior_binding_status?:'UNVERIFIED';
 }
-export interface GenuineAssessmentVisibility {admission?:GenuineAdmission;status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'DISPOSITION_CLOSED'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string;disposition?:DispositionVisibility;/** Annotation only: the earlier UNKNOWN is historical and superseded; no operation identifier is projected. */historical_unresolved?:{status:'UNKNOWN';superseded:true}}
+export interface GenuineAssessmentVisibility {admission?:ProjectedGenuineAdmission;status:'NONE'|'UNKNOWN'|'IN_PROGRESS'|'COMPLETED';recovery_eligible:boolean;recovery_reason:'NO_UNKNOWN'|'LEGACY_EVIDENCE_MISSING'|'SOURCE_CHANGED'|'FINANCIAL_HISTORY'|'ACTIVE_OR_SUCCESSOR'|'DISPOSITION_CLOSED'|'HISTORY_LIMIT'|'GRACE'|'ELIGIBLE';eligible_at?:string;disposition?:DispositionVisibility;/** Annotation only: the earlier UNKNOWN is historical and superseded; no operation identifier is projected. */historical_unresolved?:{status:'UNKNOWN';superseded:true}}
 export function genuineAssessmentVisibility(snapshot:DemoStateSnapshot,view:OperatorSourceView,id:string,version:number,now=Date.now()):GenuineAssessmentVisibility {
  assertAssessmentLineage(snapshot.assessment_operations);
  assertDispositionLineage(snapshot.assessment_operations,snapshot.authority.assessments.map(a=>a.record.assessment_id));

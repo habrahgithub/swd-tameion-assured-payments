@@ -17,6 +17,22 @@ export class DemoStateConflictError extends DemoStatePersistenceError {
   }
 }
 
+export type RecoveryWorkflowCapabilities = {
+  status: "READY" | "MISSING" | "UNAVAILABLE" | "INCONSISTENT";
+  reason_codes: string[];
+  schema_version: number | null;
+  available: {
+    human_authorization_history: boolean;
+    shared_wallet_namespace_lock: boolean;
+    parent_child_retirement_lock: boolean;
+    immutable_recovery_receipts: boolean;
+  };
+};
+
+class SupabaseRpcHttpError extends Error {
+  constructor(readonly status: number) { super("Supabase RPC failed."); }
+}
+
 /** Server-only PostgREST RPC adapter. Credentials are never included in errors or logs. */
 export class SupabaseDemoStateRepository {
   private readonly baseUrl: string;
@@ -29,9 +45,23 @@ export class SupabaseDemoStateRepository {
     this.baseUrl = url.replace(/\/+$/, "");
   }
 
+  async readRecoveryWorkflowCapabilities():Promise<RecoveryWorkflowCapabilities> {
+    const unavailable:RecoveryWorkflowCapabilities={status:"UNAVAILABLE",reason_codes:["CAPABILITY_RPC_UNAVAILABLE"],schema_version:null,available:{human_authorization_history:false,shared_wallet_namespace_lock:false,parent_child_retirement_lock:false,immutable_recovery_receipts:false}};
+    let result:Record<string,unknown>;
+    try { result=asRecord(await this.rpc('tameion_recovery_capabilities',{})); }
+    catch(error) { return error instanceof SupabaseRpcHttpError&&error.status===404?{...unavailable,status:"MISSING",reason_codes:["CAPABILITY_RPC_MISSING"]}:unavailable; }
+    const keys=["human_authorization_history","shared_wallet_namespace_lock","parent_child_retirement_lock","immutable_recovery_receipts"] as const;
+    const available=Object.fromEntries(keys.map(key=>[key,result[key]===true])) as RecoveryWorkflowCapabilities["available"];
+    const schemaVersion=Number.isSafeInteger(result.schema_version)?result.schema_version as number:null;
+    const unknownKeys=Object.keys(result).some(key=>key!=="schema_version"&&!keys.includes(key as typeof keys[number]));
+    if(unknownKeys||keys.some(key=>result[key]!==undefined&&typeof result[key]!=="boolean"))return {status:"INCONSISTENT",reason_codes:["CAPABILITY_RESULT_INCONSISTENT"],schema_version:schemaVersion,available};
+    if(schemaVersion!==1)return {status:"MISSING",reason_codes:[schemaVersion===null?"CAPABILITY_SCHEMA_VERSION_MISMATCH":"CAPABILITY_SCHEMA_VERSION_MISMATCH"],schema_version:schemaVersion,available};
+    const missing=keys.some(key=>available[key]!==true);
+    return {status:missing?"MISSING":"READY",reason_codes:missing?["REQUIRED_CAPABILITY_MISSING"]:["CAPABILITY_CONTRACT_READY"],schema_version:schemaVersion,available};
+  }
+
   async assertRecoveryWorkflowCapability():Promise<void> {
-    const result=asRecord(await this.rpc('tameion_recovery_capabilities',{}));
-    if(result.schema_version!==1||result.human_authorization_history!==true||result.shared_wallet_namespace_lock!==true||result.parent_child_retirement_lock!==true||result.immutable_recovery_receipts!==true)throw new DemoStatePersistenceError('Recovery workflow migration capability unavailable.');
+    if((await this.readRecoveryWorkflowCapabilities()).status!=="READY")throw new DemoStatePersistenceError('Recovery workflow migration capability unavailable.');
   }
 
   async loadOrSeed(namespace: string, initialSnapshot: Record<string, unknown>): Promise<DemoStateRevision> {
@@ -88,7 +118,7 @@ export class SupabaseDemoStateRepository {
     });
     if (!response.ok) {
       // Do not surface provider bodies: they may contain request details.
-      throw new Error(`Supabase durable-state RPC ${functionName} failed (HTTP ${response.status}).`);
+      throw new SupabaseRpcHttpError(response.status);
     }
     const reader=response.body?.getReader();
     if(!reader)throw new DemoStatePersistenceError("Durable state response unavailable.");
