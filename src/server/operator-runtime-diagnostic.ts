@@ -153,7 +153,9 @@ export function createRuntimeDiagnosticHandler(deps: RuntimeDiagnosticDependenci
           ? (row.genuine_assessment as Record<string, unknown>).admission : undefined;
         const rawBootstrapCode = admission && typeof admission === "object" && "bootstrap_gate_code" in admission
           ? (admission as Record<string, unknown>).bootstrap_gate_code : undefined;
-        const bootstrapGateCode = meta?.source_path === "RECOVERABLE_SOURCE_INGRESS"
+        const recoverableIngressRow = row.source_verification === "AUTHENTICATED_OPERATOR_ASSERTION_NOT_INDEPENDENT_VERIFICATION";
+        const bootstrapNotApplicable = meta?.source_path === "RECOVERABLE_SOURCE_INGRESS" || recoverableIngressRow || row.source_group === "DEMO_ARC_TESTNET";
+        const bootstrapGateCode = bootstrapNotApplicable
           ? "NOT_APPLICABLE"
           : typeof rawBootstrapCode === "string" && BOOTSTRAP_GATE_CODE_SET.has(rawBootstrapCode)
             ? rawBootstrapCode

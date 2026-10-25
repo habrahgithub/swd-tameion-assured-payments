@@ -3172,8 +3172,8 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
     const requestName=confirmDisposition?"current disposition":bootstrapReference?"current-source":successor?"successor":"original";
     const requestStorageKey=successor?`tameion.assessment-successor.${selectedId}`:`tameion.assessment-request.${selectedId}`;
     const sourceFingerprint=canonicalize(detail.record);
-    const canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
-    const bootstrapDenial=requestName==="original"?bootstrapDenialGuidance(detail.genuine_assessment?.admission?.bootstrap_gate_code):null;
+    let canOfferBootstrap=!successor&&detail.genuine_assessment?.admission?.can_bootstrap===true&&!detail.pae_sealed&&!detail.execution;
+    let bootstrapDenial=requestName==="original"?bootstrapDenialGuidance(detail.genuine_assessment?.admission?.bootstrap_gate_code):null;
     if(!confirmDisposition&&key!==selectedRequestKey&&key!=="Request identity unavailable")return;
     const token=++exactAssessmentSequence.current,generation=exactCheckRenderGeneration,epoch=exactCheckRenderEpoch;
     let expectedDetail=exactCheckRenderDetail;
@@ -3235,7 +3235,20 @@ export function CommandCenter({operatorControls,walletSummary,csrfToken,initialV
       if(firstResponse.status===401||firstResponse.status===403)setAssessmentConflict(null);
       const first=firstResponse.ok&&firstResponse.status===200?exactAssessmentStatus(firstResponse.data,selectedId,key,version):null;
       if(!first){unresolved("FAILED");return;}
-      if(first.status!=="COMPLETED_CURRENT"){unresolved(first.status);return;}
+      if(first.status!=="COMPLETED_CURRENT"){
+        if(first.status==="NOT_FOUND"&&requestName==="original"){
+          const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===key);
+          expectedDetail=detailGeneration.current;
+          setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the current bootstrap gate…"});
+          const refreshed=await waitForStatus(pendingDetail);
+          if(!identityCurrent())return;
+          if(!refreshed||String(refreshed.aggregate.aggregate_version)!==version||canonicalize(refreshed.record)!==sourceFingerprint){unresolved("STALE");return;}
+          const admission=refreshed.genuine_assessment?.admission;
+          canOfferBootstrap=admission?.can_bootstrap===true&&!refreshed.pae_sealed&&!refreshed.execution;
+          bootstrapDenial=bootstrapDenialGuidance(admission?.bootstrap_gate_code);
+        }
+        unresolved(first.status);return;
+      }
       const pendingDetail=refreshDetail(selectedId,true,generation,()=>current()&&retainedAssessmentRequestKey(selectedId)===(confirmDisposition?originalKey:key));
       expectedDetail=detailGeneration.current;
       setExactAssessmentCheck({...bound,detailRequest:expectedDetail,status:"checking",message:"Confirming the recorded assessment…"});

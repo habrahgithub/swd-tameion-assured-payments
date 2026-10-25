@@ -85,6 +85,21 @@ describe("operator runtime diagnostic", () => {
     expect(JSON.stringify(legacyBody)).not.toContain("RAW-ENV-VALUE");
   });
 
+  it("classifies bootstrap applicability per payable when the composed source path is ambiguous", async () => {
+    const { handle } = handler(async () => internal({ diagnostic_meta: {
+      observation_status: "CONSISTENT", observation_reason_code: null, binding_namespaces: ["SYNTHETIC-SECRET-NAMESPACE"], source_path: "AMBIGUOUS", source_reason_codes: ["SOURCE_PATH_AMBIGUOUS"],
+    }, obligations: [
+      { obligation_id: "OBL-J0C-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", source_group: "GENUINE_COMPANY", source_verification: "AUTHENTICATED_OPERATOR_ASSERTION_NOT_INDEPENDENT_VERIFICATION", stage2_status: "SOURCE_PERMISSION_REQUIRED", command_admitted_actions: [] },
+      { obligation_id: "OBL-J0C-002", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", source_group: "DEMO_ARC_TESTNET", command_admitted_actions: [] },
+      { obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", genuine_assessment: { admission: { bootstrap_gate_code: "BOOTSTRAP_HISTORY_LIMIT" } }, command_admitted_actions: [] },
+    ] }));
+    const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();
+    expect(body.source_path.selected).toBe("AMBIGUOUS");
+    expect(body.payables[0]).toMatchObject({ blocking_reason_code: "SOURCE_PERMISSION_REQUIRED", bootstrap_gate_code: "NOT_APPLICABLE" });
+    expect(body.payables[1].bootstrap_gate_code).toBe("NOT_APPLICABLE");
+    expect(body.payables[5].bootstrap_gate_code).toBe("BOOTSTRAP_HISTORY_LIMIT");
+  });
+
   it("does not promote read-model affordances into command admission", async () => {
     const { handle } = handler(async () => internal({ obligations: [{ obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", allowed_actions: ["MANUAL_REVIEW", "CREATE_SOURCE"] }] }));
     const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();

@@ -3731,15 +3731,16 @@ describe('Stage 2 admission browser flow',()=>{
   const value:Record<string,any>={...detail(id),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:admission.can_assess===true,genuine_assessment:{status:'COMPLETED',recovery_eligible:false,recovery_reason:'NO_UNKNOWN',admission}};
   if(cancelled)value.aggregate={...value.aggregate,state:'CANCELLED'};return value;
  }
- function mount(admissions:Record<string,Record<string,unknown>>,options:{bootstrapReply?:()=>Promise<Response>}={}){
+ function mount(admissions:Record<string,Record<string,unknown>>,options:{bootstrapReply?:()=>Promise<Response>;afterStatusAdmission?:Record<string,unknown>}={}){
   localStorage.clear();localStorage.setItem(requestStorage,earlierKey);vi.stubGlobal('crypto',{randomUUID:()=>newKey,subtle:webcrypto.subtle});
+  let statusObserved=false;
   const mock=vi.fn<typeof fetch>((input,init)=>{
    const url=String(input);
-   if(url===`/api/obligations/${idA}/advisory/status`&&init?.method==='POST')return Promise.resolve(response({status:'NOT_FOUND',obligation_id:idA,idempotency_key:JSON.parse(init.body as string).idempotency_key,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));
+   if(url===`/api/obligations/${idA}/advisory/status`&&init?.method==='POST'){statusObserved=true;return Promise.resolve(response({status:'NOT_FOUND',obligation_id:idA,idempotency_key:JSON.parse(init.body as string).idempotency_key,aggregate_version:'1',source_record_sha256:'a'.repeat(64),financial_action_eligible:false}));}
    if(url===`/api/obligations/${idA}/advisory`&&init?.method==='POST')return options.bootstrapReply?.()??Promise.resolve(response({status:'IN_PROGRESS',idempotency_key:newKey},202));
    if(init?.method==='POST')throw new Error('Forbidden extra POST '+url);
    if(url==='/api/obligations')return Promise.resolve(response({obligations:[{...obligation(idA),source_group:'GENUINE_COMPANY'},{...obligation(idB),source_group:'GENUINE_COMPANY'}]}));
-   const id=url.endsWith(idB)?idB:idA;return Promise.resolve(response(genuine(id,admissions[id]??reviewOnly,id===idB)));
+   const id=url.endsWith(idB)?idB:idA;return Promise.resolve(response(genuine(id,statusObserved&&id===idA?options.afterStatusAdmission??admissions[id]??reviewOnly:admissions[id]??reviewOnly,id===idB)));
   });vi.stubGlobal('fetch',mock);return {mock,view:renderWithExplicitFirstSelection('FICTIONAL-CSRF')};
  }
  const posts=(mock:ReturnType<typeof vi.fn<typeof fetch>>)=>mock.mock.calls.filter(([,init])=>init?.method==='POST');
@@ -3806,6 +3807,19 @@ describe('Stage 2 admission browser flow',()=>{
   expect(status.textContent).toMatch(/workspace owner/i);
   expect(status.textContent).not.toMatch(/never sent|was not sent/i);
   expect(screen.queryByRole('button',{name:/Request one assessment|Run AI Assessment/})).toBeNull();
+  expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
+ });
+ it('refreshes and rebinds the gate after exact NOT_FOUND before showing its reason',async()=>{
+  const stale={...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_PROTECTION_NOT_ATTESTED'};
+  const current={...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_HISTORY_LIMIT'};
+  const {mock}=mount({[idA]:stale},{afterStatusAdmission:current});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  const status=await screen.findByRole('status',{name:'Assessment request check'});
+  await waitFor(()=>expect(status.textContent).toMatch(/assessment history limit has been reached/));
+  expect(status.textContent).not.toMatch(/bootstrap protection is not attested/);
+  const calls=mock.mock.calls.map(([url,init])=>({url:String(url),method:init?.method??'GET'}));
+  const statusIndex=calls.findIndex(call=>call.url.endsWith('/advisory/status')&&call.method==='POST');
+  expect(calls.slice(statusIndex+1).some(call=>call.url===`/api/obligations/${idA}`&&call.method==='GET')).toBe(true);
   expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
  });
  it('shows a capability-derived review-only reason, no assessment instruction, and a history navigation action',async()=>{
