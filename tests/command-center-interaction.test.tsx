@@ -3725,8 +3725,8 @@ describe('Stage 2 server-owned UNKNOWN presentation and deliberate recovery',()=
 describe('Stage 2 admission browser flow',()=>{
  const idA='FICTIONAL-BS-A',idB='FICTIONAL-BS-B',earlierKey='00000000-0000-4000-8000-000000000401',newKey='00000000-0000-4000-8000-000000000402';
  const requestStorage=`tameion.assessment-request.${idA}`,successorStorage=`tameion.assessment-successor.${idA}`;
- const bootstrapAdmission={can_assess:true,reason:'LEGACY_HISTORY_ONLY',can_bootstrap:true,legacy_history_count:7,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
- const reviewOnly={can_assess:false,reason:'FINANCIAL_HISTORY',can_bootstrap:false,legacy_history_count:20,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
+ const bootstrapAdmission={can_assess:true,reason:'LEGACY_HISTORY_ONLY',can_bootstrap:true,bootstrap_gate_code:'BOOTSTRAP_AVAILABLE',legacy_history_count:7,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
+ const reviewOnly={can_assess:false,reason:'FINANCIAL_HISTORY',can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_FINANCIAL_HISTORY',legacy_history_count:20,counted_history:0,genuine_admissions:0,unclassifiable_history:0};
  function genuine(id:string,admission:Record<string,unknown>,cancelled=false):Record<string,any>{
   const value:Record<string,any>={...detail(id),source_group:'GENUINE_COMPANY',financial_action_eligible:false,advisory_action_eligible:admission.can_assess===true,genuine_assessment:{status:'COMPLETED',recovery_eligible:false,recovery_reason:'NO_UNKNOWN',admission}};
   if(cancelled)value.aggregate={...value.aggregate,state:'CANCELLED'};return value;
@@ -3789,6 +3789,24 @@ describe('Stage 2 admission browser flow',()=>{
   fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
   await waitFor(()=>expect(screen.getByRole('status',{name:'Assessment request check'}).textContent).toMatch(/could not be verified/));
   expect(screen.queryByRole('button',{name:/Request one assessment|Run AI Assessment/})).toBeNull();expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
+ });
+ it.each([
+  ['BOOTSTRAP_PROTECTION_NOT_ATTESTED',/bootstrap protection is not attested/],
+  ['BOOTSTRAP_FINANCIAL_HISTORY',/payment-control history blocks another assessment/],
+  ['BOOTSTRAP_UNRESOLVED_OPERATION',/another assessment operation is unresolved/],
+  ['BOOTSTRAP_HISTORY_LIMIT',/assessment history limit has been reached/],
+  ['BOOTSTRAP_HISTORY_NOT_ESTABLISHED',/required bootstrap history is not established/],
+ ] as const)('shows the evaluator reason %s only after exact NOT_FOUND and does not resubmit',async(code,copy)=>{
+  const {mock}=mount({[idA]:{...bootstrapAdmission,can_bootstrap:false,bootstrap_gate_code:code}});
+  fireEvent.click(await screen.findByRole('button',{name:'Check assessment request'}));
+  const status=await screen.findByRole('status',{name:'Assessment request check'});
+  await waitFor(()=>expect(status.textContent).toMatch(copy));
+  expect(status.textContent).toMatch(/current source state|current recorded state/);
+  expect(status.textContent).toMatch(/earlier outcome remains unverified/);
+  expect(status.textContent).toMatch(/workspace owner/i);
+  expect(status.textContent).not.toMatch(/never sent|was not sent/i);
+  expect(screen.queryByRole('button',{name:/Request one assessment|Run AI Assessment/})).toBeNull();
+  expect(posts(mock)).toHaveLength(1);expect(localStorage.getItem(requestStorage)).toBe(earlierKey);
  });
  it('shows a capability-derived review-only reason, no assessment instruction, and a history navigation action',async()=>{
   const {mock}=mount({});localStorage.clear();

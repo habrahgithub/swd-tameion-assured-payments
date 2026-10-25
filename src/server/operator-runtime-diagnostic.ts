@@ -4,6 +4,7 @@ import { privateJson } from "./operator-auth";
 import { obligationReaders } from "./operator-obligation-routes";
 import type { RecoveryWorkflowCapabilities } from "./supabase-demo-state-repository";
 import { methodNotAllowed } from "./route-access-policy";
+import { BOOTSTRAP_GATE_CODES } from "./genuine-admission";
 
 export const RUNTIME_DIAGNOSTIC_PAYABLE_IDS = [
   "OBL-J0C-001", "OBL-J0C-002", "OBL-J0C-003", "OBL-J0C-004", "OBL-J0C-005", "OBL-SWD-20261014-001",
@@ -16,6 +17,7 @@ const BLOCKERS = new Set([
   "EXISTING_FINANCIAL_CLAIM", "UNRESOLVED_OPERATION", "CURRENT_HUMAN_REVIEW_REQUIRED", "SOURCE_NOT_FOUND",
   "ASSESSMENT_OUTCOME_UNKNOWN", "ASSESSMENT_CONTEXT_REQUIRED", "ASSESSMENT_ADMISSION_REQUIRED", "SETTLEMENT_OUTCOME_UNKNOWN", "HUMAN_REVIEW_CURRENT", "READY_FOR_REVIEW", "RECOVERY_MIGRATION_REQUIRED", "STATE_UNAVAILABLE", "PREDICATE_UNAVAILABLE", "PAYABLE_NOT_PRESENT",
 ]);
+const BOOTSTRAP_GATE_CODE_SET = new Set<string>(BOOTSTRAP_GATE_CODES);
 
 type InternalDiagnostic = {
   diagnostic_meta?: { observation_status?: string; observation_reason_code?: string | null; binding_namespaces?: unknown; source_path?: string; source_reason_codes?: unknown };
@@ -139,7 +141,7 @@ export function createRuntimeDiagnosticHandler(deps: RuntimeDiagnosticDependenci
       const actionsEnabled = observationStatus === "CONSISTENT" && capabilities.status === "READY";
       const payables = RUNTIME_DIAGNOSTIC_PAYABLE_IDS.map(obligation_id => {
         const row = byId.get(obligation_id);
-        if (!row) return { obligation_id, binding_fingerprint: null, stage: "ASSESSMENT", blocking_reason_code: "PAYABLE_NOT_PRESENT", permitted_next_actions: [] };
+        if (!row) return { obligation_id, binding_fingerprint: null, stage: "ASSESSMENT", blocking_reason_code: "PAYABLE_NOT_PRESENT", bootstrap_gate_code: "UNAVAILABLE", permitted_next_actions: [] };
         // The shared read model's allowed_actions are display affordances. This
         // endpoint does not execute mutation admission and must not present them
         // as approved commands.
@@ -147,17 +149,27 @@ export function createRuntimeDiagnosticHandler(deps: RuntimeDiagnosticDependenci
         const namespace = typeof row.diagnostic_binding_namespace === "string" ? row.diagnostic_binding_namespace : null;
         const fingerprint = namespace === null ? null : fingerprintByNamespace.get(namespace) ?? null;
         const blockingReason = capabilities.status === "READY" ? primaryBlocker(row) : "RECOVERY_MIGRATION_REQUIRED";
+        const admission = row.genuine_assessment && typeof row.genuine_assessment === "object" && "admission" in row.genuine_assessment
+          ? (row.genuine_assessment as Record<string, unknown>).admission : undefined;
+        const rawBootstrapCode = admission && typeof admission === "object" && "bootstrap_gate_code" in admission
+          ? (admission as Record<string, unknown>).bootstrap_gate_code : undefined;
+        const bootstrapGateCode = meta?.source_path === "RECOVERABLE_SOURCE_INGRESS"
+          ? "NOT_APPLICABLE"
+          : typeof rawBootstrapCode === "string" && BOOTSTRAP_GATE_CODE_SET.has(rawBootstrapCode)
+            ? rawBootstrapCode
+            : "UNAVAILABLE";
         return {
           obligation_id,
           binding_fingerprint: fingerprint,
           stage: stageProjection(row, blockingReason),
           blocking_reason_code: blockingReason,
+          bootstrap_gate_code: observationStatus === "CONSISTENT" ? bootstrapGateCode : "UNAVAILABLE",
           permitted_next_actions: actionsEnabled ? [...new Set(actions)] : [],
         };
       });
       const missingBuild = !buildReady;
       const body = {
-        schema_version: 1,
+        schema_version: 2,
         observation_status: observationStatus,
         observation_reason_code: observationStatus === "CONSISTENT" ? null : typeof meta?.observation_reason_code === "string" && OBSERVATION_REASONS.has(meta.observation_reason_code) ? meta.observation_reason_code : (rowBindingMismatch ? "STATE_REVISION_CHANGED" : !bindingReady ? "BINDING_INCOMPLETE" : !buildReady ? "BUILD_IDENTITY_INCOMPLETE" : "OBSERVATION_UNAVAILABLE"),
         observed_at: deps.now().toISOString(),

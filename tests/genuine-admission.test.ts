@@ -9,7 +9,7 @@ import {DemoStateConflictError} from '../src/server/supabase-demo-state-reposito
 import {loadExistingDemoState} from '../src/server/load-existing-demo-state';
 import {createGenuineWorkflowHandlers} from '../src/server/genuine-workflow';
 import {createGenuineAssessmentStatusHandler} from '../src/server/genuine-assessment-status';
-import {classifyGenuineAdmission,assertBootstrapOperationPreservation} from '../src/server/genuine-admission';
+import {classifyGenuineAdmission,projectGenuineAdmission,assertBootstrapOperationPreservation} from '../src/server/genuine-admission';
 import {AccessError} from '../src/server/route-access-policy';
 import {syntheticSourceRecords} from './test-support/synthetic-source-records';
 import type {AuthContext} from '../src/server/operator-auth';
@@ -99,6 +99,37 @@ describe('Stage 2 shared admission classifier',()=>{
  it('uses the shared limit for UNKNOWN recovery: legacy pairs are exempt, genuine history is not',async()=>{
   vi.stubEnv('NVIDIA_API_KEY',undefined);const h=harness();seedLegacy(h,9);seedUnknown(h);expect((await recover(h)).status).toBe(200);
   const c=harness();seedGenuine(c,3);seedUnknown(c);expect((await recover(c)).status).toBe(409);
+ });
+});
+
+describe('Stage 2 bootstrap gate projection',()=>{
+ it('distinguishes the protection guard from classifier denials without changing eligibility',()=>{
+  const guarded=harness(),guardedId=guarded.records[0].obligation_id;seedLegacy(guarded,7);
+  const classifier=classifyGenuineAdmission(guarded.snapshot(),guardedId);
+  const projected=projectGenuineAdmission(guarded.snapshot(),guardedId);
+  expect(classifier).toMatchObject({can_bootstrap:true,reason:'LEGACY_HISTORY_ONLY'});
+  expect(projected).toMatchObject({can_assess:classifier.can_assess,reason:classifier.reason,can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_PROTECTION_NOT_ATTESTED'});
+
+  const financial=harness(),financialId=financial.records[0].obligation_id;seedLegacy(financial,7);financial.snapshot().execution_ledger.push({obligation_id:financialId,idempotency_key:'FICTIONAL-FIN',status:'UNKNOWN',atomic_amount:'1',destination_address:'0x'+'1'.repeat(40),provider_ref:null} as any);
+  const combined=projectGenuineAdmission(financial.snapshot(),financialId);
+  expect(combined).toMatchObject({reason:'FINANCIAL_HISTORY',can_bootstrap:false,bootstrap_gate_code:'BOOTSTRAP_FINANCIAL_HISTORY'});
+ });
+ it.each([
+  ['financial history','FINANCIAL_HISTORY','BOOTSTRAP_FINANCIAL_HISTORY'],
+  ['unresolved operation','UNRESOLVED_OPERATION','BOOTSTRAP_UNRESOLVED_OPERATION'],
+  ['history limit','HISTORY_LIMIT','BOOTSTRAP_HISTORY_LIMIT'],
+  ['history not established','ELIGIBLE','BOOTSTRAP_HISTORY_NOT_ESTABLISHED'],
+ ] as const)('projects %s as an explanatory code only',(_name,reason,code)=>{
+  const h=harness(),id=h.records[0].obligation_id;
+  if(reason==='FINANCIAL_HISTORY'){seedLegacy(h,7);h.snapshot().execution_ledger.push({obligation_id:id,idempotency_key:'FICTIONAL-FIN',status:'UNKNOWN',atomic_amount:'1',destination_address:'0x'+'1'.repeat(40),provider_ref:null} as any);}
+  if(reason==='UNRESOLVED_OPERATION')seedUnknown(h);
+  if(reason==='HISTORY_LIMIT')seedGenuine(h,4,2);
+  const result=projectGenuineAdmission(h.snapshot(),id);
+  expect(result).toMatchObject({reason,can_bootstrap:false,bootstrap_gate_code:code});
+ });
+ it('preserves the one existing explicit bootstrap when the current gate is available',()=>{
+  const h=harness(),id=h.records[0].obligation_id;attest();seedLegacy(h,7);
+  expect(projectGenuineAdmission(h.snapshot(),id)).toMatchObject({can_bootstrap:true,bootstrap_gate_code:'BOOTSTRAP_AVAILABLE'});
  });
 });
 

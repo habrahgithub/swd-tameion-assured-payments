@@ -54,6 +54,37 @@ describe("operator runtime diagnostic", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("projects the bootstrap evaluator separately from the existing blocker and action fields", async () => {
+    const { handle } = handler(async () => internal({
+      diagnostic_meta: { observation_status: "CONSISTENT", observation_reason_code: null, binding_namespaces: ["SYNTHETIC-SECRET-NAMESPACE"], source_path: "LEGACY_ADVISORY", source_reason_codes: ["LEGACY_ADVISORY_SELECTED"] },
+      obligations: [{ obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", stage: "ASSESSMENT", stage2_status: "ASSESSMENT_ADMISSION_REQUIRED", blockers: [{ code: "ASSESSMENT_ADMISSION_REQUIRED" }], command_admitted_actions: [], genuine_assessment: { admission: { bootstrap_gate_code: "BOOTSTRAP_PROTECTION_NOT_ATTESTED" } } }],
+    }));
+    const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();
+    expect(body.schema_version).toBe(2);
+    expect(body.payables[5]).toMatchObject({
+      blocking_reason_code: "ASSESSMENT_ADMISSION_REQUIRED",
+      bootstrap_gate_code: "BOOTSTRAP_PROTECTION_NOT_ATTESTED",
+      permitted_next_actions: [],
+    });
+  });
+
+  it("marks recoverable source-ingress bootstrap as not applicable and unavailable projections fail closed", async () => {
+    const { handle } = handler(async () => internal({ diagnostic_meta: { observation_status: "CONSISTENT", observation_reason_code: null, binding_namespaces: ["SYNTHETIC-SECRET-NAMESPACE"], source_path: "RECOVERABLE_SOURCE_INGRESS", source_reason_codes: ["RECOVERABLE_INGRESS_SELECTED"] }, obligations: [
+      { obligation_id: "OBL-J0C-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", stage2_status: "SOURCE_PERMISSION_REQUIRED", command_admitted_actions: [] },
+      { obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE" },
+    ] }));
+    const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();
+    expect(body.payables[0]).toMatchObject({ blocking_reason_code: "SOURCE_PERMISSION_REQUIRED", bootstrap_gate_code: "NOT_APPLICABLE" });
+    expect(body.payables[5].bootstrap_gate_code).toBe("NOT_APPLICABLE");
+
+    const legacy = handler(async () => internal({ diagnostic_meta: { observation_status: "CONSISTENT", observation_reason_code: null, binding_namespaces: ["SYNTHETIC-SECRET-NAMESPACE"], source_path: "LEGACY_ADVISORY", source_reason_codes: ["LEGACY_ADVISORY_SELECTED"] }, obligations: [
+      { obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", genuine_assessment: { admission: { bootstrap_gate_code: "RAW-ENV-VALUE" } } },
+    ] }));
+    const legacyBody = await (await legacy.handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();
+    expect(legacyBody.payables[5].bootstrap_gate_code).toBe("UNAVAILABLE");
+    expect(JSON.stringify(legacyBody)).not.toContain("RAW-ENV-VALUE");
+  });
+
   it("does not promote read-model affordances into command admission", async () => {
     const { handle } = handler(async () => internal({ obligations: [{ obligation_id: "OBL-SWD-20261014-001", diagnostic_binding_namespace: "SYNTHETIC-SECRET-NAMESPACE", allowed_actions: ["MANUAL_REVIEW", "CREATE_SOURCE"] }] }));
     const body = await (await handle(new Request("https://tameion.invalid/api/operator/runtime-diagnostic"))).json();

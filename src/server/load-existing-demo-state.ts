@@ -1,7 +1,7 @@
 import {parseDemoStateSnapshot} from "./demo-state";
 import {genuineAssessmentVisibility,type GenuineAssessmentVisibility} from "./genuine-assessment-recovery";
 import {genuineHasFinancialHistory} from './genuine-authority-boundary';
-import {classifyGenuineAdmission,bootstrapProtectionAttested} from './genuine-admission';
+import {projectGenuineAdmission} from './genuine-admission';
 import {parseLinkedInstructions,type LinkedInstruction} from '../domain/linked-instruction';
 import {parsePaymentReleases,type PaymentReleaseApproval} from '../domain/payment-release-approval';
 import {ActorAuthorityRegistry} from '../authority/actor-authority';
@@ -41,7 +41,7 @@ export async function loadExistingDemoState(rpc:Pick<RpcClient,'call'>=runtimeRp
     // A private VIEW cannot hydrate or seed missing authoritative aggregates.
     for(const record of records){const aggregate=store.get(DEMO_ORGANIZATION_ID,record.obligation_id);if(aggregate.source_amount!==record.amount||aggregate.source_currency!==record.currency)throw new Error();}
     const assessmentSnapshot=binding?.workflow_base_sha256?parseDemoStateSnapshot(s):undefined;
-    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>{const admission=classifyGenuineAdmission(snapshot,id);return {...admission,can_bootstrap:admission.can_bootstrap&&bootstrapProtectionAttested()};};
+    const genuineAdmission=(snapshot:DemoStateSnapshot,id:string)=>projectGenuineAdmission(snapshot,id);
     return {persistence_namespace:namespace,persistence_revision:result.revision as number,store,trustedKeys,
       getReadinessObservations:()=>structuredClone(s.readiness_observations??[]),
       getRecoveryEvents:()=>structuredClone(s.recovery_events??[]),
